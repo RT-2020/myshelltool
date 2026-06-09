@@ -1,0 +1,59 @@
+{
+  "task": "创建 myshelltool 首个基线提交并推送当前 master 到 GitHub origin。",
+  "mode": "ralph",
+  "phase": "baseline-commit-push-master",
+  "scope": "按 .omc/specs/deep-interview-baseline-commit-push-master.md 执行。允许创建本地首个 commit、添加 origin、push master；不得提交 .claude、.omc/state、.omc/sessions、dist、node_modules、src-tauri/target 等排除项；不得输出或保存真实 token。",
+  "stories": [
+    {
+      "id": "US-010",
+      "title": "重新运行基线提交前验证",
+      "priority": 1,
+      "passes": true,
+      "acceptanceCriteria": [
+        "git status --short --ignored 显示提交候选清晰，且 .claude、.omc/state、.omc/sessions、dist、node_modules、src-tauri/target 处于 ignored 状态",
+        "node --check src/main.js && node --check tests/ui-smoke.mjs 成功通过",
+        "package.json、src-tauri/tauri.conf.json、.omc/prd.json JSON 解析成功",
+        "cargo metadata --manifest-path src-tauri/Cargo.toml --no-deps --format-version 1 成功通过",
+        "GitHub token 前缀扫描排除 node_modules 后无匹配",
+        "npm run build 成功通过",
+        "npm run test:core 成功通过",
+        "npm run test:ui 成功通过"
+      ]
+    },
+    {
+      "id": "US-011",
+      "title": "创建首个本地基线提交",
+      "priority": 2,
+      "passes": false,
+      "acceptanceCriteria": [
+        "只暂存提交候选文件，不暂存 .claude、.omc/state、.omc/sessions、dist、node_modules、src-tauri/target 或其他 ignored 产物",
+        "创建首个本地 commit，commit message 准确描述当前 Tauri-ready 原型、Rust core、Tauri bridge、测试和窗口化基线",
+        "commit message 包含 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>",
+        "git status --short 在 commit 后不显示已提交候选文件残留"
+      ]
+    },
+    {
+      "id": "US-012",
+      "title": "添加 origin 并推送 master",
+      "priority": 3,
+      "passes": false,
+      "acceptanceCriteria": [
+        "origin remote 指向 https://github.com/RT-2020/myshelltool.git；如果 origin 已存在且不同则停止并询问用户",
+        "当前分支保持 master，不改名为 main",
+        "git push -u origin master 成功，或因认证缺失停止并提示用户自行认证且不泄露 token",
+        "推送成功后 git status --short 保持干净或仅包含允许的本地未提交状态"
+      ]
+    },
+    {
+      "id": "US-013",
+      "title": "完成 reviewer 验证与 Ralph 收尾",
+      "priority": 4,
+      "passes": false,
+      "acceptanceCriteria": [
+        "reviewer 按本 PRD 验证提交与推送结果并给出 APPROVED",
+        ".omc/progress.txt 记录验证、commit、remote、push 和最终状态",
+        "Ralph 相关状态清理完成，不留下本轮 active ralph/ultrawork/ultraqa 状态"
+      ]
+    }
+  ]
+}

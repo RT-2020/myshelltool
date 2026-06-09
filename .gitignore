@@ -1,0 +1,13 @@
+node_modules/
+dist/
+src-tauri/target/
+target/
+.claude/
+.omc/state/
+.omc/sessions/
+.omc/logs/
+.omc/research/
+.omc/notepad.md
+.omc/project-memory.json
+.DS_Store
+*.log

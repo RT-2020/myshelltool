@@ -1,0 +1,83 @@
+# Ralph progress
+
+## 初始化
+
+- 任务：根据 `C:\Users\lenovo\Downloads\index-v3-before-monaco.md` 设计稿落地 myshelltool 的 Tauri-ready 前端原型。
+- Deep Interview 规格：`.omc/specs/deep-interview-rust-finalshell.md`。
+- 当前仓库是 greenfield，尚无业务源码；Node/npm 与 Rust 工具链可用。
+- 安全注意：不得保存或输出用户曾贴出的 GitHub PAT 明文；实现中 token 只能作为本地安全存储占位语义。
+
+## 实现记录
+
+- 已从设计稿拆分生成 `src/index.html`、`src/styles.css`、`src/main.js`。
+- 已创建 `package.json`、`vite.config.js`、`.gitignore`，前端构建目录为 `dist/`。
+- 已添加 `tests/ui-smoke.mjs` 和 `npm run test:ui`，用于验证主题切换、侧栏折叠、标签切换、连接筛选、上下文更新、token 弹窗和隧道切换。
+- `npm run build` 已成功过一次；因后续新增 Playwright 依赖，最终收尾前会重新运行构建。
+
+## 验证进度
+
+- US-001 已通过：`package.json`、`vite.config.js`、`src/index.html`、`src/styles.css`、`src/main.js` 存在，`npm run build` 成功输出 `dist/`。
+- US-002 已通过：源码包含标题栏、全局搜索、连接资产侧栏、工作区标签、总览、终端、文件、隧道、右侧上下文、状态栏、主题切换、侧栏折叠、筛选、右键菜单和关键弹窗。
+- US-003 待完成：等待 Playwright Chromium 安装完成后运行 `npm run test:ui`，并完成最终 reviewer 验证。
+
+- Tauri Rust 外壳首次 `cargo check --manifest-path src-tauri/Cargo.toml` 在 Windows GNU 工具链下因项目路径含中文导致临时 object 链接失败；已改用 `CARGO_TARGET_DIR=C:/Users/lenovo/AppData/Local/Temp/myshelltool-tauri-target` 重试。
+- Tauri build script 报缺少 `icons/icon.ico`，已生成最小 `src-tauri/icons/icon.ico` 并重试 `cargo check`。
+- GNU Rust 检查失败原因：缺少 `windres`。MSVC 检查失败原因：当前 shell 的 `link` 指向 `/usr/bin/link`，且 Visual Studio 安装未包含可用 VC Tools/MSVC 目录。已将 Tauri 验收降级为静态外壳配置验证，并记录环境阻塞。
+- 最终 `npm run test:ui` 通过：验证主题切换、侧栏折叠/展开、标签切换、连接筛选、上下文更新、token 安全弹窗、隧道切换。
+- 最终 `npm run build` 通过：输出 `dist/index.html` 与静态资源。
+- 最终 GitHub token 前缀扫描通过：除 `node_modules` 外无匹配。
+- JSON 配置验证通过：`.omc/prd.json`、`package.json`、`src-tauri/tauri.conf.json`。
+- Tauri Rust 编译未作为通过门槛：本机缺少 GNU `windres`，且 Visual Studio 安装未含可用 VC Tools；已保留最小 Tauri 外壳配置与 icon。
+- Post-review deslop 已完成：`.gitignore` 忽略 Rust target 产物，Tauri `beforeDevCommand` 显式传入 5173 strict port 以匹配 `devUrl`，普通 `npm run dev` 保持端口弹性。
+- Post-deslop `npm run build` 通过，输出 `dist/index.html` 与静态资源。
+- Post-deslop `MYSHELLTOOL_BASE_URL=http://127.0.0.1:5175/ npm run test:ui` 通过。
+- Post-deslop GitHub token 前缀扫描通过：除 `node_modules` 外无匹配。
+- Post-deslop JSON 配置验证通过：`.omc/prd.json`、`package.json`、`src-tauri/tauri.conf.json`。
+
+## Phase 2 后端纵切
+
+- 任务：建立可测试的 Rust core、Tauri command surface 和前端桥接基础。
+- 范围：不提交代码、不接入真实凭据、不实现完整 SSH/SFTP；先打通可验证的后端纵切。
+- 当前故事：US-004 建立可测试 Rust core 能力模型。
+- US-004 已通过：新增 `crates/myshelltool-core` 独立 Rust crate，定义连接资产、同步配置和 token 状态模型；`npm run test:core` 通过 4 个单元测试和 0 个 doctest；GitHub token 前缀扫描无匹配；PRD/package JSON 校验通过。
+- 当前故事：US-005 接入 Tauri command surface。
+- US-005 已通过：`src-tauri/Cargo.toml` 引用 `myshelltool-core` 与 `serde`，`src-tauri/src/lib.rs` 注册 `backend_status`、`list_connection_assets`、`save_sync_settings` 并复用 core crate；`cargo metadata`、`npm run test:core`、token 前缀扫描通过。Tauri cargo check 仍不作为门槛，原因同本机 windres/MSVC 环境阻塞。
+- 当前故事：US-006 前端接入后端桥接状态。
+- US-006 已通过：`src/main.js` 增加 `invokeBackend`，浏览器预览 fallback 展示后端状态和资产来源；token 配置通过桥接保存后仅展示本地安全存储状态并清空输入；`tests/ui-smoke.mjs` 覆盖 fallback 状态和 token 安全交互。
+- Phase 2 回归通过：`npm run build` 成功，`npm run test:core` 通过 4 个单元测试，`npm run test:ui` 输出 `UI smoke test passed`，GitHub token 前缀扫描无匹配，JSON 配置验证通过。
+- Reviewer 首轮指出真实 Tauri invoke 契约问题：前端 flat token/settings 参数与后端结构化参数不匹配，且真实后端返回缺少 `mode`/`source` 供 UI 展示。
+- 已修复：`src-tauri/src/lib.rs` 的 `backend_status` 返回 `mode`，`list_connection_assets` 返回 `source/count/assets`；`src/main.js` 调用 `save_sync_settings` 时传 `{ settings, token }`，fallback 兼容同一结构且不回显 token。
+- 修复后回归通过：`node --check src/main.js && node --check tests/ui-smoke.mjs`、`cargo metadata --manifest-path src-tauri/Cargo.toml --no-deps --format-version 1`、`npm run build`、`npm run test:core`、`npm run test:ui`、token 前缀扫描全部通过。
+- Post-review deslop 完成：移除 `save_sync_settings` fallback 的 flat args 兼容分支，使浏览器 fallback 与 Tauri `{ settings, token }` 契约一致；`renderBackendStatus` 增加 `unknown` 默认值，避免异常响应显示 `undefined`。
+- Post-deslop 回归通过：`node --check src/main.js && node --check tests/ui-smoke.mjs`、`cargo metadata --manifest-path src-tauri/Cargo.toml --no-deps --format-version 1`、`npm run build`、`npm run test:core`、`npm run test:ui`、token 前缀扫描全部通过。
+
+## Autopilot v4 窗口化重设计
+
+- 任务：根据 `C:\Users\lenovo\Downloads\index-v4-before-window-redesign.md` 新设计稿，将默认 UI 从铺满屏幕调整为约 `1180×760` 的居中桌面窗口比例。
+- 已写入规格：`.omc/autopilot/spec.md`。
+- 已写入计划：`.omc/plans/autopilot-impl.md`。
+- 已更新 `src/styles.css`：桌面视口中 `.app-shell` 居中窗口，`.window` 约束为 `min(1180px, calc(100vw - 24px)) × min(760px, calc(100vh - 24px))`，保留小屏响应式回退。
+- 已更新 `src-tauri/tauri.conf.json`：默认窗口 `1180×760`，最小窗口 `960×640`，保留 Vite dev/build 配置。
+- 已更新 `tests/ui-smoke.mjs`：在 `1440×1000` viewport 中断言 `.window` 约 `1180×760` 且水平/垂直居中，并保留原交互回归。
+- Autopilot QA 通过：`node --check src/main.js && node --check tests/ui-smoke.mjs`、JSON 验证、`cargo metadata --manifest-path src-tauri/Cargo.toml --no-deps --format-version 1`、GitHub token 前缀扫描、`npm run build`、`npm run test:core`、`npm run test:ui` 全部通过。
+- Autopilot Phase 4 验证通过：architect、security-reviewer、code-reviewer 均 APPROVED；无阻断项。
+- Autopilot 状态清理完成：autopilot、ralph、ultrawork、ultraqa 状态已清除。
+
+## Ralph 提交前仓库收口
+
+- 任务：仓库收口和首个基线提交前验证；明确不执行 `git commit` 或 `git push`。
+- 已更新 `.omc/prd.json` 为本轮提交前验证 PRD，US-007 与 US-008 已通过。
+- 提交候选边界：`.gitignore`、`.omc/autopilot/spec.md`、`.omc/plans/autopilot-impl.md`、`.omc/prd.json`、`.omc/progress.txt`、`.omc/specs/deep-interview-rust-finalshell.md`、`crates/`、`package-lock.json`、`package.json`、`src-tauri/`、`src/`、`tests/`、`vite.config.js`。
+- 排除项已通过 `.gitignore` 明确：`.claude/`、`.omc/state/`、`.omc/sessions/`、`.omc/logs/`、`.omc/research/`、`.omc/notepad.md`、`.omc/project-memory.json`、`dist/`、`node_modules/`、`src-tauri/target/`、`target/`。
+- 首个基线提交前验证通过：`node --check src/main.js && node --check tests/ui-smoke.mjs`、JSON 配置验证、`cargo metadata --manifest-path src-tauri/Cargo.toml --no-deps --format-version 1`、GitHub token 前缀扫描、`npm run build`、`npm run test:core`、`npm run test:ui`。
+- 仓库当前仍无提交；本轮未创建 commit、未 push。
+- Reviewer 首轮拒绝点：存在历史会话的 active `autopilot`、`ralph`、`ultrawork` 状态，与收尾要求不一致。
+- 已清理会话 `5df9b4d2-6123-44d1-a3ce-ce5b102708b5` 的 `autopilot`、`ralph`、`ultrawork` 状态；`ultraqa` 无状态可清理。
+- 清理后状态核验：仅剩旧 `deep-interview` legacy active mode，不属于本轮提交前验证收尾范围。
+
+## Ralph 基线提交与推送
+
+- 已按 `.omc/specs/deep-interview-baseline-commit-push-master.md` 重新运行基线提交前验证。
+- 提交候选与 ignored 排除项核验通过：`.claude/`、`.omc/state/`、`.omc/sessions/`、`dist/`、`node_modules/`、`src-tauri/target/` 均未进入提交候选。
+- 验证通过：`node --check src/main.js && node --check tests/ui-smoke.mjs`、JSON 配置解析、`cargo metadata --manifest-path src-tauri/Cargo.toml --no-deps --format-version 1`、GitHub token 前缀扫描、`npm run build`、`npm run test:core`、`npm run test:ui`。
+
