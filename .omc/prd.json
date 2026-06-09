@@ -24,11 +24,11 @@
       "id": "US-011",
       "title": "创建首个本地基线提交",
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "acceptanceCriteria": [
         "只暂存提交候选文件，不暂存 .claude、.omc/state、.omc/sessions、dist、node_modules、src-tauri/target 或其他 ignored 产物",
         "创建首个本地 commit，commit message 准确描述当前 Tauri-ready 原型、Rust core、Tauri bridge、测试和窗口化基线",
-        "commit message 包含 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>",
+        "commit message 不包含 Claude coauthor trailer，并准确描述当前 Tauri-ready 原型、Rust core、Tauri bridge、测试和窗口化基线",
         "git status --short 在 commit 后不显示已提交候选文件残留"
       ]
     },
@@ -36,7 +36,7 @@
       "id": "US-012",
       "title": "添加 origin 并推送 master",
       "priority": 3,
-      "passes": false,
+      "passes": true,
       "acceptanceCriteria": [
         "origin remote 指向 https://github.com/RT-2020/myshelltool.git；如果 origin 已存在且不同则停止并询问用户",
         "当前分支保持 master，不改名为 main",
@@ -48,7 +48,7 @@
       "id": "US-013",
       "title": "完成 reviewer 验证与 Ralph 收尾",
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "acceptanceCriteria": [
         "reviewer 按本 PRD 验证提交与推送结果并给出 APPROVED",
         ".omc/progress.txt 记录验证、commit、remote、push 和最终状态",

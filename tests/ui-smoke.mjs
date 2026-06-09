@@ -6,6 +6,8 @@ const browser = await chromium.launch({ headless: true });
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   await page.goto(baseUrl, { waitUntil: 'networkidle' });
+  await page.evaluate(() => localStorage.clear());
+  await page.reload({ waitUntil: 'networkidle' });
 
   const title = await page.title();
   if (!title.includes('myshelltool')) throw new Error(`unexpected title: ${title}`);
@@ -33,7 +35,7 @@ try {
     throw new Error(`backend fallback status missing: ${backendStatus}`);
   }
   const assetSource = await page.locator('#assetSource').textContent();
-  if (!assetSource?.includes('browser-preview fallback') || !assetSource.includes('8 项')) {
+  if (!assetSource?.includes('browser-preview local assets') || !assetSource.includes('8 项')) {
     throw new Error(`asset fallback source missing: ${assetSource}`);
   }
 
@@ -58,6 +60,30 @@ try {
   await page.click('[data-host*="cache-redis"]');
   const contextTitle = await page.locator('#contextTitle').textContent();
   if (!contextTitle?.includes('cache-redis-02')) throw new Error(`context update failed: ${contextTitle}`);
+
+  await page.fill('#connectionFilter', '');
+  await page.click('[data-asset-create]');
+  if (!(await page.locator('#modalLayer.open').count())) {
+    throw new Error('asset editor modal did not open');
+  }
+  await page.fill('[data-asset-field="name"]', 'qa-local-dev');
+  await page.fill('[data-asset-field="host"]', '192.168.56.24');
+  await page.fill('[data-asset-field="username"]', 'qa');
+  await page.fill('[data-asset-field="group"]', '测试环境');
+  await page.fill('[data-asset-field="tags"]', 'qa, local');
+  await page.click('#modalPrimary');
+  await page.waitForFunction(() => document.getElementById('assetSource')?.textContent?.includes('9 项'));
+  await page.fill('#connectionFilter', 'qa-local');
+  const qaHosts = await page.locator('[data-host]:visible').count();
+  if (qaHosts !== 1) throw new Error(`created asset filter expected 1 visible host, got ${qaHosts}`);
+  await page.click('[data-host*="qa-local"]');
+  const qaContextTitle = await page.locator('#contextTitle').textContent();
+  if (!qaContextTitle?.includes('qa-local-dev')) throw new Error(`created asset context missing: ${qaContextTitle}`);
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForFunction(() => document.getElementById('assetSource')?.textContent?.includes('9 项'));
+  await page.fill('#connectionFilter', 'qa-local');
+  const persistedHosts = await page.locator('[data-host]:visible').count();
+  if (persistedHosts !== 1) throw new Error(`persisted asset expected 1 visible host, got ${persistedHosts}`);
 
   await page.click('[data-modal="tokenConfig"]');
   if (!(await page.locator('#modalLayer.open').count())) {

@@ -37,7 +37,7 @@
               <h2>连接资产</h2>
               <div class="side-actions">
                 <button class="icon-btn asset-toggle" id="assetToggle" type="button" aria-label="收起连接资产" aria-expanded="true"><span class="when-expanded">‹</span><span class="when-collapsed">›</span></button>
-                <button class="icon-btn" data-modal="fingerprint" aria-label="新增连接">＋</button>
+                <button class="icon-btn" data-asset-create aria-label="新增连接">＋</button>
               </div>
             </div>
             <input id="connectionFilter" class="filter" type="search" placeholder="筛选分组、标签、主机、IP" />
@@ -326,7 +326,7 @@
     <button class="btn" data-tab-target="terminal">连接 SSH</button>
     <button class="btn" data-tab-target="files">打开文件管理</button>
     <button class="btn" data-tab-target="tunnels">打开隧道配置</button>
-    <button class="btn" data-modal="settingsHub">编辑连接</button>
+    <button class="btn" data-asset-edit>编辑连接</button>
     <button class="btn">复制连接</button>
     <button class="btn danger" data-modal="deleteFile">删除连接</button>
   </div>

@@ -80,4 +80,24 @@
 - 已按 `.omc/specs/deep-interview-baseline-commit-push-master.md` 重新运行基线提交前验证。
 - 提交候选与 ignored 排除项核验通过：`.claude/`、`.omc/state/`、`.omc/sessions/`、`dist/`、`node_modules/`、`src-tauri/target/` 均未进入提交候选。
 - 验证通过：`node --check src/main.js && node --check tests/ui-smoke.mjs`、JSON 配置解析、`cargo metadata --manifest-path src-tauri/Cargo.toml --no-deps --format-version 1`、GitHub token 前缀扫描、`npm run build`、`npm run test:core`、`npm run test:ui`。
+- 已创建并按用户要求 amend 首个本地基线 commit：`8362a0ad7ed351f049041be48d4ec1c3cf65a45f`，message 为 `Establish Tauri-ready myshelltool baseline`，不包含 Claude coauthor trailer。
+- commit 后状态核验通过：已提交候选文件无残留，工作树仅显示 ignored 排除项。
+- 已添加 `origin` remote：`https://github.com/RT-2020/myshelltool.git`。
+- 已成功推送当前 `master`：`git push -u origin master` 完成，并设置 `master` 跟踪 `origin/master`。
+- Reviewer 验证通过并给出 APPROVED：US-010 至 US-013 的提交、推送、排除项和 post-push 本地状态均满足验收；本地 `.omc/prd.json` 与 `.omc/progress.txt` 变更仅为 Ralph bookkeeping。
+- Deslop 收尾检查：reviewer 后未产生代码变更，剩余范围仅为 `.omc` bookkeeping，无需代码清理；JSON 校验作为最终 bookkeeping 验证。
+- Ralph/Ultrawork/UltraQA 状态清理完成；本轮相关 `autopilot` 状态也已清理，仅保留旧 `deep-interview` legacy active mode。
+
+## Autopilot 连接资产本地持久化
+
+- 任务：基线提交后继续下一步，将 sample connection assets 升级为可创建、编辑、保存、加载的本地资产模型；不接入真实 SSH/SFTP，不保存真实凭据。
+- 已更新 `.omc/autopilot/spec.md` 与 `.omc/plans/autopilot-impl.md` 为本轮连接资产本地持久化规格和计划。
+- 已扩展 `crates/myshelltool-core`：连接资产增加 group、tags、status、last_connected；新增 asset store、validation、upsert、JSON load/save，并将 core 单测扩展到 8 项。
+- 已扩展 Tauri command surface：`list_connection_assets` 从 app data JSON 加载本地资产，`save_connection_asset` 校验/upsert 后保存到 `connection-assets.json`；token 设置仍只返回 configured 状态。
+- 已扩展浏览器 preview fallback：使用 `localStorage` 实现同一 list/save contract；UI 从资产数据动态渲染连接树，并支持新增/编辑连接资产弹窗。
+- 已扩展 UI smoke：覆盖新增本地资产、筛选、上下文更新、reload 后持久化，并保留窗口、主题、侧栏、tab、token 和隧道回归。
+- QA 通过：`node --check src/main.js && node --check tests/ui-smoke.mjs`、JSON 配置解析、`cargo metadata --manifest-path src-tauri/Cargo.toml --no-deps --format-version 1`、GitHub token 前缀扫描、`npm run build`、`npm run test:core`、`npm run test:ui`。
+- 额外 `cargo check --manifest-path src-tauri/Cargo.toml --lib` 仍因本机缺少 GNU `windres` 被 Tauri build script 阻断，属于此前已记录的 Windows Tauri 编译链环境问题，不作为本轮通过门槛。
+- DevTools MCP 无法连接本机 Chrome Beta；已用 Playwright UI smoke 在浏览器环境验证新增、筛选和 reload 持久化路径。
+- Architect、security-reviewer、code-reviewer 均 APPROVED；code-reviewer 的非阻断建议是后续可减少 Rust/JS 默认资产 fixture 漂移。
 

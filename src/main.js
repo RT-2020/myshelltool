@@ -3,6 +3,7 @@ const panels = [...document.querySelectorAll('[data-panel]')];
     const statusMessage = document.querySelector('[data-status-message]');
     const backendStatus = document.getElementById('backendStatus');
     const assetSource = document.getElementById('assetSource');
+    const connectionTree = document.getElementById('connectionTree');
     const contextMenu = document.getElementById('contextMenu');
     const modalLayer = document.getElementById('modalLayer');
     const modalTitle = document.getElementById('modalTitle');
@@ -22,6 +23,22 @@ const panels = [...document.querySelectorAll('[data-panel]')];
     const contextUser = document.getElementById('contextUser');
     const contextTags = document.getElementById('contextTags');
     const contextLast = document.getElementById('contextLast');
+    const browserAssetsKey = 'myshelltool-connection-assets';
+    let connectionAssets = [];
+    let selectedAssetId = null;
+    let activeModal = null;
+    let editingAssetId = null;
+
+    const fallbackAssets = [
+      asset('prod-bastion', 'prod-bastion', '10.10.4.8', 'root', '收藏', ['favorite', 'ProxyJump'], 'Connected', '15 分钟前', 'PrivateKey'),
+      asset('web-01', 'web-01', '10.10.8.21', 'deploy', '收藏', ['web', 'release'], 'Connected', '1 小时前', 'PrivateKey'),
+      asset('db-readonly', 'db-readonly', '10.10.9.32', 'audit', '收藏', ['db', 'readonly'], 'Warning', '昨天', 'Password'),
+      asset('app-cluster-01', 'app-cluster-01', '172.18.1.44', 'ubuntu', '生产环境', ['prod', 'app'], 'Connected', '今天', 'PrivateKey'),
+      asset('cache-redis-02', 'cache-redis-02', '172.18.2.19', 'redis', '生产环境', ['redis', 'idle'], 'Idle', '3 天前', 'Password'),
+      asset('ops-jump-gateway', 'ops-jump-gateway', '172.18.0.10', 'ops', '生产环境', ['jump', 'proxy'], 'Connected', '刚刚', 'PrivateKey'),
+      asset('lab-windows-dev', 'lab-windows-dev', '192.168.31.70', 'administrator', '最近连接', ['win', 'dev'], 'Connected', '刚刚', 'Password'),
+      asset('nas-backup', 'nas-backup', '192.168.31.9', 'backup', '最近连接', ['sftp', 'backup'], 'Warning', '昨天', 'PrivateKey')
+    ];
 
     async function invokeBackend(command, args = {}) {
       const tauriInvoke = window.__TAURI__?.core?.invoke;
@@ -33,7 +50,20 @@ const panels = [...document.querySelectorAll('[data-panel]')];
         return { ready: true, mode: 'browser-preview' };
       }
       if (command === 'list_connection_assets') {
-        return { source: 'browser-preview fallback', count: 8, assets: [] };
+        const assets = readBrowserAssets();
+        return { source: 'browser-preview local assets', count: assets.length, assets };
+      }
+      if (command === 'save_connection_asset') {
+        const assets = readBrowserAssets();
+        const savedAsset = normalizeAsset(args.asset);
+        const index = assets.findIndex(item => item.id === savedAsset.id);
+        if (index >= 0) {
+          assets[index] = savedAsset;
+        } else {
+          assets.push(savedAsset);
+        }
+        writeBrowserAssets(assets);
+        return { source: 'browser-preview local assets', count: assets.length, assets };
       }
       if (command === 'save_sync_settings') {
         const token = args.token?.token;
@@ -106,6 +136,21 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       }
     };
 
+    function asset(id, name, host, username, group, tags, status, lastConnected, authMethod) {
+      return {
+        id,
+        name,
+        host,
+        port: 22,
+        username,
+        auth_method: authMethod,
+        group,
+        tags,
+        status,
+        last_connected: lastConnected
+      };
+    }
+
     function announce(message) {
       statusMessage.textContent = message;
     }
@@ -150,6 +195,24 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       }
     }
 
+    function readBrowserAssets() {
+      try {
+        const stored = localStorage.getItem(browserAssetsKey);
+        if (stored) return JSON.parse(stored).map(normalizeAsset);
+      } catch {
+        return fallbackAssets.map(normalizeAsset);
+      }
+      return fallbackAssets.map(normalizeAsset);
+    }
+
+    function writeBrowserAssets(assets) {
+      try {
+        localStorage.setItem(browserAssetsKey, JSON.stringify(assets.map(normalizeAsset)));
+      } catch {
+        return;
+      }
+    }
+
     function applyAssetsState(collapsed, persist = true) {
       document.documentElement.dataset.assets = collapsed ? 'collapsed' : 'expanded';
       assetToggle.setAttribute('aria-expanded', String(!collapsed));
@@ -188,29 +251,93 @@ const panels = [...document.querySelectorAll('[data-panel]')];
           invokeBackend('backend_status'),
           invokeBackend('list_connection_assets')
         ]);
+        connectionAssets = (assets.assets || []).map(normalizeAsset);
         renderBackendStatus(status);
         renderAssetSource(assets);
+        renderConnectionTree();
       } catch {
         backendStatus.textContent = '不可用';
         assetSource.textContent = 'fallback 未加载';
+        connectionAssets = fallbackAssets.map(normalizeAsset);
+        renderConnectionTree();
       }
     }
 
-    function updateContext(node) {
-      const status = node.dataset.status || 'connected';
-      contextTitle.textContent = node.dataset.name;
-      contextSubtitle.textContent = node.dataset.address + ' · ' + node.dataset.user + ' · ' + status;
-      contextAddress.textContent = node.dataset.address;
-      contextUser.textContent = node.dataset.user;
-      contextTags.textContent = node.dataset.tags;
-      contextLast.textContent = node.dataset.last;
-      contextDot.className = 'dot' + (status === 'connected' ? ' running' : status === 'warning' ? ' warn' : '');
-      announce('已选择连接：' + node.dataset.name);
+    function normalizeAsset(item) {
+      const tags = Array.isArray(item?.tags) ? item.tags : String(item?.tags || '').split(/[·,，\s]+/).filter(Boolean);
+      return {
+        id: String(item?.id || slugify(item?.name || item?.host || 'asset')),
+        name: String(item?.name || '未命名连接'),
+        host: String(item?.host || item?.address || ''),
+        port: Number(item?.port) || 22,
+        username: String(item?.username || item?.user || ''),
+        auth_method: item?.auth_method || 'Password',
+        group: String(item?.group || '未分组'),
+        tags,
+        status: item?.status || 'Idle',
+        last_connected: String(item?.last_connected || item?.lastConnected || '从未')
+      };
+    }
+
+    function renderConnectionTree() {
+      const groups = new Map();
+      for (const item of connectionAssets) {
+        const group = item.group || '未分组';
+        if (!groups.has(group)) groups.set(group, []);
+        groups.get(group).push(item);
+      }
+
+      connectionTree.innerHTML = [...groups.entries()].map(([group, assets]) => `
+        <div class="tree-section">
+          <div class="tree-title"><span>${escapeHtml(group)}</span><span>${assets.length}</span></div>
+          ${assets.map(renderAssetNode).join('')}
+        </div>
+      `).join('');
+
+      const selected = connectionAssets.find(item => item.id === selectedAssetId) || connectionAssets[0];
+      if (selected) selectAsset(selected.id, false);
+    }
+
+    function renderAssetNode(item) {
+      const status = normalizeStatus(item.status);
+      const label = item.tags[0] || item.auth_method;
+      const searchable = [item.name, item.host, item.username, item.group, item.auth_method, ...item.tags].join(' ');
+      return `
+        <div class="host-node" data-host="${escapeAttr(searchable)}" data-asset-id="${escapeAttr(item.id)}" data-host-action>
+          <span class="dot${status.dotClass}"></span>
+          <div><div class="host-name">${escapeHtml(item.name)}</div><div class="host-meta">${escapeHtml(item.host)} · ${escapeHtml(item.username)}</div></div>
+          <span class="host-label">${escapeHtml(label)}</span>
+        </div>
+      `;
+    }
+
+    function selectAsset(id, announceSelection = true) {
+      const item = connectionAssets.find(asset => asset.id === id);
+      if (!item) return;
+      selectedAssetId = item.id;
+      document.querySelectorAll('[data-host-action]').forEach(node => {
+        node.classList.toggle('active', node.dataset.assetId === item.id);
+      });
+      updateContext(item);
+      if (announceSelection) announce('已选择连接：' + item.name);
+    }
+
+    function updateContext(asset) {
+      const status = normalizeStatus(asset.status);
+      contextTitle.textContent = asset.name;
+      contextSubtitle.textContent = asset.host + ' · ' + asset.username + ' · ' + status.label;
+      contextAddress.textContent = asset.host + ':' + asset.port;
+      contextUser.textContent = asset.username;
+      contextTags.textContent = asset.tags.join(' · ') || asset.group;
+      contextLast.textContent = asset.last_connected;
+      contextDot.className = 'dot' + status.dotClass;
     }
 
     function openModal(key) {
       const item = modals[key];
       if (!item) return;
+      activeModal = key;
+      editingAssetId = null;
       modalTitle.textContent = item.title;
       modalBody.innerHTML = item.body;
       modalPrimary.textContent = item.primary;
@@ -221,10 +348,69 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       announce('已打开弹窗：' + item.title);
     }
 
+    function openAssetEditor(assetToEdit = null) {
+      activeModal = 'assetEditor';
+      editingAssetId = assetToEdit?.id || null;
+      const item = assetToEdit || asset('', '', '', '', '未分组', [], 'Idle', '从未', 'Password');
+      modalTitle.textContent = assetToEdit ? '编辑连接资产' : '新增连接资产';
+      modalBody.innerHTML = `<div class="grid-2">
+        <label class="stack"><span class="muted">名称</span><input class="input" data-asset-field="name" value="${escapeAttr(item.name)}" /></label>
+        <label class="stack"><span class="muted">主机</span><input class="input" data-asset-field="host" value="${escapeAttr(item.host)}" /></label>
+        <label class="stack"><span class="muted">端口</span><input class="input" type="number" min="1" max="65535" data-asset-field="port" value="${escapeAttr(String(item.port || 22))}" /></label>
+        <label class="stack"><span class="muted">用户名</span><input class="input" data-asset-field="username" value="${escapeAttr(item.username)}" /></label>
+        <label class="stack"><span class="muted">分组</span><input class="input" data-asset-field="group" value="${escapeAttr(item.group)}" /></label>
+        <label class="stack"><span class="muted">标签</span><input class="input" data-asset-field="tags" value="${escapeAttr(item.tags.join(', '))}" placeholder="prod, app" /></label>
+        <label class="stack"><span class="muted">认证方式</span><select class="select" data-asset-field="auth_method"><option>Password</option><option>PrivateKey</option><option>Token</option></select></label>
+        <label class="stack"><span class="muted">状态</span><select class="select" data-asset-field="status"><option>Connected</option><option>Warning</option><option>Idle</option></select></label>
+      </div><div class="callout" style="margin-top: var(--space-3);"><strong>安全边界</strong><p class="muted">这里只保存连接资产元数据；密码、私钥、passphrase 和 token 不会写入资产 JSON。</p></div>`;
+      modalBody.querySelector('[data-asset-field="auth_method"]').value = item.auth_method;
+      modalBody.querySelector('[data-asset-field="status"]').value = item.status;
+      modalPrimary.textContent = assetToEdit ? '保存连接资产' : '创建连接资产';
+      modalSecondary.textContent = '取消';
+      modalLayer.classList.add('open');
+      modalLayer.setAttribute('aria-hidden', 'false');
+      modalBody.querySelector('[data-asset-field="name"]').focus();
+      announce(assetToEdit ? '正在编辑连接资产' : '正在新增连接资产');
+    }
+
     function closeModal() {
       modalLayer.classList.remove('open');
       modalLayer.setAttribute('aria-hidden', 'true');
+      activeModal = null;
+      editingAssetId = null;
       announce('弹窗已关闭');
+    }
+
+    async function saveAssetEditor() {
+      const field = name => modalBody.querySelector('[data-asset-field="' + name + '"]')?.value.trim() || '';
+      const name = field('name');
+      const host = field('host');
+      const username = field('username');
+      const port = Number(field('port')) || 22;
+      if (!name || !host || !username || port < 1 || port > 65535) {
+        announce('连接资产需要名称、主机、用户名和有效端口');
+        return;
+      }
+      const previous = connectionAssets.find(item => item.id === editingAssetId);
+      const item = normalizeAsset({
+        id: previous?.id || uniqueAssetId(name, host),
+        name,
+        host,
+        port,
+        username,
+        auth_method: field('auth_method') || 'Password',
+        group: field('group') || '未分组',
+        tags: field('tags').split(/[·,，\s]+/).filter(Boolean),
+        status: field('status') || 'Idle',
+        last_connected: previous?.last_connected || '从未'
+      });
+      const result = await invokeBackend('save_connection_asset', { asset: item });
+      connectionAssets = (result.assets || []).map(normalizeAsset);
+      renderAssetSource(result);
+      renderConnectionTree();
+      selectAsset(item.id);
+      closeModal();
+      announce('连接资产已保存：' + item.name);
     }
 
     async function saveTokenConfig() {
@@ -242,6 +428,36 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       const configured = Boolean(result.token_status?.configured);
       if (storageStatus) storageStatus.textContent = '本地安全存储：' + (configured ? '已配置' : '未配置');
       announce('同步配置已保存，本地安全存储：' + (configured ? '已配置' : '未配置'));
+    }
+
+    function normalizeStatus(status) {
+      if (status === 'Connected' || status === 'connected') return { label: 'connected', dotClass: ' running' };
+      if (status === 'Warning' || status === 'warning') return { label: 'warning', dotClass: ' warn' };
+      return { label: 'idle', dotClass: '' };
+    }
+
+    function uniqueAssetId(name, host) {
+      const base = slugify(name || host || 'asset');
+      let candidate = base;
+      let index = 2;
+      while (connectionAssets.some(item => item.id === candidate)) {
+        candidate = base + '-' + index;
+        index += 1;
+      }
+      return candidate;
+    }
+
+    function slugify(value) {
+      const slug = String(value).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      return slug || 'asset';
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char]));
+    }
+
+    function escapeAttr(value) {
+      return escapeHtml(value).replace(/'/g, '&#39;');
     }
 
     applyTheme(readStoredTheme());
@@ -287,8 +503,12 @@ const panels = [...document.querySelectorAll('[data-panel]')];
 
     document.addEventListener('click', event => {
       const tabTarget = event.target.closest('[data-tab-target]');
+      const createAsset = event.target.closest('[data-asset-create]');
+      const editAsset = event.target.closest('[data-asset-edit]');
       const modalTarget = event.target.closest('[data-modal]');
       if (tabTarget) activateTab(tabTarget.dataset.tabTarget);
+      if (createAsset) openAssetEditor();
+      if (editAsset) openAssetEditor(connectionAssets.find(item => item.id === selectedAssetId));
       if (modalTarget) openModal(modalTarget.dataset.modal);
       if (!event.target.closest('#contextMenu') && !event.target.closest('[data-host-action]')) contextMenu.classList.remove('open');
     });
@@ -301,27 +521,30 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       announce(value ? '连接树筛选：' + value : '连接树筛选已清空');
     });
 
-    document.querySelectorAll('[data-host-action]').forEach(node => {
-      node.addEventListener('click', () => {
-        document.querySelectorAll('[data-host-action]').forEach(item => item.classList.remove('active'));
-        node.classList.add('active');
-        updateContext(node);
-      });
-      node.addEventListener('contextmenu', event => {
-        event.preventDefault();
-        document.querySelectorAll('[data-host-action]').forEach(item => item.classList.remove('active'));
-        node.classList.add('active');
-        updateContext(node);
-        contextMenu.style.left = Math.min(event.clientX, window.innerWidth - 236) + 'px';
-        contextMenu.style.top = Math.min(event.clientY, window.innerHeight - 260) + 'px';
-        contextMenu.classList.add('open');
-        announce('已打开 ' + node.dataset.name + ' 的右键菜单');
-      });
+    connectionTree.addEventListener('click', event => {
+      const node = event.target.closest('[data-host-action]');
+      if (node) selectAsset(node.dataset.assetId);
+    });
+
+    connectionTree.addEventListener('contextmenu', event => {
+      const node = event.target.closest('[data-host-action]');
+      if (!node) return;
+      event.preventDefault();
+      selectAsset(node.dataset.assetId);
+      const item = connectionAssets.find(asset => asset.id === node.dataset.assetId);
+      contextMenu.style.left = Math.min(event.clientX, window.innerWidth - 236) + 'px';
+      contextMenu.style.top = Math.min(event.clientY, window.innerHeight - 260) + 'px';
+      contextMenu.classList.add('open');
+      announce('已打开 ' + item.name + ' 的右键菜单');
     });
 
     modalClose.addEventListener('click', closeModal);
     modalSecondary.addEventListener('click', closeModal);
     modalPrimary.addEventListener('click', async () => {
+      if (activeModal === 'assetEditor') {
+        await saveAssetEditor();
+        return;
+      }
       if (modalBody.querySelector('[data-sync-token]')) {
         await saveTokenConfig();
         return;
