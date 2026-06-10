@@ -93,6 +93,14 @@ try {
   if (!modalText?.includes('本地安全存储')) {
     throw new Error('token modal missing local secure storage text');
   }
+  await page.waitForFunction(() => {
+    const el = document.querySelector('[data-token-storage-status]');
+    return el && !el.textContent.includes('检测中');
+  });
+  const initialTokenStatus = await page.locator('[data-token-storage-status]').textContent();
+  if (!initialTokenStatus?.includes('未配置')) {
+    throw new Error(`token initial status should be unconfigured: ${initialTokenStatus}`);
+  }
   await page.fill('[data-sync-token]', 'preview-token-for-smoke-test');
   await page.click('#modalPrimary');
   const tokenStatus = await page.locator('[data-token-storage-status]').textContent();
@@ -101,6 +109,11 @@ try {
   }
   const tokenValue = await page.locator('[data-sync-token]').inputValue();
   if (tokenValue) throw new Error('token input was not cleared after save');
+  await page.click('[data-delete-credential]');
+  const afterDelete = await page.locator('[data-token-storage-status]').textContent();
+  if (!afterDelete?.includes('未配置')) {
+    throw new Error(`token status after delete should be unconfigured: ${afterDelete}`);
+  }
   await page.keyboard.press('Escape');
 
   await page.click('[data-tab="tunnels"]');

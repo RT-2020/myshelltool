@@ -5,6 +5,7 @@ use tauri::{Manager, State};
 #[derive(Debug, Clone)]
 struct AppState {
     asset_store_path: PathBuf,
+    secret_store_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,6 +62,35 @@ fn save_sync_settings(
     myshelltool_core::summarize_sync_settings(settings, token)
 }
 
+#[tauri::command]
+fn save_credential(
+    state: State<'_, AppState>,
+    id: String,
+    secret: String,
+) -> Result<myshelltool_core::CredentialStatus, String> {
+    let store = myshelltool_core::SecretStore::new(&state.secret_store_dir);
+    store.save(&id, &secret)?;
+    store.get_status(&id)
+}
+
+#[tauri::command]
+fn get_credential_status(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<myshelltool_core::CredentialStatus, String> {
+    let store = myshelltool_core::SecretStore::new(&state.secret_store_dir);
+    store.get_status(&id)
+}
+
+#[tauri::command]
+fn delete_credential(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<bool, String> {
+    let store = myshelltool_core::SecretStore::new(&state.secret_store_dir);
+    store.delete(&id)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -68,6 +98,7 @@ pub fn run() {
             let app_data_dir = app.path().app_data_dir()?;
             app.manage(AppState {
                 asset_store_path: app_data_dir.join("connection-assets.json"),
+                secret_store_dir: app_data_dir.join("credentials"),
             });
             Ok(())
         })
@@ -75,7 +106,10 @@ pub fn run() {
             backend_status,
             list_connection_assets,
             save_connection_asset,
-            save_sync_settings
+            save_sync_settings,
+            save_credential,
+            get_credential_status,
+            delete_credential
         ])
         .run(tauri::generate_context!())
         .expect("failed to run myshelltool");

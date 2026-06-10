@@ -235,6 +235,110 @@ pub fn summarize_sync_settings(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialRef {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialStatus {
+    pub id: String,
+    pub exists: bool,
+    pub label: String,
+}
+
+pub struct SecretStore {
+    dir: std::path::PathBuf,
+}
+
+impl SecretStore {
+    pub fn new(dir: impl Into<std::path::PathBuf>) -> Self {
+        Self { dir: dir.into() }
+    }
+
+    pub fn save(&self, id: &str, secret: &str) -> Result<(), String> {
+        let id = sanitize_credential_id(id)?;
+        if secret.trim().is_empty() {
+            return Err("secret must not be empty".to_string());
+        }
+        fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
+        let path = self.dir.join(id);
+        let encoded = encode_secret(secret);
+        fs::write(path, encoded).map_err(|e| e.to_string())
+    }
+
+    pub fn get_status(&self, id: &str) -> Result<CredentialStatus, String> {
+        let id = sanitize_credential_id(id)?;
+        let path = self.dir.join(&id);
+        Ok(CredentialStatus {
+            id: id.clone(),
+            exists: path.exists() && fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false),
+            label: id,
+        })
+    }
+
+    pub fn delete(&self, id: &str) -> Result<bool, String> {
+        let id = sanitize_credential_id(id)?;
+        let path = self.dir.join(&id);
+        if !path.exists() {
+            return Ok(false);
+        }
+        let content = fs::read(&path).map_err(|e| e.to_string())?;
+        fs::remove_file(path).map_err(|e| e.to_string())?;
+        zero_memory(&content);
+        Ok(true)
+    }
+
+    pub fn list(&self) -> Result<Vec<CredentialStatus>, String> {
+        if !self.dir.exists() {
+            return Ok(vec![]);
+        }
+        let mut result = vec![];
+        for entry in fs::read_dir(&self.dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.ends_with(".cred") {
+                result.push(CredentialStatus {
+                    id: name.clone(),
+                    exists: true,
+                    label: name,
+                });
+            }
+        }
+        Ok(result)
+    }
+}
+
+fn sanitize_credential_id(id: &str) -> Result<String, String> {
+    let sanitized: String = id
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    if sanitized.is_empty() {
+        return Err("credential id must contain alphanumeric characters".to_string());
+    }
+    Ok(format!("{}.cred", sanitized))
+}
+
+fn encode_secret(secret: &str) -> Vec<u8> {
+    let bytes = secret.as_bytes();
+    let mut encoded = Vec::with_capacity(bytes.len());
+    for (i, &byte) in bytes.iter().enumerate() {
+        encoded.push(byte ^ ((i as u8).wrapping_add(0x5A)));
+    }
+    encoded
+}
+
+fn zero_memory(data: &[u8]) {
+    let ptr = data.as_ptr() as *mut u8;
+    unsafe {
+        for i in 0..data.len() {
+            std::ptr::write_volatile(ptr.add(i), 0);
+        }
+    }
+}
+
 fn asset(
     id: &str,
     name: &str,
@@ -387,5 +491,81 @@ mod tests {
             .expect("time is after epoch")
             .as_nanos();
         env::temp_dir().join(format!("myshelltool-{label}-{nanos}.json"))
+    }
+
+    fn temp_secret_dir(label: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time is after epoch")
+            .as_nanos();
+        let dir = env::temp_dir().join(format!("myshelltool-secrets-{label}-{nanos}"));
+        let _ = fs::create_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn secret_store_saves_and_checks_status() {
+        let dir = temp_secret_dir("save");
+        let store = SecretStore::new(&dir);
+        store.save("github-pat", "ghp_test_secret_value").expect("save succeeds");
+
+        let status = store.get_status("github-pat").expect("status succeeds");
+        assert!(status.exists);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn secret_store_rejects_empty_secret() {
+        let dir = temp_secret_dir("empty");
+        let store = SecretStore::new(&dir);
+        assert!(store.save("test", "   ").is_err());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn secret_store_deletes_credential() {
+        let dir = temp_secret_dir("delete");
+        let store = SecretStore::new(&dir);
+        store.save("test-cred", "secret123").expect("save");
+        let deleted = store.delete("test-cred").expect("delete");
+        assert!(deleted);
+        let status = store.get_status("test-cred").expect("status");
+        assert!(!status.exists);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn secret_store_file_does_not_contain_plaintext() {
+        let dir = temp_secret_dir("plaintext");
+        let store = SecretStore::new(&dir);
+        let secret = "my-super-secret-token-value";
+        store.save("scan-test", secret).expect("save");
+
+        let content = fs::read_to_string(dir.join("scan-test.cred")).expect("read file");
+        assert!(!content.contains(secret));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn secret_store_list_returns_saved_credentials() {
+        let dir = temp_secret_dir("list");
+        let store = SecretStore::new(&dir);
+        store.save("cred-a", "secret_a").expect("save a");
+        store.save("cred-b", "secret_b").expect("save b");
+
+        let list = store.list().expect("list");
+        assert_eq!(list.len(), 2);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn secret_store_rejects_invalid_id() {
+        let dir = temp_secret_dir("invalid");
+        let store = SecretStore::new(&dir);
+        assert!(store.save("!@#$%", "secret").is_err());
+        let _ = fs::remove_dir_all(dir);
     }
 }

@@ -74,6 +74,24 @@ const panels = [...document.querySelectorAll('[data-panel]')];
           token_status: { configured: typeof token === 'string' && token.trim().length > 0 }
         };
       }
+      if (command === 'save_credential') {
+        const id = String(args.id || 'default');
+        const secret = String(args.secret || '');
+        if (!secret.trim()) throw new Error('secret must not be empty');
+        try { sessionStorage.setItem('cred-' + id, 'x'); } catch {}
+        return { id, exists: true, label: id };
+      }
+      if (command === 'get_credential_status') {
+        const id = String(args.id || 'default');
+        let exists = false;
+        try { exists = sessionStorage.getItem('cred-' + id) !== null; } catch {}
+        return { id, exists, label: id };
+      }
+      if (command === 'delete_credential') {
+        const id = String(args.id || 'default');
+        try { sessionStorage.removeItem('cred-' + id); } catch {}
+        return true;
+      }
       throw new Error('Unsupported backend command: ' + command);
     }
 
@@ -124,7 +142,7 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       },
       tokenConfig: {
         title: '配置 / 更新 GitHub token',
-        body: `<p>token 仅写入本地安全存储。界面提交后只展示“已配置”或“未配置”。</p><label class="stack" style="margin-top: var(--space-3);"><span class="muted">Personal Access Token</span><input class="input" type="password" data-sync-token placeholder="粘贴 token，保存后立即隐藏" /></label><p class="muted" data-token-storage-status>本地安全存储：未配置</p><ul><li>不会写入 Git 仓库</li><li>不会同步到远程</li><li>可以随时清除并重新测试连接</li></ul>`,
+        body: `<p>token 仅写入本地安全存储。界面提交后只展示”已配置”或”未配置”。</p><label class=”stack” style=”margin-top: var(--space-3);”><span class=”muted”>Personal Access Token</span><input class=”input” type=”password” data-sync-token placeholder=”粘贴 token，保存后立即隐藏” /></label><p class=”muted” data-token-storage-status>本地安全存储：检测中</p><button class=”btn danger” style=”margin-top: var(--space-2);” data-delete-credential>清除已保存的 token</button><ul><li>不会写入 Git 仓库</li><li>不会同步到远程</li><li>可以随时清除并重新测试连接</li></ul>`,
         primary: '保存到本地安全存储',
         secondary: '取消'
       },
@@ -345,6 +363,23 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       modalLayer.classList.add('open');
       modalLayer.setAttribute('aria-hidden', 'false');
       modalPrimary.focus();
+      if (key === 'tokenConfig') {
+        const storageStatus = modalBody.querySelector('[data-token-storage-status]');
+        invokeBackend('get_credential_status', { id: 'github-pat' }).then(status => {
+          if (storageStatus) storageStatus.textContent = '本地安全存储：' + (status.exists ? '已配置' : '未配置');
+        }).catch(() => {
+          if (storageStatus) storageStatus.textContent = '本地安全存储：未配置';
+        });
+        const deleteBtn = modalBody.querySelector('[data-delete-credential]');
+        if (deleteBtn) {
+          deleteBtn.addEventListener('click', async () => {
+            await invokeBackend('delete_credential', { id: 'github-pat' });
+            const storageStatus = modalBody.querySelector('[data-token-storage-status]');
+            if (storageStatus) storageStatus.textContent = '本地安全存储：未配置';
+            announce('已清除本地安全存储中的 token');
+          });
+        }
+      }
       announce('已打开弹窗：' + item.title);
     }
 
@@ -416,16 +451,15 @@ const panels = [...document.querySelectorAll('[data-panel]')];
     async function saveTokenConfig() {
       const tokenInput = modalBody.querySelector('[data-sync-token]');
       const storageStatus = modalBody.querySelector('[data-token-storage-status]');
-      const result = await invokeBackend('save_sync_settings', {
-        settings: {
-          enabled: true,
-          endpoint: 'git@github.com:private/myshell-config.git',
-          interval_minutes: 15
-        },
-        token: { token: tokenInput?.value || '' }
-      });
+      const secret = tokenInput?.value || '';
+      if (!secret.trim()) {
+        announce('token 不能为空');
+        return;
+      }
+      await invokeBackend('save_credential', { id: 'github-pat', secret });
       if (tokenInput) tokenInput.value = '';
-      const configured = Boolean(result.token_status?.configured);
+      const status = await invokeBackend('get_credential_status', { id: 'github-pat' });
+      const configured = Boolean(status.exists);
       if (storageStatus) storageStatus.textContent = '本地安全存储：' + (configured ? '已配置' : '未配置');
       announce('同步配置已保存，本地安全存储：' + (configured ? '已配置' : '未配置'));
     }
