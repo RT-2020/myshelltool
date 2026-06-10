@@ -14,3 +14,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 myshelltool-core = { path = "../crates/myshelltool-core" }
 serde = { version = "1", features = ["derive"] }
+russh = "0.49"
+tokio = { version = "1", features = ["sync", "parking_lot"] }
+uuid = { version = "1", features = ["v4"] }
+async-trait = "0.1"

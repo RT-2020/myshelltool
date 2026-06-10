@@ -1,11 +1,15 @@
+mod ssh;
+
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tauri::{Manager, State};
+use tokio::sync::Mutex;
 
-#[derive(Debug, Clone)]
 struct AppState {
     asset_store_path: PathBuf,
     secret_store_dir: PathBuf,
+    ssh_sessions: Arc<Mutex<ssh::SshSessionManager>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -96,9 +100,11 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
+            let ssh_mgr = Arc::new(Mutex::new(ssh::SshSessionManager::new(app.handle().clone())));
             app.manage(AppState {
                 asset_store_path: app_data_dir.join("connection-assets.json"),
                 secret_store_dir: app_data_dir.join("credentials"),
+                ssh_sessions: ssh_mgr,
             });
             Ok(())
         })
@@ -109,7 +115,11 @@ pub fn run() {
             save_sync_settings,
             save_credential,
             get_credential_status,
-            delete_credential
+            delete_credential,
+            ssh::ssh_connect,
+            ssh::ssh_write,
+            ssh::ssh_resize,
+            ssh::ssh_disconnect
         ])
         .run(tauri::generate_context!())
         .expect("failed to run myshelltool");

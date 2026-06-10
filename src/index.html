@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>myshelltool · 工作台</title>
   <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css" />
 </head>
 <body>
   <section class="app-shell" data-od-id="myshelltool-v2-workbench">
@@ -167,20 +168,8 @@
               </div>
               <div class="split-work">
                 <div class="card terminal-pane">
-                  <div class="pane-toolbar"><div><strong>root@prod-bastion</strong> <span class="muted">/srv/app · xterm-256color</span></div><span class="status-pill running"><span class="dot running"></span>connected</span></div>
-                  <div class="terminal-body" aria-label="终端区域">
-                    <div class="terminal-line"><span class="prompt">root@prod-bastion:/srv/app#</span> tmux attach -t deploy</div>
-                    <div class="terminal-line"><span class="ok">attached</span> · session deploy · panes: api logs monitor</div>
-                    <div class="terminal-line"><span class="prompt">root@prod-bastion:/srv/app#</span> top -b -n 1 | head</div>
-                    <div class="terminal-line">PID USER      PR  NI    VIRT    RES    SHR S  CPU MEM     TIME+ COMMAND</div>
-                    <div class="terminal-line">1283 app       20   0  1842m  188m  42548 S  4.3  2.1   12:04.93 myshell-api</div>
-                    <div class="terminal-line">1419 redis     20   0   912m   64m  11908 S  1.1  0.7    8:31.18 redis-server</div>
-                    <div class="terminal-line"><span class="prompt">root@prod-bastion:/srv/app#</span> vim config/production.toml</div>
-                    <div class="terminal-line"><span class="warn">VIM</span> mouse=a · syntax=on · hidden buffers enabled</div>
-                    <div class="terminal-line"><span class="prompt">root@prod-bastion:/srv/app#</span> journalctl -u myshell-api --since "10 min ago"</div>
-                    <div class="terminal-line"><span class="err">warning</span> upstream timeout from web-01, retrying via ProxyJump chain</div>
-                  </div>
-                  <div class="terminal-banner warn"><strong>断线状态</strong>：保留终端缓冲区，提供重连、查看日志、编辑跳板配置。 <button class="btn" data-modal="connectionFailed">查看错误</button></div>
+                  <div class="pane-toolbar"><div><strong id="terminalHost">未连接</strong> <span class="muted" id="terminalMeta">点击左侧主机连接</span></div><span class="status-pill" id="terminalStatus"><span class="dot"></span>idle</span></div>
+                  <div id="terminalContainer" aria-label="终端区域"></div>
                 </div>
                 <aside class="stack">
                   <div class="card">

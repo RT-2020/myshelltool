@@ -387,7 +387,7 @@
     .split-work { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(260px, 0.75fr); gap: var(--space-3); min-height: 520px; }
     .terminal-pane, .file-pane { display: flex; flex-direction: column; min-height: 0; padding: 0; overflow: hidden; }
     .pane-toolbar { min-height: 40px; display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--app-border); }
-    .terminal-body {
+    .terminal-body, #terminalContainer {
       flex: 1;
       overflow: auto;
       padding: var(--space-4);
@@ -397,6 +397,8 @@
       line-height: 1.58;
       color: var(--terminal-text);
     }
+    #terminalContainer { padding: 4px; }
+    #terminalContainer .xterm { height: 100%; }
     .terminal-line { white-space: pre-wrap; }
     .terminal-line .prompt { color: var(--terminal-prompt); }
     .terminal-line .ok { color: color-mix(in oklab, var(--success), var(--app-strong) 34%); }

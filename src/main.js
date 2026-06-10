@@ -29,6 +29,11 @@ const panels = [...document.querySelectorAll('[data-panel]')];
     let activeModal = null;
     let editingAssetId = null;
 
+    let xterm = null;
+    let xtermFit = null;
+    let activeSessionId = null;
+    let sshDisconnectFn = null;
+
     const fallbackAssets = [
       asset('prod-bastion', 'prod-bastion', '10.10.4.8', 'root', '收藏', ['favorite', 'ProxyJump'], 'Connected', '15 分钟前', 'PrivateKey'),
       asset('web-01', 'web-01', '10.10.8.21', 'deploy', '收藏', ['web', 'release'], 'Connected', '1 小时前', 'PrivateKey'),
@@ -91,6 +96,12 @@ const panels = [...document.querySelectorAll('[data-panel]')];
         const id = String(args.id || 'default');
         try { sessionStorage.removeItem('cred-' + id); } catch {}
         return true;
+      }
+      if (command === 'ssh_connect') {
+        return { session_id: '', connected: false, error: 'SSH requires desktop client' };
+      }
+      if (command === 'ssh_write' || command === 'ssh_resize' || command === 'ssh_disconnect') {
+        return null;
       }
       throw new Error('Unsupported backend command: ' + command);
     }
@@ -494,8 +505,92 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       return escapeHtml(value).replace(/'/g, '&#39;');
     }
 
+    async function initTerminal() {
+      const container = document.getElementById('terminalContainer');
+      if (!container) return;
+      const isTauri = typeof window.__TAURI__?.core?.invoke === 'function';
+      if (!isTauri) {
+        container.innerHTML = '<div style="padding:var(--space-4);color:var(--muted)">SSH 终端需要桌面客户端。当前为浏览器预览模式。</div>';
+        return;
+      }
+      try {
+        const { Terminal } = await import('../node_modules/@xterm/xterm/lib/xterm.mjs');
+        const { FitAddon } = await import('../node_modules/@xterm/addon-fit/lib/addon-fit.mjs');
+        xterm = new Terminal({
+          cursorBlink: true,
+          fontSize: 14,
+          fontFamily: 'Consolas, "Courier New", monospace',
+          theme: document.documentElement.dataset.theme === 'light'
+            ? { background: '#ffffff', foreground: '#1e1e1e', cursor: '#333333' }
+            : { background: '#1e1e1e', foreground: '#d4d4d4', cursor: '#cccccc' }
+        });
+        xtermFit = new FitAddon();
+        xterm.loadAddon(xtermFit);
+        xterm.open(container);
+        xtermFit.fit();
+        xterm.writeln('\x1b[36mmyshelltool SSH\x1b[0m — 双击左侧主机连接\r\n');
+        xterm.onData(data => {
+          if (activeSessionId) {
+            const encoder = new TextEncoder();
+            invokeBackend('ssh_write', { sessionId: activeSessionId, data: Array.from(encoder.encode(data)) });
+          }
+        });
+        window.__TAURI__.core.getCurrentWindow().listen('ssh-output', event => {
+          if (xterm && event.payload && event.payload.length > 0) {
+            const decoder = new TextDecoder();
+            xterm.write(decoder.decode(new Uint8Array(event.payload)));
+          }
+        });
+      } catch (err) {
+        container.innerHTML = '<div style="padding:var(--space-4);color:var(--muted)">终端加载失败: ' + escapeHtml(err.message) + '</div>';
+      }
+    }
+
+    async function connectSsh(assetId) {
+      const asset = connectionAssets.find(a => a.id === assetId);
+      if (!asset) return;
+      if (!xterm) { announce('终端未就绪'); return; }
+      if (activeSessionId) {
+        await invokeBackend('ssh_disconnect', { sessionId: activeSessionId });
+        activeSessionId = null;
+      }
+      const terminalHost = document.getElementById('terminalHost');
+      const terminalMeta = document.getElementById('terminalMeta');
+      const terminalStatus = document.getElementById('terminalStatus');
+      terminalHost.textContent = asset.name;
+      terminalMeta.textContent = 'connecting...';
+      terminalStatus.innerHTML = '<span class="dot running"></span>connecting';
+      xterm.reset();
+      xterm.writeln('\x1b[33mConnecting to ' + asset.host + '...\x1b[0m\r\n');
+      activateTab('terminal');
+      try {
+        const result = await invokeBackend('ssh_connect', {
+          host: asset.host,
+          port: asset.port,
+          username: asset.username,
+          password: ''
+        });
+        if (result.connected) {
+          activeSessionId = result.session_id;
+          sshDisconnectFn = () => invokeBackend('ssh_disconnect', { sessionId: activeSessionId });
+          terminalMeta.textContent = asset.username + '@' + asset.host + ' · xterm-256color';
+          terminalStatus.innerHTML = '<span class="dot running"></span>connected';
+          announce('已连接: ' + asset.name);
+        } else {
+          xterm.writeln('\x1b[31mConnection failed: ' + (result.error || 'unknown') + '\x1b[0m\r\n');
+          terminalMeta.textContent = 'connection failed';
+          terminalStatus.innerHTML = '<span class="dot warn"></span>failed';
+        }
+      } catch (err) {
+        xterm.writeln('\x1b[31mError: ' + escapeHtml(err.message) + '\x1b[0m\r\n');
+        terminalMeta.textContent = 'error';
+        terminalStatus.innerHTML = '<span class="dot warn"></span>error';
+      }
+    }
+
     applyTheme(readStoredTheme());
     initializeBackendBridge();
+    initTerminal();
     const storedAssetsState = readStoredAssetsState();
     assetPreferenceLocked = storedAssetsState === 'collapsed' || storedAssetsState === 'expanded';
     applyAssetsState(assetPreferenceLocked ? storedAssetsState === 'collapsed' : compactAssetsQuery.matches, false);
@@ -558,6 +653,11 @@ const panels = [...document.querySelectorAll('[data-panel]')];
     connectionTree.addEventListener('click', event => {
       const node = event.target.closest('[data-host-action]');
       if (node) selectAsset(node.dataset.assetId);
+    });
+
+    connectionTree.addEventListener('dblclick', event => {
+      const node = event.target.closest('[data-host-action]');
+      if (node) connectSsh(node.dataset.assetId);
     });
 
     connectionTree.addEventListener('contextmenu', event => {
