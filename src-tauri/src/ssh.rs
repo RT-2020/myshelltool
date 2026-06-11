@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use russh::client;
 use russh::ChannelMsg;
+use russh::keys::PublicKeyBase64;
+use russh_sftp::client::SftpSession;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -26,10 +28,7 @@ impl client::Handler for SshClient {
         &mut self,
         server_public_key: &russh::keys::ssh_key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        let key_bytes = match server_public_key.public_key_bytes() {
-            Ok(bytes) => bytes,
-            Err(_) => return Ok(false),
-        };
+        let key_bytes = server_public_key.public_key_bytes();
         let key_hex = bytes_to_hex(&key_bytes);
         let key_type = format!("{}", server_public_key.algorithm());
         let fingerprint = format!(
@@ -85,12 +84,14 @@ enum SshCommand {
     Disconnect,
 }
 
-pub struct SshSession {
+struct SshSession {
     cmd_tx: tokio::sync::mpsc::UnboundedSender<SshCommand>,
 }
 
 pub struct SshSessionManager {
     sessions: HashMap<String, SshSession>,
+    ssh_handles: HashMap<String, Arc<client::Handle<SshClient>>>,
+    sftp_cache: HashMap<String, Arc<Mutex<SftpSession>>>,
     app: AppHandle,
     secret_store_dir: PathBuf,
     known_hosts_path: PathBuf,
@@ -101,6 +102,8 @@ impl SshSessionManager {
     pub fn new(app: AppHandle, secret_store_dir: PathBuf, known_hosts_path: PathBuf) -> Self {
         Self {
             sessions: HashMap::new(),
+            ssh_handles: HashMap::new(),
+            sftp_cache: HashMap::new(),
             app,
             secret_store_dir,
             known_hosts_path,
@@ -186,9 +189,14 @@ async fn connect_authenticated(
         };
         let key_data = std::fs::read(&expanded)
             .map_err(|e| format!("Failed to read key file '{}': {e}", expanded))?;
-        let key_pair = russh::keys::load_key_pair(&key_data[..], resolved_passphrase.as_deref())
+        let key_str = String::from_utf8_lossy(&key_data);
+        let key_pair = russh::keys::decode_secret_key(&key_str, resolved_passphrase.as_deref())
             .map_err(|e| format!("Failed to load private key: {e}"))?;
-        handle.authenticate_publickey(username, Arc::new(key_pair))
+        let key_with_hash = russh::keys::key::PrivateKeyWithHashAlg::new(
+            Arc::new(key_pair),
+            None,
+        ).map_err(|e| format!("Key wrap failed: {e}"))?;
+        handle.authenticate_publickey(username, key_with_hash)
             .await
             .map_err(|e| format!("Public key auth failed: {e}"))?
     } else {
@@ -239,7 +247,7 @@ pub async fn ssh_connect(
     passphrase: Option<String>,
     passphrase_credential_id: Option<String>,
 ) -> Result<SshConnectResult, String> {
-    let mut handle = match connect_authenticated(
+    let handle = match connect_authenticated(
         &state,
         &host,
         port,
@@ -283,6 +291,7 @@ pub async fn ssh_connect(
 
     {
         let mut mgr = state.lock().await;
+        mgr.ssh_handles.insert(session_id.clone(), Arc::new(handle));
         mgr.sessions.insert(session_id.clone(), SshSession { cmd_tx });
     }
 
@@ -350,7 +359,7 @@ pub async fn ssh_list_directory(
     path: String,
 ) -> Result<RemoteDirectoryList, String> {
     let requested_path = if path.trim().is_empty() { ".".to_string() } else { path };
-    let mut handle = connect_authenticated(
+    let handle = connect_authenticated(
         &state,
         &host,
         port,
@@ -447,6 +456,8 @@ pub async fn ssh_disconnect(
     if let Some(session) = mgr.sessions.remove(&session_id) {
         let _ = session.cmd_tx.send(SshCommand::Disconnect);
     }
+    mgr.ssh_handles.remove(&session_id);
+    mgr.sftp_cache.remove(&session_id);
     Ok(())
 }
 
@@ -462,6 +473,192 @@ pub async fn ssh_confirm_host_key(
         let _ = tx.send(accepted);
     }
     Ok(())
+}
+
+// --- SFTP operations ---
+
+async fn get_or_create_sftp(
+    state: &State<'_, Arc<Mutex<SshSessionManager>>>,
+    session_id: &str,
+) -> Result<Arc<Mutex<SftpSession>>, String> {
+    {
+        let mgr = state.lock().await;
+        if let Some(sftp) = mgr.sftp_cache.get(session_id) {
+            return Ok(sftp.clone());
+        }
+    }
+
+    let handle = {
+        let mgr = state.lock().await;
+        mgr.ssh_handles.get(session_id)
+            .ok_or_else(|| format!("SSH handle for session {session_id} not found"))?
+            .clone()  // Arc::clone
+    };
+
+    let mut channel = handle.channel_open_session().await
+        .map_err(|e| format!("SFTP channel open failed: {e}"))?;
+    channel.request_subsystem(true, "sftp").await
+        .map_err(|e| format!("SFTP subsystem request failed: {e}"))?;
+
+    let sftp = SftpSession::new(channel.into_stream()).await
+        .map_err(|e| format!("SFTP session init failed: {e}"))?;
+
+    let arc = Arc::new(Mutex::new(sftp));
+    {
+        let mut mgr = state.lock().await;
+        mgr.sftp_cache.insert(session_id.to_string(), arc.clone());
+    }
+    Ok(arc)
+}
+
+#[tauri::command]
+pub async fn sftp_list_dir(
+    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    session_id: String,
+    path: String,
+) -> Result<RemoteDirectoryList, String> {
+    let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
+    let sftp = sftp_arc.lock().await;
+
+    let requested_path = if path.trim().is_empty() { ".".to_string() } else { path };
+
+    let raw_entries = sftp.read_dir(&requested_path).await
+        .map_err(|e| format!("SFTP read_dir failed: {e}"))?;
+
+    let mut entries: Vec<RemoteFileEntry> = raw_entries.into_iter().map(|entry| {
+        let meta = entry.metadata();
+        let kind = if meta.is_dir() {
+            "directory"
+        } else if meta.is_symlink() {
+            "symlink"
+        } else {
+            "file"
+        }.to_string();
+        RemoteFileEntry {
+            name: entry.file_name(),
+            path: entry.path(),
+            kind,
+            size: meta.len(),
+            modified: format!("{:?}", meta.modified()),
+        }
+    }).collect();
+
+    entries.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
+
+    Ok(RemoteDirectoryList {
+        host: String::new(),
+        path: requested_path,
+        entries,
+    })
+}
+
+#[tauri::command]
+pub async fn sftp_read_file(
+    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    session_id: String,
+    path: String,
+) -> Result<String, String> {
+    let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
+    let sftp = sftp_arc.lock().await;
+
+    let mut file = sftp.open(&path).await
+        .map_err(|e| format!("SFTP open failed: {e}"))?;
+
+    use tokio::io::AsyncReadExt;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents).await
+        .map_err(|e| format!("SFTP read failed: {e}"))?;
+
+    Ok(contents)
+}
+
+#[tauri::command]
+pub async fn sftp_write_file(
+    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    session_id: String,
+    path: String,
+    content: String,
+) -> Result<(), String> {
+    let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
+    let sftp = sftp_arc.lock().await;
+
+    let mut file = sftp.create(&path).await
+        .map_err(|e| format!("SFTP create failed: {e}"))?;
+
+    use tokio::io::AsyncWriteExt;
+    file.write_all(content.as_bytes()).await
+        .map_err(|e| format!("SFTP write failed: {e}"))?;
+    file.shutdown().await
+        .map_err(|e| format!("SFTP flush failed: {e}"))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn sftp_mkdir(
+    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    session_id: String,
+    path: String,
+) -> Result<(), String> {
+    let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
+    let sftp = sftp_arc.lock().await;
+    sftp.create_dir(&path).await
+        .map_err(|e| format!("SFTP mkdir failed: {e}"))
+}
+
+#[tauri::command]
+pub async fn sftp_rename(
+    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    session_id: String,
+    old_path: String,
+    new_path: String,
+) -> Result<(), String> {
+    let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
+    let sftp = sftp_arc.lock().await;
+    sftp.rename(&old_path, &new_path).await
+        .map_err(|e| format!("SFTP rename failed: {e}"))
+}
+
+#[tauri::command]
+pub async fn sftp_remove(
+    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    session_id: String,
+    path: String,
+    kind: String,
+) -> Result<(), String> {
+    let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
+    let sftp = sftp_arc.lock().await;
+    if kind == "directory" {
+        sftp.remove_dir(&path).await
+    } else {
+        sftp.remove_file(&path).await
+    }.map_err(|e| format!("SFTP remove failed: {e}"))
+}
+
+#[tauri::command]
+pub async fn sftp_stat(
+    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    session_id: String,
+    path: String,
+) -> Result<RemoteFileEntry, String> {
+    let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
+    let sftp = sftp_arc.lock().await;
+    let meta = sftp.metadata(&path).await
+        .map_err(|e| format!("SFTP stat failed: {e}"))?;
+
+    let name = std::path::Path::new(&path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&path)
+        .to_string();
+
+    Ok(RemoteFileEntry {
+        name,
+        path,
+        kind: if meta.is_dir() { "directory" } else if meta.is_symlink() { "symlink" } else { "file" }.to_string(),
+        size: meta.len(),
+        modified: format!("{:?}", meta.modified()),
+    })
 }
 
 // --- known_hosts helpers ---

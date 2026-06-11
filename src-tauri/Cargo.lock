@@ -2206,6 +2206,7 @@ dependencies = [
  "async-trait",
  "myshelltool-core",
  "russh",
+ "russh-sftp",
  "serde",
  "serde_json",
  "tauri",
