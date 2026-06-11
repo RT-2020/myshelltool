@@ -102,6 +102,7 @@
             <!-- Dynamic session tabs inserted here -->
             <button class="workspace-tab" role="tab" aria-selected="false" data-tab="files">文件 <span class="tab-close" title="关闭标签">×</span></button>
             <button class="workspace-tab" role="tab" aria-selected="false" data-tab="tunnels">隧道管理</button>
+            <button class="workspace-tab" role="tab" aria-selected="false" data-tab="editor" hidden>编辑器 <span class="tab-close" title="关闭编辑器">×</span></button>
           </div>
 
           <div class="panel-stage">
@@ -164,12 +165,12 @@
                   <h1>prod-bastion · SSH</h1>
                   <p>终端保持最大可读面积，文件快捷窗只显示当前路径和队列，不再把所有设置铺在页面里。</p>
                 </div>
-                <div class="toolbar"><button class="btn">搜索</button><button class="btn">复制</button><button class="btn">粘贴</button><button class="btn">清屏</button><button class="btn" data-modal="connectionFailed">断线详情</button></div>
+                <div class="toolbar"><button class="btn" id="terminalSearchBtn">搜索</button><button class="btn">复制</button><button class="btn">粘贴</button><button class="btn" id="terminalClearBtn">清屏</button><button class="btn" id="terminalFullscreenBtn">全屏</button><button class="btn" data-modal="connectionFailed">断线详情</button></div>
               </div>
               <div class="split-work">
                 <div class="card terminal-pane">
                   <div class="pane-toolbar"><div><strong id="terminalHost">未连接</strong> <span class="muted" id="terminalMeta">点击左侧主机连接</span></div><span class="status-pill" id="terminalStatus"><span class="dot"></span>idle</span></div>
-                  <div id="terminalContainer" aria-label="终端区域"></div>
+                  <div id="terminalSearchBar" style="display:none"><input type="text" id="terminalSearchInput" placeholder="Search..." /><button class="btn" id="terminalSearchPrev">&#8593;</button><button class="btn" id="terminalSearchNext">&#8595;</button><button class="btn" id="terminalSearchClose">&#10005;</button></div><div id="terminalContainer" aria-label="终端区域"></div>
                 </div>
                 <aside class="stack">
                   <div class="card">
@@ -242,7 +243,7 @@
                   <h1>隧道管理</h1>
                   <p>Local、Remote、Dynamic SOCKS、HTTP 代理与 ProxyJump 链统一在一张表里处理，状态可切换、日志可追踪。</p>
                 </div>
-                <div class="toolbar"><button class="btn primary">新增隧道</button><button class="btn">查看日志</button><button class="btn" data-modal="connectionFailed">端口占用详情</button></div>
+                <div class="toolbar"><button class="btn primary" data-create-tunnel>新增隧道</button><button class="btn" data-refresh-tunnels>刷新</button><button class="btn" data-modal="connectionFailed">端口占用详情</button></div>
               </div>
               <div class="callout warn" style="margin-bottom: var(--space-4);"><strong>端口占用</strong><p class="muted">127.0.0.1:3306 已被本机进程占用。建议改用 13306、停止占用进程，或查看日志定位冲突来源。</p></div>
               <div class="card">
@@ -258,6 +259,20 @@
                   </table>
                 </div>
               </div>
+            </section>
+
+            <section class="screen-panel" data-panel="editor" data-od-id="remote-editor-v2">
+              <div class="screen-header">
+                <div>
+                  <h1 id="editorTitle">远程编辑</h1>
+                  <p id="editorSubtitle" class="muted">选择远程文件进行编辑</p>
+                </div>
+                <div class="toolbar">
+                  <button class="btn primary" id="editorSaveBtn">保存</button>
+                  <button class="btn" id="editorCloseBtn">关闭</button>
+                </div>
+              </div>
+              <div id="editorContainer" style="flex:1;min-height:400px;"></div>
             </section>
           </div>
         </main>
@@ -330,5 +345,6 @@
   </div>
 
   <script type="module" src="./main.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.0/min/vs/loader.js"></script>
 </body>
 </html>

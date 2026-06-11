@@ -281,6 +281,7 @@ const panels = [...document.querySelectorAll('[data-panel]')];
         switchToSession(sessionId);
       }
       if (id === 'files') refreshRemoteFiles().catch(err => announce('远程文件刷新失败：' + err.message));
+      if (id === 'tunnels') refreshTunnelList();
       try {
         localStorage.setItem('myshelltool-active-tab', id);
       } catch {}
@@ -607,6 +608,175 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       refreshRemoteFiles(currentRemotePath);
     }
 
+    let monacoEditor = null;
+    let editorFilePath = null;
+    let monacoReady = false;
+
+    function languageForPath(path) {
+      const ext = path.split('.').pop().toLowerCase();
+      const map = { js: 'javascript', ts: 'typescript', py: 'python', rb: 'ruby', rs: 'rust', go: 'go', toml: 'toml', yaml: 'yaml', yml: 'yaml', json: 'json', md: 'markdown', sh: 'shell', bash: 'shell', sql: 'sql', xml: 'xml', html: 'html', css: 'css', scss: 'scss', less: 'less', java: 'java', c: 'c', cpp: 'cpp', h: 'c', hpp: 'cpp', conf: 'ini', cfg: 'ini', ini: 'ini', log: 'plaintext', txt: 'plaintext' };
+      return map[ext] || 'plaintext';
+    }
+
+    function initMonaco(callback) {
+      if (monacoReady) { callback(); return; }
+      if (typeof require === 'undefined') { announce('Monaco Editor 加载中，请稍后重试'); return; }
+      require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.0/min/vs' } });
+      require(['vs/editor/editor.main'], () => {
+        monacoReady = true;
+        callback();
+      });
+    }
+
+    async function openRemoteEditor(filePath) {
+      const session = getSessionForAsset(selectedAssetId);
+      if (!session) { announce('需要先连接 SSH'); return; }
+      announce('正在加载文件：' + filePath);
+      const content = await invokeBackend('sftp_read_file', { session_id: session.sessionId, path: filePath });
+      editorFilePath = filePath;
+      const fileName = filePath.split('/').pop();
+      const editorTab = document.querySelector('[data-tab="editor"]');
+      if (editorTab) { editorTab.hidden = false; editorTab.textContent = fileName + ' '; }
+      activateTab('editor');
+      document.getElementById('editorTitle')?.textContent && (document.getElementById('editorTitle').textContent = fileName);
+      document.getElementById('editorSubtitle')?.textContent && (document.getElementById('editorSubtitle').textContent = filePath);
+      initMonaco(() => {
+        const container = document.getElementById('editorContainer');
+        if (!container) return;
+        if (monacoEditor) { monacoEditor.dispose(); monacoEditor = null; }
+        const isDark = document.documentElement.dataset.theme === 'dark';
+        monacoEditor = monaco.editor.create(container, {
+          value: content,
+          language: languageForPath(filePath),
+          theme: isDark ? 'vs-dark' : 'vs',
+          automaticLayout: true,
+          minimap: { enabled: true },
+          fontSize: 14,
+          scrollBeyondLastLine: false,
+        });
+        announce('已打开远程编辑器：' + fileName);
+      });
+    }
+
+    async function saveRemoteEditor() {
+      if (!monacoEditor || !editorFilePath) { announce('没有打开的文件'); return; }
+      const session = getSessionForAsset(selectedAssetId);
+      if (!session) { announce('SSH 会话已断开'); return; }
+      announce('正在保存：' + editorFilePath);
+      const content = monacoEditor.getValue();
+      await invokeBackend('sftp_write_file', { session_id: session.sessionId, path: editorFilePath, content });
+      announce('已保存：' + editorFilePath);
+    }
+
+    function closeRemoteEditor() {
+      if (monacoEditor) { monacoEditor.dispose(); monacoEditor = null; }
+      editorFilePath = null;
+      const editorTab = document.querySelector('[data-tab="editor"]');
+      if (editorTab) editorTab.hidden = true;
+      activateTab('files');
+      announce('已关闭编辑器');
+    }
+
+    async function refreshTunnelList() {
+      try {
+        const tunnels = await invokeBackend('tunnel_list');
+        renderTunnelTable(tunnels || []);
+      } catch (err) {
+        announce('获取隧道列表失败：' + err.message);
+      }
+    }
+
+    function renderTunnelTable(tunnels) {
+      const tbody = document.querySelector('#tunnelTable tbody');
+      if (!tbody) return;
+      if (!tunnels.length) {
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-muted)">暂无隧道配置，点击「新增隧道」创建</td></tr>';
+        return;
+      }
+      tbody.innerHTML = tunnels.map(t => {
+        const cfg = t.config;
+        const isActive = t.active;
+        const statusClass = isActive ? 'running' : (t.error ? 'error' : '');
+        const statusText = isActive ? 'Running' : (t.error || 'Stopped');
+        const kindLabel = cfg.kind === 'local' ? 'Local' : cfg.kind === 'remote' ? 'Remote' : 'Dynamic SOCKS';
+        const remoteCell = cfg.kind === 'dynamic' ? '—' : `${cfg.remote_addr}:${cfg.remote_port}`;
+        return `<tr data-tunnel-row data-tunnel-id="${escapeAttr(cfg.id)}" data-session-id="${escapeAttr(cfg.session_id)}">
+          <td>${escapeHtml(cfg.name)}</td>
+          <td>${kindLabel}</td>
+          <td class="num">${escapeHtml(cfg.local_addr)}:${cfg.local_port}</td>
+          <td class="num">${remoteCell}</td>
+          <td>${escapeHtml(cfg.session_id)}</td>
+          <td><span class="status-pill ${statusClass}" data-status-pill>${statusText}</span></td>
+          <td><button class="switch ${cfg.auto_start ? 'on' : ''}" aria-label="自动启动" data-tunnel-autostart="${escapeAttr(cfg.id)}"><span></span></button></td>
+          <td>${isActive ? '活跃' : '未运行'}</td>
+          <td>
+            <button class="btn" data-tunnel-toggle="${escapeAttr(cfg.id)}">${isActive ? '停止' : '启动'}</button>
+            <button class="btn danger" data-tunnel-delete="${escapeAttr(cfg.id)}">删除</button>
+          </td>
+        </tr>`;
+      }).join('');
+    }
+
+    function openTunnelDialog() {
+      const session = getSessionForAsset(selectedAssetId);
+      if (!session) { announce('需要先连接 SSH 才能创建隧道'); return; }
+      activeModal = 'tunnelCreate';
+      editingAssetId = null;
+      modalTitle.textContent = '新增隧道';
+      modalBody.innerHTML = `
+        <div class="stack">
+          <label class="stack"><span>名称</span><input class="input" id="tunnelName" placeholder="mysql-local" /></label>
+          <label class="stack"><span>类型</span>
+            <select class="input" id="tunnelKind">
+              <option value="local">Local（本地端口转发）</option>
+              <option value="dynamic">Dynamic SOCKS</option>
+              <option value="remote">Remote（远程端口转发）</option>
+            </select>
+          </label>
+          <label class="stack"><span>本地地址</span><input class="input" id="tunnelLocalAddr" value="127.0.0.1" /></label>
+          <label class="stack"><span>本地端口</span><input class="input" id="tunnelLocalPort" type="number" placeholder="13306" /></label>
+          <div id="tunnelRemoteFields">
+            <label class="stack"><span>远程地址</span><input class="input" id="tunnelRemoteAddr" placeholder="10.10.9.32" /></label>
+            <label class="stack"><span>远程端口</span><input class="input" id="tunnelRemotePort" type="number" placeholder="3306" /></label>
+          </div>
+          <label><input type="checkbox" id="tunnelAutoStart" /> 自动启动</label>
+        </div>`;
+      modalPrimary.textContent = '创建';
+      modalSecondary.textContent = '取消';
+      modalLayer.classList.add('open');
+      modalLayer.setAttribute('aria-hidden', 'false');
+      document.getElementById('tunnelKind').addEventListener('change', e => {
+        document.getElementById('tunnelRemoteFields').style.display = e.target.value === 'dynamic' ? 'none' : '';
+      });
+    }
+
+    async function handleTunnelCreate() {
+      const session = getSessionForAsset(selectedAssetId);
+      if (!session) { announce('SSH 会话不存在'); closeModal(); return; }
+      const name = document.getElementById('tunnelName')?.value?.trim();
+      const kind = document.getElementById('tunnelKind')?.value;
+      const localAddr = document.getElementById('tunnelLocalAddr')?.value?.trim() || '127.0.0.1';
+      const localPort = parseInt(document.getElementById('tunnelLocalPort')?.value, 10);
+      const remoteAddr = document.getElementById('tunnelRemoteAddr')?.value?.trim() || '127.0.0.1';
+      const remotePort = parseInt(document.getElementById('tunnelRemotePort')?.value, 10);
+      const autoStart = document.getElementById('tunnelAutoStart')?.checked || false;
+      if (!name || !localPort) { announce('请填写名称和端口'); return; }
+      const id = 'tunnel-' + Date.now();
+      try {
+        await invokeBackend('tunnel_create', {
+          config: { id, name, kind, local_addr: localAddr, local_port: localPort, remote_addr: remoteAddr, remote_port: remotePort, session_id: session.sessionId, auto_start: autoStart }
+        });
+        if (autoStart) {
+          await invokeBackend('tunnel_start', { session_id: session.sessionId, tunnel_id: id });
+        }
+        closeModal();
+        refreshTunnelList();
+        announce('隧道已创建：' + name);
+      } catch (err) {
+        announce('创建隧道失败：' + err.message);
+      }
+    }
+
     function openModal(key) {
       const item = modals[key];
       if (!item) return;
@@ -856,6 +1026,29 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       });
     }
 
+    let pendingKeyboardResolve = null;
+
+    function showKeyboardInteractiveDialog(eventData) {
+      return new Promise(resolve => {
+        pendingKeyboardResolve = resolve;
+        activeModal = 'keyboardInteractive';
+        editingAssetId = null;
+        const { name, instructions, prompts } = eventData;
+        modalTitle.textContent = name || 'Keyboard Interactive 认证';
+        let body = '';
+        if (instructions) body += `<p>${escapeHtml(instructions)}</p>`;
+        prompts.forEach((prompt, i) => {
+          body += `<label class="stack" style="margin-top:var(--space-2)"><span>${escapeHtml(prompt)}</span><input class="input" data-kb-prompt="${i}" type="password" /></label>`;
+        });
+        modalBody.innerHTML = body;
+        modalPrimary.textContent = '提交';
+        modalSecondary.textContent = '取消';
+        modalLayer.classList.add('open');
+        modalLayer.setAttribute('aria-hidden', 'false');
+        modalPrimary.focus();
+      });
+    }
+
     function getTerminalTheme() {
       return document.documentElement.dataset.theme === 'light'
         ? { background: '#ffffff', foreground: '#1e1e1e', cursor: '#333333' }
@@ -872,6 +1065,13 @@ const panels = [...document.querySelectorAll('[data-panel]')];
           invokeBackend('ssh_confirm_host_key', {
             request_id: event.payload.request_id,
             accepted
+          });
+        });
+        window.__TAURI__.core.getCurrentWindow().listen('ssh-keyboard-interactive', async event => {
+          const responses = await showKeyboardInteractiveDialog(event.payload);
+          invokeBackend('ssh_keyboard_response', {
+            request_id: event.payload.request_id,
+            responses
           });
         });
       } else {
@@ -936,10 +1136,11 @@ const panels = [...document.querySelectorAll('[data-panel]')];
         }
       }
 
-      let Terminal, FitAddon;
+      let Terminal, FitAddon, SearchAddon;
       try {
         ({ Terminal } = await import('../node_modules/@xterm/xterm/lib/xterm.mjs'));
         ({ FitAddon } = await import('../node_modules/@xterm/addon-fit/lib/addon-fit.mjs'));
+        ({ SearchAddon } = await import('../node_modules/@xterm/addon-search/lib/addon-search.mjs'));
       } catch (err) {
         announce('终端模块加载失败: ' + err.message);
         return;
@@ -967,7 +1168,9 @@ const panels = [...document.querySelectorAll('[data-panel]')];
         theme: getTerminalTheme()
       });
       const fit = new FitAddon();
+      const search = new SearchAddon();
       term.loadAddon(fit);
+      term.loadAddon(search);
       term.open(termDiv);
       term.writeln('\x1b[36mmyshelltool SSH\x1b[0m — connecting to ' + asset.host + '...\r\n');
 
@@ -991,7 +1194,7 @@ const panels = [...document.querySelectorAll('[data-panel]')];
           tab.dataset.tab = 'session-' + sessionId;
           tab.dataset.sessionId = sessionId;
 
-          sessions.set(sessionId, { term, fit, termDiv, tab, asset, sessionId });
+          sessions.set(sessionId, { term, fit, search, termDiv, tab, asset, sessionId });
 
           term.onData(data => {
             const encoder = new TextEncoder();
@@ -1035,6 +1238,58 @@ const panels = [...document.querySelectorAll('[data-panel]')];
     assetPreferenceLocked = storedAssetsState === 'collapsed' || storedAssetsState === 'expanded';
     applyAssetsState(assetPreferenceLocked ? storedAssetsState === 'collapsed' : compactAssetsQuery.matches, false);
 
+    function getActiveSession() {
+      if (!activeSessionId) return null;
+      return sessions.get(activeSessionId) || null;
+    }
+
+    document.getElementById('terminalSearchBtn')?.addEventListener('click', () => {
+      const bar = document.getElementById('terminalSearchBar');
+      if (!bar) return;
+      bar.style.display = bar.style.display === 'none' ? 'flex' : 'none';
+      if (bar.style.display === 'flex') document.getElementById('terminalSearchInput')?.focus();
+    });
+    document.getElementById('terminalSearchClose')?.addEventListener('click', () => {
+      const bar = document.getElementById('terminalSearchBar');
+      if (bar) bar.style.display = 'none';
+      const s = getActiveSession();
+      if (s?.search) s.search.clearDecorations();
+    });
+    document.getElementById('terminalSearchInput')?.addEventListener('input', () => {
+      const s = getActiveSession();
+      const query = document.getElementById('terminalSearchInput')?.value;
+      if (s?.search && query) s.search.findNext(query);
+    });
+    document.getElementById('terminalSearchNext')?.addEventListener('click', () => {
+      const s = getActiveSession();
+      const query = document.getElementById('terminalSearchInput')?.value;
+      if (s?.search && query) s.search.findNext(query);
+    });
+    document.getElementById('terminalSearchPrev')?.addEventListener('click', () => {
+      const s = getActiveSession();
+      const query = document.getElementById('terminalSearchInput')?.value;
+      if (s?.search && query) s.search.findPrevious(query);
+    });
+    document.getElementById('terminalClearBtn')?.addEventListener('click', () => {
+      const s = getActiveSession();
+      if (s?.term) s.term.clear();
+    });
+    document.getElementById('terminalFullscreenBtn')?.addEventListener('click', () => {
+      const pane = document.querySelector('.terminal-pane');
+      if (!pane) return;
+      const isFull = pane.classList.toggle('fullscreen');
+      document.getElementById('terminalFullscreenBtn').textContent = isFull ? '退出全屏' : '全屏';
+      const s = getActiveSession();
+      if (s?.fit) setTimeout(() => { try { s.fit.fit(); } catch {} }, 100);
+    });
+
+    document.getElementById('editorSaveBtn')?.addEventListener('click', () => {
+      saveRemoteEditor().catch(err => announce('保存失败：' + err.message));
+    });
+    document.getElementById('editorCloseBtn')?.addEventListener('click', () => {
+      closeRemoteEditor();
+    });
+
     themeToggle.addEventListener('click', () => {
       const currentTheme = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
       const nextTheme = currentTheme === 'light' ? 'dark' : 'light';
@@ -1068,6 +1323,10 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       if (!tab) return;
       if (close) {
         event.stopPropagation();
+        if (tab.dataset.tab === 'editor') {
+          closeRemoteEditor();
+          return;
+        }
         if (tab.dataset.sessionId) {
           const sessionId = tab.dataset.sessionId;
           invokeBackend('ssh_disconnect', { sessionId });
@@ -1099,6 +1358,10 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       const fileDownload = event.target.closest('[data-file-download]');
       const newDirBtn = event.target.closest('[data-create-remote-dir]');
       const uploadBtn = event.target.closest('[data-upload-file]');
+      const tunnelToggle = event.target.closest('[data-tunnel-toggle]');
+      const tunnelDeleteBtn = event.target.closest('[data-tunnel-delete]');
+      const tunnelCreateBtn = event.target.closest('[data-create-tunnel]');
+      const tunnelRefresh = event.target.closest('[data-refresh-tunnels]');
       if (refreshRemote) refreshRemoteFiles().catch(err => announce('远程文件刷新失败：' + err.message));
       if (newDirBtn) createRemoteDir().catch(err => announce('创建目录失败：' + err.message));
       if (uploadBtn) document.getElementById('fileUploadInput')?.click();
@@ -1108,8 +1371,29 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       }
       if (fileRename) renameRemoteFile(fileRename.dataset.fileRename).catch(err => announce('重命名失败：' + err.message));
       if (fileDelete) deleteRemoteFile(fileDelete.dataset.fileDelete, fileDelete.dataset.kind || 'file').catch(err => announce('删除失败：' + err.message));
-      if (fileEdit) announce('远程编辑（Monaco Editor）将在 Phase D 实现');
+      if (fileEdit) openRemoteEditor(fileEdit.dataset.fileEdit).catch(err => announce('打开编辑器失败：' + err.message));
       if (fileDownload) announce('文件下载将在 Phase C 实现');
+      if (tunnelCreateBtn) openTunnelDialog();
+      if (tunnelRefresh) refreshTunnelList();
+      if (tunnelToggle) {
+        const row = tunnelToggle.closest('[data-tunnel-row]');
+        const tunnelId = row?.dataset?.tunnelId;
+        const sessionId = row?.dataset?.sessionId;
+        const pill = row?.querySelector('[data-status-pill]');
+        const isActive = pill?.textContent?.trim() === 'Running';
+        if (isActive) {
+          invokeBackend('tunnel_stop', { tunnel_id: tunnelId }).then(() => refreshTunnelList()).catch(err => announce('停止失败：' + err.message));
+        } else {
+          invokeBackend('tunnel_start', { session_id: sessionId, tunnel_id: tunnelId }).then(() => refreshTunnelList()).catch(err => announce('启动失败：' + err.message));
+        }
+      }
+      if (tunnelDeleteBtn) {
+        const row = tunnelDeleteBtn.closest('[data-tunnel-row]');
+        const tunnelId = row?.dataset?.tunnelId;
+        if (tunnelId && confirm('确认删除隧道？')) {
+          invokeBackend('tunnel_delete', { tunnel_id: tunnelId }).then(() => { refreshTunnelList(); announce('隧道已删除'); }).catch(err => announce('删除失败：' + err.message));
+        }
+      }
       if (tabTarget) {
         if (tabTarget.dataset.tabTarget === 'terminal') {
           connectSsh(selectedAssetId);
@@ -1192,6 +1476,10 @@ const panels = [...document.querySelectorAll('[data-panel]')];
         pendingPasswordResolve(null);
         pendingPasswordResolve = null;
       }
+      if (activeModal === 'keyboardInteractive' && pendingKeyboardResolve) {
+        pendingKeyboardResolve([]);
+        pendingKeyboardResolve = null;
+      }
       closeModal();
     });
     modalPrimary.addEventListener('click', async () => {
@@ -1215,6 +1503,18 @@ const panels = [...document.querySelectorAll('[data-panel]')];
         await saveAssetEditor();
         return;
       }
+      if (activeModal === 'tunnelCreate') {
+        await handleTunnelCreate();
+        return;
+      }
+      if (activeModal === 'keyboardInteractive' && pendingKeyboardResolve) {
+        const inputs = modalBody.querySelectorAll('[data-kb-prompt]');
+        const responses = [...inputs].map(input => input.value || '');
+        pendingKeyboardResolve(responses);
+        pendingKeyboardResolve = null;
+        closeModal();
+        return;
+      }
       if (modalBody.querySelector('[data-sync-token]')) {
         await saveTokenConfig();
         return;
@@ -1222,25 +1522,12 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       closeModal();
     });
     modalLayer.addEventListener('click', event => { if (event.target === modalLayer) closeModal(); });
-    document.addEventListener('keydown', event => { if (event.key === 'Escape') { closeModal(); contextMenu.classList.remove('open'); } });
-
-    document.querySelectorAll('[data-toggle-tunnel]').forEach(button => {
-      button.addEventListener('click', () => {
-        const row = button.closest('[data-tunnel-row]');
-        const pill = row.querySelector('[data-status-pill]');
-        const isRunning = pill.textContent.trim() === 'Running' || pill.textContent.trim() === 'Reconnecting';
-        pill.classList.remove('running', 'warn', 'error', 'reconnecting');
-        if (isRunning) {
-          pill.textContent = 'Stopped';
-          button.textContent = '启动';
-          announce(row.cells[0].textContent + ' 已停止');
-        } else {
-          pill.textContent = 'Running';
-          pill.classList.add('running');
-          button.textContent = '停止';
-          announce(row.cells[0].textContent + ' 已启动，健康检查正常');
-        }
-      });
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { closeModal(); contextMenu.classList.remove('open'); }
+      if ((event.ctrlKey || event.metaKey) && event.key === 's' && monacoEditor) {
+        event.preventDefault();
+        saveRemoteEditor().catch(err => announce('保存失败：' + err.message));
+      }
     });
 
     document.querySelectorAll('.switch').forEach(toggle => {

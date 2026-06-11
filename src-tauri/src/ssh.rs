@@ -11,13 +11,39 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{Mutex, oneshot};
 
+// --- Tunnel / port-forwarding types ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TunnelConfig {
+    pub id: String,
+    pub name: String,
+    pub kind: String, // "local", "remote", "dynamic"
+    pub local_addr: String,
+    pub local_port: u16,
+    pub remote_addr: String,
+    pub remote_port: u16,
+    pub session_id: String,
+    pub auto_start: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TunnelStatus {
+    pub id: String,
+    pub config: TunnelConfig,
+    pub active: bool,
+    pub error: Option<String>,
+}
+
 type PendingDecisions = Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>;
+
+type PendingKeyboardResponses = Arc<Mutex<HashMap<String, oneshot::Sender<Vec<String>>>>>;
 
 struct SshClient {
     app: AppHandle,
     host_port: String,
     known_hosts_path: PathBuf,
     pending: PendingDecisions,
+    pending_keyboard: PendingKeyboardResponses,
 }
 
 #[async_trait]
@@ -92,10 +118,13 @@ pub struct SshSessionManager {
     sessions: HashMap<String, SshSession>,
     ssh_handles: HashMap<String, Arc<client::Handle<SshClient>>>,
     sftp_cache: HashMap<String, Arc<Mutex<SftpSession>>>,
+    tunnels: HashMap<String, TunnelStatus>,
+    tunnel_handles: HashMap<String, tokio::task::JoinHandle<()>>,
     app: AppHandle,
     secret_store_dir: PathBuf,
     known_hosts_path: PathBuf,
     pending_host_decisions: PendingDecisions,
+    pending_keyboard: PendingKeyboardResponses,
 }
 
 impl SshSessionManager {
@@ -104,10 +133,13 @@ impl SshSessionManager {
             sessions: HashMap::new(),
             ssh_handles: HashMap::new(),
             sftp_cache: HashMap::new(),
+            tunnels: HashMap::new(),
+            tunnel_handles: HashMap::new(),
             app,
             secret_store_dir,
             known_hosts_path,
             pending_host_decisions: Arc::new(Mutex::new(HashMap::new())),
+            pending_keyboard: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -144,6 +176,14 @@ struct HostKeyVerifyEvent {
     is_changed: bool,
 }
 
+#[derive(Clone, Serialize)]
+struct KeyboardInteractiveEvent {
+    request_id: String,
+    name: String,
+    instructions: String,
+    prompts: Vec<String>,
+}
+
 async fn connect_authenticated(
     state: &State<'_, Arc<Mutex<SshSessionManager>>>,
     host: &str,
@@ -158,21 +198,23 @@ async fn connect_authenticated(
 ) -> Result<client::Handle<SshClient>, String> {
     let config = Arc::new(client::Config::default());
 
-    let (app, secret_store_dir, known_hosts_path, pending) = {
+    let (app, secret_store_dir, known_hosts_path, pending, pending_keyboard) = {
         let mgr = state.lock().await;
         (
             mgr.app.clone(),
             mgr.secret_store_dir.clone(),
             mgr.known_hosts_path.clone(),
             mgr.pending_host_decisions.clone(),
+            mgr.pending_keyboard.clone(),
         )
     };
 
     let handler = SshClient {
-        app,
+        app: app.clone(),
         host_port: format!("{host}:{port}"),
         known_hosts_path,
         pending,
+        pending_keyboard: pending_keyboard.clone(),
     };
     let mut handle = client::connect(config, (host, port), handler)
         .await
@@ -217,10 +259,56 @@ async fn connect_authenticated(
     };
 
     if !auth_ok {
-        return Err("Authentication failed".to_string());
+        let resp = handle.authenticate_keyboard_interactive_start(username, None::<String>)
+            .await
+            .map_err(|e| format!("Keyboard-interactive start failed: {e}"))?;
+        let (h, authenticated) = keyboard_interactive_loop(handle, resp, &pending_keyboard, &app).await?;
+        if !authenticated {
+            return Err("Authentication failed (password + keyboard-interactive)".to_string());
+        }
+        return Ok(h);
     }
 
     Ok(handle)
+}
+
+async fn keyboard_interactive_loop(
+    mut handle: client::Handle<SshClient>,
+    mut resp: client::KeyboardInteractiveAuthResponse,
+    pending_keyboard: &PendingKeyboardResponses,
+    app: &AppHandle,
+) -> Result<(client::Handle<SshClient>, bool), String> {
+    loop {
+        match resp {
+            client::KeyboardInteractiveAuthResponse::Success => return Ok((handle, true)),
+            client::KeyboardInteractiveAuthResponse::Failure => return Ok((handle, false)),
+            client::KeyboardInteractiveAuthResponse::InfoRequest { name, instructions, prompts } => {
+                let request_id = uuid::Uuid::new_v4().to_string();
+                let (tx, rx) = oneshot::channel();
+                {
+                    let mut map = pending_keyboard.lock().await;
+                    map.insert(request_id.clone(), tx);
+                }
+                let prompt_texts: Vec<String> = prompts.iter().map(|p| p.prompt.clone()).collect();
+                let event = KeyboardInteractiveEvent {
+                    request_id,
+                    name,
+                    instructions,
+                    prompts: prompt_texts,
+                };
+                if app.emit("ssh-keyboard-interactive", event).is_err() {
+                    return Ok((handle, false));
+                }
+                let responses = match rx.await {
+                    Ok(r) => r,
+                    Err(_) => return Ok((handle, false)),
+                };
+                resp = handle.authenticate_keyboard_interactive_respond(responses)
+                    .await
+                    .map_err(|e| format!("Keyboard-interactive respond failed: {e}"))?;
+            }
+        }
+    }
 }
 
 fn expand_home_path(path: &str) -> String {
@@ -458,6 +546,19 @@ pub async fn ssh_disconnect(
     }
     mgr.ssh_handles.remove(&session_id);
     mgr.sftp_cache.remove(&session_id);
+    // Stop and remove tunnels associated with this session
+    let tunnel_ids_to_remove: Vec<String> = mgr
+        .tunnels
+        .iter()
+        .filter(|(_, status)| status.config.session_id == session_id)
+        .map(|(id, _)| id.clone())
+        .collect();
+    for tid in tunnel_ids_to_remove {
+        if let Some(jh) = mgr.tunnel_handles.remove(&tid) {
+            jh.abort();
+        }
+        mgr.tunnels.remove(&tid);
+    }
     Ok(())
 }
 
@@ -471,6 +572,20 @@ pub async fn ssh_confirm_host_key(
     let mut pending = mgr.pending_host_decisions.lock().await;
     if let Some(tx) = pending.remove(&request_id) {
         let _ = tx.send(accepted);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn ssh_keyboard_response(
+    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    request_id: String,
+    responses: Vec<String>,
+) -> Result<(), String> {
+    let mgr = state.lock().await;
+    let mut pending = mgr.pending_keyboard.lock().await;
+    if let Some(tx) = pending.remove(&request_id) {
+        let _ = tx.send(responses);
     }
     Ok(())
 }
@@ -495,7 +610,7 @@ async fn get_or_create_sftp(
             .clone()  // Arc::clone
     };
 
-    let mut channel = handle.channel_open_session().await
+    let channel = handle.channel_open_session().await
         .map_err(|e| format!("SFTP channel open failed: {e}"))?;
     channel.request_subsystem(true, "sftp").await
         .map_err(|e| format!("SFTP subsystem request failed: {e}"))?;
@@ -659,6 +774,372 @@ pub async fn sftp_stat(
         size: meta.len(),
         modified: format!("{:?}", meta.modified()),
     })
+}
+
+// --- Tunnel / port-forwarding commands ---
+
+#[tauri::command]
+pub async fn tunnel_create(
+    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    config: TunnelConfig,
+) -> Result<TunnelStatus, String> {
+    let id = config.id.clone();
+    let status = TunnelStatus {
+        id: id.clone(),
+        config,
+        active: false,
+        error: None,
+    };
+    let mut mgr = state.lock().await;
+    mgr.tunnels.insert(id, status.clone());
+    Ok(status)
+}
+
+#[tauri::command]
+pub async fn tunnel_start(
+    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    session_id: String,
+    tunnel_id: String,
+) -> Result<(), String> {
+    let (handle, config, app) = {
+        let mgr = state.lock().await;
+        let handle = mgr
+            .ssh_handles
+            .get(&session_id)
+            .ok_or_else(|| format!("SSH session {session_id} not found"))?
+            .clone();
+        let tunnel = mgr
+            .tunnels
+            .get(&tunnel_id)
+            .ok_or_else(|| format!("Tunnel {tunnel_id} not found"))?;
+        if tunnel.active {
+            return Err("Tunnel is already active".to_string());
+        }
+        (handle, tunnel.config.clone(), mgr.app.clone())
+    };
+
+    let join_handle = match config.kind.as_str() {
+        "local" => start_local_forward(handle, config.clone(), app).await?,
+        "remote" => start_remote_forward(handle, config.clone()).await?,
+        "dynamic" => start_dynamic_forward(handle, config.clone(), app).await?,
+        other => return Err(format!("Unknown tunnel kind: {other}")),
+    };
+
+    {
+        let mut mgr = state.lock().await;
+        if let Some(status) = mgr.tunnels.get_mut(&tunnel_id) {
+            status.active = true;
+            status.error = None;
+        }
+        mgr.tunnel_handles.insert(tunnel_id, join_handle);
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn tunnel_stop(
+    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    tunnel_id: String,
+) -> Result<(), String> {
+    let mut mgr = state.lock().await;
+    if let Some(jh) = mgr.tunnel_handles.remove(&tunnel_id) {
+        jh.abort();
+    }
+    if let Some(status) = mgr.tunnels.get_mut(&tunnel_id) {
+        status.active = false;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn tunnel_list(
+    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+) -> Result<Vec<TunnelStatus>, String> {
+    let mgr = state.lock().await;
+    Ok(mgr.tunnels.values().cloned().collect())
+}
+
+#[tauri::command]
+pub async fn tunnel_delete(
+    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    tunnel_id: String,
+) -> Result<(), String> {
+    let mut mgr = state.lock().await;
+    if let Some(jh) = mgr.tunnel_handles.remove(&tunnel_id) {
+        jh.abort();
+    }
+    mgr.tunnels.remove(&tunnel_id);
+    Ok(())
+}
+
+// --- Local port forwarding ---
+
+async fn start_local_forward(
+    handle: Arc<client::Handle<SshClient>>,
+    config: TunnelConfig,
+    app: AppHandle,
+) -> Result<tokio::task::JoinHandle<()>, String> {
+    let listen_addr = format!("{}:{}", config.local_addr, config.local_port);
+    let listener = tokio::net::TcpListener::bind(&listen_addr)
+        .await
+        .map_err(|e| format!("Failed to bind {listen_addr}: {e}"))?;
+
+    let remote_addr = config.remote_addr.clone();
+    let remote_port = config.remote_port as u32;
+    let tunnel_id = config.id.clone();
+
+    let jh = tokio::spawn(async move {
+        loop {
+            let tcp_stream = match listener.accept().await {
+                Ok((s, _)) => s,
+                Err(_) => continue,
+            };
+
+            let ssh_handle = handle.clone();
+            let remote_addr = remote_addr.clone();
+            let app = app.clone();
+            let tid = tunnel_id.clone();
+
+            tokio::spawn(async move {
+                let mut channel = match ssh_handle
+                    .channel_open_direct_tcpip(
+                        &remote_addr,
+                        remote_port,
+                        "127.0.0.1",
+                        0,
+                    )
+                    .await
+                {
+                    Ok(ch) => ch,
+                    Err(_) => return,
+                };
+
+                let (mut tcp_read, mut tcp_write) =
+                    tokio::io::split(tcp_stream);
+
+                // Use a single loop with select, reading from SSH channel and TCP concurrently.
+                // channel.wait() borrows &mut self, so we can't have it in a separate future
+                // alongside channel.data(). Instead, interleave reads and writes in one task.
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut tcp_buf = vec![0u8; 32 * 1024];
+                loop {
+                    tokio::select! {
+                        msg = channel.wait() => {
+                            match msg {
+                                Some(ChannelMsg::Data { data }) => {
+                                    if tcp_write.write_all(&data).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Some(ChannelMsg::Eof) | None => break,
+                                _ => {}
+                            }
+                        }
+                        n = tcp_read.read(&mut tcp_buf) => {
+                            match n {
+                                Ok(0) => {
+                                    let _ = channel.eof().await;
+                                    break;
+                                }
+                                Ok(n) => {
+                                    if channel.data(&tcp_buf[..n]).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    }
+                }
+
+                let _ = app.emit(
+                    &format!("tunnel-traffic-{tid}"),
+                    "connection-closed",
+                );
+            });
+        }
+    });
+
+    Ok(jh)
+}
+
+// --- Remote port forwarding ---
+
+async fn start_remote_forward(
+    _handle: Arc<client::Handle<SshClient>>,
+    _config: TunnelConfig,
+) -> Result<tokio::task::JoinHandle<()>, String> {
+    Err("Remote forwarding is not yet supported. Use local or dynamic forwarding instead.".to_string())
+}
+
+// --- Dynamic (SOCKS5) port forwarding ---
+
+async fn start_dynamic_forward(
+    handle: Arc<client::Handle<SshClient>>,
+    config: TunnelConfig,
+    app: AppHandle,
+) -> Result<tokio::task::JoinHandle<()>, String> {
+    let listen_addr = format!("{}:{}", config.local_addr, config.local_port);
+    let listener = tokio::net::TcpListener::bind(&listen_addr)
+        .await
+        .map_err(|e| format!("Failed to bind {listen_addr}: {e}"))?;
+
+    let tunnel_id = config.id.clone();
+
+    let jh = tokio::spawn(async move {
+        loop {
+            let tcp_stream = match listener.accept().await {
+                Ok((s, _)) => s,
+                Err(_) => continue,
+            };
+
+            let ssh_handle = handle.clone();
+            let app = app.clone();
+            let tid = tunnel_id.clone();
+
+            tokio::spawn(async move {
+                if let Err(e) = handle_socks5_connection(tcp_stream, ssh_handle, app.clone(), &tid).await {
+                    let _ = app.emit(
+                        &format!("tunnel-error-{tid}"),
+                        format!("SOCKS5 error: {e}"),
+                    );
+                }
+            });
+        }
+    });
+
+    Ok(jh)
+}
+
+async fn handle_socks5_connection(
+    tcp_stream: tokio::net::TcpStream,
+    handle: Arc<client::Handle<SshClient>>,
+    app: AppHandle,
+    tunnel_id: &str,
+) -> Result<(), String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let (mut tcp_read, mut tcp_write) = tokio::io::split(tcp_stream);
+
+    // SOCKS5 handshake: read version and auth methods
+    let mut buf = [0u8; 2];
+    tcp_read.read_exact(&mut buf).await.map_err(|e| format!("SOCKS5 read version: {e}"))?;
+    if buf[0] != 0x05 {
+        return Err("Not a SOCKS5 request".to_string());
+    }
+    let nmethods = buf[1] as usize;
+    let mut methods = vec![0u8; nmethods];
+    tcp_read.read_exact(&mut methods).await.map_err(|e| format!("SOCKS5 read methods: {e}"))?;
+
+    // Reply: no auth required
+    tcp_write.write_all(&[0x05, 0x00]).await.map_err(|e| format!("SOCKS5 write method: {e}"))?;
+
+    // Read connect request
+    let mut head = [0u8; 4];
+    tcp_read.read_exact(&mut head).await.map_err(|e| format!("SOCKS5 read request: {e}"))?;
+    if head[0] != 0x05 || head[1] != 0x01 {
+        // Only support CONNECT (0x01)
+        tcp_write.write_all(&[0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await.ok();
+        return Err("SOCKS5 only supports CONNECT".to_string());
+    }
+
+    let target_addr = match head[3] {
+        // IPv4
+        0x01 => {
+            let mut addr = [0u8; 4];
+            tcp_read.read_exact(&mut addr).await.map_err(|e| format!("SOCKS5 read IPv4: {e}"))?;
+            format!("{}.{}.{}.{}", addr[0], addr[1], addr[2], addr[3])
+        }
+        // Domain name
+        0x03 => {
+            let mut len_buf = [0u8; 1];
+            tcp_read.read_exact(&mut len_buf).await.map_err(|e| format!("SOCKS5 read domain len: {e}"))?;
+            let len = len_buf[0] as usize;
+            let mut domain = vec![0u8; len];
+            tcp_read.read_exact(&mut domain).await.map_err(|e| format!("SOCKS5 read domain: {e}"))?;
+            String::from_utf8_lossy(&domain).to_string()
+        }
+        // IPv6
+        0x04 => {
+            let mut addr = [0u8; 16];
+            tcp_read.read_exact(&mut addr).await.map_err(|e| format!("SOCKS5 read IPv6: {e}"))?;
+            addr.iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .chunks(2)
+                .map(|c| c.join(""))
+                .collect::<Vec<_>>()
+                .join(":")
+        }
+        _ => {
+            tcp_write.write_all(&[0x05, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await.ok();
+            return Err("Unsupported SOCKS5 address type".to_string());
+        }
+    };
+
+    let mut port_buf = [0u8; 2];
+    tcp_read.read_exact(&mut port_buf).await.map_err(|e| format!("SOCKS5 read port: {e}"))?;
+    let target_port = u16::from_be_bytes(port_buf) as u32;
+
+    // Open SSH direct TCP/IP channel to the target
+    let mut channel = match handle
+        .channel_open_direct_tcpip(&target_addr, target_port, "127.0.0.1", 0)
+        .await
+    {
+        Ok(ch) => ch,
+        Err(e) => {
+            // SOCKS5 reply: connection refused
+            tcp_write.write_all(&[0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await.ok();
+            return Err(format!("SSH channel open failed: {e}"));
+        }
+    };
+
+    // SOCKS5 success reply
+    tcp_write
+        .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+        .await
+        .map_err(|e| format!("SOCKS5 write success: {e}"))?;
+
+    let _ = app.emit(
+        &format!("tunnel-traffic-{tunnel_id}"),
+        format!("connected:{target_addr}:{target_port}"),
+    );
+
+    // Bidirectional copy using single select loop to avoid borrow conflicts
+    // on the SSH channel (wait() takes &mut self, data() takes &self)
+    let mut tcp_buf = vec![0u8; 32 * 1024];
+    loop {
+        tokio::select! {
+            msg = channel.wait() => {
+                match msg {
+                    Some(ChannelMsg::Data { data }) => {
+                        if tcp_write.write_all(&data).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(ChannelMsg::Eof) | None => break,
+                    _ => {}
+                }
+            }
+            n = tcp_read.read(&mut tcp_buf) => {
+                match n {
+                    Ok(0) => {
+                        let _ = channel.eof().await;
+                        break;
+                    }
+                    Ok(n) => {
+                        if channel.data(&tcp_buf[..n]).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 // --- known_hosts helpers ---

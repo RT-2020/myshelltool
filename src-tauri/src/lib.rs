@@ -126,13 +126,19 @@ pub fn run() {
             ssh::ssh_resize,
             ssh::ssh_disconnect,
             ssh::ssh_confirm_host_key,
+            ssh::ssh_keyboard_response,
             ssh::sftp_list_dir,
             ssh::sftp_read_file,
             ssh::sftp_write_file,
             ssh::sftp_mkdir,
             ssh::sftp_rename,
             ssh::sftp_remove,
-            ssh::sftp_stat
+            ssh::sftp_stat,
+            ssh::tunnel_create,
+            ssh::tunnel_start,
+            ssh::tunnel_stop,
+            ssh::tunnel_list,
+            ssh::tunnel_delete
         ])
         .run(tauri::generate_context!())
         .expect("failed to run myshelltool");
