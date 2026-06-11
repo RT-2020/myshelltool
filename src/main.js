@@ -31,6 +31,7 @@ const panels = [...document.querySelectorAll('[data-panel]')];
 
     const sessions = new Map();
     let activeSessionId = null;
+    let currentRemotePath = '/';
     let pendingPasswordResolve = null;
     let pendingHostKeyResolve = null;
 
@@ -401,11 +402,48 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       return size + ' B';
     }
 
+    function fileIcon(kind) {
+      if (kind === 'directory') return '📁';
+      if (kind === 'symlink') return '🔗';
+      return '📄';
+    }
+
     function renderRemoteFiles(result) {
       const pathBar = document.getElementById('remotePathBar');
       const list = document.getElementById('remoteFileList');
       if (!pathBar || !list) return;
-      pathBar.textContent = result.path || '/';
+      currentRemotePath = result.path || '/';
+      pathBar.innerHTML = '';
+      const parts = currentRemotePath.split('/').filter(Boolean);
+      const breadcrumb = document.createDocumentFragment();
+      const rootLink = document.createElement('span');
+      rootLink.className = 'breadcrumb-link';
+      rootLink.textContent = '/';
+      rootLink.onclick = () => refreshRemoteFiles('/');
+      breadcrumb.appendChild(rootLink);
+      let accumulated = '';
+      parts.forEach((part, i) => {
+        accumulated += '/' + part;
+        const sep = document.createElement('span');
+        sep.className = 'breadcrumb-sep';
+        sep.textContent = ' / ';
+        breadcrumb.appendChild(sep);
+        if (i < parts.length - 1) {
+          const link = document.createElement('span');
+          link.className = 'breadcrumb-link';
+          link.textContent = part;
+          const targetPath = accumulated;
+          link.onclick = () => refreshRemoteFiles(targetPath);
+          breadcrumb.appendChild(link);
+        } else {
+          const current = document.createElement('span');
+          current.className = 'breadcrumb-current';
+          current.textContent = part;
+          breadcrumb.appendChild(current);
+        }
+      });
+      pathBar.appendChild(breadcrumb);
+
       const entries = Array.isArray(result.entries) ? result.entries : [];
       if (!entries.length) {
         list.innerHTML = '<div class="file-row"><div><strong>空目录</strong><p class="muted">没有远程文件</p></div><span class="status-pill">empty</span></div>';
@@ -413,10 +451,14 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       }
       list.innerHTML = entries.map(entry => {
         const kindLabel = entry.kind === 'directory' ? '目录' : entry.kind === 'symlink' ? '链接' : '文件';
-        const action = entry.kind === 'directory'
-          ? '<button class="btn" data-open-remote-dir>打开</button>'
-          : '<button class="btn">下载</button>';
-        return `<div class="file-row" data-remote-path="${escapeAttr(entry.path)}"><div><strong>${escapeHtml(entry.name)}</strong><p class="muted">${kindLabel} · ${formatBytes(entry.size)} · ${escapeHtml(entry.modified || 'unknown')}</p></div>${action}</div>`;
+        const icon = fileIcon(entry.kind);
+        const clickAttr = entry.kind === 'directory'
+          ? `data-open-remote-dir`
+          : '';
+        const actions = entry.kind === 'directory'
+          ? `<button class="btn" data-open-remote-dir>打开</button><button class="btn" data-file-rename="${escapeAttr(entry.path)}">重命名</button><button class="btn danger" data-file-delete="${escapeAttr(entry.path)}&kind=directory">删除</button>`
+          : `<button class="btn" data-file-download="${escapeAttr(entry.path)}">下载</button><button class="btn" data-file-edit="${escapeAttr(entry.path)}">编辑</button><button class="btn" data-file-rename="${escapeAttr(entry.path)}">重命名</button><button class="btn danger" data-file-delete="${escapeAttr(entry.path)}&kind=file">删除</button>`;
+        return `<div class="file-row" data-remote-path="${escapeAttr(entry.path)}" ${clickAttr}><div><span style="margin-right:6px">${icon}</span><strong>${escapeHtml(entry.name)}</strong><p class="muted">${kindLabel} · ${formatBytes(entry.size)} · ${escapeHtml(entry.modified || 'unknown')}</p></div>${actions}</div>`;
       }).join('');
     }
 
@@ -472,6 +514,13 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       return { password, credentialId, passphrase, passphraseCredId, authMethod };
     }
 
+    function getSessionForAsset(assetId) {
+      for (const [, s] of sessions) {
+        if (s.asset.id === assetId) return s;
+      }
+      return null;
+    }
+
     async function refreshRemoteFiles(path = null) {
       const asset = connectionAssets.find(item => item.id === selectedAssetId) || connectionAssets[0];
       if (!asset) return;
@@ -480,6 +529,22 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       const pathBar = document.getElementById('remotePathBar');
       if (pathBar) pathBar.textContent = remotePath;
       if (list) list.innerHTML = '<div class="file-row"><div><strong>加载中</strong><p class="muted">正在读取远程目录</p></div><span class="status-pill warn">loading</span></div>';
+
+      const activeSession = getSessionForAsset(asset.id);
+      if (activeSession) {
+        try {
+          const result = await invokeBackend('sftp_list_dir', {
+            session_id: activeSession.sessionId,
+            path: remotePath
+          });
+          renderRemoteFiles(result);
+          announce('远程文件已刷新（SFTP）：' + asset.name);
+          return;
+        } catch (e) {
+          announce('SFTP 列表失败，回退到 SSH exec');
+        }
+      }
+
       const auth = await resolveAssetAuth(asset);
       if (!auth) return;
       const result = await invokeBackend('ssh_list_directory', {
@@ -496,6 +561,50 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       });
       renderRemoteFiles(result);
       announce('远程文件已刷新：' + asset.name);
+    }
+
+    async function createRemoteDir() {
+      const name = prompt('新建目录名称：');
+      if (!name) return;
+      const session = getSessionForAsset(selectedAssetId);
+      if (!session) { announce('需要先连接 SSH'); return; }
+      const fullPath = currentRemotePath === '/' ? '/' + name : currentRemotePath + '/' + name;
+      await invokeBackend('sftp_mkdir', { session_id: session.sessionId, path: fullPath });
+      announce('已创建目录：' + name);
+      refreshRemoteFiles(currentRemotePath);
+    }
+
+    async function renameRemoteFile(oldPath) {
+      const newName = prompt('新名称：', oldPath.split('/').pop());
+      if (!newName) return;
+      const session = getSessionForAsset(selectedAssetId);
+      if (!session) { announce('需要先连接 SSH'); return; }
+      const dir = oldPath.substring(0, oldPath.lastIndexOf('/')) || '/';
+      const newPath = dir + '/' + newName;
+      await invokeBackend('sftp_rename', { session_id: session.sessionId, old_path: oldPath, new_path: newPath });
+      announce('已重命名为：' + newName);
+      refreshRemoteFiles(currentRemotePath);
+    }
+
+    async function deleteRemoteFile(filePath, kind) {
+      const name = filePath.split('/').pop();
+      if (!confirm('确定要删除 ' + kind === 'directory' ? '目录' : '文件' + ' "' + name + '"？此操作不可撤销。')) return;
+      const session = getSessionForAsset(selectedAssetId);
+      if (!session) { announce('需要先连接 SSH'); return; }
+      await invokeBackend('sftp_remove', { session_id: session.sessionId, path: filePath, kind });
+      announce('已删除：' + name);
+      refreshRemoteFiles(currentRemotePath);
+    }
+
+    async function uploadFile(file) {
+      const session = getSessionForAsset(selectedAssetId);
+      if (!session) { announce('需要先连接 SSH'); return; }
+      const remotePath = currentRemotePath === '/' ? '/' + file.name : currentRemotePath + '/' + file.name;
+      announce('正在上传：' + file.name);
+      const content = await file.text();
+      await invokeBackend('sftp_write_file', { session_id: session.sessionId, path: remotePath, content });
+      announce('已上传：' + file.name);
+      refreshRemoteFiles(currentRemotePath);
     }
 
     function openModal(key) {
@@ -984,11 +1093,23 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       const modalTarget = event.target.closest('[data-modal]');
       const refreshRemote = event.target.closest('[data-refresh-remote-files]');
       const openRemoteDir = event.target.closest('[data-open-remote-dir]');
+      const fileRename = event.target.closest('[data-file-rename]');
+      const fileDelete = event.target.closest('[data-file-delete]');
+      const fileEdit = event.target.closest('[data-file-edit]');
+      const fileDownload = event.target.closest('[data-file-download]');
+      const newDirBtn = event.target.closest('[data-create-remote-dir]');
+      const uploadBtn = event.target.closest('[data-upload-file]');
       if (refreshRemote) refreshRemoteFiles().catch(err => announce('远程文件刷新失败：' + err.message));
+      if (newDirBtn) createRemoteDir().catch(err => announce('创建目录失败：' + err.message));
+      if (uploadBtn) document.getElementById('fileUploadInput')?.click();
       if (openRemoteDir) {
         const row = openRemoteDir.closest('[data-remote-path]');
         if (row) refreshRemoteFiles(row.dataset.remotePath).catch(err => announce('远程目录打开失败：' + err.message));
       }
+      if (fileRename) renameRemoteFile(fileRename.dataset.fileRename).catch(err => announce('重命名失败：' + err.message));
+      if (fileDelete) deleteRemoteFile(fileDelete.dataset.fileDelete, fileDelete.dataset.kind || 'file').catch(err => announce('删除失败：' + err.message));
+      if (fileEdit) announce('远程编辑（Monaco Editor）将在 Phase D 实现');
+      if (fileDownload) announce('文件下载将在 Phase C 实现');
       if (tabTarget) {
         if (tabTarget.dataset.tabTarget === 'terminal') {
           connectSsh(selectedAssetId);
@@ -1009,6 +1130,35 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       });
       announce(value ? '连接树筛选：' + value : '连接树筛选已清空');
     });
+
+    document.getElementById('fileUploadInput')?.addEventListener('change', event => {
+      const files = event.target.files;
+      if (!files || !files.length) return;
+      for (const file of files) {
+        uploadFile(file).catch(err => announce('上传失败：' + err.message));
+      }
+      event.target.value = '';
+    });
+
+    const remoteFileList = document.getElementById('remoteFileList');
+    if (remoteFileList) {
+      remoteFileList.addEventListener('dragover', event => {
+        event.preventDefault();
+        remoteFileList.classList.add('drag-over');
+      });
+      remoteFileList.addEventListener('dragleave', () => {
+        remoteFileList.classList.remove('drag-over');
+      });
+      remoteFileList.addEventListener('drop', event => {
+        event.preventDefault();
+        remoteFileList.classList.remove('drag-over');
+        const files = event.dataTransfer?.files;
+        if (!files || !files.length) return;
+        for (const file of files) {
+          uploadFile(file).catch(err => announce('上传失败：' + err.message));
+        }
+      });
+    }
 
     connectionTree.addEventListener('click', event => {
       const node = event.target.closest('[data-host-action]');

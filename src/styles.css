@@ -417,7 +417,13 @@
     .callout.danger { border-color: color-mix(in oklab, var(--danger), transparent 50%); background: color-mix(in oklab, var(--danger), transparent 91%); }
     .dual-pane { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-3); min-height: 470px; }
     .file-list { flex: 1; overflow: auto; padding: var(--space-3); }
-    .path-bar { color: var(--app-muted); font-family: var(--font-mono); font-size: var(--text-xs); }
+    .path-bar { color: var(--app-muted); font-family: var(--font-mono); font-size: var(--text-xs); display: flex; align-items: center; flex-wrap: wrap; gap: 2px; min-height: 1.4em; }
+    .breadcrumb-link { cursor: pointer; color: var(--app-primary); text-decoration: none; }
+    .breadcrumb-link:hover { text-decoration: underline; }
+    .breadcrumb-current { color: var(--app-text); font-weight: 600; }
+    .breadcrumb-sep { opacity: 0.4; }
+    .file-row .btn { margin-left: 4px; font-size: var(--text-xs); padding: 2px 8px; }
+    .drag-over { outline: 2px dashed var(--app-primary); outline-offset: -4px; background: color-mix(in oklab, var(--app-primary), transparent 95%); }
     .progress { height: 6px; overflow: hidden; border-radius: var(--radius-pill); background: color-mix(in oklab, var(--app-text), transparent 90%); }
     .progress span { display: block; height: 100%; border-radius: inherit; background: var(--success); }
     .context-body { min-height: 0; overflow: auto; padding: var(--space-3); }

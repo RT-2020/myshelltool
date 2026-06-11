@@ -199,7 +199,8 @@
                   <h1>web-01 · 文件管理</h1>
                   <p>默认只展示本地 / 远程双栏与当前队列，冲突、覆盖、删除、权限修改通过弹窗渐进披露。</p>
                 </div>
-                <div class="toolbar"><button class="btn primary">上传</button><button class="btn">下载</button><button class="btn">新建目录</button><button class="btn" data-refresh-remote-files>刷新</button><button class="btn danger" data-modal="deleteFile">删除</button></div>
+                <div class="toolbar"><button class="btn primary" data-upload-file>上传</button><button class="btn" data-create-remote-dir>新建目录</button><button class="btn" data-refresh-remote-files>刷新</button></div>
+                <input type="file" id="fileUploadInput" style="display:none" multiple />
               </div>
               <div class="dual-pane">
                 <div class="card file-pane">
