@@ -580,3 +580,5 @@
       margin: 0;
     }
     .terminal-pane.fullscreen .pane-toolbar { flex-shrink: 0; }
+    .progress.error span { background: var(--error, #dc3545); }
+    .progress.done span { background: var(--success, #28a745); }

@@ -597,15 +597,89 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       refreshRemoteFiles(currentRemotePath);
     }
 
+    const transferQueue = [];
+    let transferCounter = 0;
+
+    function addTransfer(type, fileName, localPath, remotePath) {
+      const id = 'tx-' + (++transferCounter);
+      const tx = { id, type, fileName, localPath, remotePath, status: 'pending', progress: 0, total: 0, error: null };
+      transferQueue.push(tx);
+      renderTransferQueue();
+      return tx;
+    }
+
+    function renderTransferQueue() {
+      const container = document.getElementById('transferQueueList');
+      if (!container) return;
+      if (!transferQueue.length) {
+        container.innerHTML = '<p class="muted" style="text-align:center;padding:var(--space-3)">暂无传输任务</p>';
+        return;
+      }
+      container.innerHTML = transferQueue.map(tx => {
+        const pct = tx.total > 0 ? Math.round(tx.progress / tx.total * 100) : 0;
+        const statusLabel = tx.status === 'done' ? '完成' : tx.status === 'error' ? '失败' : tx.status === 'active' ? pct + '%' : '等待中';
+        const barClass = tx.status === 'error' ? 'error' : tx.status === 'done' ? 'done' : '';
+        return `<div class="queue-row"><div><strong>${escapeHtml(tx.fileName)}</strong><p class="muted">${tx.type === 'upload' ? '↑' : '↓'} ${escapeHtml(tx.localPath || '')} → ${escapeHtml(tx.remotePath)}</p>${tx.error ? '<p class="muted" style="color:var(--error)">' + escapeHtml(tx.error) + '</p>' : ''}</div><div style="min-width:140px;display:flex;align-items:center;gap:var(--space-2)"><div class="progress ${barClass}"><span style="width:${pct}%"></span></div><span class="muted" style="min-width:40px">${statusLabel}</span>${tx.status === 'error' ? '<button class="btn" data-retry-transfer="' + tx.id + '">重试</button>' : ''}</div></div>`;
+      }).join('');
+    }
+
     async function uploadFile(file) {
       const session = getSessionForAsset(selectedAssetId);
       if (!session) { announce('需要先连接 SSH'); return; }
       const remotePath = currentRemotePath === '/' ? '/' + file.name : currentRemotePath + '/' + file.name;
-      announce('正在上传：' + file.name);
-      const content = await file.text();
-      await invokeBackend('sftp_write_file', { session_id: session.sessionId, path: remotePath, content });
-      announce('已上传：' + file.name);
-      refreshRemoteFiles(currentRemotePath);
+      const tx = addTransfer('upload', file.name, file.name, remotePath);
+
+      try {
+        const buffer = await file.arrayBuffer();
+        const bytes = Array.from(new Uint8Array(buffer));
+        tx.total = bytes.length;
+        tx.status = 'active';
+        renderTransferQueue();
+        await invokeBackend('sftp_upload_with_progress', {
+          session_id: session.sessionId,
+          remote_path: remotePath,
+          content: bytes,
+          transfer_id: tx.id,
+        });
+        tx.progress = tx.total;
+        tx.status = 'done';
+        announce('已上传：' + file.name);
+        refreshRemoteFiles(currentRemotePath);
+      } catch (err) {
+        tx.status = 'error';
+        tx.error = err.message;
+        announce('上传失败：' + file.name + ' — ' + err.message);
+      }
+      renderTransferQueue();
+    }
+
+    async function downloadFile(remotePath, fileName) {
+      const session = getSessionForAsset(selectedAssetId);
+      if (!session) { announce('需要先连接 SSH'); return; }
+      const tx = addTransfer('download', fileName, '', remotePath);
+      try {
+        tx.status = 'active';
+        renderTransferQueue();
+        const data = await invokeBackend('sftp_download_with_progress', {
+          session_id: session.sessionId,
+          remote_path: remotePath,
+          transfer_id: tx.id,
+        });
+        tx.status = 'done';
+        const blob = new Blob([new Uint8Array(data)]);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = fileName;
+        document.body.appendChild(a); a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        announce('已下载：' + fileName);
+      } catch (err) {
+        tx.status = 'error';
+        tx.error = err.message;
+        announce('下载失败：' + fileName + ' — ' + err.message);
+      }
+      renderTransferQueue();
     }
 
     let monacoEditor = null;
@@ -1074,6 +1148,15 @@ const panels = [...document.querySelectorAll('[data-panel]')];
             responses
           });
         });
+        window.__TAURI__.core.getCurrentWindow().listen('sftp-transfer-progress', event => {
+          const { transfer_id, bytes_transferred, total_bytes } = event.payload;
+          const tx = transferQueue.find(t => t.id === transfer_id);
+          if (tx) {
+            tx.progress = bytes_transferred;
+            tx.total = total_bytes;
+            renderTransferQueue();
+          }
+        });
       } else {
         container.innerHTML = '<div style="padding:var(--space-4);color:var(--muted)">SSH 终端需要桌面客户端。当前为浏览器预览模式。</div>';
       }
@@ -1362,6 +1445,7 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       const tunnelDeleteBtn = event.target.closest('[data-tunnel-delete]');
       const tunnelCreateBtn = event.target.closest('[data-create-tunnel]');
       const tunnelRefresh = event.target.closest('[data-refresh-tunnels]');
+      const retryTransfer = event.target.closest('[data-retry-transfer]');
       if (refreshRemote) refreshRemoteFiles().catch(err => announce('远程文件刷新失败：' + err.message));
       if (newDirBtn) createRemoteDir().catch(err => announce('创建目录失败：' + err.message));
       if (uploadBtn) document.getElementById('fileUploadInput')?.click();
@@ -1372,7 +1456,11 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       if (fileRename) renameRemoteFile(fileRename.dataset.fileRename).catch(err => announce('重命名失败：' + err.message));
       if (fileDelete) deleteRemoteFile(fileDelete.dataset.fileDelete, fileDelete.dataset.kind || 'file').catch(err => announce('删除失败：' + err.message));
       if (fileEdit) openRemoteEditor(fileEdit.dataset.fileEdit).catch(err => announce('打开编辑器失败：' + err.message));
-      if (fileDownload) announce('文件下载将在 Phase C 实现');
+      if (fileDownload) {
+        const path = fileDownload.dataset.fileDownload;
+        const name = path.split('/').pop();
+        downloadFile(path, name).catch(err => announce('下载失败：' + err.message));
+      }
       if (tunnelCreateBtn) openTunnelDialog();
       if (tunnelRefresh) refreshTunnelList();
       if (tunnelToggle) {
@@ -1393,6 +1481,11 @@ const panels = [...document.querySelectorAll('[data-panel]')];
         if (tunnelId && confirm('确认删除隧道？')) {
           invokeBackend('tunnel_delete', { tunnel_id: tunnelId }).then(() => { refreshTunnelList(); announce('隧道已删除'); }).catch(err => announce('删除失败：' + err.message));
         }
+      }
+      if (retryTransfer) {
+        const txId = retryTransfer.dataset.retryTransfer;
+        const tx = transferQueue.find(t => t.id === txId);
+        if (tx) { tx.status = 'pending'; tx.error = null; tx.progress = 0; renderTransferQueue(); }
       }
       if (tabTarget) {
         if (tabTarget.dataset.tabTarget === 'terminal') {

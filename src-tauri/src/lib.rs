@@ -130,6 +130,8 @@ pub fn run() {
             ssh::sftp_list_dir,
             ssh::sftp_read_file,
             ssh::sftp_write_file,
+            ssh::sftp_upload_with_progress,
+            ssh::sftp_download_with_progress,
             ssh::sftp_mkdir,
             ssh::sftp_rename,
             ssh::sftp_remove,

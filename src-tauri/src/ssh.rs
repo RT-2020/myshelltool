@@ -709,6 +709,85 @@ pub async fn sftp_write_file(
     Ok(())
 }
 
+#[derive(Clone, Serialize)]
+struct TransferProgressEvent {
+    transfer_id: String,
+    bytes_transferred: u64,
+    total_bytes: u64,
+}
+
+#[tauri::command]
+pub async fn sftp_upload_with_progress(
+    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    session_id: String,
+    remote_path: String,
+    content: Vec<u8>,
+    transfer_id: String,
+) -> Result<(), String> {
+    let total = content.len() as u64;
+    let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
+    let sftp = sftp_arc.lock().await;
+    let app = { state.lock().await.app.clone() };
+
+    let mut file = sftp.create(&remote_path).await
+        .map_err(|e| format!("SFTP create failed: {e}"))?;
+
+    use tokio::io::AsyncWriteExt;
+    let chunk_size: usize = 65536;
+    let mut offset: usize = 0;
+    while offset < content.len() {
+        let end = std::cmp::min(offset + chunk_size, content.len());
+        file.write_all(&content[offset..end]).await
+            .map_err(|e| format!("SFTP write chunk failed: {e}"))?;
+        offset = end;
+        let _ = app.emit("sftp-transfer-progress", TransferProgressEvent {
+            transfer_id: transfer_id.clone(),
+            bytes_transferred: offset as u64,
+            total_bytes: total,
+        });
+    }
+    file.shutdown().await
+        .map_err(|e| format!("SFTP flush failed: {e}"))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn sftp_download_with_progress(
+    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    session_id: String,
+    remote_path: String,
+    transfer_id: String,
+) -> Result<Vec<u8>, String> {
+    let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
+    let sftp = sftp_arc.lock().await;
+    let app = { state.lock().await.app.clone() };
+
+    let mut file = sftp.open(&remote_path).await
+        .map_err(|e| format!("SFTP open failed: {e}"))?;
+
+    let attrs = sftp.metadata(&remote_path).await
+        .map_err(|e| format!("SFTP stat failed: {e}"))?;
+    let total = attrs.len();
+
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::with_capacity(total as usize);
+    let mut tmp = [0u8; 65536];
+    loop {
+        let n = file.read(&mut tmp).await
+            .map_err(|e| format!("SFTP read chunk failed: {e}"))?;
+        if n == 0 { break; }
+        buf.extend_from_slice(&tmp[..n]);
+        let _ = app.emit("sftp-transfer-progress", TransferProgressEvent {
+            transfer_id: transfer_id.clone(),
+            bytes_transferred: buf.len() as u64,
+            total_bytes: total,
+        });
+    }
+
+    Ok(buf)
+}
+
 #[tauri::command]
 pub async fn sftp_mkdir(
     state: State<'_, Arc<Mutex<SshSessionManager>>>,

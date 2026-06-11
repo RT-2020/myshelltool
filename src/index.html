@@ -223,10 +223,9 @@
               </div>
               <div class="grid-2" style="margin-top: var(--space-4);">
                 <div class="card">
-                  <div class="row-between"><h3>传输队列</h3><button class="btn" data-modal="fileConflict">处理冲突</button></div>
-                  <div style="margin-top: var(--space-3);">
-                    <div class="queue-row"><div><strong>上传 myshelltool.exe</strong><p class="muted">D:/Projects/release → /srv/app/releases</p></div><div style="min-width: 140px;"><div class="progress"><span style="width: 68%;"></span></div></div></div>
-                    <div class="queue-row"><div><strong>下载 backup.tar</strong><p class="muted">/srv/app/releases → D:/Downloads</p></div><div style="min-width: 140px;"><div class="progress"><span style="width: 22%;"></span></div></div></div>
+                  <div class="row-between"><h3>传输队列</h3></div>
+                  <div id="transferQueueList" style="margin-top: var(--space-3);">
+                    <p class="muted" style="text-align:center;padding:var(--space-3)">暂无传输任务</p>
                   </div>
                 </div>
                 <div class="callout warn">
