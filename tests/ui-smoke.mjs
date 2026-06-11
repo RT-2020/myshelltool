@@ -39,14 +39,21 @@ try {
     throw new Error(`asset fallback source missing: ${assetSource}`);
   }
 
-  await page.click('[data-tab="terminal"]');
-  if (!(await page.locator('[data-panel="terminal"].active').count())) {
-    throw new Error('terminal tab not active');
+  const termFallback = await page.locator('#terminalContainer').textContent();
+  if (!termFallback?.includes('桌面客户端')) {
+    throw new Error('terminal fallback message missing');
   }
 
-  await page.click('[data-panel="terminal"].active [data-tab-target="files"]');
+  await page.click('[data-tab="files"]');
   if (!(await page.locator('[data-panel="files"].active').count())) {
-    throw new Error('files tab target failed');
+    throw new Error('files tab not active');
+  }
+  await page.waitForFunction(() => document.getElementById('remoteFileList')?.textContent?.includes('backup.tar'));
+  const remotePath = await page.locator('#remotePathBar').textContent();
+  if (!remotePath?.startsWith('/')) throw new Error(`remote path missing: ${remotePath}`);
+  const remoteFiles = await page.locator('#remoteFileList').textContent();
+  if (!remoteFiles?.includes('config.toml') || !remoteFiles.includes('logs')) {
+    throw new Error(`remote file preview missing entries: ${remoteFiles}`);
   }
 
   await page.click('#assetToggle');

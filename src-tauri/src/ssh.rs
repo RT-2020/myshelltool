@@ -1,14 +1,22 @@
 use async_trait::async_trait;
 use russh::client;
 use russh::ChannelMsg;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Cursor;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, oneshot};
 
-struct SshClient;
+type PendingDecisions = Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>;
+
+struct SshClient {
+    app: AppHandle,
+    host_port: String,
+    known_hosts_path: PathBuf,
+    pending: PendingDecisions,
+}
 
 #[async_trait]
 impl client::Handler for SshClient {
@@ -16,9 +24,58 @@ impl client::Handler for SshClient {
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &russh::keys::ssh_key::PublicKey,
+        server_public_key: &russh::keys::ssh_key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        Ok(true)
+        let key_bytes = match server_public_key.public_key_bytes() {
+            Ok(bytes) => bytes,
+            Err(_) => return Ok(false),
+        };
+        let key_hex = bytes_to_hex(&key_bytes);
+        let key_type = format!("{}", server_public_key.algorithm());
+        let fingerprint = format!(
+            "{}",
+            server_public_key.fingerprint(russh::keys::ssh_key::HashAlg::Sha256)
+        );
+
+        let known = load_known_hosts(&self.known_hosts_path);
+
+        if let Some(entry) = known.get(&self.host_port) {
+            if entry.key_hex == key_hex {
+                return Ok(true);
+            }
+        }
+
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut map = self.pending.lock().await;
+            map.insert(request_id.clone(), tx);
+        }
+
+        let is_changed = known.contains_key(&self.host_port);
+        let event = HostKeyVerifyEvent {
+            request_id,
+            host_port: self.host_port.clone(),
+            key_type: key_type.clone(),
+            fingerprint,
+            is_changed,
+        };
+        if self.app.emit("ssh-host-key-verify", event).is_err() {
+            return Ok(false);
+        }
+
+        let accepted = match rx.await {
+            Ok(v) => v,
+            Err(_) => return Ok(false),
+        };
+
+        if accepted {
+            let mut known = known;
+            known.insert(self.host_port.clone(), KnownHostEntry { key_type, key_hex });
+            let _ = save_known_hosts(&self.known_hosts_path, &known);
+        }
+
+        Ok(accepted)
     }
 }
 
@@ -35,13 +92,19 @@ pub struct SshSession {
 pub struct SshSessionManager {
     sessions: HashMap<String, SshSession>,
     app: AppHandle,
+    secret_store_dir: PathBuf,
+    known_hosts_path: PathBuf,
+    pending_host_decisions: PendingDecisions,
 }
 
 impl SshSessionManager {
-    pub fn new(app: AppHandle) -> Self {
+    pub fn new(app: AppHandle, secret_store_dir: PathBuf, known_hosts_path: PathBuf) -> Self {
         Self {
             sessions: HashMap::new(),
             app,
+            secret_store_dir,
+            known_hosts_path,
+            pending_host_decisions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -53,6 +116,116 @@ pub struct SshConnectResult {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct RemoteFileEntry {
+    pub name: String,
+    pub path: String,
+    pub kind: String,
+    pub size: u64,
+    pub modified: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RemoteDirectoryList {
+    pub host: String,
+    pub path: String,
+    pub entries: Vec<RemoteFileEntry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct HostKeyVerifyEvent {
+    request_id: String,
+    host_port: String,
+    key_type: String,
+    fingerprint: String,
+    is_changed: bool,
+}
+
+async fn connect_authenticated(
+    state: &State<'_, Arc<Mutex<SshSessionManager>>>,
+    host: &str,
+    port: u16,
+    username: &str,
+    password: String,
+    credential_id: Option<String>,
+    auth_method: Option<String>,
+    private_key_path: Option<String>,
+    passphrase: Option<String>,
+    passphrase_credential_id: Option<String>,
+) -> Result<client::Handle<SshClient>, String> {
+    let config = Arc::new(client::Config::default());
+
+    let (app, secret_store_dir, known_hosts_path, pending) = {
+        let mgr = state.lock().await;
+        (
+            mgr.app.clone(),
+            mgr.secret_store_dir.clone(),
+            mgr.known_hosts_path.clone(),
+            mgr.pending_host_decisions.clone(),
+        )
+    };
+
+    let handler = SshClient {
+        app,
+        host_port: format!("{host}:{port}"),
+        known_hosts_path,
+        pending,
+    };
+    let mut handle = client::connect(config, (host, port), handler)
+        .await
+        .map_err(|e| format!("SSH connect failed: {e}"))?;
+
+    let auth_ok = if auth_method.as_deref() == Some("PrivateKey") {
+        let key_path = private_key_path.as_deref().unwrap_or("~/.ssh/id_ed25519");
+        let expanded = expand_home_path(key_path);
+        let resolved_passphrase = if let Some(ref cred_id) = passphrase_credential_id {
+            myshelltool_core::SecretStore::new(&secret_store_dir).read(cred_id)
+                .map_err(|e| format!("Failed to read passphrase: {e}"))?
+        } else {
+            passphrase.as_deref().and_then(|p| if p.is_empty() { None } else { Some(p.to_string()) })
+        };
+        let key_data = std::fs::read(&expanded)
+            .map_err(|e| format!("Failed to read key file '{}': {e}", expanded))?;
+        let key_pair = russh::keys::load_key_pair(&key_data[..], resolved_passphrase.as_deref())
+            .map_err(|e| format!("Failed to load private key: {e}"))?;
+        handle.authenticate_publickey(username, Arc::new(key_pair))
+            .await
+            .map_err(|e| format!("Public key auth failed: {e}"))?
+    } else {
+        let resolved_password = if password.is_empty() {
+            if let Some(ref cred_id) = credential_id {
+                myshelltool_core::SecretStore::new(&secret_store_dir).read(cred_id)
+                    .map_err(|e| format!("Failed to read credential: {e}"))?
+                    .ok_or_else(|| "Stored credential not found".to_string())?
+            } else {
+                return Err("No password provided and no stored credential".to_string());
+            }
+        } else {
+            password
+        };
+        handle.authenticate_password(username, &resolved_password)
+            .await
+            .map_err(|e| format!("Auth failed: {e}"))?
+    };
+
+    if !auth_ok {
+        return Err("Authentication failed".to_string());
+    }
+
+    Ok(handle)
+}
+
+fn expand_home_path(path: &str) -> String {
+    if path.starts_with("~/") {
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_else(|_| ".".to_string());
+        format!("{}{}", home, &path[1..])
+    } else {
+        path.to_string()
+    }
+}
+
 #[tauri::command]
 pub async fn ssh_connect(
     state: State<'_, Arc<Mutex<SshSessionManager>>>,
@@ -60,26 +233,33 @@ pub async fn ssh_connect(
     port: u16,
     username: String,
     password: String,
+    credential_id: Option<String>,
+    auth_method: Option<String>,
+    private_key_path: Option<String>,
+    passphrase: Option<String>,
+    passphrase_credential_id: Option<String>,
 ) -> Result<SshConnectResult, String> {
-    let config = Arc::new(client::Config::default());
-
-    let handler = SshClient;
-    let mut handle = client::connect(config, (host.as_str(), port), handler)
-        .await
-        .map_err(|e| format!("SSH connect failed: {e}"))?;
-
-    let auth_ok = handle
-        .authenticate_password(username, password)
-        .await
-        .map_err(|e| format!("Auth failed: {e}"))?;
-
-    if !auth_ok {
-        return Ok(SshConnectResult {
-            session_id: String::new(),
-            connected: false,
-            error: Some("Authentication failed".to_string()),
-        });
-    }
+    let mut handle = match connect_authenticated(
+        &state,
+        &host,
+        port,
+        &username,
+        password,
+        credential_id,
+        auth_method,
+        private_key_path,
+        passphrase,
+        passphrase_credential_id,
+    ).await {
+        Ok(handle) => handle,
+        Err(error) => {
+            return Ok(SshConnectResult {
+                session_id: String::new(),
+                connected: false,
+                error: Some(error),
+            });
+        }
+    };
 
     let mut channel = handle
         .channel_open_session()
@@ -111,7 +291,6 @@ pub async fn ssh_connect(
         mgr.app.clone()
     };
 
-    // This task exclusively owns the channel
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -153,6 +332,72 @@ pub async fn ssh_connect(
         session_id,
         connected: true,
         error: None,
+    })
+}
+
+#[tauri::command]
+pub async fn ssh_list_directory(
+    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    host: String,
+    port: u16,
+    username: String,
+    password: String,
+    credential_id: Option<String>,
+    auth_method: Option<String>,
+    private_key_path: Option<String>,
+    passphrase: Option<String>,
+    passphrase_credential_id: Option<String>,
+    path: String,
+) -> Result<RemoteDirectoryList, String> {
+    let requested_path = if path.trim().is_empty() { ".".to_string() } else { path };
+    let mut handle = connect_authenticated(
+        &state,
+        &host,
+        port,
+        &username,
+        password,
+        credential_id,
+        auth_method,
+        private_key_path,
+        passphrase,
+        passphrase_credential_id,
+    ).await?;
+
+    let mut channel = handle
+        .channel_open_session()
+        .await
+        .map_err(|e| format!("Channel open failed: {e}"))?;
+    let command = format!(
+        "LC_ALL=C find {} -maxdepth 1 -mindepth 1 -printf '%f\\t%p\\t%y\\t%s\\t%TY-%Tm-%Td %TH:%TM\\n'",
+        shell_quote(&requested_path)
+    );
+    channel
+        .exec(true, command)
+        .await
+        .map_err(|e| format!("Directory list failed: {e}"))?;
+
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+    while let Some(msg) = channel.wait().await {
+        match msg {
+            ChannelMsg::Data { data } => output.extend_from_slice(&data),
+            ChannelMsg::ExtendedData { data, ext: _ } => errors.extend_from_slice(&data),
+            ChannelMsg::Eof | ChannelMsg::ExitStatus { .. } => break,
+            _ => {}
+        }
+    }
+
+    if !errors.is_empty() {
+        let message = String::from_utf8_lossy(&errors).trim().to_string();
+        if !message.is_empty() {
+            return Err(message);
+        }
+    }
+
+    Ok(RemoteDirectoryList {
+        host,
+        path: requested_path,
+        entries: parse_remote_file_entries(&String::from_utf8_lossy(&output)),
     })
 }
 
@@ -203,4 +448,79 @@ pub async fn ssh_disconnect(
         let _ = session.cmd_tx.send(SshCommand::Disconnect);
     }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn ssh_confirm_host_key(
+    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    request_id: String,
+    accepted: bool,
+) -> Result<(), String> {
+    let mgr = state.lock().await;
+    let mut pending = mgr.pending_host_decisions.lock().await;
+    if let Some(tx) = pending.remove(&request_id) {
+        let _ = tx.send(accepted);
+    }
+    Ok(())
+}
+
+// --- known_hosts helpers ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct KnownHostEntry {
+    key_type: String,
+    key_hex: String,
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn parse_remote_file_entries(output: &str) -> Vec<RemoteFileEntry> {
+    let mut entries = Vec::new();
+    for line in output.lines() {
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() < 5 {
+            continue;
+        }
+        entries.push(RemoteFileEntry {
+            name: parts[0].to_string(),
+            path: parts[1].to_string(),
+            kind: match parts[2] {
+                "d" => "directory",
+                "l" => "symlink",
+                _ => "file",
+            }.to_string(),
+            size: parts[3].parse().unwrap_or(0),
+            modified: parts[4].to_string(),
+        });
+    }
+    entries.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
+    entries
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn load_known_hosts(path: &PathBuf) -> HashMap<String, KnownHostEntry> {
+    if !path.exists() {
+        return HashMap::new();
+    }
+    let raw = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return HashMap::new(),
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+fn save_known_hosts(
+    path: &PathBuf,
+    hosts: &HashMap<String, KnownHostEntry>,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(hosts).map_err(|e| e.to_string())?;
+    std::fs::write(path, json).map_err(|e| e.to_string())
 }

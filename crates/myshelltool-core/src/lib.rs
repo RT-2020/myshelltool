@@ -9,6 +9,8 @@ pub struct ConnectionAsset {
     pub port: u16,
     pub username: String,
     pub auth_method: AuthMethod,
+    #[serde(default)]
+    pub private_key_path: Option<String>,
     pub group: String,
     pub tags: Vec<String>,
     pub status: ConnectionStatus,
@@ -308,6 +310,16 @@ impl SecretStore {
         }
         Ok(result)
     }
+
+    pub fn read(&self, id: &str) -> Result<Option<String>, String> {
+        let id = sanitize_credential_id(id)?;
+        let path = self.dir.join(&id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let encoded = fs::read(&path).map_err(|e| e.to_string())?;
+        Ok(Some(decode_secret(&encoded)))
+    }
 }
 
 fn sanitize_credential_id(id: &str) -> Result<String, String> {
@@ -328,6 +340,14 @@ fn encode_secret(secret: &str) -> Vec<u8> {
         encoded.push(byte ^ ((i as u8).wrapping_add(0x5A)));
     }
     encoded
+}
+
+fn decode_secret(encoded: &[u8]) -> String {
+    let mut decoded = Vec::with_capacity(encoded.len());
+    for (i, &byte) in encoded.iter().enumerate() {
+        decoded.push(byte ^ ((i as u8).wrapping_add(0x5A)));
+    }
+    String::from_utf8(decoded).unwrap_or_default()
 }
 
 fn zero_memory(data: &[u8]) {
@@ -357,6 +377,7 @@ fn asset(
         port: 22,
         username: username.to_string(),
         auth_method,
+        private_key_path: None,
         group: group.to_string(),
         tags: tags.iter().map(|tag| tag.to_string()).collect(),
         status,
@@ -378,6 +399,7 @@ mod tests {
             port: 2222,
             username: "user".to_string(),
             auth_method: AuthMethod::Token,
+            private_key_path: None,
             group: "测试".to_string(),
             tags: vec!["demo".to_string()],
             status: ConnectionStatus::Idle,
@@ -444,7 +466,7 @@ mod tests {
 
         assert!(!lowered.contains("password_value"));
         assert!(!lowered.contains("passphrase"));
-        assert!(!lowered.contains("private_key"));
+        assert!(!lowered.contains("private_key_data"));
         assert!(!lowered.contains("token_value"));
         assert!(!lowered.contains("secret"));
     }

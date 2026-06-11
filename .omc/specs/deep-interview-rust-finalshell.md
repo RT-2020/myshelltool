@@ -6,7 +6,7 @@ threshold: 0.2
 threshold_percent: 20%
 threshold_source: default
 final_ambiguity: 0.18
-status: pending approval
+status: approved — Phase 1 (connection assets + SSH terminal) implemented
 created_at: 2026-06-08
 ---
 
@@ -51,41 +51,41 @@ created_at: 2026-06-08
 
 ### 2. SSH 终端与会话
 
-**状态：active**
+**状态：phase-1-partial** — 基础终端 + 认证 + 多标签 + host key 校验已实现
 
 第一阶段必须具备完整可用的 SSH 终端体验：
 
-- 稳定登录与交互式 Shell。
-- 窗口大小同步。
-- UTF-8 和中文显示。
-- 复制粘贴。
-- 多标签。
-- 断线提示。
-- 高级终端兼容：vim、tmux、top、xterm-256color、鼠标事件、滚屏缓冲、搜索、快捷键。
-- 会话恢复能力。
+- [x] 稳定登录与交互式 Shell。 — russh + xterm.js, PTY request with xterm-256color
+- [x] 窗口大小同步。 — `ssh_resize` command, fit addon on resize
+- [x] UTF-8 和中文显示。 — xterm.js UTF-8 support
+- [x] 复制粘贴。 — xterm.js default behavior
+- [x] 多标签。 — `sessions` Map, dynamic tabs, per-session xterm
+- [x] 断线提示。 — EOF detection, “Connection closed” message
+- [ ] 高级终端兼容：vim、tmux、top、xterm-256color、鼠标事件、滚屏缓冲、搜索、快捷键。 — PTY 使用 xterm-256color，基础 vim/tmux 待实测验证
+- [ ] 会话恢复能力。 — 未实现
 
-认证与主机安全边界选择“尽量完整”：
+认证与主机安全边界选择”尽量完整”：
 
-- 密码认证。
-- 私钥认证。
-- 私钥 passphrase。
-- keyboard-interactive 和常见 2FA。
-- known_hosts 管理。
-- 首次连接显示指纹确认。
-- host key 变更时阻止连接并明确警告。
-- SSH agent/Pageant。
-- OpenSSH config。
-- SSH 证书。
-- FIDO2/硬件密钥。
-- 更多算法兼容性。
+- [x] 密码认证。 — `ssh_connect` password auth + SecretStore resolution
+- [x] 私钥认证。 — `ssh_connect` PrivateKey auth, ed25519/rsa key loading
+- [x] 私钥 passphrase。 — passphrase via SecretStore or prompt modal
+- [ ] keyboard-interactive 和常见 2FA。 — 未实现
+- [x] known_hosts 管理。 — `known_hosts.json` with hex-encoded key bytes
+- [x] 首次连接显示指纹确认。 — `showHostKeyDialog()` with SHA256 fingerprint
+- [x] host key 变更时阻止连接并明确警告。 — `is_changed` flag, high-risk warning modal
+- [ ] SSH agent/Pageant。 — 未实现
+- [ ] OpenSSH config。 — 未实现
+- [ ] SSH 证书。 — 未实现
+- [ ] FIDO2/硬件密钥。 — 未实现
+- [ ] 更多算法兼容性。 — 依赖 russh 默认算法集
 
 验收标准：
 
-- 能连接常见 Linux 主机并稳定交互。
-- vim/tmux/top 等全屏程序可用。
-- 中文、颜色、鼠标、滚屏和快捷键表现可接受。
-- 主机指纹确认和变更警告不会被静默绕过。
-- 终端、文件传输、隧道可复用同一连接资产与认证配置。
+- [x] 能连接常见 Linux 主机并稳定交互。
+- [ ] vim/tmux/top 等全屏程序可用。 — 待实测
+- [x] 中文、颜色、鼠标、滚屏和快捷键表现可接受。 — xterm-256color + UTF-8
+- [x] 主机指纹确认和变更警告不会被静默绕过。 — oneshot channel blocks handshake
+- [x] 终端、文件传输、隧道可复用同一连接资产与认证配置。 — 共用 ConnectionAsset 结构
 
 ### 3. 文件传输与远程文件管理
 

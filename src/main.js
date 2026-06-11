@@ -29,10 +29,10 @@ const panels = [...document.querySelectorAll('[data-panel]')];
     let activeModal = null;
     let editingAssetId = null;
 
-    let xterm = null;
-    let xtermFit = null;
+    const sessions = new Map();
     let activeSessionId = null;
-    let sshDisconnectFn = null;
+    let pendingPasswordResolve = null;
+    let pendingHostKeyResolve = null;
 
     const fallbackAssets = [
       asset('prod-bastion', 'prod-bastion', '10.10.4.8', 'root', '收藏', ['favorite', 'ProxyJump'], 'Connected', '15 分钟前', 'PrivateKey'),
@@ -99,6 +99,22 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       }
       if (command === 'ssh_connect') {
         return { session_id: '', connected: false, error: 'SSH requires desktop client' };
+      }
+      if (command === 'ssh_list_directory') {
+        const path = args.path || '/srv/app/releases';
+        return {
+          host: args.host || 'browser-preview',
+          path,
+          entries: [
+            { name: 'current', path: path + '/current', kind: 'symlink', size: 0, modified: 'preview' },
+            { name: 'config.toml', path: path + '/config.toml', kind: 'file', size: 8192, modified: 'preview' },
+            { name: 'logs', path: path + '/logs', kind: 'directory', size: 0, modified: 'preview' },
+            { name: 'backup.tar', path: path + '/backup.tar', kind: 'file', size: 100663296, modified: 'preview' }
+          ]
+        };
+      }
+      if (command === 'ssh_confirm_host_key') {
+        return null;
       }
       if (command === 'ssh_write' || command === 'ssh_resize' || command === 'ssh_disconnect') {
         return null;
@@ -173,6 +189,7 @@ const panels = [...document.querySelectorAll('[data-panel]')];
         port: 22,
         username,
         auth_method: authMethod,
+        private_key_path: null,
         group,
         tags,
         status,
@@ -251,15 +268,21 @@ const panels = [...document.querySelectorAll('[data-panel]')];
     }
 
     function activateTab(id) {
-      const targetTab = tabs.find(tab => tab.dataset.tab === id);
+      const isSessionTab = id.startsWith('session-');
+      const panelId = isSessionTab ? 'terminal' : id;
+      const allTabs = document.querySelectorAll('.workspace-tab');
+      allTabs.forEach(tab => tab.setAttribute('aria-selected', String(tab.dataset.tab === id)));
+      panels.forEach(panel => panel.classList.toggle('active', panel.dataset.panel === panelId));
+      const targetTab = [...allTabs].find(tab => tab.dataset.tab === id);
       if (targetTab) targetTab.hidden = false;
-      tabs.forEach(tab => tab.setAttribute('aria-selected', String(tab.dataset.tab === id)));
-      panels.forEach(panel => panel.classList.toggle('active', panel.dataset.panel === id));
+      if (isSessionTab) {
+        const sessionId = id.replace('session-', '');
+        switchToSession(sessionId);
+      }
+      if (id === 'files') refreshRemoteFiles().catch(err => announce('远程文件刷新失败：' + err.message));
       try {
         localStorage.setItem('myshelltool-active-tab', id);
-      } catch {
-        return;
-      }
+      } catch {}
       announce('已切换到 ' + (targetTab?.textContent.replace('×', '').trim() || id));
     }
 
@@ -301,6 +324,7 @@ const panels = [...document.querySelectorAll('[data-panel]')];
         port: Number(item?.port) || 22,
         username: String(item?.username || item?.user || ''),
         auth_method: item?.auth_method || 'Password',
+        private_key_path: item?.private_key_path || null,
         group: String(item?.group || '未分组'),
         tags,
         status: item?.status || 'Idle',
@@ -362,6 +386,118 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       contextDot.className = 'dot' + status.dotClass;
     }
 
+    function remotePathForAsset(asset) {
+      if (!asset) return '/srv/app/releases';
+      if (asset.tags.includes('backup')) return '/backup';
+      if (asset.tags.includes('redis')) return '/var/lib/redis';
+      if (asset.tags.includes('web') || asset.tags.includes('release')) return '/srv/app/releases';
+      return '/home/' + (asset.username || 'user');
+    }
+
+    function formatBytes(bytes) {
+      const size = Number(bytes) || 0;
+      if (size >= 1024 * 1024) return Math.round(size / 1024 / 1024) + ' MB';
+      if (size >= 1024) return Math.round(size / 1024) + ' KB';
+      return size + ' B';
+    }
+
+    function renderRemoteFiles(result) {
+      const pathBar = document.getElementById('remotePathBar');
+      const list = document.getElementById('remoteFileList');
+      if (!pathBar || !list) return;
+      pathBar.textContent = result.path || '/';
+      const entries = Array.isArray(result.entries) ? result.entries : [];
+      if (!entries.length) {
+        list.innerHTML = '<div class="file-row"><div><strong>空目录</strong><p class="muted">没有远程文件</p></div><span class="status-pill">empty</span></div>';
+        return;
+      }
+      list.innerHTML = entries.map(entry => {
+        const kindLabel = entry.kind === 'directory' ? '目录' : entry.kind === 'symlink' ? '链接' : '文件';
+        const action = entry.kind === 'directory'
+          ? '<button class="btn" data-open-remote-dir>打开</button>'
+          : '<button class="btn">下载</button>';
+        return `<div class="file-row" data-remote-path="${escapeAttr(entry.path)}"><div><strong>${escapeHtml(entry.name)}</strong><p class="muted">${kindLabel} · ${formatBytes(entry.size)} · ${escapeHtml(entry.modified || 'unknown')}</p></div>${action}</div>`;
+      }).join('');
+    }
+
+    async function resolveAssetAuth(asset) {
+      const isTauri = typeof window.__TAURI__?.core?.invoke === 'function';
+      let password = '';
+      let credentialId = null;
+      let passphrase = null;
+      let passphraseCredId = null;
+      const authMethod = asset.auth_method || 'Password';
+
+      if (authMethod === 'Password') {
+        const credId = 'ssh-pw-' + asset.id;
+        if (isTauri) {
+          try {
+            const status = await invokeBackend('get_credential_status', { id: credId });
+            if (status.exists) credentialId = credId;
+          } catch {}
+        }
+        if (isTauri && !credentialId) {
+          const result = await openCredentialPrompt(asset);
+          if (!result) return null;
+          password = result.password;
+          if (result.savePassword) {
+            try { await invokeBackend('save_credential', { id: credId, secret: password }); } catch {}
+          }
+        }
+      } else if (authMethod === 'PrivateKey') {
+        const credId = 'ssh-key-' + asset.id;
+        if (isTauri) {
+          try {
+            const status = await invokeBackend('get_credential_status', { id: credId });
+            if (status.exists) passphraseCredId = credId;
+          } catch {}
+        }
+        if (isTauri && !passphraseCredId) {
+          const result = await openCredentialPrompt(asset, {
+            title: '输入私钥 Passphrase — ' + asset.name,
+            label: 'Passphrase',
+            placeholder: '留空表示无 passphrase',
+            saveLabel: '保存 passphrase 到本地安全存储',
+            note: '如果私钥有 passphrase 请输入，无 passphrase 可直接点连接。',
+            allowEmpty: true
+          });
+          if (!result) return null;
+          passphrase = result.password;
+          if (result.savePassword && passphrase) {
+            try { await invokeBackend('save_credential', { id: credId, secret: passphrase }); } catch {}
+          }
+        }
+      }
+
+      return { password, credentialId, passphrase, passphraseCredId, authMethod };
+    }
+
+    async function refreshRemoteFiles(path = null) {
+      const asset = connectionAssets.find(item => item.id === selectedAssetId) || connectionAssets[0];
+      if (!asset) return;
+      const remotePath = path || remotePathForAsset(asset);
+      const list = document.getElementById('remoteFileList');
+      const pathBar = document.getElementById('remotePathBar');
+      if (pathBar) pathBar.textContent = remotePath;
+      if (list) list.innerHTML = '<div class="file-row"><div><strong>加载中</strong><p class="muted">正在读取远程目录</p></div><span class="status-pill warn">loading</span></div>';
+      const auth = await resolveAssetAuth(asset);
+      if (!auth) return;
+      const result = await invokeBackend('ssh_list_directory', {
+        host: asset.host,
+        port: asset.port,
+        username: asset.username,
+        password: auth.password,
+        credential_id: auth.credentialId,
+        auth_method: auth.authMethod,
+        private_key_path: asset.private_key_path,
+        passphrase: auth.passphrase,
+        passphrase_credential_id: auth.passphraseCredId,
+        path: remotePath
+      });
+      renderRemoteFiles(result);
+      announce('远程文件已刷新：' + asset.name);
+    }
+
     function openModal(key) {
       const item = modals[key];
       if (!item) return;
@@ -407,6 +543,7 @@ const panels = [...document.querySelectorAll('[data-panel]')];
         <label class="stack"><span class="muted">分组</span><input class="input" data-asset-field="group" value="${escapeAttr(item.group)}" /></label>
         <label class="stack"><span class="muted">标签</span><input class="input" data-asset-field="tags" value="${escapeAttr(item.tags.join(', '))}" placeholder="prod, app" /></label>
         <label class="stack"><span class="muted">认证方式</span><select class="select" data-asset-field="auth_method"><option>Password</option><option>PrivateKey</option><option>Token</option></select></label>
+        <label class="stack"><span class="muted">私钥路径</span><input class="input" data-asset-field="private_key_path" value="${escapeAttr(item.private_key_path || '')}" placeholder="~/.ssh/id_ed25519" /></label>
         <label class="stack"><span class="muted">状态</span><select class="select" data-asset-field="status"><option>Connected</option><option>Warning</option><option>Idle</option></select></label>
       </div><div class="callout" style="margin-top: var(--space-3);"><strong>安全边界</strong><p class="muted">这里只保存连接资产元数据；密码、私钥、passphrase 和 token 不会写入资产 JSON。</p></div>`;
       modalBody.querySelector('[data-asset-field="auth_method"]').value = item.auth_method;
@@ -420,6 +557,14 @@ const panels = [...document.querySelectorAll('[data-panel]')];
     }
 
     function closeModal() {
+      if (activeModal === 'hostKeyPrompt' && pendingHostKeyResolve) {
+        pendingHostKeyResolve(false);
+        pendingHostKeyResolve = null;
+      }
+      if (activeModal === 'passwordPrompt' && pendingPasswordResolve) {
+        pendingPasswordResolve(null);
+        pendingPasswordResolve = null;
+      }
       modalLayer.classList.remove('open');
       modalLayer.setAttribute('aria-hidden', 'true');
       activeModal = null;
@@ -445,6 +590,7 @@ const panels = [...document.querySelectorAll('[data-panel]')];
         port,
         username,
         auth_method: field('auth_method') || 'Password',
+        private_key_path: field('private_key_path') || null,
         group: field('group') || '未分组',
         tags: field('tags').split(/[·,，\s]+/).filter(Boolean),
         status: field('status') || 'Idle',
@@ -505,86 +651,271 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       return escapeHtml(value).replace(/'/g, '&#39;');
     }
 
+    function openCredentialPrompt(asset, opts = {}) {
+      const title = opts.title || ('输入 SSH 密码 — ' + asset.name);
+      const label = opts.label || '密码';
+      const placeholder = opts.placeholder || '输入 SSH 密码';
+      const saveLabel = opts.saveLabel || '保存密码到本地安全存储';
+      const allowEmpty = Boolean(opts.allowEmpty);
+      const note = opts.note || `用户 ${escapeHtml(asset.username)} 的凭据未保存在本地安全存储中。`;
+      return new Promise(resolve => {
+        pendingPasswordResolve = resolve;
+        activeModal = 'passwordPrompt';
+        editingAssetId = null;
+        modalBody.dataset.allowEmpty = allowEmpty ? 'true' : 'false';
+        modalTitle.textContent = title;
+        modalBody.innerHTML = `<p>正在连接 <strong>${escapeHtml(asset.name)}</strong>（${escapeHtml(asset.host)}:${asset.port}）</p><p class="muted">${note}</p><label class="stack" style="margin-top: var(--space-3);"><span class="muted">${label}</span><input class="input" type="password" data-ssh-password placeholder="${placeholder}" /></label><label style="margin-top: var(--space-3); display: flex; align-items: center; gap: var(--space-2);"><input type="checkbox" data-save-password /><span class="muted">${saveLabel}</span></label>`;
+        modalPrimary.textContent = '连接';
+        modalSecondary.textContent = '取消';
+        modalLayer.classList.add('open');
+        modalLayer.setAttribute('aria-hidden', 'false');
+        const pwInput = modalBody.querySelector('[data-ssh-password]');
+        if (pwInput) {
+          pwInput.focus();
+          pwInput.addEventListener('keydown', e => { if (e.key === 'Enter') modalPrimary.click(); });
+        }
+        announce(opts.announce || ('请输入凭据'));
+      });
+    }
+
+    function updateTerminalToolbar(asset) {
+      const terminalHost = document.getElementById('terminalHost');
+      const terminalMeta = document.getElementById('terminalMeta');
+      const terminalStatus = document.getElementById('terminalStatus');
+      if (asset) {
+        terminalHost.textContent = asset.name;
+        terminalMeta.textContent = asset.username + '@' + asset.host + ' · xterm-256color';
+        terminalStatus.innerHTML = '<span class="dot running"></span>connected';
+      } else {
+        terminalHost.textContent = '未连接';
+        terminalMeta.textContent = '点击左侧主机连接';
+        terminalStatus.innerHTML = '<span class="dot"></span>idle';
+      }
+    }
+
+    function switchToSession(sessionId) {
+      sessions.forEach((s, id) => {
+        s.termDiv.style.display = id === sessionId ? '' : 'none';
+      });
+      activeSessionId = sessionId;
+      const session = sessions.get(sessionId);
+      if (session) {
+        setTimeout(() => { try { session.fit.fit(); } catch {} }, 10);
+        updateTerminalToolbar(session.asset);
+      }
+    }
+
+    function removeSession(sessionId) {
+      const session = sessions.get(sessionId);
+      if (!session) return;
+      session.term.dispose();
+      session.termDiv.remove();
+      session.tab.remove();
+      sessions.delete(sessionId);
+      if (activeSessionId === sessionId) {
+        activeSessionId = null;
+        const remaining = [...sessions.keys()];
+        if (remaining.length > 0) {
+          activateTab('session-' + remaining[remaining.length - 1]);
+        } else {
+          updateTerminalToolbar(null);
+          activateTab('overview');
+        }
+      }
+    }
+
+    function showHostKeyDialog(eventData) {
+      return new Promise(resolve => {
+        pendingHostKeyResolve = resolve;
+        activeModal = 'hostKeyPrompt';
+        editingAssetId = null;
+        const { host_port, key_type, fingerprint, is_changed } = eventData;
+        if (is_changed) {
+          modalTitle.textContent = 'host key 变更高危警告';
+          modalBody.innerHTML = `<p>${escapeHtml(host_port)} 的主机指纹与 known_hosts 记录不一致。可能是服务器重装，也可能是中间人攻击。</p><div class="fingerprint" style="margin-top: var(--space-3);">新指纹 ${escapeHtml(key_type)} · ${escapeHtml(fingerprint)}</div><ul><li>建议先联系管理员核对</li><li>默认不允许自动覆盖 known_hosts</li></ul>`;
+          modalPrimary.textContent = '我已核对，更新指纹';
+        } else {
+          modalTitle.textContent = '首次连接主机指纹确认';
+          modalBody.innerHTML = `<p>这是第一次连接 ${escapeHtml(host_port)}。请确认主机指纹来自可信来源后再继续。</p><div class="fingerprint" style="margin-top: var(--space-3);">${escapeHtml(key_type)} · ${escapeHtml(fingerprint)}</div><ul><li>默认动作：取消连接</li><li>信任后写入 known_hosts</li><li>后续变更会触发高危警告</li></ul>`;
+          modalPrimary.textContent = '信任并连接';
+        }
+        modalSecondary.textContent = '取消连接';
+        modalLayer.classList.add('open');
+        modalLayer.setAttribute('aria-hidden', 'false');
+        modalPrimary.focus();
+        announce(is_changed ? '主机指纹已变更，请确认' : '首次连接，请确认主机指纹');
+      });
+    }
+
+    function getTerminalTheme() {
+      return document.documentElement.dataset.theme === 'light'
+        ? { background: '#ffffff', foreground: '#1e1e1e', cursor: '#333333' }
+        : { background: '#1e1e1e', foreground: '#d4d4d4', cursor: '#cccccc' };
+    }
+
     async function initTerminal() {
       const container = document.getElementById('terminalContainer');
       if (!container) return;
       const isTauri = typeof window.__TAURI__?.core?.invoke === 'function';
-      if (!isTauri) {
+      if (isTauri) {
+        window.__TAURI__.core.getCurrentWindow().listen('ssh-host-key-verify', async event => {
+          const accepted = await showHostKeyDialog(event.payload);
+          invokeBackend('ssh_confirm_host_key', {
+            request_id: event.payload.request_id,
+            accepted
+          });
+        });
+      } else {
         container.innerHTML = '<div style="padding:var(--space-4);color:var(--muted)">SSH 终端需要桌面客户端。当前为浏览器预览模式。</div>';
-        return;
-      }
-      try {
-        const { Terminal } = await import('../node_modules/@xterm/xterm/lib/xterm.mjs');
-        const { FitAddon } = await import('../node_modules/@xterm/addon-fit/lib/addon-fit.mjs');
-        xterm = new Terminal({
-          cursorBlink: true,
-          fontSize: 14,
-          fontFamily: 'Consolas, "Courier New", monospace',
-          theme: document.documentElement.dataset.theme === 'light'
-            ? { background: '#ffffff', foreground: '#1e1e1e', cursor: '#333333' }
-            : { background: '#1e1e1e', foreground: '#d4d4d4', cursor: '#cccccc' }
-        });
-        xtermFit = new FitAddon();
-        xterm.loadAddon(xtermFit);
-        xterm.open(container);
-        xtermFit.fit();
-        xterm.writeln('\x1b[36mmyshelltool SSH\x1b[0m — 双击左侧主机连接\r\n');
-        xterm.onData(data => {
-          if (activeSessionId) {
-            const encoder = new TextEncoder();
-            invokeBackend('ssh_write', { sessionId: activeSessionId, data: Array.from(encoder.encode(data)) });
-          }
-        });
-        window.__TAURI__.core.getCurrentWindow().listen('ssh-output', event => {
-          if (xterm && event.payload && event.payload.length > 0) {
-            const decoder = new TextDecoder();
-            xterm.write(decoder.decode(new Uint8Array(event.payload)));
-          }
-        });
-      } catch (err) {
-        container.innerHTML = '<div style="padding:var(--space-4);color:var(--muted)">终端加载失败: ' + escapeHtml(err.message) + '</div>';
       }
     }
 
     async function connectSsh(assetId) {
       const asset = connectionAssets.find(a => a.id === assetId);
       if (!asset) return;
-      if (!xterm) { announce('终端未就绪'); return; }
-      if (activeSessionId) {
-        await invokeBackend('ssh_disconnect', { sessionId: activeSessionId });
-        activeSessionId = null;
+      const isTauri = typeof window.__TAURI__?.core?.invoke === 'function';
+      if (!isTauri) { announce('SSH 需要桌面客户端'); return; }
+
+      const existing = [...sessions.values()].find(s => s.asset.id === assetId);
+      if (existing) {
+        activateTab('session-' + existing.sessionId);
+        return;
       }
-      const terminalHost = document.getElementById('terminalHost');
-      const terminalMeta = document.getElementById('terminalMeta');
-      const terminalStatus = document.getElementById('terminalStatus');
-      terminalHost.textContent = asset.name;
-      terminalMeta.textContent = 'connecting...';
-      terminalStatus.innerHTML = '<span class="dot running"></span>connecting';
-      xterm.reset();
-      xterm.writeln('\x1b[33mConnecting to ' + asset.host + '...\x1b[0m\r\n');
+
+      let password = '';
+      let credentialId = null;
+      let authMethod = asset.auth_method || 'Password';
+      let privateKeyPath = asset.private_key_path || null;
+      let passphrase = null;
+      let passphraseCredId = null;
+
+      if (authMethod === 'Password') {
+        const credId = 'ssh-pw-' + asset.id;
+        try {
+          const status = await invokeBackend('get_credential_status', { id: credId });
+          if (status.exists) credentialId = credId;
+        } catch {}
+        if (!credentialId) {
+          const result = await openCredentialPrompt(asset);
+          if (!result) return;
+          password = result.password;
+          if (result.savePassword) {
+            try { await invokeBackend('save_credential', { id: credId, secret: password }); } catch {}
+          }
+        }
+      } else if (authMethod === 'PrivateKey') {
+        if (!privateKeyPath) privateKeyPath = '~/.ssh/id_ed25519';
+        const credId = 'ssh-key-' + asset.id;
+        try {
+          const status = await invokeBackend('get_credential_status', { id: credId });
+          if (status.exists) passphraseCredId = credId;
+        } catch {}
+        if (!passphraseCredId) {
+          const result = await openCredentialPrompt(asset, {
+            title: '输入私钥 Passphrase — ' + asset.name,
+            label: 'Passphrase',
+            placeholder: '留空表示无 passphrase',
+            saveLabel: '保存 passphrase 到本地安全存储',
+            note: '如果私钥有 passphrase 请输入，无 passphrase 可直接点连接。',
+            allowEmpty: true
+          });
+          if (!result) return;
+          passphrase = result.password;
+          if (result.savePassword && passphrase) {
+            try { await invokeBackend('save_credential', { id: credId, secret: passphrase }); } catch {}
+          }
+        }
+      }
+
+      let Terminal, FitAddon;
+      try {
+        ({ Terminal } = await import('../node_modules/@xterm/xterm/lib/xterm.mjs'));
+        ({ FitAddon } = await import('../node_modules/@xterm/addon-fit/lib/addon-fit.mjs'));
+      } catch (err) {
+        announce('终端模块加载失败: ' + err.message);
+        return;
+      }
+
+      const tab = document.createElement('button');
+      tab.className = 'workspace-tab';
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-selected', 'false');
+      tab.dataset.tab = 'session-pending';
+      tab.dataset.sessionTab = 'true';
+      tab.innerHTML = escapeHtml(asset.name) + ' · SSH <span class="tab-close" title="关闭标签">×</span>';
+      const filesTab = document.querySelector('[data-tab="files"]');
+      filesTab.parentElement.insertBefore(tab, filesTab);
+
+      const container = document.getElementById('terminalContainer');
+      const termDiv = document.createElement('div');
+      termDiv.style.cssText = 'display:none;height:100%;';
+      container.appendChild(termDiv);
+
+      const term = new Terminal({
+        cursorBlink: true,
+        fontSize: 14,
+        fontFamily: 'Consolas, "Courier New", monospace',
+        theme: getTerminalTheme()
+      });
+      const fit = new FitAddon();
+      term.loadAddon(fit);
+      term.open(termDiv);
+      term.writeln('\x1b[36mmyshelltool SSH\x1b[0m — connecting to ' + asset.host + '...\r\n');
+
       activateTab('terminal');
+
       try {
         const result = await invokeBackend('ssh_connect', {
           host: asset.host,
           port: asset.port,
           username: asset.username,
-          password: ''
+          password,
+          credential_id: credentialId,
+          auth_method: authMethod,
+          private_key_path: privateKeyPath,
+          passphrase,
+          passphrase_credential_id: passphraseCredId,
         });
+
         if (result.connected) {
-          activeSessionId = result.session_id;
-          sshDisconnectFn = () => invokeBackend('ssh_disconnect', { sessionId: activeSessionId });
-          terminalMeta.textContent = asset.username + '@' + asset.host + ' · xterm-256color';
-          terminalStatus.innerHTML = '<span class="dot running"></span>connected';
+          const sessionId = result.session_id;
+          tab.dataset.tab = 'session-' + sessionId;
+          tab.dataset.sessionId = sessionId;
+
+          sessions.set(sessionId, { term, fit, termDiv, tab, asset, sessionId });
+
+          term.onData(data => {
+            const encoder = new TextEncoder();
+            invokeBackend('ssh_write', { sessionId, data: Array.from(encoder.encode(data)) });
+          });
+
+          window.__TAURI__.core.getCurrentWindow().listen('ssh-output-' + sessionId, event => {
+            if (event.payload && event.payload.length > 0) {
+              const decoder = new TextDecoder();
+              term.write(decoder.decode(new Uint8Array(event.payload)));
+            } else {
+              term.writeln('\x1b[31m\r\nConnection closed.\x1b[0m');
+            }
+          });
+
+          switchToSession(sessionId);
+          const allTabs = document.querySelectorAll('.workspace-tab');
+          allTabs.forEach(t => t.setAttribute('aria-selected', String(t.dataset.tab === 'session-' + sessionId)));
           announce('已连接: ' + asset.name);
         } else {
-          xterm.writeln('\x1b[31mConnection failed: ' + (result.error || 'unknown') + '\x1b[0m\r\n');
-          terminalMeta.textContent = 'connection failed';
-          terminalStatus.innerHTML = '<span class="dot warn"></span>failed';
+          term.writeln('\x1b[31mConnection failed: ' + (result.error || 'unknown') + '\x1b[0m\r\n');
+          term.dispose();
+          termDiv.remove();
+          tab.remove();
+          activateTab('overview');
+          announce('连接失败: ' + asset.name);
         }
       } catch (err) {
-        xterm.writeln('\x1b[31mError: ' + escapeHtml(err.message) + '\x1b[0m\r\n');
-        terminalMeta.textContent = 'error';
-        terminalStatus.innerHTML = '<span class="dot warn"></span>error';
+        term.writeln('\x1b[31mError: ' + escapeHtml(err.message) + '\x1b[0m\r\n');
+        term.dispose();
+        termDiv.remove();
+        tab.remove();
+        activateTab('overview');
       }
     }
 
@@ -599,6 +930,8 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       const currentTheme = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
       const nextTheme = currentTheme === 'light' ? 'dark' : 'light';
       applyTheme(nextTheme);
+      const theme = getTerminalTheme();
+      sessions.forEach(s => { s.term.options.theme = theme; });
       announce('已切换到' + (nextTheme === 'light' ? '浅色' : '深色') + '主题');
     });
 
@@ -613,12 +946,26 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       if (!assetPreferenceLocked) applyAssetsState(event.matches, false);
     });
 
+    window.addEventListener('resize', () => {
+      if (activeSessionId) {
+        const session = sessions.get(activeSessionId);
+        if (session) { try { session.fit.fit(); } catch {} }
+      }
+    });
+
     document.querySelector('.tabbar').addEventListener('click', event => {
       const close = event.target.closest('.tab-close');
       const tab = event.target.closest('.workspace-tab');
       if (!tab) return;
       if (close) {
         event.stopPropagation();
+        if (tab.dataset.sessionId) {
+          const sessionId = tab.dataset.sessionId;
+          invokeBackend('ssh_disconnect', { sessionId });
+          removeSession(sessionId);
+          announce('已断开并关闭：' + tab.textContent.replace('×', '').trim());
+          return;
+        }
         const wasActive = tab.getAttribute('aria-selected') === 'true';
         tab.hidden = true;
         const panel = document.querySelector('[data-panel="' + tab.dataset.tab + '"]');
@@ -635,7 +982,20 @@ const panels = [...document.querySelectorAll('[data-panel]')];
       const createAsset = event.target.closest('[data-asset-create]');
       const editAsset = event.target.closest('[data-asset-edit]');
       const modalTarget = event.target.closest('[data-modal]');
-      if (tabTarget) activateTab(tabTarget.dataset.tabTarget);
+      const refreshRemote = event.target.closest('[data-refresh-remote-files]');
+      const openRemoteDir = event.target.closest('[data-open-remote-dir]');
+      if (refreshRemote) refreshRemoteFiles().catch(err => announce('远程文件刷新失败：' + err.message));
+      if (openRemoteDir) {
+        const row = openRemoteDir.closest('[data-remote-path]');
+        if (row) refreshRemoteFiles(row.dataset.remotePath).catch(err => announce('远程目录打开失败：' + err.message));
+      }
+      if (tabTarget) {
+        if (tabTarget.dataset.tabTarget === 'terminal') {
+          connectSsh(selectedAssetId);
+        } else {
+          activateTab(tabTarget.dataset.tabTarget);
+        }
+      }
       if (createAsset) openAssetEditor();
       if (editAsset) openAssetEditor(connectionAssets.find(item => item.id === selectedAssetId));
       if (modalTarget) openModal(modalTarget.dataset.modal);
@@ -673,8 +1033,34 @@ const panels = [...document.querySelectorAll('[data-panel]')];
     });
 
     modalClose.addEventListener('click', closeModal);
-    modalSecondary.addEventListener('click', closeModal);
+    modalSecondary.addEventListener('click', () => {
+      if (activeModal === 'hostKeyPrompt' && pendingHostKeyResolve) {
+        pendingHostKeyResolve(false);
+        pendingHostKeyResolve = null;
+      }
+      if (activeModal === 'passwordPrompt' && pendingPasswordResolve) {
+        pendingPasswordResolve(null);
+        pendingPasswordResolve = null;
+      }
+      closeModal();
+    });
     modalPrimary.addEventListener('click', async () => {
+      if (activeModal === 'hostKeyPrompt' && pendingHostKeyResolve) {
+        pendingHostKeyResolve(true);
+        pendingHostKeyResolve = null;
+        closeModal();
+        return;
+      }
+      if (activeModal === 'passwordPrompt' && pendingPasswordResolve) {
+        const password = modalBody.querySelector('[data-ssh-password]')?.value || '';
+        const allowEmpty = modalBody.dataset.allowEmpty === 'true';
+        if (!password && !allowEmpty) { announce('密码不能为空'); return; }
+        const savePassword = modalBody.querySelector('[data-save-password]')?.checked || false;
+        pendingPasswordResolve({ password, savePassword });
+        pendingPasswordResolve = null;
+        closeModal();
+        return;
+      }
       if (activeModal === 'assetEditor') {
         await saveAssetEditor();
         return;

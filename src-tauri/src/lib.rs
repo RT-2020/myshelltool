@@ -100,7 +100,11 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
-            let ssh_mgr = Arc::new(Mutex::new(ssh::SshSessionManager::new(app.handle().clone())));
+            let ssh_mgr = Arc::new(Mutex::new(ssh::SshSessionManager::new(
+                app.handle().clone(),
+                app_data_dir.join("credentials"),
+                app_data_dir.join("known_hosts.json"),
+            )));
             app.manage(AppState {
                 asset_store_path: app_data_dir.join("connection-assets.json"),
                 secret_store_dir: app_data_dir.join("credentials"),
@@ -117,9 +121,11 @@ pub fn run() {
             get_credential_status,
             delete_credential,
             ssh::ssh_connect,
+            ssh::ssh_list_directory,
             ssh::ssh_write,
             ssh::ssh_resize,
-            ssh::ssh_disconnect
+            ssh::ssh_disconnect,
+            ssh::ssh_confirm_host_key
         ])
         .run(tauri::generate_context!())
         .expect("failed to run myshelltool");

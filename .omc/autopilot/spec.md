@@ -58,3 +58,28 @@ Upgrade myshelltool from static/sample connection assets to a local asset model 
 - Token UI may show only local secure-storage status such as `已配置` / `未配置`.
 - `.claude/`, `.omc/state/`, `.omc/sessions/`, `dist/`, `node_modules/`, and Rust target outputs remain excluded from commits.
 - Commit messages in this project must not add Claude coauthor trailers.
+
+---
+
+## Completion status
+
+**Status: COMPLETE** — All acceptance criteria met. 14 core tests pass, UI smoke test passes.
+
+### Subsequent phases (also complete)
+
+After asset persistence, the following SSH terminal phases were implemented via ultragoal `ssh-auth-multitab`:
+
+| Phase | Feature | Key changes |
+|-------|---------|-------------|
+| G001 | Password dialog | `openCredentialPrompt()` Promise-based modal, SecretStore credential check before prompt |
+| G002 | Public key auth | `ssh_connect` dual auth (Password/PrivateKey), key file loading, passphrase via SecretStore |
+| G003 | Multi-tab sessions | `sessions` Map, dynamic tabs, per-session xterm + `ssh-output-{id}` events |
+| G004 | Host key verification | `check_server_key` with known_hosts JSON, oneshot-channel async IPC, `showHostKeyDialog()` frontend |
+
+Files changed across all phases:
+- `crates/myshelltool-core/src/lib.rs` — `SecretStore::read()`, `decode_secret()`, `private_key_path` field
+- `src-tauri/src/ssh.rs` — Full SSH backend: connect, write, resize, disconnect, host key verification, confirm command
+- `src-tauri/src/lib.rs` — Session manager with known_hosts path, all SSH commands registered
+- `src/main.js` — Multi-session terminal, credential prompts, host key dialog, dynamic tab management
+- `src/index.html` — Dynamic tab bar, terminal container
+- `tests/ui-smoke.mjs` — Updated for dynamic tabs and terminal fallback

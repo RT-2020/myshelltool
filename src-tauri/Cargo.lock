@@ -2207,6 +2207,7 @@ dependencies = [
  "myshelltool-core",
  "russh",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tokio",

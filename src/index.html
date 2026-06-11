@@ -97,10 +97,10 @@
         </aside>
 
         <main class="workbench" aria-label="主工作区">
-          <div class="tabbar" role="tablist" aria-label="工作区标签">
+          <div class="tabbar" role="tablist" aria-label="工作区标签" id="tabbar">
             <button class="workspace-tab" role="tab" aria-selected="true" data-tab="overview">工作区总览</button>
-            <button class="workspace-tab" role="tab" aria-selected="false" data-tab="terminal">prod-bastion · SSH <span class="tab-close" title="关闭标签">×</span></button>
-            <button class="workspace-tab" role="tab" aria-selected="false" data-tab="files">web-01 · 文件 <span class="tab-close" title="关闭标签">×</span></button>
+            <!-- Dynamic session tabs inserted here -->
+            <button class="workspace-tab" role="tab" aria-selected="false" data-tab="files">文件 <span class="tab-close" title="关闭标签">×</span></button>
             <button class="workspace-tab" role="tab" aria-selected="false" data-tab="tunnels">隧道管理</button>
           </div>
 
@@ -199,7 +199,7 @@
                   <h1>web-01 · 文件管理</h1>
                   <p>默认只展示本地 / 远程双栏与当前队列，冲突、覆盖、删除、权限修改通过弹窗渐进披露。</p>
                 </div>
-                <div class="toolbar"><button class="btn primary">上传</button><button class="btn">下载</button><button class="btn">新建目录</button><button class="btn">刷新</button><button class="btn danger" data-modal="deleteFile">删除</button></div>
+                <div class="toolbar"><button class="btn primary">上传</button><button class="btn">下载</button><button class="btn">新建目录</button><button class="btn" data-refresh-remote-files>刷新</button><button class="btn danger" data-modal="deleteFile">删除</button></div>
               </div>
               <div class="dual-pane">
                 <div class="card file-pane">
@@ -211,8 +211,8 @@
                   </div>
                 </div>
                 <div class="card file-pane">
-                  <div class="pane-toolbar"><strong>远程</strong><span class="path-bar">/srv/app/releases</span></div>
-                  <div class="file-list">
+                  <div class="pane-toolbar"><strong>远程</strong><span class="path-bar" id="remotePathBar">/srv/app/releases</span></div>
+                  <div class="file-list" id="remoteFileList" aria-label="远程文件列表">
                     <div class="file-row"><div><strong>current</strong><p class="muted">链接 · 运行中</p></div><button class="btn">打开</button></div>
                     <div class="file-row"><div><strong>config.toml</strong><p class="muted">8 KB · 远端变化</p></div><button class="btn" data-modal="editConflict">差异</button></div>
                     <div class="file-row"><div><strong>backup.tar</strong><p class="muted">96 MB · 可下载</p></div><button class="btn danger" data-modal="deleteFile">删除</button></div>
