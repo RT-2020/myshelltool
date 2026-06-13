@@ -1,15 +1,17 @@
 mod ssh;
 
 use serde::Serialize;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
-use tokio::sync::Mutex;
+use tokio::sync::Mutex as AsyncMutex;
 
-struct AppState {
-    asset_store_path: PathBuf,
-    secret_store_dir: PathBuf,
-    ssh_sessions: Arc<Mutex<ssh::SshSessionManager>>,
+pub struct AppState {
+    pub asset_store_path: PathBuf,
+    pub secret_store_dir: PathBuf,
+    pub ssh_sessions: Arc<AsyncMutex<ssh::SshSessionManager>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -87,12 +89,52 @@ fn get_credential_status(
 }
 
 #[tauri::command]
-fn delete_credential(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<bool, String> {
+fn delete_credential(state: State<'_, AppState>, id: String) -> Result<bool, String> {
     let store = myshelltool_core::SecretStore::new(&state.secret_store_dir);
     store.delete(&id)
+}
+
+struct FileLogger {
+    file: Mutex<std::fs::File>,
+}
+
+impl FileLogger {
+    fn new(path: &std::path::Path) -> Result<Self, std::io::Error> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        Ok(Self {
+            file: Mutex::new(file),
+        })
+    }
+}
+
+impl log::Log for FileLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            let msg = format!(
+                "[{} {}] {}\n",
+                record.level(),
+                record.target(),
+                record.args()
+            );
+            eprint!("{}", msg);
+            if let Ok(mut file) = self.file.lock() {
+                let _ = file.write_all(msg.as_bytes());
+            }
+        }
+    }
+
+    fn flush(&self) {
+        if let Ok(mut file) = self.file.lock() {
+            let _ = file.flush();
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -100,11 +142,20 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
-            let ssh_mgr = Arc::new(Mutex::new(ssh::SshSessionManager::new(
+            let log_path = app_data_dir.join("logs").join("myshelltool.log");
+            let logger = FileLogger::new(&log_path).expect("failed to create log file");
+            log::set_boxed_logger(Box::new(logger))
+                .map(|()| log::set_max_level(log::LevelFilter::Info))
+                .expect("failed to set logger");
+            log::info!("myshelltool starting, data dir: {}", app_data_dir.display());
+            let ssh_mgr = Arc::new(AsyncMutex::new(ssh::SshSessionManager::new(
                 app.handle().clone(),
                 app_data_dir.join("credentials"),
                 app_data_dir.join("known_hosts.json"),
             )));
+
+            // Option A：ssh.rs 全部命令统一通过 State<'_, AppState> 解析。
+            // 不再需要双 manage hack——参见 .omc/plans/followup-ssh-state-unify.md（已完成）。
             app.manage(AppState {
                 asset_store_path: app_data_dir.join("connection-assets.json"),
                 secret_store_dir: app_data_dir.join("credentials"),
@@ -130,7 +181,9 @@ pub fn run() {
             ssh::sftp_list_dir,
             ssh::sftp_read_file,
             ssh::sftp_write_file,
-            ssh::sftp_upload_with_progress,
+            ssh::sftp_upload_start,
+            ssh::sftp_upload_chunk,
+            ssh::sftp_upload_finalize,
             ssh::sftp_download_with_progress,
             ssh::sftp_mkdir,
             ssh::sftp_rename,

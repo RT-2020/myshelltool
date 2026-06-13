@@ -4,25 +4,41 @@
   "version": "0.1.0",
   "identifier": "com.redtei.myshelltool",
   "build": {
-    "beforeDevCommand": "npm run dev -- --port 5173 --strictPort",
+    "beforeDevCommand": "npm run dev -- --port 41234 --strictPort",
     "beforeBuildCommand": "npm run build",
-    "devUrl": "http://127.0.0.1:5173",
+    "devUrl": "http://127.0.0.1:41234",
     "frontendDist": "../dist"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
-        "title": "myshelltool",
+        "title": "myshelltool — SSH 运维客户端",
         "width": 1180,
         "height": 760,
         "minWidth": 960,
         "minHeight": 640,
-        "resizable": true
+        "resizable": true,
+        "center": true
       }
     ]
   },
   "bundle": {
     "active": true,
-    "targets": "all"
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": ["WebView2Loader.dll", "libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"],
+    "windows": {
+      "nsis": {
+        "displayLanguageSelector": false,
+        "languages": ["SimpChinese"]
+      }
+    }
   }
 }

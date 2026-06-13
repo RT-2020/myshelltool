@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::{fs, path::Path};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct ConnectionAsset {
     pub id: String,
     pub name: String,
@@ -15,6 +16,12 @@ pub struct ConnectionAsset {
     pub tags: Vec<String>,
     pub status: ConnectionStatus,
     pub last_connected: String,
+    /// Password 模式下，本地安全存储中的密码引用 ID（如 "<asset_id>:password"）
+    #[serde(default, alias = "credentialId")]
+    pub credential_id: Option<String>,
+    /// PrivateKey 模式下，passphrase 的本地安全存储引用 ID
+    #[serde(default, alias = "passphraseCredentialId")]
+    pub passphrase_credential_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -381,6 +388,8 @@ fn asset(
         group: group.to_string(),
         tags: tags.iter().map(|tag| tag.to_string()).collect(),
         status,
+        credential_id: None,
+        passphrase_credential_id: None,
         last_connected: last_connected.to_string(),
     }
 }
