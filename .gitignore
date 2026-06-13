@@ -9,5 +9,17 @@ target/
 .omc/research/
 .omc/notepad.md
 .omc/project-memory.json
+.omc/autopilot/
+.omc/ultragoal/
+# 子目录里的 OMC 临时状态
+**/.omc/state/
+**/.omc/sessions/
+**/.omc/logs/
+**/.omc/autopilot/
+**/.omc/ultragoal/
+# codegraph 本地索引
+.codegraph/
+# 构建产物
+release/
 .DS_Store
 *.log

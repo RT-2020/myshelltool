@@ -1,7 +1,8 @@
 use async_trait::async_trait;
+use log::{error, info, warn};
 use russh::client;
-use russh::ChannelMsg;
 use russh::keys::PublicKeyBase64;
+use russh::ChannelMsg;
 use russh_sftp::client::SftpSession;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -9,7 +10,9 @@ use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{oneshot, Mutex};
+
+use crate::AppState;
 
 // --- Tunnel / port-forwarding types ---
 
@@ -43,7 +46,6 @@ struct SshClient {
     host_port: String,
     known_hosts_path: PathBuf,
     pending: PendingDecisions,
-    pending_keyboard: PendingKeyboardResponses,
 }
 
 #[async_trait]
@@ -54,6 +56,11 @@ impl client::Handler for SshClient {
         &mut self,
         server_public_key: &russh::keys::ssh_key::PublicKey,
     ) -> Result<bool, Self::Error> {
+        info!(
+            "check_server_key: enter for {}, known_hosts_path={}",
+            self.host_port,
+            self.known_hosts_path.display()
+        );
         let key_bytes = server_public_key.public_key_bytes();
         let key_hex = bytes_to_hex(&key_bytes);
         let key_type = format!("{}", server_public_key.algorithm());
@@ -61,13 +68,24 @@ impl client::Handler for SshClient {
             "{}",
             server_public_key.fingerprint(russh::keys::ssh_key::HashAlg::Sha256)
         );
+        info!(
+            "check_server_key: {} presented key type={}, fingerprint={}",
+            self.host_port, key_type, fingerprint
+        );
 
         let known = load_known_hosts(&self.known_hosts_path);
 
         if let Some(entry) = known.get(&self.host_port) {
             if entry.key_hex == key_hex {
+                info!("check_server_key: {} matched known_hosts, accepting", self.host_port);
                 return Ok(true);
             }
+            warn!(
+                "check_server_key: {} key_hex mismatch (expected {}, got {})",
+                self.host_port, entry.key_hex, key_hex
+            );
+        } else {
+            info!("check_server_key: {} not in known_hosts, prompting user", self.host_port);
         }
 
         let request_id = uuid::Uuid::new_v4().to_string();
@@ -76,28 +94,59 @@ impl client::Handler for SshClient {
             let mut map = self.pending.lock().await;
             map.insert(request_id.clone(), tx);
         }
+        info!(
+            "check_server_key: {} registered request_id={}, waiting for user",
+            self.host_port, request_id
+        );
 
         let is_changed = known.contains_key(&self.host_port);
         let event = HostKeyVerifyEvent {
-            request_id,
+            request_id: request_id.clone(),
             host_port: self.host_port.clone(),
             key_type: key_type.clone(),
             fingerprint,
             is_changed,
         };
-        if self.app.emit("ssh-host-key-verify", event).is_err() {
+        if let Err(e) = self.app.emit("ssh-host-key-verify", event) {
+            warn!(
+                "check_server_key: {} emit ssh-host-key-verify failed: {}",
+                self.host_port, e
+            );
             return Ok(false);
         }
 
-        let accepted = match rx.await {
-            Ok(v) => v,
-            Err(_) => return Ok(false),
+        let accepted = match tokio::time::timeout(std::time::Duration::from_secs(60), rx).await {
+            Ok(Ok(v)) => v,
+            Ok(Err(_)) => {
+                warn!(
+                    "check_server_key: {} oneshot channel closed (frontend dropped)",
+                    self.host_port
+                );
+                return Ok(false);
+            }
+            Err(_) => {
+                warn!(
+                    "check_server_key: {} timeout (60s) waiting for user response",
+                    self.host_port
+                );
+                let mut map = self.pending.lock().await;
+                map.remove(&request_id);
+                return Ok(false);
+            }
         };
 
         if accepted {
+            info!("check_server_key: {} user accepted, saving to known_hosts", self.host_port);
             let mut known = known;
             known.insert(self.host_port.clone(), KnownHostEntry { key_type, key_hex });
-            let _ = save_known_hosts(&self.known_hosts_path, &known);
+            if let Err(e) = save_known_hosts(&self.known_hosts_path, &known) {
+                warn!(
+                    "check_server_key: {} save_known_hosts failed: {}",
+                    self.host_port, e
+                );
+            }
+        } else {
+            info!("check_server_key: {} user rejected", self.host_port);
         }
 
         Ok(accepted)
@@ -120,6 +169,7 @@ pub struct SshSessionManager {
     sftp_cache: HashMap<String, Arc<Mutex<SftpSession>>>,
     tunnels: HashMap<String, TunnelStatus>,
     tunnel_handles: HashMap<String, tokio::task::JoinHandle<()>>,
+    upload_files: Arc<Mutex<HashMap<String, Box<dyn tokio::io::AsyncWrite + Send + Unpin>>>>,
     app: AppHandle,
     secret_store_dir: PathBuf,
     known_hosts_path: PathBuf,
@@ -135,6 +185,7 @@ impl SshSessionManager {
             sftp_cache: HashMap::new(),
             tunnels: HashMap::new(),
             tunnel_handles: HashMap::new(),
+            upload_files: Arc::new(Mutex::new(HashMap::new())),
             app,
             secret_store_dir,
             known_hosts_path,
@@ -185,7 +236,7 @@ struct KeyboardInteractiveEvent {
 }
 
 async fn connect_authenticated(
-    state: &State<'_, Arc<Mutex<SshSessionManager>>>,
+    state: &State<'_, AppState>,
     host: &str,
     port: u16,
     username: &str,
@@ -199,7 +250,7 @@ async fn connect_authenticated(
     let config = Arc::new(client::Config::default());
 
     let (app, secret_store_dir, known_hosts_path, pending, pending_keyboard) = {
-        let mgr = state.lock().await;
+        let mgr = state.ssh_sessions.lock().await;
         (
             mgr.app.clone(),
             mgr.secret_store_dir.clone(),
@@ -214,61 +265,86 @@ async fn connect_authenticated(
         host_port: format!("{host}:{port}"),
         known_hosts_path,
         pending,
-        pending_keyboard: pending_keyboard.clone(),
     };
     let mut handle = client::connect(config, (host, port), handler)
         .await
         .map_err(|e| format!("SSH connect failed: {e}"))?;
 
+    info!("SSH TCP connected to {host}:{port}");
+
+    let resolved_password: Option<String> = if auth_method.as_deref() == Some("PrivateKey") {
+        None
+    } else if password.is_empty() {
+        if let Some(ref cred_id) = credential_id {
+            Some(
+                myshelltool_core::SecretStore::new(&secret_store_dir)
+                    .read(cred_id)
+                    .map_err(|e| format!("Failed to read credential: {e}"))?
+                    .ok_or_else(|| "Stored credential not found".to_string())?,
+            )
+        } else {
+            return Err("No password provided and no stored credential".to_string());
+        }
+    } else {
+        Some(password)
+    };
+
     let auth_ok = if auth_method.as_deref() == Some("PrivateKey") {
         let key_path = private_key_path.as_deref().unwrap_or("~/.ssh/id_ed25519");
         let expanded = expand_home_path(key_path);
         let resolved_passphrase = if let Some(ref cred_id) = passphrase_credential_id {
-            myshelltool_core::SecretStore::new(&secret_store_dir).read(cred_id)
+            myshelltool_core::SecretStore::new(&secret_store_dir)
+                .read(cred_id)
                 .map_err(|e| format!("Failed to read passphrase: {e}"))?
         } else {
-            passphrase.as_deref().and_then(|p| if p.is_empty() { None } else { Some(p.to_string()) })
+            passphrase.as_deref().and_then(|p| {
+                if p.is_empty() {
+                    None
+                } else {
+                    Some(p.to_string())
+                }
+            })
         };
         let key_data = std::fs::read(&expanded)
             .map_err(|e| format!("Failed to read key file '{}': {e}", expanded))?;
         let key_str = String::from_utf8_lossy(&key_data);
         let key_pair = russh::keys::decode_secret_key(&key_str, resolved_passphrase.as_deref())
             .map_err(|e| format!("Failed to load private key: {e}"))?;
-        let key_with_hash = russh::keys::key::PrivateKeyWithHashAlg::new(
-            Arc::new(key_pair),
-            None,
-        ).map_err(|e| format!("Key wrap failed: {e}"))?;
-        handle.authenticate_publickey(username, key_with_hash)
+        let key_with_hash = russh::keys::key::PrivateKeyWithHashAlg::new(Arc::new(key_pair), None)
+            .map_err(|e| format!("Key wrap failed: {e}"))?;
+        handle
+            .authenticate_publickey(username, key_with_hash)
             .await
             .map_err(|e| format!("Public key auth failed: {e}"))?
     } else {
-        let resolved_password = if password.is_empty() {
-            if let Some(ref cred_id) = credential_id {
-                myshelltool_core::SecretStore::new(&secret_store_dir).read(cred_id)
-                    .map_err(|e| format!("Failed to read credential: {e}"))?
-                    .ok_or_else(|| "Stored credential not found".to_string())?
-            } else {
-                return Err("No password provided and no stored credential".to_string());
-            }
-        } else {
-            password
-        };
-        handle.authenticate_password(username, &resolved_password)
+        handle
+            .authenticate_password(username, resolved_password.as_deref().unwrap_or(""))
             .await
             .map_err(|e| format!("Auth failed: {e}"))?
     };
 
     if !auth_ok {
-        let resp = handle.authenticate_keyboard_interactive_start(username, None::<String>)
+        info!(
+            "auth: password/key rejected for {username}@{host}:{port}, trying keyboard-interactive"
+        );
+        let resp = handle
+            .authenticate_keyboard_interactive_start(username, None::<String>)
             .await
             .map_err(|e| format!("Keyboard-interactive start failed: {e}"))?;
-        let (h, authenticated) = keyboard_interactive_loop(handle, resp, &pending_keyboard, &app).await?;
+        // 自动用已保存的密码响应 keyboard-interactive 的密码 prompt（debian 等服务器
+        // 默认禁用 PasswordAuthentication 但启用 KbdInteractiveAuthentication，导致
+        // password auth 失败但 keyboard-interactive 实际就是同一密码）
+        let auto_password = resolved_password.as_deref();
+        let (h, authenticated) =
+            keyboard_interactive_loop(handle, resp, &pending_keyboard, &app, auto_password).await?;
         if !authenticated {
+            warn!("auth failed (all methods) for {username}@{host}:{port}");
             return Err("Authentication failed (password + keyboard-interactive)".to_string());
         }
         return Ok(h);
     }
 
+    info!("auth succeeded for {username}@{host}:{port}");
     Ok(handle)
 }
 
@@ -277,33 +353,56 @@ async fn keyboard_interactive_loop(
     mut resp: client::KeyboardInteractiveAuthResponse,
     pending_keyboard: &PendingKeyboardResponses,
     app: &AppHandle,
+    auto_password: Option<&str>,
 ) -> Result<(client::Handle<SshClient>, bool), String> {
     loop {
         match resp {
             client::KeyboardInteractiveAuthResponse::Success => return Ok((handle, true)),
             client::KeyboardInteractiveAuthResponse::Failure => return Ok((handle, false)),
-            client::KeyboardInteractiveAuthResponse::InfoRequest { name, instructions, prompts } => {
-                let request_id = uuid::Uuid::new_v4().to_string();
-                let (tx, rx) = oneshot::channel();
-                {
-                    let mut map = pending_keyboard.lock().await;
-                    map.insert(request_id.clone(), tx);
-                }
-                let prompt_texts: Vec<String> = prompts.iter().map(|p| p.prompt.clone()).collect();
-                let event = KeyboardInteractiveEvent {
-                    request_id,
-                    name,
-                    instructions,
-                    prompts: prompt_texts,
+            client::KeyboardInteractiveAuthResponse::InfoRequest {
+                name,
+                instructions,
+                prompts,
+            } => {
+                // 判断是否所有 prompts 都是密码类（单 prompt + 文本含 password/passphrase/密码）
+                // 且 auto_password 可用 → 自动响应，不弹 modal
+                let all_password_like = !prompts.is_empty()
+                    && prompts.iter().all(|p| {
+                        let lower = p.prompt.to_lowercase();
+                        lower.contains("password") || lower.contains("passphrase") || lower.contains("密码")
+                    });
+                let responses = if all_password_like && auto_password.is_some() {
+                    let pwd = auto_password.unwrap().to_string();
+                    info!(
+                        "keyboard-interactive: auto-responding {} password-like prompt(s) with saved credential",
+                        prompts.len()
+                    );
+                    prompts.iter().map(|_| pwd.clone()).collect::<Vec<String>>()
+                } else {
+                    // 弹 modal 让用户手动输入（MFA、非密码 prompt 等）
+                    let request_id = uuid::Uuid::new_v4().to_string();
+                    let (tx, rx) = oneshot::channel();
+                    {
+                        let mut map = pending_keyboard.lock().await;
+                        map.insert(request_id.clone(), tx);
+                    }
+                    let prompt_texts: Vec<String> = prompts.iter().map(|p| p.prompt.clone()).collect();
+                    let event = KeyboardInteractiveEvent {
+                        request_id,
+                        name,
+                        instructions,
+                        prompts: prompt_texts,
+                    };
+                    if app.emit("ssh-keyboard-interactive", event).is_err() {
+                        return Ok((handle, false));
+                    }
+                    match rx.await {
+                        Ok(r) => r,
+                        Err(_) => return Ok((handle, false)),
+                    }
                 };
-                if app.emit("ssh-keyboard-interactive", event).is_err() {
-                    return Ok((handle, false));
-                }
-                let responses = match rx.await {
-                    Ok(r) => r,
-                    Err(_) => return Ok((handle, false)),
-                };
-                resp = handle.authenticate_keyboard_interactive_respond(responses)
+                resp = handle
+                    .authenticate_keyboard_interactive_respond(responses)
                     .await
                     .map_err(|e| format!("Keyboard-interactive respond failed: {e}"))?;
             }
@@ -324,7 +423,7 @@ fn expand_home_path(path: &str) -> String {
 
 #[tauri::command]
 pub async fn ssh_connect(
-    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    state: State<'_, AppState>,
     host: String,
     port: u16,
     username: String,
@@ -346,9 +445,12 @@ pub async fn ssh_connect(
         private_key_path,
         passphrase,
         passphrase_credential_id,
-    ).await {
+    )
+    .await
+    {
         Ok(handle) => handle,
         Err(error) => {
+            error!("SSH connect failed for {username}@{host}:{port}: {error}");
             return Ok(SshConnectResult {
                 session_id: String::new(),
                 connected: false,
@@ -378,13 +480,14 @@ pub async fn ssh_connect(
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<SshCommand>();
 
     {
-        let mut mgr = state.lock().await;
+        let mut mgr = state.ssh_sessions.lock().await;
         mgr.ssh_handles.insert(session_id.clone(), Arc::new(handle));
-        mgr.sessions.insert(session_id.clone(), SshSession { cmd_tx });
+        mgr.sessions
+            .insert(session_id.clone(), SshSession { cmd_tx });
     }
 
     let emit_app = {
-        let mgr = state.lock().await;
+        let mgr = state.ssh_sessions.lock().await;
         mgr.app.clone()
     };
 
@@ -425,6 +528,8 @@ pub async fn ssh_connect(
         }
     });
 
+    info!("SSH session {session_id} established for {username}@{host}:{port}");
+
     Ok(SshConnectResult {
         session_id,
         connected: true,
@@ -434,7 +539,7 @@ pub async fn ssh_connect(
 
 #[tauri::command]
 pub async fn ssh_list_directory(
-    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    state: State<'_, AppState>,
     host: String,
     port: u16,
     username: String,
@@ -446,7 +551,11 @@ pub async fn ssh_list_directory(
     passphrase_credential_id: Option<String>,
     path: String,
 ) -> Result<RemoteDirectoryList, String> {
-    let requested_path = if path.trim().is_empty() { ".".to_string() } else { path };
+    let requested_path = if path.trim().is_empty() {
+        ".".to_string()
+    } else {
+        path
+    };
     let handle = connect_authenticated(
         &state,
         &host,
@@ -458,7 +567,8 @@ pub async fn ssh_list_directory(
         private_key_path,
         passphrase,
         passphrase_credential_id,
-    ).await?;
+    )
+    .await?;
 
     let mut channel = handle
         .channel_open_session()
@@ -500,11 +610,11 @@ pub async fn ssh_list_directory(
 
 #[tauri::command]
 pub async fn ssh_write(
-    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    state: State<'_, AppState>,
     session_id: String,
     data: Vec<u8>,
 ) -> Result<(), String> {
-    let mgr = state.lock().await;
+    let mgr = state.ssh_sessions.lock().await;
     let session = mgr
         .sessions
         .get(&session_id)
@@ -518,12 +628,12 @@ pub async fn ssh_write(
 
 #[tauri::command]
 pub async fn ssh_resize(
-    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    state: State<'_, AppState>,
     session_id: String,
     cols: u32,
     rows: u32,
 ) -> Result<(), String> {
-    let mgr = state.lock().await;
+    let mgr = state.ssh_sessions.lock().await;
     let session = mgr
         .sessions
         .get(&session_id)
@@ -537,12 +647,13 @@ pub async fn ssh_resize(
 
 #[tauri::command]
 pub async fn ssh_disconnect(
-    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    state: State<'_, AppState>,
     session_id: String,
 ) -> Result<(), String> {
-    let mut mgr = state.lock().await;
+    let mut mgr = state.ssh_sessions.lock().await;
     if let Some(session) = mgr.sessions.remove(&session_id) {
         let _ = session.cmd_tx.send(SshCommand::Disconnect);
+        info!("SSH session {session_id} disconnected");
     }
     mgr.ssh_handles.remove(&session_id);
     mgr.sftp_cache.remove(&session_id);
@@ -564,63 +675,81 @@ pub async fn ssh_disconnect(
 
 #[tauri::command]
 pub async fn ssh_confirm_host_key(
-    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    state: State<'_, AppState>,
     request_id: String,
     accepted: bool,
 ) -> Result<(), String> {
-    let mgr = state.lock().await;
+    let mgr = state.ssh_sessions.lock().await;
     let mut pending = mgr.pending_host_decisions.lock().await;
-    if let Some(tx) = pending.remove(&request_id) {
-        let _ = tx.send(accepted);
+    match pending.remove(&request_id) {
+        Some(tx) => {
+            let _ = tx.send(accepted);
+            Ok(())
+        }
+        None => Err(format!(
+            "ssh_confirm_host_key: request_id {request_id} not found (可能已超时或不存在)"
+        )),
     }
-    Ok(())
 }
 
 #[tauri::command]
 pub async fn ssh_keyboard_response(
-    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    state: State<'_, AppState>,
     request_id: String,
     responses: Vec<String>,
 ) -> Result<(), String> {
-    let mgr = state.lock().await;
+    let mgr = state.ssh_sessions.lock().await;
     let mut pending = mgr.pending_keyboard.lock().await;
-    if let Some(tx) = pending.remove(&request_id) {
-        let _ = tx.send(responses);
+    match pending.remove(&request_id) {
+        Some(tx) => {
+            let _ = tx.send(responses);
+            Ok(())
+        }
+        None => Err(format!(
+            "ssh_keyboard_response: request_id {request_id} not found (可能已超时或不存在)"
+        )),
     }
-    Ok(())
 }
 
 // --- SFTP operations ---
 
 async fn get_or_create_sftp(
-    state: &State<'_, Arc<Mutex<SshSessionManager>>>,
+    state: &State<'_, AppState>,
     session_id: &str,
 ) -> Result<Arc<Mutex<SftpSession>>, String> {
     {
-        let mgr = state.lock().await;
+        let mgr = state.ssh_sessions.lock().await;
         if let Some(sftp) = mgr.sftp_cache.get(session_id) {
             return Ok(sftp.clone());
         }
     }
 
     let handle = {
-        let mgr = state.lock().await;
-        mgr.ssh_handles.get(session_id)
+        let mgr = state.ssh_sessions.lock().await;
+        mgr.ssh_handles
+            .get(session_id)
             .ok_or_else(|| format!("SSH handle for session {session_id} not found"))?
-            .clone()  // Arc::clone
+            .clone() // Arc::clone
     };
 
-    let channel = handle.channel_open_session().await
+    let channel = handle
+        .channel_open_session()
+        .await
         .map_err(|e| format!("SFTP channel open failed: {e}"))?;
-    channel.request_subsystem(true, "sftp").await
+    channel
+        .request_subsystem(true, "sftp")
+        .await
         .map_err(|e| format!("SFTP subsystem request failed: {e}"))?;
 
-    let sftp = SftpSession::new(channel.into_stream()).await
+    let sftp = SftpSession::new(channel.into_stream())
+        .await
         .map_err(|e| format!("SFTP session init failed: {e}"))?;
+
+    info!("SFTP session initialized for session {session_id}");
 
     let arc = Arc::new(Mutex::new(sftp));
     {
-        let mut mgr = state.lock().await;
+        let mut mgr = state.ssh_sessions.lock().await;
         mgr.sftp_cache.insert(session_id.to_string(), arc.clone());
     }
     Ok(arc)
@@ -628,35 +757,45 @@ async fn get_or_create_sftp(
 
 #[tauri::command]
 pub async fn sftp_list_dir(
-    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    state: State<'_, AppState>,
     session_id: String,
     path: String,
 ) -> Result<RemoteDirectoryList, String> {
     let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
     let sftp = sftp_arc.lock().await;
 
-    let requested_path = if path.trim().is_empty() { ".".to_string() } else { path };
+    let requested_path = if path.trim().is_empty() {
+        ".".to_string()
+    } else {
+        path
+    };
 
-    let raw_entries = sftp.read_dir(&requested_path).await
+    let raw_entries = sftp
+        .read_dir(&requested_path)
+        .await
         .map_err(|e| format!("SFTP read_dir failed: {e}"))?;
 
-    let mut entries: Vec<RemoteFileEntry> = raw_entries.into_iter().map(|entry| {
-        let meta = entry.metadata();
-        let kind = if meta.is_dir() {
-            "directory"
-        } else if meta.is_symlink() {
-            "symlink"
-        } else {
-            "file"
-        }.to_string();
-        RemoteFileEntry {
-            name: entry.file_name(),
-            path: entry.path(),
-            kind,
-            size: meta.len(),
-            modified: format!("{:?}", meta.modified()),
-        }
-    }).collect();
+    let mut entries: Vec<RemoteFileEntry> = raw_entries
+        .into_iter()
+        .map(|entry| {
+            let meta = entry.metadata();
+            let kind = if meta.is_dir() {
+                "directory"
+            } else if meta.is_symlink() {
+                "symlink"
+            } else {
+                "file"
+            }
+            .to_string();
+            RemoteFileEntry {
+                name: entry.file_name(),
+                path: entry.path(),
+                kind,
+                size: meta.len(),
+                modified: format!("{:?}", meta.modified()),
+            }
+        })
+        .collect();
 
     entries.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
 
@@ -669,19 +808,22 @@ pub async fn sftp_list_dir(
 
 #[tauri::command]
 pub async fn sftp_read_file(
-    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    state: State<'_, AppState>,
     session_id: String,
     path: String,
 ) -> Result<String, String> {
     let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
     let sftp = sftp_arc.lock().await;
 
-    let mut file = sftp.open(&path).await
+    let mut file = sftp
+        .open(&path)
+        .await
         .map_err(|e| format!("SFTP open failed: {e}"))?;
 
     use tokio::io::AsyncReadExt;
     let mut contents = String::new();
-    file.read_to_string(&mut contents).await
+    file.read_to_string(&mut contents)
+        .await
         .map_err(|e| format!("SFTP read failed: {e}"))?;
 
     Ok(contents)
@@ -689,7 +831,7 @@ pub async fn sftp_read_file(
 
 #[tauri::command]
 pub async fn sftp_write_file(
-    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    state: State<'_, AppState>,
     session_id: String,
     path: String,
     content: String,
@@ -697,13 +839,17 @@ pub async fn sftp_write_file(
     let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
     let sftp = sftp_arc.lock().await;
 
-    let mut file = sftp.create(&path).await
+    let mut file = sftp
+        .create(&path)
+        .await
         .map_err(|e| format!("SFTP create failed: {e}"))?;
 
     use tokio::io::AsyncWriteExt;
-    file.write_all(content.as_bytes()).await
+    file.write_all(content.as_bytes())
+        .await
         .map_err(|e| format!("SFTP write failed: {e}"))?;
-    file.shutdown().await
+    file.shutdown()
+        .await
         .map_err(|e| format!("SFTP flush failed: {e}"))?;
 
     Ok(())
@@ -717,56 +863,93 @@ struct TransferProgressEvent {
 }
 
 #[tauri::command]
-pub async fn sftp_upload_with_progress(
-    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+pub async fn sftp_upload_start(
+    state: State<'_, AppState>,
     session_id: String,
     remote_path: String,
-    content: Vec<u8>,
     transfer_id: String,
 ) -> Result<(), String> {
-    let total = content.len() as u64;
     let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
     let sftp = sftp_arc.lock().await;
-    let app = { state.lock().await.app.clone() };
-
-    let mut file = sftp.create(&remote_path).await
+    let file = sftp
+        .create(&remote_path)
+        .await
         .map_err(|e| format!("SFTP create failed: {e}"))?;
-
-    use tokio::io::AsyncWriteExt;
-    let chunk_size: usize = 65536;
-    let mut offset: usize = 0;
-    while offset < content.len() {
-        let end = std::cmp::min(offset + chunk_size, content.len());
-        file.write_all(&content[offset..end]).await
-            .map_err(|e| format!("SFTP write chunk failed: {e}"))?;
-        offset = end;
-        let _ = app.emit("sftp-transfer-progress", TransferProgressEvent {
-            transfer_id: transfer_id.clone(),
-            bytes_transferred: offset as u64,
-            total_bytes: total,
-        });
+    let ssh_mgr = state.ssh_sessions.lock().await;
+    let mut uploads = ssh_mgr.upload_files.lock().await;
+    if uploads.contains_key(&transfer_id) {
+        return Err(format!("transfer_id {transfer_id} already in progress"));
     }
-    file.shutdown().await
-        .map_err(|e| format!("SFTP flush failed: {e}"))?;
+    uploads.insert(transfer_id, Box::new(file) as Box<dyn tokio::io::AsyncWrite + Send + Unpin>);
+    Ok(())
+}
 
+#[tauri::command]
+pub async fn sftp_upload_chunk(
+    state: State<'_, AppState>,
+    _session_id: String,
+    chunk: Vec<u8>,
+    transfer_id: String,
+    bytes_transferred: u64,
+    total_bytes: u64,
+) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+    let ssh_mgr = state.ssh_sessions.lock().await;
+    let app = ssh_mgr.app.clone();
+    let mut uploads = ssh_mgr.upload_files.lock().await;
+    let file = uploads
+        .get_mut(&transfer_id)
+        .ok_or_else(|| format!("transfer_id {transfer_id} not started"))?;
+    file.write_all(&chunk)
+        .await
+        .map_err(|e| format!("SFTP write chunk failed: {e}"))?;
+    let _ = app.emit(
+        "sftp-transfer-progress",
+        TransferProgressEvent {
+            transfer_id: transfer_id.clone(),
+            bytes_transferred,
+            total_bytes,
+        },
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn sftp_upload_finalize(
+    state: State<'_, AppState>,
+    transfer_id: String,
+) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+    let ssh_mgr = state.ssh_sessions.lock().await;
+    let mut uploads = ssh_mgr.upload_files.lock().await;
+    let mut file = uploads
+        .remove(&transfer_id)
+        .ok_or_else(|| format!("transfer_id {transfer_id} not started"))?;
+    file.shutdown()
+        .await
+        .map_err(|e| format!("SFTP flush failed: {e}"))?;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn sftp_download_with_progress(
-    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    state: State<'_, AppState>,
     session_id: String,
     remote_path: String,
     transfer_id: String,
 ) -> Result<Vec<u8>, String> {
     let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
     let sftp = sftp_arc.lock().await;
-    let app = { state.lock().await.app.clone() };
+    let app = { state.ssh_sessions.lock().await.app.clone() };
 
-    let mut file = sftp.open(&remote_path).await
+    let mut file = sftp
+        .open(&remote_path)
+        .await
         .map_err(|e| format!("SFTP open failed: {e}"))?;
 
-    let attrs = sftp.metadata(&remote_path).await
+    let attrs = sftp
+        .metadata(&remote_path)
+        .await
         .map_err(|e| format!("SFTP stat failed: {e}"))?;
     let total = attrs.len();
 
@@ -774,15 +957,22 @@ pub async fn sftp_download_with_progress(
     let mut buf = Vec::with_capacity(total as usize);
     let mut tmp = [0u8; 65536];
     loop {
-        let n = file.read(&mut tmp).await
+        let n = file
+            .read(&mut tmp)
+            .await
             .map_err(|e| format!("SFTP read chunk failed: {e}"))?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         buf.extend_from_slice(&tmp[..n]);
-        let _ = app.emit("sftp-transfer-progress", TransferProgressEvent {
-            transfer_id: transfer_id.clone(),
-            bytes_transferred: buf.len() as u64,
-            total_bytes: total,
-        });
+        let _ = app.emit(
+            "sftp-transfer-progress",
+            TransferProgressEvent {
+                transfer_id: transfer_id.clone(),
+                bytes_transferred: buf.len() as u64,
+                total_bytes: total,
+            },
+        );
     }
 
     Ok(buf)
@@ -790,32 +980,34 @@ pub async fn sftp_download_with_progress(
 
 #[tauri::command]
 pub async fn sftp_mkdir(
-    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    state: State<'_, AppState>,
     session_id: String,
     path: String,
 ) -> Result<(), String> {
     let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
     let sftp = sftp_arc.lock().await;
-    sftp.create_dir(&path).await
+    sftp.create_dir(&path)
+        .await
         .map_err(|e| format!("SFTP mkdir failed: {e}"))
 }
 
 #[tauri::command]
 pub async fn sftp_rename(
-    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    state: State<'_, AppState>,
     session_id: String,
     old_path: String,
     new_path: String,
 ) -> Result<(), String> {
     let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
     let sftp = sftp_arc.lock().await;
-    sftp.rename(&old_path, &new_path).await
+    sftp.rename(&old_path, &new_path)
+        .await
         .map_err(|e| format!("SFTP rename failed: {e}"))
 }
 
 #[tauri::command]
 pub async fn sftp_remove(
-    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    state: State<'_, AppState>,
     session_id: String,
     path: String,
     kind: String,
@@ -826,18 +1018,21 @@ pub async fn sftp_remove(
         sftp.remove_dir(&path).await
     } else {
         sftp.remove_file(&path).await
-    }.map_err(|e| format!("SFTP remove failed: {e}"))
+    }
+    .map_err(|e| format!("SFTP remove failed: {e}"))
 }
 
 #[tauri::command]
 pub async fn sftp_stat(
-    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    state: State<'_, AppState>,
     session_id: String,
     path: String,
 ) -> Result<RemoteFileEntry, String> {
     let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
     let sftp = sftp_arc.lock().await;
-    let meta = sftp.metadata(&path).await
+    let meta = sftp
+        .metadata(&path)
+        .await
         .map_err(|e| format!("SFTP stat failed: {e}"))?;
 
     let name = std::path::Path::new(&path)
@@ -849,7 +1044,14 @@ pub async fn sftp_stat(
     Ok(RemoteFileEntry {
         name,
         path,
-        kind: if meta.is_dir() { "directory" } else if meta.is_symlink() { "symlink" } else { "file" }.to_string(),
+        kind: if meta.is_dir() {
+            "directory"
+        } else if meta.is_symlink() {
+            "symlink"
+        } else {
+            "file"
+        }
+        .to_string(),
         size: meta.len(),
         modified: format!("{:?}", meta.modified()),
     })
@@ -859,7 +1061,7 @@ pub async fn sftp_stat(
 
 #[tauri::command]
 pub async fn tunnel_create(
-    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    state: State<'_, AppState>,
     config: TunnelConfig,
 ) -> Result<TunnelStatus, String> {
     let id = config.id.clone();
@@ -869,19 +1071,19 @@ pub async fn tunnel_create(
         active: false,
         error: None,
     };
-    let mut mgr = state.lock().await;
+    let mut mgr = state.ssh_sessions.lock().await;
     mgr.tunnels.insert(id, status.clone());
     Ok(status)
 }
 
 #[tauri::command]
 pub async fn tunnel_start(
-    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    state: State<'_, AppState>,
     session_id: String,
     tunnel_id: String,
 ) -> Result<(), String> {
     let (handle, config, app) = {
-        let mgr = state.lock().await;
+        let mgr = state.ssh_sessions.lock().await;
         let handle = mgr
             .ssh_handles
             .get(&session_id)
@@ -905,12 +1107,13 @@ pub async fn tunnel_start(
     };
 
     {
-        let mut mgr = state.lock().await;
+        let mut mgr = state.ssh_sessions.lock().await;
         if let Some(status) = mgr.tunnels.get_mut(&tunnel_id) {
             status.active = true;
             status.error = None;
         }
-        mgr.tunnel_handles.insert(tunnel_id, join_handle);
+        mgr.tunnel_handles.insert(tunnel_id.clone(), join_handle);
+        info!("tunnel {tunnel_id} ({}) started", config.kind);
     }
 
     Ok(())
@@ -918,12 +1121,13 @@ pub async fn tunnel_start(
 
 #[tauri::command]
 pub async fn tunnel_stop(
-    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    state: State<'_, AppState>,
     tunnel_id: String,
 ) -> Result<(), String> {
-    let mut mgr = state.lock().await;
+    let mut mgr = state.ssh_sessions.lock().await;
     if let Some(jh) = mgr.tunnel_handles.remove(&tunnel_id) {
         jh.abort();
+        info!("tunnel {tunnel_id} stopped");
     }
     if let Some(status) = mgr.tunnels.get_mut(&tunnel_id) {
         status.active = false;
@@ -933,18 +1137,18 @@ pub async fn tunnel_stop(
 
 #[tauri::command]
 pub async fn tunnel_list(
-    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    state: State<'_, AppState>,
 ) -> Result<Vec<TunnelStatus>, String> {
-    let mgr = state.lock().await;
+    let mgr = state.ssh_sessions.lock().await;
     Ok(mgr.tunnels.values().cloned().collect())
 }
 
 #[tauri::command]
 pub async fn tunnel_delete(
-    state: State<'_, Arc<Mutex<SshSessionManager>>>,
+    state: State<'_, AppState>,
     tunnel_id: String,
 ) -> Result<(), String> {
-    let mut mgr = state.lock().await;
+    let mut mgr = state.ssh_sessions.lock().await;
     if let Some(jh) = mgr.tunnel_handles.remove(&tunnel_id) {
         jh.abort();
     }
@@ -982,20 +1186,14 @@ async fn start_local_forward(
 
             tokio::spawn(async move {
                 let mut channel = match ssh_handle
-                    .channel_open_direct_tcpip(
-                        &remote_addr,
-                        remote_port,
-                        "127.0.0.1",
-                        0,
-                    )
+                    .channel_open_direct_tcpip(&remote_addr, remote_port, "127.0.0.1", 0)
                     .await
                 {
                     Ok(ch) => ch,
                     Err(_) => return,
                 };
 
-                let (mut tcp_read, mut tcp_write) =
-                    tokio::io::split(tcp_stream);
+                let (mut tcp_read, mut tcp_write) = tokio::io::split(tcp_stream);
 
                 // Use a single loop with select, reading from SSH channel and TCP concurrently.
                 // channel.wait() borrows &mut self, so we can't have it in a separate future
@@ -1032,10 +1230,7 @@ async fn start_local_forward(
                     }
                 }
 
-                let _ = app.emit(
-                    &format!("tunnel-traffic-{tid}"),
-                    "connection-closed",
-                );
+                let _ = app.emit(&format!("tunnel-traffic-{tid}"), "connection-closed");
             });
         }
     });
@@ -1049,7 +1244,10 @@ async fn start_remote_forward(
     _handle: Arc<client::Handle<SshClient>>,
     _config: TunnelConfig,
 ) -> Result<tokio::task::JoinHandle<()>, String> {
-    Err("Remote forwarding is not yet supported. Use local or dynamic forwarding instead.".to_string())
+    Err(
+        "Remote forwarding is not yet supported. Use local or dynamic forwarding instead."
+            .to_string(),
+    )
 }
 
 // --- Dynamic (SOCKS5) port forwarding ---
@@ -1078,11 +1276,10 @@ async fn start_dynamic_forward(
             let tid = tunnel_id.clone();
 
             tokio::spawn(async move {
-                if let Err(e) = handle_socks5_connection(tcp_stream, ssh_handle, app.clone(), &tid).await {
-                    let _ = app.emit(
-                        &format!("tunnel-error-{tid}"),
-                        format!("SOCKS5 error: {e}"),
-                    );
+                if let Err(e) =
+                    handle_socks5_connection(tcp_stream, ssh_handle, app.clone(), &tid).await
+                {
+                    let _ = app.emit(&format!("tunnel-error-{tid}"), format!("SOCKS5 error: {e}"));
                 }
             });
         }
@@ -1103,23 +1300,38 @@ async fn handle_socks5_connection(
 
     // SOCKS5 handshake: read version and auth methods
     let mut buf = [0u8; 2];
-    tcp_read.read_exact(&mut buf).await.map_err(|e| format!("SOCKS5 read version: {e}"))?;
+    tcp_read
+        .read_exact(&mut buf)
+        .await
+        .map_err(|e| format!("SOCKS5 read version: {e}"))?;
     if buf[0] != 0x05 {
         return Err("Not a SOCKS5 request".to_string());
     }
     let nmethods = buf[1] as usize;
     let mut methods = vec![0u8; nmethods];
-    tcp_read.read_exact(&mut methods).await.map_err(|e| format!("SOCKS5 read methods: {e}"))?;
+    tcp_read
+        .read_exact(&mut methods)
+        .await
+        .map_err(|e| format!("SOCKS5 read methods: {e}"))?;
 
     // Reply: no auth required
-    tcp_write.write_all(&[0x05, 0x00]).await.map_err(|e| format!("SOCKS5 write method: {e}"))?;
+    tcp_write
+        .write_all(&[0x05, 0x00])
+        .await
+        .map_err(|e| format!("SOCKS5 write method: {e}"))?;
 
     // Read connect request
     let mut head = [0u8; 4];
-    tcp_read.read_exact(&mut head).await.map_err(|e| format!("SOCKS5 read request: {e}"))?;
+    tcp_read
+        .read_exact(&mut head)
+        .await
+        .map_err(|e| format!("SOCKS5 read request: {e}"))?;
     if head[0] != 0x05 || head[1] != 0x01 {
         // Only support CONNECT (0x01)
-        tcp_write.write_all(&[0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await.ok();
+        tcp_write
+            .write_all(&[0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+            .await
+            .ok();
         return Err("SOCKS5 only supports CONNECT".to_string());
     }
 
@@ -1127,22 +1339,34 @@ async fn handle_socks5_connection(
         // IPv4
         0x01 => {
             let mut addr = [0u8; 4];
-            tcp_read.read_exact(&mut addr).await.map_err(|e| format!("SOCKS5 read IPv4: {e}"))?;
+            tcp_read
+                .read_exact(&mut addr)
+                .await
+                .map_err(|e| format!("SOCKS5 read IPv4: {e}"))?;
             format!("{}.{}.{}.{}", addr[0], addr[1], addr[2], addr[3])
         }
         // Domain name
         0x03 => {
             let mut len_buf = [0u8; 1];
-            tcp_read.read_exact(&mut len_buf).await.map_err(|e| format!("SOCKS5 read domain len: {e}"))?;
+            tcp_read
+                .read_exact(&mut len_buf)
+                .await
+                .map_err(|e| format!("SOCKS5 read domain len: {e}"))?;
             let len = len_buf[0] as usize;
             let mut domain = vec![0u8; len];
-            tcp_read.read_exact(&mut domain).await.map_err(|e| format!("SOCKS5 read domain: {e}"))?;
+            tcp_read
+                .read_exact(&mut domain)
+                .await
+                .map_err(|e| format!("SOCKS5 read domain: {e}"))?;
             String::from_utf8_lossy(&domain).to_string()
         }
         // IPv6
         0x04 => {
             let mut addr = [0u8; 16];
-            tcp_read.read_exact(&mut addr).await.map_err(|e| format!("SOCKS5 read IPv6: {e}"))?;
+            tcp_read
+                .read_exact(&mut addr)
+                .await
+                .map_err(|e| format!("SOCKS5 read IPv6: {e}"))?;
             addr.iter()
                 .map(|b| format!("{:02x}", b))
                 .collect::<Vec<_>>()
@@ -1152,13 +1376,19 @@ async fn handle_socks5_connection(
                 .join(":")
         }
         _ => {
-            tcp_write.write_all(&[0x05, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await.ok();
+            tcp_write
+                .write_all(&[0x05, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                .await
+                .ok();
             return Err("Unsupported SOCKS5 address type".to_string());
         }
     };
 
     let mut port_buf = [0u8; 2];
-    tcp_read.read_exact(&mut port_buf).await.map_err(|e| format!("SOCKS5 read port: {e}"))?;
+    tcp_read
+        .read_exact(&mut port_buf)
+        .await
+        .map_err(|e| format!("SOCKS5 read port: {e}"))?;
     let target_port = u16::from_be_bytes(port_buf) as u32;
 
     // Open SSH direct TCP/IP channel to the target
@@ -1169,7 +1399,10 @@ async fn handle_socks5_connection(
         Ok(ch) => ch,
         Err(e) => {
             // SOCKS5 reply: connection refused
-            tcp_write.write_all(&[0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await.ok();
+            tcp_write
+                .write_all(&[0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                .await
+                .ok();
             return Err(format!("SSH channel open failed: {e}"));
         }
     };
@@ -1247,7 +1480,8 @@ fn parse_remote_file_entries(output: &str) -> Vec<RemoteFileEntry> {
                 "d" => "directory",
                 "l" => "symlink",
                 _ => "file",
-            }.to_string(),
+            }
+            .to_string(),
             size: parts[3].parse().unwrap_or(0),
             modified: parts[4].to_string(),
         });
@@ -1271,10 +1505,7 @@ fn load_known_hosts(path: &PathBuf) -> HashMap<String, KnownHostEntry> {
     serde_json::from_str(&raw).unwrap_or_default()
 }
 
-fn save_known_hosts(
-    path: &PathBuf,
-    hosts: &HashMap<String, KnownHostEntry>,
-) -> Result<(), String> {
+fn save_known_hosts(path: &PathBuf, hosts: &HashMap<String, KnownHostEntry>) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }

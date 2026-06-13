@@ -81,3 +81,38 @@ npm run test:ui      # UI 冒烟测试
 ## License
 
 MIT
+
+---
+
+## 架构决策（ADR v3 APPROVED）
+
+详见 `.omc/plans/framework-choice-tauri-vs-qt-vs-electron.md`（v3 Critic 三审 APPROVE）。
+
+**决策**：继续使用 Tauri 2.x，不切换 Qt 或 Electron。
+
+**核心理由**：
+1. 当前痛点（`State<T>` 陷阱、IPC OOM、浏览器预览双实现）均为应用层问题，与框架无关
+2. russh 是 Rust SSH 第一梯队，保留资产
+3. 切框架 = 切栈 + 修同样的痛点，无净收益
+
+**已修复**：
+- ✅ Option A 重构（统一 `State<'_, AppState>`，删除双 manage hack）
+- ✅ IPC OOM（chunked upload：sftp_upload_start/chunk/finalize，8MB 分块）
+- ✅ 删除 invokeBrowserPreview 假后端（100+ 行）+ fallbackAssets 设计稿残留
+- ✅ Tauri command 参数 camelCase 修复（ssh_connect、tunnel_*）
+- ✅ Host key 验证流程：IIFE 立即监听 + 65s 自动清理 + 字段名 snake/camel 一致
+- ✅ keyboard-interactive 自动响应（debian 等服务器禁用 PasswordAuth 的 fallback）
+- ✅ ConnectionAsset 加 credential_id/passphrase_credential_id 字段，向后兼容
+
+## 后续 Follow-ups
+
+- `sftp_download_with_progress` 仍返回 `Vec<u8>` 整块（upload 已分块，download 同样改造作为独立项）
+- 隧道转发无认证（默认 127.0.0.1，但允许 0.0.0.0 时缺安全警告）
+- known_hosts 不兼容 OpenSSH 格式、无通配符、无原子写入
+- AC-6 mock SSH server 测试覆盖 connect/upload/download/tunnel 4 个命令（CI 集成）
+
+## 已知小问题
+
+- `sanitize_credential_id` 过滤 `:` 和 `.`：`192.168.2.2:password` → `192-168-2-2password`，能正常读写但不直观，cleanup 项
+- `start_remote_forward` 是返回 Err 的桩函数（local/dynamic SOCKS5 已实现）
+- `metadata.modified()` 在 `ssh.rs:713` 仍是 `SystemTime` Debug 打印（UX 优化项）

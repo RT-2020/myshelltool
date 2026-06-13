@@ -78,6 +78,29 @@
       --terminal-prompt: color-mix(in oklab, var(--surface), transparent 32%);
     }
 
+    /* 显式 [data-theme="dark"]：与默认 :root 等价，避免"无属性默认即深色"的隐式约定。 */
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --app-bg: color-mix(in oklab, var(--fg), var(--accent) 7%);
+      --app-window: color-mix(in oklab, var(--fg), var(--surface) 5%);
+      --app-chrome: color-mix(in oklab, var(--fg), var(--accent) 8%);
+      --app-panel: color-mix(in oklab, var(--fg), var(--surface) 6%);
+      --app-panel-2: color-mix(in oklab, var(--fg), var(--surface) 4%);
+      --app-control: color-mix(in oklab, var(--fg), var(--surface) 5%);
+      --app-hover: color-mix(in oklab, var(--surface), transparent 93%);
+      --app-border: color-mix(in oklab, var(--border), transparent 78%);
+      --app-border-strong: color-mix(in oklab, var(--border), transparent 66%);
+      --app-text: color-mix(in oklab, var(--surface), var(--border) 10%);
+      --app-strong: var(--surface);
+      --app-muted: color-mix(in oklab, var(--surface), transparent 47%);
+      --app-subtle: color-mix(in oklab, var(--surface), transparent 62%);
+      --app-scrim: color-mix(in oklab, var(--fg), transparent 26%);
+      --app-shadow: 0 20px 58px color-mix(in oklab, var(--fg), transparent 48%);
+      --terminal-bg: color-mix(in oklab, var(--fg), var(--accent) 3%);
+      --terminal-text: color-mix(in oklab, var(--surface), var(--success) 7%);
+      --terminal-prompt: color-mix(in oklab, var(--surface), transparent 32%);
+    }
+
     :root[data-theme="light"] {
       color-scheme: light;
       --app-bg: var(--bg);
