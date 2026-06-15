@@ -16,3 +16,13 @@
 - [ ] 回滚触发条件（Option A 重构失败 > 3 天 / IPC 流式改造后传输性能 < 5MB/s）的阈值是否合理？是否应该再加一条"用户主观体验倒退"作为软触发？ — 影响回滚策略的可执行性。
 - [ ] 方案 B 子选项推荐 PySide6（而非 Rust + qmetaobject + russh）是否正确？如果维护者愿意保留 russh，qmetaobject 路线是否值得作为 B3 评估？ — 影响方案 B 否决理由的完整性。
 - [ ] Tauri 2.x 在 2026 H2 是否有已知的破坏性变更计划（如 State<T> API 改造）可能让方案 A 的"长期维护风险"评分被低估？ — 影响加权总分表第 8 行的可信度。
+
+## ui-full-refactor-consensus — 2026-06-14
+
+- [ ] `resource_monitor` SSH 命令执行通道：复用现有 session 的 SSH channel exec `cat /proc/*`，还是单独打开新 channel？ — 前者可能与用户交互命令冲突，后者增加 session 复杂度；spec 未明确。
+- [ ] 图表手写 vs 引图表库：spec Round 4-5 禁 Tailwind/UI 库但未明确 chart.js/d3 是否算 UI 库 — 影响右侧栏 4 类图表实现方式（本计划假设纯 SVG 手写）。
+- [ ] transferDrawer 与现有 `sftp-transfer-progress` 事件关系：复用还是新建？ — 影响 Wave 3.4 传输抽屉实现复杂度。
+- [ ] 右侧栏宽度策略：固定宽度（本计划假设 280px）还是可拖拽？ — 影响 AppShellLayout CSS Grid 模板复杂度。
+- [ ] 5 区域布局最小屏宽断点：spec AC1 要求同时可见但未定义下限；本计划假设 1280px，低于此横向滚动 — 是否需要更激进的断点（如 1024px 下隐藏右侧栏）。
+- [ ] `resource_monitor` 采样间隔默认值：spec 提到 `intervalMs` 参数但未指定默认；本计划假设 2000ms（2s） — 是否太频繁影响 SSH channel 负载。
+- [ ] OSC 标题解析在 8 个 terminal 组件 restyle 时的回归保护：spec AC7/Constraints 强制保留 OSC 0/1/2 — Wave 3.3 是否需要补 explicit test step 验证 OSC 标题在 restyle 后仍响应。

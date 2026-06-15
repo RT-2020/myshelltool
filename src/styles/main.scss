@@ -1,0 +1,20 @@
+// main.scss — Vite 入口样式
+// Wave 1 of UI full refactor.
+// 在 main.js 中 import './styles/main.scss'。
+// 旧 src/styles.css 在 Wave 1-4 期间继续通过 src/index.html <link> 加载作为兼容层，
+// Wave 3.5 才删除旧 styles.css。
+
+// 1. Design tokens (CSS variables + SCSS maps)
+@use './tokens' as tokens;
+
+// 2. Reset + global typography
+@use './base';
+
+// 3. Utility classes
+@use './utilities';
+
+// ===========================================================================
+// Backward compatibility: 暴露 tokens 模块的 CSS 变量到全局
+// （@use 默认不输出 CSS；用 @forward 让 :root 块正常发出）
+// ===========================================================================
+@forward './tokens';

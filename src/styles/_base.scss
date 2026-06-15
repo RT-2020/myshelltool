@@ -1,0 +1,79 @@
+// Reset + global typography
+// Replaces src/styles.css lines 126-148 (box-sizing, body, button, headings)
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body { min-height: 100%; }
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--app-bg);
+  color: var(--app-text);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  line-height: var(--leading-body);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+button, input, select, textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+h1, h2, h3, h4, h5, h6, p {
+  margin: 0;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display);
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-display);
+}
+
+h1 { font-size: clamp(var(--text-xl), 2.4vw, var(--text-2xl)); font-weight: 650; }
+h2 { font-size: var(--text-lg); font-weight: 650; }
+h3 { font-size: var(--text-base); font-weight: 620; }
+h4 { font-size: var(--text-sm); font-weight: 620; }
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+  &:hover { color: var(--accent-hover); }
+}
+
+code, kbd, pre {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+ul, ol { margin: 0; padding: 0; list-style: none; }
+
+// Custom scrollbars (Tabby/Termius 视觉调性：极细 + 半透明)
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--app-border-strong) transparent;
+}
+
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--app-border-strong);
+  border-radius: var(--radius-pill);
+  &:hover { background: var(--app-muted); }
+}
+
+// Focus ring（a11y）
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--radius-sm);
+}

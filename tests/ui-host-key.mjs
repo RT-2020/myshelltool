@@ -10,7 +10,7 @@
 
 import { chromium } from 'playwright';
 
-const baseUrl = process.env.MYSHELLTOOL_BASE_URL ?? 'http://127.0.0.1:41235/';
+const baseUrl = process.env.MYSHELLTOOL_BASE_URL ?? 'http://127.0.0.1:41234/';
 
 const browser = await chromium.launch({ headless: true });
 const failures = [];

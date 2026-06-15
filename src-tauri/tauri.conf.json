@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.redtei.myshelltool",
   "build": {
-    "beforeDevCommand": "npm run dev -- --port 41234 --strictPort",
-    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "pnpm run dev -- --port 41234 --strictPort",
+    "beforeBuildCommand": "pnpm run build",
     "devUrl": "http://127.0.0.1:41234",
     "frontendDist": "../dist"
   },
@@ -14,10 +14,10 @@
     "windows": [
       {
         "title": "myshelltool — SSH 运维客户端",
-        "width": 1180,
-        "height": 760,
-        "minWidth": 960,
-        "minHeight": 640,
+        "width": 1366,
+        "height": 800,
+        "minWidth": 1280,
+        "minHeight": 720,
         "resizable": true,
         "center": true
       }

@@ -1,0 +1,109 @@
+// Utility classes (composable, low-specificity)
+// Mirrors common patterns from src/styles.css without component coupling.
+
+// ---- Color / typography helpers ----
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.muted { color: var(--app-muted); }
+.strong { color: var(--app-strong); font-weight: 600; }
+.subtle { color: var(--app-subtle); }
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+// ---- Layout primitives ----
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.stack-sm { display: flex; flex-direction: column; gap: var(--space-2); }
+.stack-lg { display: flex; flex-direction: column; gap: var(--space-5); }
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.row-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-3);
+}
+
+// ---- Spacing helpers ----
+@each $key, $value in (
+  1: var(--space-1),
+  2: var(--space-2),
+  3: var(--space-3),
+  4: var(--space-4),
+  5: var(--space-5),
+  6: var(--space-6),
+  8: var(--space-8)
+) {
+  .mt-#{$key} { margin-top: $value; }
+  .mb-#{$key} { margin-bottom: $value; }
+  .ml-#{$key} { margin-left: $value; }
+  .mr-#{$key} { margin-right: $value; }
+  .pt-#{$key} { padding-top: $value; }
+  .pb-#{$key} { padding-bottom: $value; }
+  .pl-#{$key} { padding-left: $value; }
+  .pr-#{$key} { padding-right: $value; }
+  .p-#{$key} { padding: $value; }
+  .gap-#{$key} { gap: $value; }
+}
+
+// ---- Display helpers ----
+.hidden { display: none !important; }
+.invisible { visibility: hidden; }
+.text-center { text-align: center; }
+.text-right { text-align: right; }
+.w-full { width: 100%; }
+.h-full { height: 100%; }
+.flex-1 { flex: 1 1 0%; }
+.flex-shrink-0 { flex-shrink: 0; }
+
+// ---- Status pill base (used by ConnectionStatusPill, transfer rows, etc.) ----
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-xs);
+  color: var(--app-muted);
+  background: var(--app-panel-2);
+  border: 1px solid var(--app-border);
+  &.running { color: var(--success); }
+  &.warn { color: var(--warn); }
+  &.error { color: var(--danger); }
+}
+
+// ---- Dot indicator base (used by sidebar tree, status bar) ----
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--app-muted);
+  &.running { background: var(--success); }
+  &.warn { background: var(--warn); }
+  &.error { background: var(--danger); }
+  &.pulse { animation: dot-pulse var(--motion-base) infinite alternate var(--ease-standard); }
+}
+
+@keyframes dot-pulse {
+  from { opacity: 0.5; transform: scale(0.9); }
+  to { opacity: 1; transform: scale(1.1); }
+}

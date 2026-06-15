@@ -1,3 +1,5 @@
+mod fs_local;
+mod resource_monitor;
 mod ssh;
 
 use serde::Serialize;
@@ -12,6 +14,7 @@ pub struct AppState {
     pub asset_store_path: PathBuf,
     pub secret_store_dir: PathBuf,
     pub ssh_sessions: Arc<AsyncMutex<ssh::SshSessionManager>>,
+    pub resource_monitors: Arc<Mutex<resource_monitor::ResourceMonitorState>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -160,6 +163,7 @@ pub fn run() {
                 asset_store_path: app_data_dir.join("connection-assets.json"),
                 secret_store_dir: app_data_dir.join("credentials"),
                 ssh_sessions: ssh_mgr,
+                resource_monitors: Arc::new(Mutex::new(resource_monitor::ResourceMonitorState::default())),
             });
             Ok(())
         })
@@ -193,7 +197,16 @@ pub fn run() {
             ssh::tunnel_start,
             ssh::tunnel_stop,
             ssh::tunnel_list,
-            ssh::tunnel_delete
+            ssh::tunnel_delete,
+            fs_local::fs_local_home_dir,
+            fs_local::fs_local_list_dir,
+            fs_local::fs_local_mkdir,
+            fs_local::fs_local_delete,
+            fs_local::fs_local_rename,
+            resource_monitor::resource_monitor_start,
+            resource_monitor::resource_monitor_stop,
+            resource_monitor::resource_monitor_snapshot,
+            resource_monitor::resource_monitor_list_active
         ])
         .run(tauri::generate_context!())
         .expect("failed to run myshelltool");

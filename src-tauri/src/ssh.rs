@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{oneshot, Mutex};
 
 use crate::AppState;
@@ -153,10 +153,14 @@ impl client::Handler for SshClient {
     }
 }
 
-enum SshCommand {
+pub enum SshCommand {
     Write(Vec<u8>),
     Resize { cols: u32, rows: u32 },
     Disconnect,
+    /// Run a one-shot exec command on a fresh channel (no PTY).
+    /// Used by resource_monitor to sample /proc/* without disturbing the
+    /// interactive shell. Output is parsed + emitted as a ResourceSnapshot.
+    MonitorExec(String),
 }
 
 struct SshSession {
@@ -192,6 +196,14 @@ impl SshSessionManager {
             pending_host_decisions: Arc::new(Mutex::new(HashMap::new())),
             pending_keyboard: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Returns a clone of the session's command channel sender, if the session still exists.
+    pub fn get_cmd_tx(
+        &self,
+        session_id: &str,
+    ) -> Option<tokio::sync::mpsc::UnboundedSender<SshCommand>> {
+        self.sessions.get(session_id).map(|s| s.cmd_tx.clone())
     }
 }
 
@@ -433,6 +445,8 @@ pub async fn ssh_connect(
     private_key_path: Option<String>,
     passphrase: Option<String>,
     passphrase_credential_id: Option<String>,
+    cols: u32,
+    rows: u32,
 ) -> Result<SshConnectResult, String> {
     let handle = match connect_authenticated(
         &state,
@@ -464,8 +478,10 @@ pub async fn ssh_connect(
         .await
         .map_err(|e| format!("Channel open failed: {e}"))?;
 
+    let pty_cols = if cols > 0 { cols } else { 80 };
+    let pty_rows = if rows > 0 { rows } else { 24 };
     channel
-        .request_pty(false, "xterm-256color", 80, 24, 0, 0, &[])
+        .request_pty(false, "xterm-256color", pty_cols, pty_rows, 0, 0, &[])
         .await
         .map_err(|e| format!("PTY request failed: {e}"))?;
 
@@ -476,12 +492,14 @@ pub async fn ssh_connect(
 
     let session_id = uuid::Uuid::new_v4().to_string();
     let event_name = format!("ssh-output-{session_id}");
+    let closed_event_name = format!("ssh-closed-{session_id}");
 
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<SshCommand>();
 
+    let ssh_handle: Arc<client::Handle<SshClient>> = Arc::new(handle);
     {
         let mut mgr = state.ssh_sessions.lock().await;
-        mgr.ssh_handles.insert(session_id.clone(), Arc::new(handle));
+        mgr.ssh_handles.insert(session_id.clone(), ssh_handle.clone());
         mgr.sessions
             .insert(session_id.clone(), SshSession { cmd_tx });
     }
@@ -490,6 +508,15 @@ pub async fn ssh_connect(
         let mgr = state.ssh_sessions.lock().await;
         mgr.app.clone()
     };
+
+    // Clone the AppHandle so the spawned task can resolve AppState later
+    // (for resource_monitor's MonitorExec path: app.state::<AppState>()) without
+    // borrowing the Tauri State<'_, AppState>.
+    let app_handle_for_task = emit_app.clone();
+
+    // Clone the session id into a task-local binding so the outer `session_id`
+    // stays owned and valid for the log + return value below.
+    let session_id_task = session_id.clone();
 
     tokio::spawn(async move {
         loop {
@@ -503,7 +530,7 @@ pub async fn ssh_connect(
                             let _ = emit_app.emit(&event_name, data.to_vec());
                         }
                         Some(ChannelMsg::Eof) | None => {
-                            let _ = emit_app.emit(&event_name, Vec::<u8>::new());
+                            let _ = emit_app.emit(&closed_event_name, "remote-closed".to_string());
                             break;
                         }
                         _ => {}
@@ -517,9 +544,21 @@ pub async fn ssh_connect(
                         Some(SshCommand::Resize { cols, rows }) => {
                             let _ = channel.window_change(cols, rows, 0, 0).await;
                         }
+                        Some(SshCommand::MonitorExec(command)) => {
+                            // Run a one-shot exec on a fresh channel — does NOT
+                            // touch the interactive PTY. Parse /proc/* output and
+                            // emit resource-monitor-snapshot.
+                            handle_monitor_exec(
+                                session_id_task.clone(),
+                                command,
+                                &ssh_handle,
+                                &app_handle_for_task,
+                            )
+                            .await;
+                        }
                         Some(SshCommand::Disconnect) | None => {
                             let _ = channel.eof().await;
-                            let _ = emit_app.emit(&event_name, Vec::<u8>::new());
+                            let _ = emit_app.emit(&closed_event_name, "disconnected-by-user".to_string());
                             break;
                         }
                     }
@@ -535,6 +574,97 @@ pub async fn ssh_connect(
         connected: true,
         error: None,
     })
+}
+
+/// Run a one-shot exec command on a fresh channel and parse the /proc/* output
+/// into a ResourceSnapshot. Used by the resource_monitor module's polling loop
+/// (via SshCommand::MonitorExec). Does NOT touch the interactive PTY channel.
+///
+/// Flow:
+/// 1. Open a new session channel
+/// 2. exec(command) — the command is `cat /proc/stat; cat /proc/meminfo; cat /proc/net/dev; cat /proc/diskstats`
+/// 3. Read all stdout into a String
+/// 4. Use resource_monitor::build_snapshot to parse + build a ResourceSnapshot
+///    (this requires prev_cpu delta — we read the previous snapshot from the
+///    monitor handle to compute the CPU delta)
+/// 5. Emit "resource-monitor-snapshot" event with the parsed ResourceSnapshot
+/// 6. Record the snapshot + prev_cpu back into the monitor handle for next tick
+async fn handle_monitor_exec(
+    session_id: String,
+    command: String,
+    ssh_handle: &Arc<client::Handle<SshClient>>,
+    app: &AppHandle,
+) {
+    // Open a fresh exec channel (separate from the interactive PTY).
+    let mut exec_channel = match ssh_handle.channel_open_session().await {
+        Ok(ch) => ch,
+        Err(e) => {
+            warn!(
+                "resource_monitor: session {session_id} exec channel open failed: {e}"
+            );
+            return;
+        }
+    };
+
+    if let Err(e) = exec_channel.exec(true, command).await {
+        warn!(
+            "resource_monitor: session {session_id} exec failed: {e}"
+        );
+        return;
+    }
+
+    // Collect stdout + stderr.
+    let mut stdout = Vec::new();
+    while let Some(msg) = exec_channel.wait().await {
+        match msg {
+            ChannelMsg::Data { data } => stdout.extend_from_slice(&data),
+            ChannelMsg::ExtendedData { data, ext: _ } => {
+                // stderr — log but don't fail the snapshot
+                let msg = String::from_utf8_lossy(&data);
+                warn!(
+                    "resource_monitor: session {session_id} stderr: {}",
+                    msg.trim()
+                );
+            }
+            ChannelMsg::Eof | ChannelMsg::ExitStatus { .. } => break,
+            ChannelMsg::Close => break,
+            _ => {}
+        }
+    }
+
+    let combined = String::from_utf8_lossy(&stdout);
+
+    // Resolve AppState via the AppHandle so we can read/write resource_monitors.
+    let resource_state = app.state::<crate::AppState>();
+
+    // Fetch prev_cpu so build_snapshot can compute a CPU delta.
+    let prev_cpu = match resource_state.resource_monitors.lock() {
+        Ok(m) => m.handles.get(&session_id).and_then(|h| h.prev_cpu.clone()),
+        Err(_) => None,
+    };
+
+    // Build snapshot (parses /proc/stat, /proc/meminfo, /proc/net/dev, /proc/diskstats).
+    let snapshot = crate::resource_monitor::build_snapshot(&session_id, &combined, prev_cpu);
+
+    // Compute prev_cpu for the NEXT tick = (idle, total) from this sample.
+    // We re-parse /proc/stat to get the current jiffies.
+    let (idle_now, total_now, _) =
+        match crate::resource_monitor::parse_proc_stat(
+            &crate::resource_monitor::extract_stat_section(&combined),
+        ) {
+            Ok(v) => v,
+            Err(_) => (0, 0, 0),
+        };
+
+    // Emit the structured snapshot to the frontend.
+    if let Err(e) = app.emit("resource-monitor-snapshot", snapshot.clone()) {
+        warn!(
+            "resource_monitor: session {session_id} emit snapshot failed: {e}"
+        );
+    }
+
+    // Record the snapshot + prev_cpu back into the monitor handle.
+    crate::resource_monitor::record_snapshot(&resource_state, snapshot, (idle_now, total_now));
 }
 
 #[tauri::command]
@@ -670,6 +800,19 @@ pub async fn ssh_disconnect(
         }
         mgr.tunnels.remove(&tid);
     }
+    drop(mgr);
+
+    // Stop any active resource monitor for this session. Direct module call —
+    // no event hop needed since both modules share AppState.
+    {
+        let mut monitors = state.resource_monitors.lock().map_err(|e| e.to_string())?;
+        if let Some(handle) = monitors.handles.remove(&session_id) {
+            // Signal the polling task to stop. Ignore error — task may already be done.
+            let _ = handle.cancel.send(());
+            info!("resource_monitor: stopped monitor for {session_id} (via ssh_disconnect)");
+        }
+    }
+
     Ok(())
 }
 

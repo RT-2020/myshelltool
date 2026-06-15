@@ -33,7 +33,29 @@ try {
   const windowBox = await page.locator('.window').boundingBox();
   if (!windowBox) throw new Error('window shell missing');
 
-  console.log('UI smoke test passed (Tauri-runtime-gated smoke)');
+  // Wave 5: 5 区域可见性断言（AC22）
+  const regions = ['titlebar', 'sidebar', 'center-top', 'center-bottom', 'right', 'statusbar'];
+  for (const region of regions) {
+    const el = page.locator(`[data-region="${region}"]`).first();
+    const visible = await el.isVisible().catch(() => false);
+    if (!visible) throw new Error(`5-region layout: data-region="${region}" not visible`);
+  }
+
+  // Wave 5: 右侧栏资源监控占位（AC22 — 浏览器预览模式显示"需要桌面端"）
+  const rmPanel = page.locator('[data-region="resource-monitor"]').first();
+  const rmVisible = await rmPanel.isVisible().catch(() => false);
+  if (!rmVisible) throw new Error('resource-monitor panel not visible');
+  const rmText = await rmPanel.textContent();
+  if (!rmText?.includes('需要桌面端')) {
+    throw new Error(`resource-monitor should show "需要桌面端" in preview mode (got: ${rmText})`);
+  }
+
+  // Wave 5: 运维摘要面板渲染（AC10）
+  const opsPanel = page.locator('[data-region="ops-summary"]').first();
+  const opsVisible = await opsPanel.isVisible().catch(() => false);
+  if (!opsVisible) throw new Error('ops-summary panel not visible');
+
+  console.log('UI smoke test passed (Tauri-runtime-gated smoke + 5-region + resource-monitor placeholder)');
 } finally {
   await browser.close();
 }
