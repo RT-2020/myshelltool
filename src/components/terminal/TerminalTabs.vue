@@ -1,0 +1,338 @@
+<script setup>
+import { ref, onMounted, onBeforeUnmount, watch, nextTick, computed } from 'vue';
+import { Plus, MoreHorizontal, X, Copy, FolderX, SquareX } from 'lucide-vue-next';
+
+const props = defineProps({
+  sessions: { type: Array, default: () => [] },
+  activeSessionId: { type: String, default: '' }
+});
+const emit = defineEmits(['select', 'close', 'close-others', 'close-right', 'copy-host', 'new-terminal']);
+
+const barRef = ref(null);
+const overflowed = ref([]);
+const overflowMenuOpen = ref(false);
+const contextMenu = ref({ open: false, x: 0, y: 0, sessionId: '' });
+
+function updateOverflow() {
+  const bar = barRef.value;
+  if (!bar) return;
+  const tabs = Array.from(bar.querySelectorAll('[data-session-tab]'));
+  const reserve = 90;
+  const limit = bar.clientWidth - reserve;
+  const next = [];
+  for (const t of tabs) {
+    if (t.offsetLeft + t.offsetWidth > limit) {
+      next.push(t.dataset.sessionId);
+    }
+  }
+  overflowed.value = next;
+}
+
+let ro = null;
+onMounted(() => {
+  if (typeof ResizeObserver !== 'undefined' && barRef.value) {
+    ro = new ResizeObserver(updateOverflow);
+    ro.observe(barRef.value);
+  }
+  nextTick(updateOverflow);
+});
+onBeforeUnmount(() => { if (ro) ro.disconnect(); });
+watch(() => props.sessions.length, () => nextTick(updateOverflow));
+
+function onTabClick(sessionId) { emit('select', sessionId); }
+function onTabClose(e, sessionId) {
+  e.stopPropagation();
+  emit('close', sessionId);
+}
+function onContextMenu(e, sessionId) {
+  e.preventDefault();
+  contextMenu.value = { open: true, x: e.clientX, y: e.clientY, sessionId };
+}
+function closeAllMenus() {
+  contextMenu.value.open = false;
+  overflowMenuOpen.value = false;
+}
+
+const visibleSessions = computed(() => props.sessions.filter(s => !overflowed.value.includes(s.sessionId)));
+const hiddenSessions = computed(() => props.sessions.filter(s => overflowed.value.includes(s.sessionId)));
+
+function statusFor(s) {
+  if (s.status === 'connected') return 'connected';
+  if (s.status === 'connecting') return 'connecting';
+  if (s.status === 'disconnected') return 'disconnected';
+  return 'idle';
+}
+function tooltipFor(s) {
+  const parts = [s.asset?.name || '', s.asset?.host || ''];
+  if (s.oscTitle) parts.push(s.oscTitle);
+  return parts.filter(Boolean).join(' · ');
+}
+</script>
+
+<template>
+  <div class="terminal-tabs-host">
+    <div class="tabbar terminal-tabs" ref="barRef" role="tablist" aria-label="SSH 会话标签">
+      <button class="workspace-tab terminal-tab-new" role="tab" @click="emit('new-terminal')" title="新建会话">
+        <Plus :size="14" />
+        <span class="new-label">新建</span>
+      </button>
+      <div
+        v-for="session in visibleSessions"
+        :key="session.sessionId"
+        :class="['workspace-tab', 'session-tab', { active: session.sessionId === activeSessionId }]"
+        role="tab"
+        tabindex="0"
+        :aria-selected="String(session.sessionId === activeSessionId)"
+        :data-session-id="session.sessionId"
+        data-session-tab
+        :title="tooltipFor(session)"
+        @click="onTabClick(session.sessionId)"
+        @keydown.enter.prevent="onTabClick(session.sessionId)"
+        @keydown.space.prevent="onTabClick(session.sessionId)"
+        @contextmenu="onContextMenu($event, session.sessionId)"
+        @mousedown.middle.prevent="onTabClick($event, session.sessionId); emit('close', session.sessionId)"
+      >
+        <span :class="['session-status-dot', statusFor(session)]"></span>
+        <span class="session-tab-name">{{ session.asset?.name }}</span>
+        <span class="session-tab-host">{{ session.asset?.host }}</span>
+        <span v-if="session.oscTitle" class="session-tab-osc">· {{ session.oscTitle }}</span>
+        <button class="tab-close" title="关闭 (Ctrl+W)" @click="onTabClose($event, session.sessionId)" tabindex="-1"><X :size="12" /></button>
+      </div>
+      <button v-if="hiddenSessions.length" class="workspace-tab overflow-trigger" :class="{ active: overflowMenuOpen }" @click="overflowMenuOpen = !overflowMenuOpen" title="更多会话">
+        <MoreHorizontal :size="14" />
+      </button>
+    </div>
+
+    <Teleport to="body">
+      <div v-if="overflowMenuOpen && hiddenSessions.length" class="overflow-menu" @click.stop>
+        <button v-for="session in hiddenSessions" :key="session.sessionId" :class="['overflow-item', { active: session.sessionId === activeSessionId }]" @click="() => { onTabClick(session.sessionId); overflowMenuOpen = false; }">
+          <span :class="['session-status-dot', statusFor(session)]"></span>
+          <span class="overflow-name">{{ session.asset?.name }}</span>
+          <span class="overflow-host muted">{{ session.asset?.host }}</span>
+        </button>
+      </div>
+      <div v-if="contextMenu.open" class="tab-context-menu" :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }" @click.stop>
+        <button @click="emit('copy-host', contextMenu.sessionId); closeAllMenus()"><Copy :size="14" /> 复制主机地址</button>
+        <button @click="emit('close-others', contextMenu.sessionId); closeAllMenus()"><FolderX :size="14" /> 关闭其他</button>
+        <button @click="emit('close-right', contextMenu.sessionId); closeAllMenus()"><SquareX :size="14" /> 关闭右侧</button>
+        <button class="danger" @click="emit('close', contextMenu.sessionId); closeAllMenus()"><X :size="14" /> 关闭此标签</button>
+      </div>
+      <div v-if="overflowMenuOpen || contextMenu.open" class="tab-overlay" @click="closeAllMenus" @contextmenu.prevent="closeAllMenus"></div>
+    </Teleport>
+  </div>
+</template>
+
+<style scoped lang="scss">
+@use '@/styles/_tokens' as *;
+
+.terminal-tabs-host {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.terminal-tabs {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  overflow: hidden;
+}
+
+.workspace-tab { min-width: 0; }
+
+.terminal-tab-new {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border: none;
+  background: transparent;
+  color: var(--app-muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard);
+}
+
+.terminal-tab-new:hover {
+  color: var(--accent);
+  background: var(--app-hover);
+}
+
+.session-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  max-width: 220px;
+  flex: 0 1 auto;
+  min-width: 0;
+  // Tabby-style: single-pixel bottom border is the only emphasis for active.
+  border-block-end: 2px solid transparent;
+  transition: background var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard);
+}
+
+.session-tab:hover {
+  background: var(--app-hover);
+}
+
+.session-tab.active {
+  background: var(--app-hover);
+  border-block-end-color: var(--accent);
+  color: var(--app-strong);
+}
+
+.session-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--app-subtle);
+  flex: 0 0 auto;
+}
+
+.session-status-dot.connected { background: var(--success); }
+.session-status-dot.connecting { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
+.session-status-dot.disconnected { background: var(--danger); }
+.session-status-dot.idle { background: var(--app-subtle); }
+
+.session-tab-name {
+  font-size: var(--text-xs);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 110px;
+}
+
+.session-tab-host {
+  font-size: 10px;
+  color: var(--app-muted);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.session-tab-osc {
+  font-size: 10px;
+  color: var(--app-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100px;
+}
+
+.tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  background: transparent;
+  color: var(--app-muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--ease-standard),
+    background var(--motion-fast) var(--ease-standard);
+  flex: 0 0 auto;
+}
+
+.session-tab:hover .tab-close,
+.session-tab.active .tab-close { opacity: 1; }
+
+.tab-close:hover {
+  background: color-mix(in oklab, var(--danger) 20%, transparent);
+  color: var(--danger);
+}
+
+.overflow-trigger {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--app-muted);
+}
+
+.overflow-trigger:hover,
+.overflow-trigger.active {
+  color: var(--accent);
+  background: var(--app-hover);
+}
+
+// ============================================================
+// Floating menus (overflow + context) — low-weight, single border
+// ============================================================
+.overflow-menu,
+.tab-context-menu {
+  position: fixed;
+  z-index: var(--z-dropdown);
+  background: var(--app-panel);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--elev-raised);
+  padding: 4px;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.overflow-item,
+.tab-context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px var(--space-2);
+  background: transparent;
+  border: none;
+  color: var(--app-text);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  text-align: left;
+}
+
+.overflow-item:hover,
+.tab-context-menu button:hover { background: var(--app-hover); }
+
+.overflow-item.active {
+  background: color-mix(in oklab, var(--accent) 15%, transparent);
+  color: var(--accent);
+}
+
+.overflow-name {
+  font-size: var(--text-xs);
+  font-weight: 500;
+}
+
+.overflow-host {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  margin-left: auto;
+}
+
+.tab-context-menu button.danger:hover {
+  background: color-mix(in oklab, var(--danger) 18%, transparent);
+  color: var(--danger);
+}
+
+.tab-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-dropdown) - 1);
+  background: transparent;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+</style>

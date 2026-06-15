@@ -1,0 +1,309 @@
+// Design tokens for myshelltool
+// Source of truth for colors / spacing / radius / typography / motion / z-index.
+// Wave 1 of UI full refactor (Tabby/Termius visual × FinalShell 5-region layout).
+//
+// 同时输出:
+//   1) SCSS maps ($colors / $spacing / $radius / $typography) 供 SCSS 函数消费
+//   2) :root CSS 变量 (--*) 供运行时主题切换 + JS 读取
+//
+// 三态主题: system / light / dark
+// 默认 :root 为 dark（与原 styles.css 行为一致，避免破坏现有视觉）。
+// :root[data-theme="light"] 覆盖为浅色调色板。
+// :root[data-theme="auto"] 通过 @media (prefers-color-scheme) 自适应。
+
+// ===========================================================================
+// SCSS Maps（供 SCSS 函数 / mixin 消费，不输出到 CSS）
+// ===========================================================================
+
+$colors: (
+  // brand
+  accent: #2f6feb,
+  accent-hover: color-mix(in oklab, #2f6feb, black 8%),
+  accent-active: color-mix(in oklab, #2f6feb, black 14%),
+  accent-on: #ffffff,
+  // status
+  success: #17a34a,
+  warn: #eab308,
+  danger: #dc2626,
+  // light theme base
+  bg-light: #fafafa,
+  surface-light: #ffffff,
+  fg-light: #111111,
+  muted-light: #6b6b6b,
+  border-light: #e5e5e5,
+  // dark theme base
+  fg-dark: #111111,
+  surface-dark: #ffffff,
+);
+
+$spacing: (
+  1: 4px,
+  2: 8px,
+  3: 12px,
+  4: 16px,
+  5: 20px,
+  6: 24px,
+  8: 32px,
+  12: 48px,
+  20: 80px,
+);
+
+$radius: (
+  sm: 8px,
+  md: 12px,
+  lg: 16px,
+  pill: 9999px,
+);
+
+$typography: (
+  // font families
+  font-display: ('Inter', -apple-system, system-ui, sans-serif),
+  font-body: ('Inter', -apple-system, system-ui, sans-serif),
+  font-mono: (ui-monospace, 'JetBrains Mono', monospace),
+  // sizes
+  text-xs: 12px,
+  text-sm: 14px,
+  text-base: 16px,
+  text-lg: 20px,
+  text-xl: 24px,
+  text-2xl: 32px,
+  text-3xl: 48px,
+  text-4xl: 64px,
+  // line heights
+  leading-body: 1.5,
+  leading-tight: 1.2,
+  // letter spacing
+  tracking-display: -0.01em,
+);
+
+$motion: (
+  fast: 150ms,
+  base: 200ms,
+);
+
+$ease: (
+  standard: cubic-bezier(0.2, 0, 0, 1),
+);
+
+// z-index 层级表（Critic 改进 7：避免散落 magic number）
+$z-indexes: (
+  base: 1,
+  dropdown: 100,
+  sticky: 200,
+  drawer: 300,
+  modal: 400,
+  toast: 500,
+  tooltip: 600,
+);
+
+// ===========================================================================
+// CSS 变量输出（运行时主题切换消费）
+// ===========================================================================
+
+:root {
+  // primitives
+  --bg: #fafafa;
+  --surface: #ffffff;
+  --surface-warm: var(--surface);
+  --fg: #111111;
+  --fg-2: var(--fg);
+  --muted: #6b6b6b;
+  --meta: var(--muted);
+  --border: #e5e5e5;
+  --border-soft: var(--border);
+
+  // brand
+  --accent: #2f6feb;
+  --accent-on: #ffffff;
+  --accent-hover: color-mix(in oklab, var(--accent), black 8%);
+  --accent-active: color-mix(in oklab, var(--accent), black 14%);
+
+  // status
+  --success: #17a34a;
+  --warn: #eab308;
+  --danger: #dc2626;
+
+  // typography
+  --font-display: 'Inter', -apple-system, system-ui, sans-serif;
+  --font-body: 'Inter', -apple-system, system-ui, sans-serif;
+  --font-mono: ui-monospace, 'JetBrains Mono', monospace;
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-base: 16px;
+  --text-lg: 20px;
+  --text-xl: 24px;
+  --text-2xl: 32px;
+  --text-3xl: 48px;
+  --text-4xl: 64px;
+  --leading-body: 1.5;
+  --leading-tight: 1.2;
+  --tracking-display: -0.01em;
+
+  // spacing
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-20: 80px;
+
+  // section padding (legacy, retained for backward compat)
+  --section-y-desktop: 80px;
+  --section-y-tablet: 48px;
+  --section-y-phone: 32px;
+
+  // radius
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-pill: 9999px;
+
+  // elevation
+  --elev-flat: none;
+  --elev-ring: 0 0 0 1px var(--border);
+  --elev-raised: 0 2px 8px color-mix(in oklab, var(--fg), transparent 92%);
+  --focus-ring: 0 0 0 3px color-mix(in oklab, var(--accent), transparent 70%);
+
+  // motion
+  --motion-fast: 150ms;
+  --motion-base: 200ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+  // layout
+  --container-max: 1200px;
+  --container-gutter-desktop: 24px;
+  --container-gutter-tablet: 16px;
+  --container-gutter-phone: 12px;
+
+  // z-index (Critic 改进 7)
+  --z-base: 1;
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-drawer: 300;
+  --z-modal: 400;
+  --z-toast: 500;
+  --z-tooltip: 600;
+
+  // =========================================================================
+  // Dark theme（默认 :root 即 dark，与原 styles.css 行为一致）
+  // =========================================================================
+  color-scheme: dark;
+  --app-bg: color-mix(in oklab, var(--fg), var(--accent) 7%);
+  --app-window: color-mix(in oklab, var(--fg), var(--surface) 5%);
+  --app-chrome: color-mix(in oklab, var(--fg), var(--accent) 8%);
+  --app-panel: color-mix(in oklab, var(--fg), var(--surface) 6%);
+  --app-panel-2: color-mix(in oklab, var(--fg), var(--surface) 4%);
+  --app-control: color-mix(in oklab, var(--fg), var(--surface) 5%);
+  --app-hover: color-mix(in oklab, var(--surface), transparent 93%);
+  --app-border: color-mix(in oklab, var(--border), transparent 78%);
+  --app-border-strong: color-mix(in oklab, var(--border), transparent 66%);
+  --app-text: color-mix(in oklab, var(--surface), var(--border) 10%);
+  --app-strong: var(--surface);
+  --app-muted: color-mix(in oklab, var(--surface), transparent 47%);
+  --app-subtle: color-mix(in oklab, var(--surface), transparent 62%);
+  --app-scrim: color-mix(in oklab, var(--fg), transparent 26%);
+  --app-shadow: 0 20px 58px color-mix(in oklab, var(--fg), transparent 48%);
+  --terminal-bg: color-mix(in oklab, var(--fg), var(--accent) 3%);
+  --terminal-text: color-mix(in oklab, var(--surface), var(--success) 7%);
+  --terminal-prompt: color-mix(in oklab, var(--surface), transparent 32%);
+}
+
+// ===========================================================================
+// 显式 dark override（spec 一致性：避免"无属性 = dark"隐式约定）
+// ===========================================================================
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --app-bg: color-mix(in oklab, var(--fg), var(--accent) 7%);
+  --app-window: color-mix(in oklab, var(--fg), var(--surface) 5%);
+  --app-chrome: color-mix(in oklab, var(--fg), var(--accent) 8%);
+  --app-panel: color-mix(in oklab, var(--fg), var(--surface) 6%);
+  --app-panel-2: color-mix(in oklab, var(--fg), var(--surface) 4%);
+  --app-control: color-mix(in oklab, var(--fg), var(--surface) 5%);
+  --app-hover: color-mix(in oklab, var(--surface), transparent 93%);
+  --app-border: color-mix(in oklab, var(--border), transparent 78%);
+  --app-border-strong: color-mix(in oklab, var(--border), transparent 66%);
+  --app-text: color-mix(in oklab, var(--surface), var(--border) 10%);
+  --app-strong: var(--surface);
+  --app-muted: color-mix(in oklab, var(--surface), transparent 47%);
+  --app-subtle: color-mix(in oklab, var(--surface), transparent 62%);
+  --app-scrim: color-mix(in oklab, var(--fg), transparent 26%);
+  --app-shadow: 0 20px 58px color-mix(in oklab, var(--fg), transparent 48%);
+  --terminal-bg: color-mix(in oklab, var(--fg), var(--accent) 3%);
+  --terminal-text: color-mix(in oklab, var(--surface), var(--success) 7%);
+  --terminal-prompt: color-mix(in oklab, var(--surface), transparent 32%);
+}
+
+// ===========================================================================
+// Light theme override
+// ===========================================================================
+:root[data-theme='light'] {
+  color-scheme: light;
+  --app-bg: var(--bg);
+  --app-window: var(--surface);
+  --app-chrome: color-mix(in oklab, var(--surface), var(--bg) 70%);
+  --app-panel: var(--surface);
+  --app-panel-2: color-mix(in oklab, var(--bg), var(--surface) 58%);
+  --app-control: color-mix(in oklab, var(--surface), var(--bg) 44%);
+  --app-hover: color-mix(in oklab, var(--accent), transparent 93%);
+  --app-border: var(--border);
+  --app-border-strong: color-mix(in oklab, var(--border), var(--muted) 18%);
+  --app-text: var(--fg);
+  --app-strong: var(--fg);
+  --app-muted: var(--muted);
+  --app-subtle: color-mix(in oklab, var(--muted), transparent 24%);
+  --app-scrim: color-mix(in oklab, var(--fg), transparent 72%);
+  --app-shadow: 0 18px 48px color-mix(in oklab, var(--fg), transparent 88%);
+  --terminal-bg: color-mix(in oklab, var(--surface), var(--bg) 72%);
+  --terminal-text: var(--fg);
+  --terminal-prompt: color-mix(in oklab, var(--fg), transparent 28%);
+}
+
+// ===========================================================================
+// System theme（CSS @media 切换；由 useTheme 在 system 模式下设置 data-theme='auto'）
+// ===========================================================================
+:root[data-theme='auto'] {
+  color-scheme: light dark;
+  @media (prefers-color-scheme: dark) {
+    --app-bg: color-mix(in oklab, var(--fg), var(--accent) 7%);
+    --app-window: color-mix(in oklab, var(--fg), var(--surface) 5%);
+    --app-chrome: color-mix(in oklab, var(--fg), var(--accent) 8%);
+    --app-panel: color-mix(in oklab, var(--fg), var(--surface) 6%);
+    --app-panel-2: color-mix(in oklab, var(--fg), var(--surface) 4%);
+    --app-control: color-mix(in oklab, var(--fg), var(--surface) 5%);
+    --app-hover: color-mix(in oklab, var(--surface), transparent 93%);
+    --app-border: color-mix(in oklab, var(--border), transparent 78%);
+    --app-border-strong: color-mix(in oklab, var(--border), transparent 66%);
+    --app-text: color-mix(in oklab, var(--surface), var(--border) 10%);
+    --app-strong: var(--surface);
+    --app-muted: color-mix(in oklab, var(--surface), transparent 47%);
+    --app-subtle: color-mix(in oklab, var(--surface), transparent 62%);
+    --app-scrim: color-mix(in oklab, var(--fg), transparent 26%);
+    --app-shadow: 0 20px 58px color-mix(in oklab, var(--fg), transparent 48%);
+    --terminal-bg: color-mix(in oklab, var(--fg), var(--accent) 3%);
+    --terminal-text: color-mix(in oklab, var(--surface), var(--success) 7%);
+    --terminal-prompt: color-mix(in oklab, var(--surface), transparent 32%);
+  }
+  @media (prefers-color-scheme: light) {
+    --app-bg: var(--bg);
+    --app-window: var(--surface);
+    --app-chrome: color-mix(in oklab, var(--surface), var(--bg) 70%);
+    --app-panel: var(--surface);
+    --app-panel-2: color-mix(in oklab, var(--bg), var(--surface) 58%);
+    --app-control: color-mix(in oklab, var(--surface), var(--bg) 44%);
+    --app-hover: color-mix(in oklab, var(--accent), transparent 93%);
+    --app-border: var(--border);
+    --app-border-strong: color-mix(in oklab, var(--border), var(--muted) 18%);
+    --app-text: var(--fg);
+    --app-strong: var(--fg);
+    --app-muted: var(--muted);
+    --app-subtle: color-mix(in oklab, var(--muted), transparent 24%);
+    --app-scrim: color-mix(in oklab, var(--fg), transparent 72%);
+    --app-shadow: 0 18px 48px color-mix(in oklab, var(--fg), transparent 88%);
+    --terminal-bg: color-mix(in oklab, var(--surface), var(--bg) 72%);
+    --terminal-text: var(--fg);
+    --terminal-prompt: color-mix(in oklab, var(--fg), transparent 28%);
+  }
+}

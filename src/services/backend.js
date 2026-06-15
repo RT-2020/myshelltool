@@ -16,14 +16,21 @@ export async function listenBackendEvent(eventName, handler) {
     return tauriEventListen(eventName, handler);
   }
 
-  const currentWindow = window.__TAURI__?.webviewWindow?.getCurrentWebviewWindow?.()
-    || window.__TAURI__?.window?.getCurrentWindow?.()
-    || window.__TAURI__?.core?.getCurrentWindow?.();
+  const currentWindow = getTauriWindow();
   if (typeof currentWindow?.listen === 'function') {
     return currentWindow.listen(eventName, handler);
   }
 
   throw new Error(`Event "${eventName}" requires the Tauri desktop runtime.`);
+}
+
+// 返回 Tauri 2 当前窗口对象（WebviewWindow 或 Window），无 runtime 时 null。
+// 用于调 setFullscreen / maximize / minimize 等 OS 级窗口 API。
+export function getTauriWindow() {
+  return window.__TAURI__?.webviewWindow?.getCurrentWebviewWindow?.()
+    || window.__TAURI__?.window?.getCurrentWindow?.()
+    || window.__TAURI__?.core?.getCurrentWindow?.()
+    || null;
 }
 
 function getTauriInvoke() {
