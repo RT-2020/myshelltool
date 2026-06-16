@@ -280,22 +280,53 @@ pub fn run() {
 
 // ─── MCP server 入口（D1 双二进制：myshelltool-mcp.exe console 子系统调用）───
 
+/// 解析 MCP 进程的数据目录。
+///
+/// 优先级：
+/// 1. 环境变量 `MYSHELLTOOL_DATA_DIR`（Claude Desktop 配置里可显式指定）
+/// 2. `%APPDATA%/myshelltool`（与 GUI 的 Tauri app_data_dir 约定一致，
+///    保证 GUI 与 MCP 读同一份资产/凭据/known_hosts）
+fn mcp_data_dir() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("MYSHELLTOOL_DATA_DIR") {
+        return std::path::PathBuf::from(dir);
+    }
+    let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(appdata).join("myshelltool")
+}
+
 /// 初始化 MCP 专用 logger。
 ///
-/// 与 GUI 的 FileLogger 不同：MCP 子进程模式**绝不向 stdout 输出任何日志**
-/// （会破坏 JSON-RPC 协议帧解析），仅写 stderr + 文件。
-/// Layer 0 阶段为桩，Layer 2 接入 rmcp 时落地完整实现。
+/// 复用 GUI 的 `FileLogger`（stderr + 文件双写，仅 Info 及以上）——
+/// 它本来就**绝不写 stdout**（会破坏 JSON-RPC 协议帧解析），符合 MCP 要求。
+///
+/// 日志路径：`<data_dir>/logs/myshelltool-mcp.log`（与 GUI 日志分开，便于排查）。
 pub fn init_mcp_logger() {
-    // TODO(Layer 2): 初始化 stderr + 文件双写 logger
-    eprintln!("[myshelltool-mcp] logger stub initialized");
+    let log_path = mcp_data_dir().join("logs").join("myshelltool-mcp.log");
+    match FileLogger::new(&log_path) {
+        Ok(logger) => {
+            if let Err(e) = log::set_boxed_logger(Box::new(logger))
+                .map(|()| log::set_max_level(log::LevelFilter::Info))
+            {
+                eprintln!("[myshelltool-mcp] failed to set logger: {e}");
+            }
+            log::info!("myshelltool-mcp logger initialized, log: {}", log_path.display());
+        }
+        Err(e) => {
+            // 日志初始化失败不致命：退化为仅 stderr
+            eprintln!("[myshelltool-mcp] failed to open log file {}: {e}", log_path.display());
+        }
+    }
 }
 
 /// MCP stdio server 主入口。被 `src/bin/mcp.rs` 调用。
 ///
-/// Layer 0 阶段为桩：仅打印启动信息后返回，验证双二进制脚手架可编译可运行。
-/// Layer 2 落地 rmcp stdio server 主循环（加载资产 + 构造 headless manager + serve）。
+/// Layer 2：落地 rmcp stdio serve 主循环（替换 M1 的桩）。
+/// Layer 7（降级）会在此函数开头加 GUI 检测 + 只读降级分支。
 pub async fn run_mcp_stdio() -> Result<(), String> {
-    log::info!("myshelltool-mcp stdio server starting (Layer 0 stub)");
-    eprintln!("[myshelltool-mcp] run_mcp_stdio stub ready (Layer 0 scaffold OK, awaiting Layer 2 rmcp wiring)");
+    log::info!("myshelltool-mcp stdio server starting");
+    // Layer 2：rmcp stdio serve（assets/manager 加载留待 Layer 3 需要时）
+    mcp::server::serve_stdio()
+        .await
+        .map_err(|e| format!("MCP server error: {e}"))?;
     Ok(())
 }
