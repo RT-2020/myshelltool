@@ -1,6 +1,6 @@
 [package]
 name = "myshelltool"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 # 双二进制（D1）：cargo run / tauri dev 默认跑 GUI，
 # myshelltool-mcp 由 src/bin/mcp.rs 独立构建（console 子系统）。
