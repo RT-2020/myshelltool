@@ -1,0 +1,38 @@
+---
+description: Vue 3 + Pinia 前端编码规则（setup store、设计 token、组件分层、跨 store 桥接）
+globs:
+  - "src/**/*.vue"
+  - "src/**/*.js"
+alwaysApply: false
+---
+
+# Vue 3 / Pinia 前端规则
+
+适用 `src/**` 下文件。完整项目上下文见根目录 `AGENTS.md`。
+
+## 组件
+- `<script setup>` + Composition API，禁止 Options API。
+- 业务组件按域分目录：`shell/` `terminal/` `files/` `resource-monitor/`；无业务基础组件放 `ui/`，命名 `App*.vue`，并在 `ui/index.js` barrel 导出。
+- 图标统一 `lucide-vue-next`：`import { Plus, Pencil, Trash2 } from 'lucide-vue-next';`
+
+## 样式（SCSS + token）
+- `<style scoped lang="scss">` 顶部 `@use '@/styles/_tokens' as *;`。
+- **必须用 `var(--token)`**：颜色、间距、圆角、阴影、动效、z-index（`var(--z-base|dropdown|sticky|drawer|modal|toast|tooltip)`）。禁止硬编码。
+- 新增 token：加到 `_tokens.scss` 的 map 并暴露为 `:root` CSS 变量。
+
+## 状态（Pinia）
+- setup store 风格：`defineStore('x', () => { const r = ref(...); return {...}; })`。
+- **6 领域 store**：`sessions`(活跃会话/终端) `assets`(连接资产/分组) `files`(SFTP/传输) `tunnels` `ui`(主题/tab/modal/搜索) `resourceMonitor`。
+- **`workbench.js` 是编排壳**：实例化子 store，`initialize()` 编排启动，re-export 子 store 表面。
+- 跨 store 依赖：子 store 用 `attachWorkbench(bridge)` 注入（lazy），调 `wb().xxx`。**禁止循环 import**。
+- 新 action → 加子 store → 在 `workbench.js` return 块 re-export。
+- `workbench.js` 暴露子 store 响应式 state **必须 `computed()` 包裹**（直接暴露子 store ref 会丢响应性）。
+
+## IPC
+- 经 `src/services/backend.js`：`invokeBackend(command, args)` / `listenBackendEvent(event, handler)`。
+- 非 Tauri runtime（浏览器预览）会抛错——SSH 类功能只在 `npm run tauri:dev` 可用。
+- 命令参数 camelCase。资产经 `normalizeAsset()` 规整。
+
+## 操作入口模式
+- 右键菜单：`<AppContextMenu :open :items :x :y @close>`，`items:[{label,action,danger,separator,disabled}]`，危险项 `danger:true`。参照 `FileSurface.vue`。
+- 弹窗：`store.modal = { type, ...payload }`，`GlobalModals.vue` 按 `modal.type` 分支。新增 type 同步改 `modalTitle`/`submitModal`/`watch`。保留 legacy 选择器（`#modalLayer`/`#modalBody`/`.modal-actions .btn.danger`）兼容测试。

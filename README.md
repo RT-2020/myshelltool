@@ -4,7 +4,7 @@ Windows SSH 运维客户端，Rust + Tauri 构建。
 
 ## 功能
 
-- **连接资产管理** — 分组、标签、筛选、收藏，本地 JSON 持久化
+- **连接资产管理** — 多级嵌套分组（`/` 分隔路径）、标签、筛选、收藏，本地 JSON 持久化；资产支持编辑/复制/删除，分组支持重命名/解散/新建
 - **SSH 终端** — 多标签会话、xterm.js 前端、自动 fit、深色/浅色主题
 - **Host Key 验证** — 首次连接指纹确认、变更高危警告、known_hosts 持久化
 - **多认证方式** — 密码、私钥（ed25519/RSA）、passphrase、keyboard-interactive 降级
@@ -23,30 +23,48 @@ Windows SSH 运维客户端，Rust + Tauri 构建。
 |---|---|
 | 桌面框架 | Tauri 2 |
 | 后端 | Rust (russh 0.49, russh-sftp 2.x, tokio) |
-| 前端 | Vanilla JS + CSS，无框架 |
-| 终端 | xterm.js 6 + addon-fit + addon-search |
+| 前端 | Vue 3 (`<script setup>`) + Pinia (setup store) + SCSS 设计 token |
+| 图标 | lucide-vue-next |
+| 终端 | xterm.js 6 + addon-fit/search/web-links/webgl |
 | 远程编辑 | Monaco Editor 0.52 (CDN) |
-| 构建 | Vite 7 |
+| 构建 | Vite 7（root=`src/`，`@`→`src` 别名） |
 | 测试 | Playwright (UI smoke), cargo test (core) |
 
 ## 项目结构
 
 ```
 myshelltool/
-├── src/                          # 前端
-│   ├── index.html                # 主页面
-│   ├── main.js                   # 应用逻辑
-│   └── styles.css                # 样式
+├── src/                          # 前端（Vite root）
+│   ├── index.html                # 主页面（Vite 入口）
+│   ├── main.js                   # 应用入口：createApp(App).use(createPinia()).mount()
+│   ├── App.vue                   # 根组件：5 区域布局 + onMounted 调 store.initialize()
+│   ├── components/
+│   │   ├── shell/                # 外壳：AppShellLayout/TitleBar/StatusBar/
+│   │   │                         #        ConnectionSidebar/AssetGroupNode/GlobalModals
+│   │   ├── terminal/             # 终端：TerminalSurface/Tabs/Toolbar
+│   │   ├── files/                # 文件：FileSurface/FileColumn
+│   │   ├── resource-monitor/     # 资源监控：Cpu/Memory/Network/Disk 图表
+│   │   └── ui/                   # 基础组件库：App*(Input/Button/Select/Modal/...)
+│   ├── stores/                   # Pinia：workbench(编排) + sessions/assets/files/
+│   │                             #        tunnels/ui/resourceMonitor(6 领域)
+│   ├── composables/              # useTheme/useClipboard/useTerminalConfig/...
+│   ├── lib/                      # terminalController/terminalThemes/dangerousCommands
+│   ├── services/backend.js       # Tauri IPC 桥（invokeBackend/listenBackendEvent）
+│   └── styles/                   # SCSS：_tokens(设计token)/_base/_utilities/main
 ├── src-tauri/                    # Tauri/Rust 后端
 │   ├── Cargo.toml
 │   ├── build.rs                  # 构建脚本（含 windres 容错）
 │   └── src/
-│       ├── lib.rs                # Tauri 命令注册
-│       └── ssh.rs                # SSH/SFTP/隧道核心实现
+│       ├── lib.rs                # Tauri 命令注册 + AppState + 资产/凭据命令
+│       ├── ssh.rs                # SSH/SFTP/隧道核心实现
+│       ├── resource_monitor.rs   # 远程资源轮询
+│       └── fs_local.rs           # 本地文件系统命令
 ├── crates/
-│   └── myshelltool-core/         # 共享核心库（资产存储、凭据、同步）
+│   └── myshelltool-core/         # 共享核心库（资产存储/凭据/校验，可独立 cargo test）
 ├── tests/
-│   └── ui-smoke.mjs              # UI 冒烟测试
+│   ├── ui-smoke.mjs              # UI 冒烟测试
+│   └── ui-host-key.mjs           # Host key 验证流程测试
+├── AGENTS.md                     # AI Coding Agent 上下文（单一信息源）
 └── package.json
 ```
 
@@ -69,6 +87,10 @@ npm run tauri:build
 npm run test:core    # Rust core 单元测试
 npm run test:ui      # UI 冒烟测试
 ```
+
+## AI 协作上下文
+
+本项目为 AI Coding Agent 提供了完整项目上下文文件 [`AGENTS.md`](./AGENTS.md)（技术栈、目录结构、编码约定、构建/测试命令、IPC 契约、数据模型、安全红线）。使用 Claude Code / Cursor / Copilot 等工具开发时，请先读 `AGENTS.md`。工具专用派生文件（`CLAUDE.md`、`.github/copilot-instructions.md`、`.cursor/rules/*`）均引用该文件。
 
 ## 安全设计
 
