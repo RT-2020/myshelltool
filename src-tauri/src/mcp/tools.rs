@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use rmcp::model::{CallToolRequestParam, CallToolResult, Content, Tool};
+use rmcp::model::{CallToolRequestParams, CallToolResult, Content, Tool};
 use serde_json::{json, Map};
 use tokio::sync::Mutex;
 
@@ -146,7 +146,7 @@ pub fn list_all_tools() -> Vec<Tool> {
 /// 分发工具调用。返回 CallToolResult（成功用 text content，失败用 is_error）。
 pub async fn call_tool(
     name: &str,
-    params: CallToolRequestParam,
+    params: CallToolRequestParams,
     ctx: &McpToolContext,
 ) -> Result<CallToolResult, String> {
     let arguments: Map<String, serde_json::Value> = params.arguments.unwrap_or_default();

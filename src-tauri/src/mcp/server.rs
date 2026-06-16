@@ -1,18 +1,19 @@
 //! MCP stdio server 主循环 + ServerHandler 实现（Layer 2 + Layer 3）。
 //!
 //! M2：rmcp stdio server 骨架（get_info）
-//! M3：接入 list_tools（7 个只读工具）+ call_tool（headless exec）
+//! M3/M4：接入 list_tools（9 个工具）+ call_tool（headless exec + 审批）
+//! M5：接入 list_resources/read_resource/list_prompts/get_prompt
 //!
-//! 见 docs/plans/MCP服务接入-实施计划.md §4-§5。
+//! 见 docs/plans/MCP服务接入-实施计划.md §4-§7。
 
 use std::sync::Arc;
 
 use rmcp::{
     ServerHandler, ServiceExt,
     model::{
-        CallToolRequestParam, CallToolResult, GetPromptRequestParam, GetPromptResult,
+        CallToolRequestParams, CallToolResult, GetPromptRequestParams, GetPromptResult,
         Implementation, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
-        ListResourcesResult, ListToolsResult, PaginatedRequestParam, ReadResourceRequestParams,
+        ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams,
         ReadResourceResult, ServerCapabilities, ServerInfo,
     },
     service::RequestContext,
@@ -48,10 +49,10 @@ impl ServerHandler for MyshellToolMcpServer {
         ))
     }
 
-    /// 返回 M3 阶段的 7 个只读工具。
+    /// 返回 9 个工具（7 只读 + 2 高危）。
     fn list_tools(
         &self,
-        _request: Option<PaginatedRequestParam>,
+        _request: Option<PaginatedRequestParams>,
         _context: RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
         let tools = tools::list_all_tools();
@@ -65,7 +66,7 @@ impl ServerHandler for MyshellToolMcpServer {
     /// 分发工具调用到 tools::call_tool。
     fn call_tool(
         &self,
-        request: CallToolRequestParam,
+        request: CallToolRequestParams,
         _context: RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
         let ctx = self.ctx.clone();
@@ -88,7 +89,7 @@ impl ServerHandler for MyshellToolMcpServer {
     /// 列出 3 个静态资源（Layer 4）。
     fn list_resources(
         &self,
-        _request: Option<PaginatedRequestParam>,
+        _request: Option<PaginatedRequestParams>,
         _context: RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListResourcesResult, McpError>> + Send + '_ {
         let resources = super::resources::list_resources();
@@ -118,7 +119,7 @@ impl ServerHandler for MyshellToolMcpServer {
     /// 列出 resource template（Layer 4）。
     fn list_resource_templates(
         &self,
-        _request: Option<PaginatedRequestParam>,
+        _request: Option<PaginatedRequestParams>,
         _context: RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListResourceTemplatesResult, McpError>> + Send + '_
     {
@@ -133,7 +134,7 @@ impl ServerHandler for MyshellToolMcpServer {
     /// 列出 3 个诊断 prompt（Layer 5）。
     fn list_prompts(
         &self,
-        _request: Option<PaginatedRequestParam>,
+        _request: Option<PaginatedRequestParams>,
         _context: RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListPromptsResult, McpError>> + Send + '_ {
         let prompts = super::prompts::list_prompts();
@@ -147,7 +148,7 @@ impl ServerHandler for MyshellToolMcpServer {
     /// 生成 prompt messages（Layer 5）。
     fn get_prompt(
         &self,
-        request: GetPromptRequestParam,
+        request: GetPromptRequestParams,
         _context: RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<GetPromptResult, McpError>> + Send + '_ {
         std::future::ready(match super::prompts::get_prompt(&request) {
