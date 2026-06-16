@@ -1,0 +1,40 @@
+---
+description: 文件大小与单一职责——God File 触发拆分，按职责而非行数拆
+globs:
+  - "src/**/*"
+  - "src-tauri/src/**/*"
+  - "crates/**/*"
+alwaysApply: true
+---
+
+# 文件大小与单一职责规则
+
+完整说明见根目录 `AGENTS.md`「质量红线」节与 `docs/llm-engineering-guidelines.md`。
+
+## 硬阈值（超出必须拆分，除非 PR 充分说明理由）
+
+| 类型 | 软警告 | 硬上限 |
+|---|---|---|
+| Vue SFC `.vue` | 300 行 | **500 行** |
+| Pinia store `.js` | 300 行 | **500 行** |
+| Rust 模块 `.rs` | 400 行 | **800 行** |
+
+> Vue 社区共识 ~300 行为软上限（[Vue SFC 官方指南](https://vuejs.org/guide/scaling-up/sfc.html)、SOLID/SRP）。
+
+## 当前已超标文件（新增功能前优先评估拆分，而非继续堆）
+
+- `src-tauri/src/ssh.rs` **1548 行**（SSH+认证+SFTP+隧道+SOCKS5 全堆一起）→ 候选拆 `ssh/{connect,pty,sftp,tunnel,known_hosts}.rs`。
+- `src/stores/sessions.js` **810 行**（事件监听+OSC+xterm+DOM+主题+连接流程）→ 抽 composable。
+- `src/components/files/FileColumn.vue` **768 行**、`src/stores/files.js` **612 行**。
+- `src/components/shell/GlobalModals.vue` **512 行**（9 种 modal）→ 考虑注册表 + 独立 modal 组件。
+
+## 拆分原则
+
+- **按职责拆，不按行数拆**：判据是「这块逻辑是否有独立的变更理由」。
+- **拆分步骤**：先抽独立纯函数 → 再抽 composable/子模块 → 最后拆组件，每步保证构建通过。
+- **新增功能时问**：「这是否属于当前文件的职责？不属于就新建文件。」
+
+## 扩展性（Open-Closed）
+
+- 新增分支 >5 个的 switch 链 → 用注册表/映射替代。`GlobalModals.vue` 的 `modalTitle`/`submitModal`/template 三处 switch 是反例（加一个 modal 要改 4 处）。
+- 任何「加一个功能要改 N 处」的设计，N 应尽量 = 1（注册表）或 2（定义+注册）。

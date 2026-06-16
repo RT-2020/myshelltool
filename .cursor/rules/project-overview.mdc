@@ -1,0 +1,37 @@
+---
+description: 项目总规则：所有改动必须遵循 AGENTS.md（技术栈/目录/约定/命令）。先读 AGENTS.md 再编码。
+globs:
+  - "**/*"
+alwaysApply: true
+---
+
+# myshelltool — Cursor 项目规则
+
+**完整项目上下文见仓库根目录 [`AGENTS.md`](../../../AGENTS.md)。本规则不重复其内容，仅强调。**
+
+阅读顺序：先读 `AGENTS.md`，再开始任何改动。
+
+## 核心约束（违反 = 破坏一致性）
+
+- **前端：Vue 3 `<script setup>` + Pinia setup store + SCSS 设计 token**。不是 Vanilla JS。
+- **样式**：颜色/间距/z-index 一律用 `var(--token)`（`src/styles/_tokens.scss`），禁止硬编码。组件 `<style scoped lang="scss">` 顶部 `@use '@/styles/_tokens' as *;`。
+- **路径别名** `@` → `src/`。
+- **图标**：统一 `lucide-vue-next`，不引其他图标库。
+- **基础组件**在 `src/components/ui/`（`App*` 命名，`index.js` barrel 导出），业务组件按域分目录。
+- **通用操作入口**：右键菜单用 `AppContextMenu`（`items:[{label,action,danger,separator,disabled}]`），弹窗走 `GlobalModals.vue`（`store.modal={type,...}`）。
+- **跨 store 逻辑**：加子 store action + `workbench.js` re-export + `attachWorkbench` lazy bridge，禁止循环 import。响应式 state 用 `computed()` 包裹暴露。
+- **新增 Tauri 命令**：`src-tauri/src/lib.rs` 加 `#[tauri::command]` **并**在 `generate_handler![]` 注册。
+- **凭据红线**：密码/passphrase 只走 `SecretStore`，不进 JSON/日志/console。
+
+## 改完必验（如实报告 exit code）
+
+- 前端：`npm run build`
+- Rust：`cd src-tauri && cargo build`（或 `cargo check`）
+- core 单测：`npm run test:core`
+- UI 冒烟（需先 `npm run dev`）：`npm run test:ui`
+
+## 工作流
+
+- 多文件/架构决策类任务：先规划（产出计划），确认后再实现。
+- 复用现成实现（查 `ui/index.js`、`workbench.js` re-export、`backend.js` 的 normalize*）。
+- 不自动 commit/push。

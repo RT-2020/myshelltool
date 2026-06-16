@@ -1,0 +1,34 @@
+---
+description: Rust/Tauri 后端规则（命令注册、State 统一、core 分层、凭据红线、分组路径）
+globs:
+  - "src-tauri/**/*.rs"
+  - "crates/**/*.rs"
+alwaysApply: false
+---
+
+# Rust / Tauri 后端规则
+
+适用 `src-tauri/**` 与 `crates/**`。完整上下文见根目录 `AGENTS.md`。
+
+## 命令
+- **新增命令两步**：① `src-tauri/src/lib.rs`（或对应模块）加 `#[tauri::command] fn xxx(state: State<'_, AppState>, ...) -> Result<T, String>`；② 在 `lib.rs` 的 `tauri::generate_handler![...]` **注册**（漏注册 = 前端 "command not found"）。
+- **统一用 `State<'_, AppState>`** 解析共享状态（ADR v3 Option A）。禁止双 `manage` hack。
+- 命令参数 **camelCase**（前端 `invokeBackend('ssh_connect', {credentialId})`）。Rust 字段用 `#[serde(alias = "camelCase")]` 兼容。
+- 持久化命令模式：`load_connection_asset_store` → 改 → `save_connection_asset_store` → 返回更新后的 `ConnectionAssetList { source, count, assets, groups }`。
+
+## 分层
+- **持久化/领域逻辑放 `crates/myshelltool-core`**（无 Tauri 依赖，可独立 `cargo test`）。`src-tauri` 只做命令封装 + State 读取 + 事件 emit。
+- 模块：`lib.rs`(资产/凭据命令+AppState) `ssh.rs`(SSH/SFTP/隧道核心) `resource_monitor.rs`(资源轮询) `fs_local.rs`(本地文件)。
+
+## 数据模型（`crates/myshelltool-core/src/lib.rs`）
+- `ConnectionAsset`：id/name/host/port(u16)/username/auth_method(Password|PrivateKey|Token)/private_key_path(Option)/group(String)/tags(Vec)/status(Connected|Warning|Idle)/last_connected/credential_id(Option)/passphrase_credential_id(Option)。
+- **分组是 `asset.group` 字符串字段**，`/` 分隔多级路径（如 "生产/数据库"）。空分组用 `ConnectionAssetStore.groups: Vec<String>` 单独持久化。「未分组」保留，不可改/删。
+- `ConnectionAssetStore { assets, groups }`（`groups` 有 `#[serde(default)]` 兼容旧文件）。
+
+## 安全红线
+- **凭据（密码/passphrase）只走 `SecretStore`**，绝不写进资产 JSON / 日志 / 错误信息。
+- 凭据 id 约定：`<assetId>:<kind>`（kind=password|passphrase）。
+
+## 验证
+- `cd src-tauri && cargo build`（Windows 上 build 偶因 windres build script 阻断，可 `cargo check` 兜底）。
+- core 单测：`npm run test:core`（= `cargo test --manifest-path crates/myshelltool-core/Cargo.toml`）。

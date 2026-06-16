@@ -1,0 +1,34 @@
+---
+description: 防 ai-slop——写代码前先搜现有实现，禁止重复造轮子、死代码、绕过自有抽象
+globs:
+  - "src/**/*"
+  - "src-tauri/src/**/*"
+  - "crates/**/*"
+alwaysApply: true
+---
+
+# 防 ai-slop 规则（强制）
+
+完整说明见根目录 `AGENTS.md`「质量红线」节与 `docs/llm-engineering-guidelines.md`。
+
+## 写代码前必须做的（强制）
+
+1. **先搜后写**：动笔前用 grep/Grep/Explore 搜索相似逻辑、同名工具、同类样式。已有则**复用**，不另写。
+   - 工具函数先查：`src/services/backend.js`（normalize*）、`src/lib/`、`src/composables/`。
+   - 样式先查：`src/styles/_utilities.scss`、`src/styles/_tokens.scss`。
+2. **DRY 单位是「概念」**：一个正则、一个样式、一个状态映射，全仓库只允许一处权威实现。
+   - 本项目实证（禁止重蹈）：tag 正则曾 ×3、`.dot` CSS 曾 ×4、`terminalController.js` 死代码与 sessions.js 内联重复。
+
+## 禁止（硬约束）
+
+- ❌ **空 `catch {}`**：错误至少 `announce(message)` 或 `.catch(() => null)` + 显式注释「为何可忽略」。本项目 `sessions.js` 多处空 catch 是反例。
+- ❌ **`window.alert` / `window.confirm` / `window.prompt`**：表单校验用组件内 reactive error + 红字；危险操作确认用 `store.modal = { type: 'confirmXxx', ... }` 走 `GlobalModals.vue`。（`GlobalModals.vue:182`、`files.js:538` 是反例。）
+- ❌ **硬编码颜色/z-index/间距**：用 `var(--token)`。
+- ❌ **死代码**：未被 import 的模块（如 `terminalController.js`），确认无引用后删除，不留"以后可能用"。
+- ❌ **同一概念多份实现**：连接状态等用权威定义点（sessions store 的 `session.status` 为运行时权威，`normalizeStatus()` 为视觉映射权威），不在组件内另造一套。
+
+## 复用阈值
+
+- 被 ≥2 个组件用的 CSS → 抽到 `src/styles/_utilities.scss` 全局 class。
+- 被 ≥2 处用的纯函数 → 抽到 `src/lib/` 或 composable（`useXxx`）。
+- 某 domain 的 `invokeBackend` 调用 >5 处 → 抽 `src/services/<domain>.js`。
