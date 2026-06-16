@@ -182,6 +182,7 @@ pub struct SshSessionManager {
 }
 
 impl SshSessionManager {
+    /// GUI 模式构造（持有 AppHandle，host key/keyboard 可经事件弹窗）。
     pub fn new(app: AppHandle, secret_store_dir: PathBuf, known_hosts_path: PathBuf) -> Self {
         Self {
             sessions: HashMap::new(),
@@ -204,6 +205,16 @@ impl SshSessionManager {
         session_id: &str,
     ) -> Option<tokio::sync::mpsc::UnboundedSender<SshCommand>> {
         self.sessions.get(session_id).map(|s| s.cmd_tx.clone())
+    }
+
+    /// 当前活跃会话 ID 列表（MCP `list_sessions` 工具用）。
+    pub fn list_session_ids(&self) -> Vec<String> {
+        self.sessions.keys().cloned().collect()
+    }
+
+    /// 会话是否存在（MCP 工具参数校验用）。
+    pub fn has_session(&self, session_id: &str) -> bool {
+        self.sessions.contains_key(session_id)
     }
 }
 
