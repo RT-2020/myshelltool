@@ -3,8 +3,10 @@ title: myshelltool MCP 服务接入 — 实施计划
 spec: docs/specs/MCP服务接入-需求规格.md
 interview: docs/interviews/MCP服务接入-访谈记录-20260616.md
 decisions: D1-D9 全部按推荐锁定
-status: ready for execution
+status: ✅ v1.0 已完成并发布（v0.2.0，tag v0.2.0，2026-06-16）
 created_at: 2026-06-16
+completed_at: 2026-06-16
+next: docs/plans/下一轮迭代交接.md（v1.1 / v0.3.0 计划）
 ---
 
 # myshelltool MCP 服务接入 — 实施计划
@@ -12,6 +14,9 @@ created_at: 2026-06-16
 > 凝练了 9 轮 Socratic 访谈 + D1-D9 选型决策（全部按推荐锁定）+ brownfield 基线核查编写而成。
 > 任务拆解维度：**按架构层**（访谈末尾由用户选定）。
 > 每层独立可验证，从底层往上构建，最后集成。
+>
+> **✅ v1.0（Layer 0-8）已全部完成并发布为 v0.2.0。** AC1-AC7 全通过，回归测试干净。
+> 下一轮迭代（v1.1 named pipe）见 [`下一轮迭代交接.md`](./下一轮迭代交接.md)。
 
 ---
 
