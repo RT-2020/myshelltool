@@ -7,15 +7,17 @@
  * existing App.vue titlebar block (lines 864-908) — kept symmetrical
  * in slot usage so App.vue (Wave 3.5) can swap without reflowing.
  */
-import { computed } from 'vue';
-import { Sun, Moon, RefreshCw, AlertTriangle } from 'lucide-vue-next';
+import { computed, ref, watch, nextTick } from 'vue';
+import {
+  Sun, Moon, RefreshCw, AlertTriangle,
+  PanelRight, PanelRightOpen, RotateCcw, Settings
+} from 'lucide-vue-next';
 import AppButton from '../ui/AppButton.vue';
 
 const props = defineProps({
-  backendReady: { type: Boolean, default: false },
-  activeSessions: { type: Number, default: 0 },
   themeLabel: { type: String, default: '' },
   warningCount: { type: Number, default: 0 },
+  rightCollapsed: { type: Boolean, default: false },
   searchQuery: { type: String, default: '' },
   searchState: {
     type: Object,
@@ -28,6 +30,9 @@ const emit = defineEmits([
   'toggle-theme',
   'open-sync',
   'toggle-warnings',
+  'toggle-right',
+  'reset-layout',
+  'open-settings',
   'activate-suggestion'
 ]);
 
@@ -38,14 +43,19 @@ const themeIcon = computed(() => {
   return RefreshCw;
 });
 
-const statusText = computed(() =>
-  props.backendReady
-    ? `online · ${props.activeSessions} sessions`
-    : `preview · ${props.activeSessions} sessions`
-);
-
 const suggestions = computed(() => props.searchState?.suggestions || []);
 const isOpen = computed(() => !!props.searchState?.open && suggestions.value.length);
+
+// 搜索框 DOM ref —— Ctrl+K 打开搜索时聚焦。原先 App.vue 的 globalSearchInput ref
+// 从未绑定到任何元素（输入框在此组件内），导致 Ctrl+K 聚焦静默失败。改由本组件在
+// searchState.open 变 true 时自行聚焦。
+const searchFieldEl = ref(null);
+watch(
+  () => props.searchState?.open,
+  open => {
+    if (open) nextTick(() => searchFieldEl.value?.focus());
+  }
+);
 
 function onSearchInput(e) {
   emit('update:searchQuery', e.target.value);
@@ -78,6 +88,7 @@ function activateSuggestion(item) {
     <div class="quick-search">
       <div class="quick-search-wrap">
         <input
+          ref="searchFieldEl"
           class="quick-search-field"
           type="search"
           :value="searchQuery"
@@ -108,11 +119,6 @@ function activateSuggestion(item) {
 
     <!-- Right: title actions -->
     <div class="title-actions">
-      <span class="status-chip" :class="{ 'is-online': backendReady }">
-        <span class="status-dot" :class="{ running: backendReady }" aria-hidden="true"></span>
-        {{ statusText }}
-      </span>
-
       <AppButton variant="ghost" size="sm" @click="emit('toggle-theme')" title="点击切换主题">
         <component :is="themeIcon" :size="14" />
         <span>{{ themeLabel }}</span>
@@ -132,6 +138,38 @@ function activateSuggestion(item) {
       >
         <AlertTriangle :size="14" />
         <span>{{ warningCount }} warning</span>
+      </AppButton>
+
+      <!-- 分隔：布局控制 -->
+      <span class="title-action-divider" aria-hidden="true"></span>
+
+      <AppButton
+        variant="ghost"
+        size="sm"
+        @click="emit('toggle-right')"
+        :title="rightCollapsed ? '展开右侧面板' : '收起右侧面板'"
+        :aria-pressed="String(rightCollapsed)"
+      >
+        <component :is="rightCollapsed ? PanelRightOpen : PanelRight" :size="14" />
+      </AppButton>
+
+      <AppButton
+        variant="ghost"
+        size="sm"
+        @click="emit('reset-layout')"
+        title="恢复默认布局"
+      >
+        <RotateCcw :size="14" />
+      </AppButton>
+
+      <!-- 设置入口（预留，未来扩展实际设置页） -->
+      <AppButton
+        variant="ghost"
+        size="sm"
+        @click="emit('open-settings')"
+        title="设置"
+      >
+        <Settings :size="14" />
       </AppButton>
     </div>
   </div>
@@ -283,27 +321,11 @@ function activateSuggestion(item) {
   gap: var(--space-2);
 }
 
-.status-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  font-size: var(--text-xs);
-  color: var(--app-muted);
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-pill);
-}
-
-.status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: var(--radius-pill);
-  background: var(--danger);
+.title-action-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--app-border);
   flex-shrink: 0;
-}
-
-.status-dot.running {
-  background: var(--success);
 }
 
 .has-warning {

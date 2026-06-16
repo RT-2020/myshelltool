@@ -40,6 +40,23 @@ defineProps({
     opacity var(--motion-fast) var(--ease-standard);
 }
 
+// .app-btn-label 是图标(slot)+文字的容器。设为 inline-flex 并垂直居中，
+// 否则 lucide 图标(inline-block, vertical-align:baseline)与文字 span 会在
+// baseline 上对齐导致图标视觉偏移——这是「主题/同步/警告三图标未对齐」的根因。
+.app-btn-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  line-height: 1;
+}
+
+// lucide 图标 svg 显式垂直居中，避免个别浏览器 baseline 残留偏移。
+.app-btn-label :deep(svg) {
+  flex-shrink: 0;
+  align-self: center;
+}
+
 .app-btn--sm {
   padding: 4px 10px;
   font-size: var(--text-xs);

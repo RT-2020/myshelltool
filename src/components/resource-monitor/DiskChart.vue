@@ -1,13 +1,16 @@
 <script setup>
 import { computed } from 'vue';
 import { HardDrive } from 'lucide-vue-next';
-import { CHART_H, CHART_W, formatRate, buildLinePath } from './chart-utils.js';
+import { CHART_H, CHART_W, formatBytes, formatRate, buildLinePath } from './chart-utils.js';
 
 const props = defineProps({
   readPoints: { type: Array, default: () => [] },
   writePoints: { type: Array, default: () => [] },
   readRate: { type: Number, default: 0 },
-  writeRate: { type: Number, default: 0 }
+  writeRate: { type: Number, default: 0 },
+  // 根分区容量（来自 df，字节）
+  diskTotal: { type: Number, default: 0 },
+  diskUsed: { type: Number, default: 0 }
 });
 
 const allPoints = computed(() => [...props.readPoints, ...props.writePoints]);
@@ -17,6 +20,13 @@ const yMax = computed(() => {
 });
 const readPath = computed(() => buildLinePath(props.readPoints, yMax.value));
 const writePath = computed(() => buildLinePath(props.writePoints, yMax.value));
+
+// 容量百分比 + 进度条宽度
+const diskPct = computed(() => {
+  if (!props.diskTotal) return 0;
+  return Math.min(100, Math.round((props.diskUsed / props.diskTotal) * 100));
+});
+const hasCapacity = computed(() => props.diskTotal > 0);
 </script>
 
 <template>
@@ -32,6 +42,20 @@ const writePath = computed(() => buildLinePath(props.writePoints, yMax.value));
       <path v-if="readPath" :d="readPath" fill="none" stroke="var(--info, var(--accent))" stroke-width="1.2" />
       <path v-if="writePath" :d="writePath" fill="none" stroke="var(--warn)" stroke-width="1.2" />
     </svg>
+
+    <!-- 根分区容量（来自 df）：used / total (pct%) + 进度条 -->
+    <div v-if="hasCapacity" class="disk-capacity">
+      <div class="disk-capacity-head">
+        <span class="rm-chart-label">容量</span>
+        <span class="mono num disk-capacity-text">
+          {{ formatBytes(diskUsed) }} / {{ formatBytes(diskTotal) }}
+          <span class="disk-capacity-pct" :class="{ 'is-high': diskPct >= 85, 'is-warn': diskPct >= 70 }">{{ diskPct }}%</span>
+        </span>
+      </div>
+      <div class="disk-capacity-bar" role="progressbar" :aria-valuenow="diskPct" aria-valuemin="0" aria-valuemax="100">
+        <div class="disk-capacity-fill" :class="{ 'is-high': diskPct >= 85, 'is-warn': diskPct >= 70 }" :style="{ width: diskPct + '%' }"></div>
+      </div>
+    </div>
   </section>
 </template>
 
@@ -70,5 +94,43 @@ const writePath = computed(() => buildLinePath(props.writePoints, yMax.value));
   width: 100%;
   height: 60px;
   display: block;
+}
+
+// 容量行
+.disk-capacity {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-block-start: 2px;
+}
+.disk-capacity-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--text-xs);
+}
+.disk-capacity-text {
+  color: var(--app-strong);
+}
+.disk-capacity-pct {
+  margin-inline-start: 4px;
+  color: var(--app-muted);
+  &.is-warn { color: var(--warn); }
+  &.is-high { color: var(--danger); }
+}
+.disk-capacity-bar {
+  width: 100%;
+  height: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--app-control);
+  overflow: hidden;
+}
+.disk-capacity-fill {
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  transition: width var(--motion-base, 0.3s) var(--ease-standard);
+  &.is-warn { background: var(--warn); }
+  &.is-high { background: var(--danger); }
 }
 </style>

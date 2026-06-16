@@ -31,7 +31,12 @@ use crate::AppState;
 
 /// One sampling of remote resource usage. All byte fields are cumulative
 /// (since boot) unless otherwise noted; CPU is instantaneous percent.
+//
+// `rename_all = "camelCase"` 是关键：前端 store/chart 全部按 camelCase 读
+// (cpuUsage / memTotal / diskTotal ...)，缺这条会序列化成 snake_case
+// 导致前端每个字段都读 undefined，图表全显示 0。这是「数据不正确」的根因。
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResourceSnapshot {
     pub session_id: String,
     pub cpu_usage: f32,
@@ -262,35 +267,89 @@ pub fn parse_proc_diskstats(content: &str) -> Result<(u64, u64), String> {
     Ok((read_bytes, write_bytes))
 }
 
+/// Parse `df -P -B1 /` output to extract root filesystem capacity.
+///
+/// `-P` = POSIX format (one line per FS, no wrapping); `-B1` = byte units
+/// (1-byte blocks, so the "1K-blocks" column is actually total bytes).
+///
+/// Output shape:
+/// ```text
+/// Filesystem     1B-blocks      Used Available Use% Mounted on
+/// /dev/sda1    52710350080 30366834688 19626848256  61% /
+/// ```
+///
+/// Returns `(disk_total_bytes, disk_used_bytes)` from the line whose last
+/// field is `/` (the root mount). Falls back to the first data row if no
+/// root line is found.
+pub fn parse_df(content: &str) -> Result<(u64, u64), String> {
+    let mut total: u64 = 0;
+    let mut used: u64 = 0;
+    let mut picked = false;
+    let mut first_data: Option<(u64, u64)> = None;
+
+    for line in content.lines() {
+        let line = line.trim();
+        // 跳过表头与空行
+        if line.is_empty() || line.starts_with("Filesystem") {
+            continue;
+        }
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        // 至少 6 列：Filesystem 1B-blocks Used Available Use% Mounted-on
+        if fields.len() < 6 {
+            continue;
+        }
+        // -B1 下第二列是 total bytes，第三列是 used bytes
+        let total_b: u64 = fields[1].parse().unwrap_or(0);
+        let used_b: u64 = fields[2].parse().unwrap_or(0);
+        if first_data.is_none() {
+            first_data = Some((total_b, used_b));
+        }
+        // 优先取挂载点为 / 的根分区
+        if fields.last() == Some(&"/") {
+            total = total_b;
+            used = used_b;
+            picked = true;
+            break;
+        }
+    }
+    if !picked {
+        if let Some((t, u)) = first_data {
+            total = t;
+            used = u;
+        }
+    }
+    if total == 0 && used == 0 {
+        return Err("df: no usable capacity line".to_string());
+    }
+    Ok((total, used))
+}
+
 // ---------------------------------------------------------------------------
-// Snapshot builder — given combined /proc/* output, run all 4 parsers
+// Snapshot builder — given combined /proc/* output, run all parsers
 // ---------------------------------------------------------------------------
 
 /// Build a ResourceSnapshot from the combined stdout of:
-///   cat /proc/stat; cat /proc/meminfo; cat /proc/net/dev; cat /proc/diskstats
+///   cat /proc/stat; cat /proc/meminfo; cat /proc/net/dev; cat /proc/diskstats; df -P -B1 /
 ///
 /// We split the combined output by looking for known section anchors
-/// ("cpu " for stat, "MemTotal:" for meminfo, "Inter-|" for net/dev, and
-/// the first diskstats line). Parsers are tolerant of partial / missing
-/// sections — every field gracefully degrades to 0.
+/// ("cpu " for stat, "MemTotal:" for meminfo, "Inter-|" for net/dev,
+/// first diskstats line, and "Filesystem" for df). Parsers are tolerant of
+/// partial / missing sections — every field gracefully degrades to 0.
 pub fn build_snapshot(
     session_id: &str,
     combined: &str,
     prev_cpu: Option<(u64, u64)>,
 ) -> ResourceSnapshot {
-    let (stat_section, meminfo_section, net_section, disk_section) = split_proc_output(combined);
+    let (stat_section, meminfo_section, net_section, disk_section, df_section) = split_proc_output(combined);
 
     let (idle, total, cores) = parse_proc_stat(&stat_section).unwrap_or((0, 0, 0));
     let (mem_total, mem_used) = parse_proc_meminfo(&meminfo_section).unwrap_or((0, 0));
     let (net_rx, net_tx) = parse_proc_net_dev(&net_section).unwrap_or((0, 0));
     let (disk_read, disk_write) = parse_proc_diskstats(&disk_section).unwrap_or((0, 0));
+    let (disk_total, disk_used) = parse_df(&df_section).unwrap_or((0, 0));
 
     let cpu_usage = compute_cpu_usage(prev_cpu, idle, total);
 
-    // disk_total / disk_used are NOT available from /proc/* alone — they need
-    // a separate `df` call. We surface 0 here; the frontend can either ignore
-    // these fields or call a separate command. Keeping them in the struct
-    // preserves wire-compat with the design.
     ResourceSnapshot {
         session_id: session_id.to_string(),
         cpu_usage,
@@ -301,8 +360,8 @@ pub fn build_snapshot(
         net_tx_bytes: net_tx,
         disk_read_bytes: disk_read,
         disk_write_bytes: disk_write,
-        disk_total: 0,
-        disk_used: 0,
+        disk_total,
+        disk_used,
         timestamp: unix_millis(),
     }
 }
@@ -325,21 +384,18 @@ fn compute_cpu_usage(prev: Option<(u64, u64)>, idle: u64, total: u64) -> f32 {
 }
 
 /// Split the combined `cat /proc/stat; cat /proc/meminfo; cat /proc/net/dev;
-/// cat /proc/diskstats` output into 4 sections. Parsers tolerate sections that
-/// contain unrelated lines, so we use generous anchor-based splitting.
-fn split_proc_output(combined: &str) -> (String, String, String, String) {
+/// cat /proc/diskstats; df -P -B1 /` output into 5 sections. Parsers tolerate
+/// sections that contain unrelated lines, so we use generous anchor-based splitting.
+fn split_proc_output(combined: &str) -> (String, String, String, String, String) {
     // Find anchor byte offsets
     let stat_idx = combined.find("cpu ");
     let mem_idx = combined.find("MemTotal:");
     let net_idx = combined.find("Inter-|");
-    // diskstats anchor: a line beginning with digits then digits then "sd" or "nvme" or "vd"
-    // — too brittle. Instead use "the section after net/dev" = everything after net_idx's
-    // data block. We approximate by picking the next anchor: a line that looks like
-    // diskstats (3 leading numeric fields). But simpler: assume the 4 sections appear in
-    // the canonical order and split by the next anchor.
+    // df anchor: the POSIX header "Filesystem" (df -P 输出首行).
+    let df_idx = combined.find("Filesystem");
 
     // Strategy: order the anchors by offset (filter None), then carve sections between them.
-    // diskstats is whatever falls after net_idx (or mem_idx if no net).
+    // diskstats 没有专属锚点，它的范围 = net 之后到 df 之前（或 EOF）。
     let mut anchors: Vec<(usize, &str)> = Vec::new();
     if let Some(i) = stat_idx {
         anchors.push((i, "stat"));
@@ -350,25 +406,36 @@ fn split_proc_output(combined: &str) -> (String, String, String, String) {
     if let Some(i) = net_idx {
         anchors.push((i, "net"));
     }
+    if let Some(i) = df_idx {
+        anchors.push((i, "df"));
+    }
     anchors.sort_by_key(|(i, _)| *i);
 
     let stat_end = next_anchor_end(&anchors, "stat");
     let mem_end = next_anchor_end(&anchors, "mem");
     let net_end = next_anchor_end(&anchors, "net");
+    let df_start = anchors.iter().find(|(_, n)| *n == "df").map(|(i, _)| *i);
 
     let stat_section = slice_between(combined, stat_idx, stat_end);
     let mem_section = slice_between(combined, mem_idx, mem_end);
     let net_section = slice_between(combined, net_idx, net_end);
 
-    // disk_section = everything after the net block (or after mem if net missing,
-    // or after stat if both missing, or full output if all missing).
-    let disk_start = net_end.or(mem_end).or(stat_end).or(Some(combined.len()));
-    let disk_section = match disk_start {
+    // disk_section = net 之后到 df 之前（若无 df 则到 EOF）。
+    let disk_start = net_end.or(mem_end).or(stat_end);
+    let disk_end = df_start;
+    let disk_section = match (disk_start, disk_end) {
+        (Some(s), Some(e)) if s < e => combined[s..e].to_string(),
+        (Some(s), None) if s < combined.len() => combined[s..].to_string(),
+        _ => String::new(),
+    };
+
+    // df_section = 从 Filesystem 锚点到 EOF。
+    let df_section = match df_start {
         Some(s) if s < combined.len() => combined[s..].to_string(),
         _ => String::new(),
     };
 
-    (stat_section, mem_section, net_section, disk_section)
+    (stat_section, mem_section, net_section, disk_section, df_section)
 }
 
 /// Return the end offset (exclusive) of the section starting at the named anchor.
@@ -392,7 +459,7 @@ fn slice_between(s: &str, start: Option<usize>, end: Option<usize>) -> String {
 /// combined MonitorExec stdout. Used to read the latest (idle, total) jiffies
 /// after build_snapshot so we can stash prev_cpu for the next tick.
 pub fn extract_stat_section(combined: &str) -> String {
-    let (stat_section, _, _, _) = split_proc_output(combined);
+    let (stat_section, _, _, _, _) = split_proc_output(combined);
     stat_section
 }
 
@@ -472,7 +539,7 @@ fn spawn_monitor_task(
     app: AppHandle,
     mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
 ) {
-    let cmd = "cat /proc/stat; cat /proc/meminfo; cat /proc/net/dev; cat /proc/diskstats";
+    let cmd = "cat /proc/stat; cat /proc/meminfo; cat /proc/net/dev; cat /proc/diskstats; df -P -B1 /";
 
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
@@ -631,6 +698,13 @@ Inter-|   Receive                                                |  Transmit
  259       0 nvme0n1 99999 8888 8888888 77777 66666 5555 5555555 44444 0 333333 111110
 ";
 
+    const DF_SAMPLE: &str = "\
+Filesystem     1B-blocks       Used  Available Use% Mounted on
+/dev/sda1   52710350080 30366834688 19626848256  61% /
+tmpfs         1677721600     1234567 1676487033   1% /dev/shm
+/dev/sda2   104857600    52428800    52428800  50% /boot
+";
+
     #[test]
     fn test_parse_proc_stat_typical() {
         let (idle, total, cores) = parse_proc_stat(PROC_STAT_SAMPLE).expect("stat parse");
@@ -702,14 +776,17 @@ Inter-|   Receive                                                |  Transmit
     #[test]
     fn test_split_proc_output_finds_all_sections() {
         let combined = format!(
-            "{}\n{}\n{}\n{}\n",
-            PROC_STAT_SAMPLE, PROC_MEMINFO_SAMPLE, PROC_NET_DEV_SAMPLE, PROC_DISKSTATS_SAMPLE
+            "{}\n{}\n{}\n{}\n{}\n",
+            PROC_STAT_SAMPLE, PROC_MEMINFO_SAMPLE, PROC_NET_DEV_SAMPLE, PROC_DISKSTATS_SAMPLE, DF_SAMPLE
         );
-        let (stat, mem, net, disk) = split_proc_output(&combined);
+        let (stat, mem, net, disk, df) = split_proc_output(&combined);
         assert!(stat.contains("cpu  "));
         assert!(mem.contains("MemTotal:"));
         assert!(net.contains("Inter-|"));
         assert!(disk.contains("sda"));
+        assert!(df.contains("Filesystem"));
+        // disk 段不应混入 df 内容（df 段单独切出）
+        assert!(!disk.contains("Filesystem"));
     }
 
     #[test]
@@ -726,5 +803,73 @@ Inter-|   Receive                                                |  Transmit
         )
         .expect("net_dev empty");
         assert_eq!((rx, tx), (0, 0));
+    }
+
+    #[test]
+    fn test_parse_df_picks_root_mount() {
+        let (total, used) = parse_df(DF_SAMPLE).expect("df parse");
+        // 必须取挂载点 / 的行：52710350080 / 30366834688，而非 tmpfs 或 /boot
+        assert_eq!(total, 52710350080);
+        assert_eq!(used, 30366834688);
+        // 不应是 /boot 的值
+        assert_ne!(total, 104857600);
+    }
+
+    #[test]
+    fn test_parse_df_falls_back_to_first_row_without_root() {
+        // 无 / 挂载点时，取第一行数据
+        let df = "\
+Filesystem     1B-blocks       Used  Available Use% Mounted on
+/dev/xvda1   1000000       400000       600000  40% /mnt/data
+";
+        let (total, used) = parse_df(df).expect("df fallback");
+        assert_eq!(total, 1000000);
+        assert_eq!(used, 400000);
+    }
+
+    #[test]
+    fn test_parse_df_rejects_empty() {
+        assert!(parse_df("").is_err());
+        assert!(parse_df("Filesystem     1B-blocks\n").is_err()); // 只有表头
+    }
+
+    #[test]
+    fn test_build_snapshot_populates_disk_capacity() {
+        let combined = format!(
+            "{}\n{}\n{}\n{}\n{}\n",
+            PROC_STAT_SAMPLE, PROC_MEMINFO_SAMPLE, PROC_NET_DEV_SAMPLE, PROC_DISKSTATS_SAMPLE, DF_SAMPLE
+        );
+        let snap = build_snapshot("test-session", &combined, None);
+        // disk_total/used 必须来自 df 根分区，而非写死 0
+        assert_eq!(snap.disk_total, 52710350080);
+        assert_eq!(snap.disk_used, 30366834688);
+        // 其余字段也应正常填充（serde 字段名是 camelCase，但 struct 字段名仍是 snake）
+        assert_eq!(snap.mem_total, 16266984 * 1024);
+        assert!(snap.disk_read_bytes > 0);
+    }
+
+    #[test]
+    fn test_resource_snapshot_serializes_camel_case() {
+        // 关键回归防护：serde rename_all="camelCase" 必须生效，
+        // 否则前端读 cpuUsage/memTotal 全 undefined。
+        let snap = ResourceSnapshot {
+            session_id: "s1".into(),
+            cpu_usage: 42.5,
+            cpu_cores: 4,
+            mem_total: 1000,
+            mem_used: 500,
+            net_rx_bytes: 10,
+            net_tx_bytes: 20,
+            disk_read_bytes: 30,
+            disk_write_bytes: 40,
+            disk_total: 1000,
+            disk_used: 600,
+            timestamp: 12345,
+        };
+        let json = serde_json::to_string(&snap).expect("serialize");
+        assert!(json.contains("\"cpuUsage\""), "json must use camelCase: {json}");
+        assert!(json.contains("\"memTotal\""));
+        assert!(json.contains("\"diskTotal\""));
+        assert!(!json.contains("\"cpu_usage\""), "snake_case must not leak: {json}");
     }
 }

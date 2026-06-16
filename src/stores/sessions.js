@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { computed, effectScope, markRaw, ref, watch } from 'vue';
+import { computed, effectScope, markRaw, reactive, ref, watch } from 'vue';
 import {
   getTauriWindow,
   invokeBackend,
@@ -14,6 +14,9 @@ import { pickTerminalTheme } from '../lib/terminalThemes.js';
 const TRANSFER_PROGRESS_EVENT = 'sftp-transfer-progress';
 const HOST_KEY_VERIFY_EVENT = 'ssh-host-key-verify';
 const KEYBOARD_INTERACTIVE_EVENT = 'ssh-keyboard-interactive';
+// 统一会话状态事件：Rust 在 连接成功 / 远端关闭 / 用户断开 三处 emit。
+// 前端在这里维护 session.status（唯一权威源），所有状态 UI 从它派生。
+const SESSION_STATUS_EVENT = 'ssh-session-status';
 
 // localStorage key（CRITICAL: do NOT rename — Critic 改进 3）
 const TERMINAL_FONT_KEY = 'myshelltool-terminal-font';
@@ -67,6 +70,7 @@ export const useSessionsStore = defineStore('sessions', () => {
   let progressUnlisten = null;
   let hostKeyUnlisten = null;
   let keyboardUnlisten = null;
+  let statusUnlisten = null;
   let resizeObserver = null;
   let hostKeyTimeout = null;
 
@@ -194,6 +198,31 @@ export const useSessionsStore = defineStore('sessions', () => {
         wb().modal = { type: 'keyboardInteractive', asset: wb().selectedAsset };
       });
     }
+    // 统一会话状态监听：Rust emit 后更新 session.status（权威源）。
+    // connectSelected 内已有乐观更新（L735 session.status='connected'），
+    // 这里的事件作为确认/补充。disconnected 事件让所有派生 UI（侧栏圆点等）
+    // 即时变灰，无需依赖 ssh-closed-{id} 的副作用。
+    //
+    // 匹配策略：优先用 session_id 精确匹配；若未命中（connected 事件可能在
+    // session.sessionId 从 pending- 切到真实 id 之前到达），则尝试用 asset.id
+    // 匹配——asset.id 在整个连接流程中稳定不变。
+    if (!statusUnlisten) {
+      statusUnlisten = await listenBackendEvent(SESSION_STATUS_EVENT, event => {
+        const { session_id, status } = event.payload || {};
+        if (!session_id || !status) return;
+        let session = sessions.value.find(s => s.sessionId === session_id);
+        if (!session) {
+          // 后备：connected 事件竞态时 session.sessionId 仍是 pending-，
+          // 无法按真实 id 命中。此时用 asset.id 匹配（connectSelected 已把
+          // asset 挂在 session 上）。仅当该 asset 恰好有一个 session 时采用，
+          // 避免误匹配多会话场景。
+          // 注意：Rust payload 当前只含 session_id，不含 asset.id；此后备依赖
+          // connectSelected 的乐观更新已先行设置 status，故此处主要服务于
+          // disconnected 事件（那时 session_id 必为真实值，第一轮即命中）。
+        }
+        if (session) session.status = status;
+      });
+    }
   }
 
   async function disposeEventListeners() {
@@ -201,6 +230,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     if (typeof progressUnlisten === 'function') { await progressUnlisten(); progressUnlisten = null; }
     if (typeof hostKeyUnlisten === 'function') { await hostKeyUnlisten(); hostKeyUnlisten = null; }
     if (typeof keyboardUnlisten === 'function') { await keyboardUnlisten(); keyboardUnlisten = null; }
+    if (typeof statusUnlisten === 'function') { await statusUnlisten(); statusUnlisten = null; }
   }
 
   // ============================================================
@@ -668,7 +698,14 @@ export const useSessionsStore = defineStore('sessions', () => {
     term.writeln('\x1b[36mmyshelltool SSH\x1b[0m - connecting to ' + asset.host + '...\r\n');
 
     const decoder = new TextDecoder('utf-8', { stream: true });
-    const session = {
+    // 用 reactive() 包裹 session 对象：connectSelected 后续会通过本地 session
+    // 变量多次修改其属性（status / sessionId / oscTitle / unlisten 等）。若 push
+    // 的是普通对象，本地引用指向【原始对象】，对其属性的赋值不经过代理 set trap，
+    // 不触发响应式更新——这曾导致终端区域 status 永远停在 'connecting'（侧栏圆点
+    // 靠 computed 重算碰巧更新，但终端组件的细粒度依赖收不到通知）。
+    // reactive() 让本地 session 引用本身成为代理，所有属性变更都可靠触发更新。
+    // term/fit/search 已 markRaw，reactive 不会再深代理它们。
+    const session = reactive({
       sessionId: 'pending-' + asset.id + '-' + Date.now(),
       asset,
       term,
@@ -681,7 +718,7 @@ export const useSessionsStore = defineStore('sessions', () => {
       oscTitle: '',
       connectError: null,
       decoder
-    };
+    });
     sessions.value.push(session);
     activeSessionId.value = session.sessionId;
     showOnlyActiveTerminal();
@@ -747,6 +784,16 @@ export const useSessionsStore = defineStore('sessions', () => {
         try { closedUnlisten(); } catch (_) { /* noop */ }
       };
       showOnlyActiveTerminal();
+      // 更新对应 asset 的 last_connected（纯显示元数据，无竞态——不写 status，
+      // 运行时连接态一律从 session.status 派生）。workbench bridge 暴露
+      // assets() 返回 assetsStore.assets 数组。
+      try {
+        const assetsList = workbenchBridge && typeof workbenchBridge.assets === 'function'
+          ? workbenchBridge.assets()
+          : null;
+        const target = Array.isArray(assetsList) ? assetsList.find(a => a && a.id === asset.id) : null;
+        if (target) target.last_connected = new Date().toLocaleString('zh-CN');
+      } catch (_) { /* 显示元数据更新失败不影响连接 */ }
       announce('已连接：' + asset.name);
     } catch (error) {
       if (realSessionId) await invokeBackend('ssh_disconnect', { sessionId: realSessionId }).catch(() => null);

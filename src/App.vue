@@ -16,6 +16,7 @@ import { isTauriRuntime } from './services/backend.js';
 // orchestration into a composable; until then, this is the canonical
 // entry point. See .omc/plans/ui-full-refactor-consensus.md Step 3.5.
 import { useWorkbenchStore } from './stores/workbench.js';
+import { usePanelResize } from './composables/usePanelResize.js';
 import AppShellLayout from './components/shell/AppShellLayout.vue';
 import AppTitleBar from './components/shell/AppTitleBar.vue';
 import AppStatusBar from './components/shell/AppStatusBar.vue';
@@ -29,14 +30,16 @@ import ResourceMonitorPanel from './components/resource-monitor/ResourceMonitorP
 const desktopRuntimeAvailable = computed(() => isTauriRuntime());
 const store = useWorkbenchStore();
 const {
-  backendStatus, activeSessions, themeLabel, assetsCollapsed,
+  backendStatus, activeSessions, themeLabel, assetsCollapsed, rightCollapsed,
   statusMessage, assets, groupedAssets, selectedAssetId, searchState,
   runningTunnels, tunnels, warningCount, syncText
 } = storeToRefs(store);
 
+// 面板拖拽布局（三列宽 + 中间两行高），reset/syncCollapse 供标题栏按钮与折叠态调用。
+const panelResize = usePanelResize();
+
 const sidebarSearch = ref('');
 const sidebarQuickConnect = ref('');
-const globalSearchInput = ref(null);
 
 onMounted(() => {
   store.initialize();
@@ -48,12 +51,11 @@ onBeforeUnmount(() => {
 });
 
 // App-level shortcuts only — surface shortcuts (terminal/files) live in
-// TerminalSurface / FileSurface.
+// TerminalSurface / FileSurface. Ctrl+K 打开全局搜索（聚焦由 AppTitleBar 自行处理）。
 function handleGlobalKeydown(event) {
   if ((event.ctrlKey || event.metaKey) && (event.key === 'k' || event.key === 'K') && !event.shiftKey) {
     event.preventDefault();
     store.openGlobalSearch();
-    setTimeout(() => globalSearchInput.value?.focus(), 30);
     return;
   }
   if (event.key === 'Escape' && searchState.value.open) store.closeGlobalSearch();
@@ -64,11 +66,40 @@ function onSelectAsset(id) { store.selectAsset(id); }
 function onConnectAsset(id) { store.selectAsset(id); store.connectSelected(); }
 function onQuickConnect(parsed) { store.activateSuggestion({ kind: 'quick-connect', ...parsed }); }
 function onCreateAsset() { store.modal = { type: 'assetEditor', asset: null }; }
+// 侧栏折叠：store 切换后同步拖拽内联变量（折叠列清除内联让 44px 生效）。
+function onToggleAssets() {
+  store.toggleAssets();
+  panelResize.syncCollapse();
+}
+// 资产管理：编辑/复制/删除（资产对象）
+function onEditAsset(asset) {
+  store.selectAsset(asset.id, false);
+  store.modal = { type: 'assetEditor', asset };
+}
+function onDuplicateAsset(asset) { store.duplicateAsset(asset); }
+function onDeleteAsset(asset) { store.modal = { type: 'confirmDelete', asset }; }
+// 分组管理：新建/重命名/解散/移动
+function onCreateGroup() { store.modal = { type: 'createGroup' }; }
+function onRenameGroup(path) { store.modal = { type: 'renameGroup', path }; }
+function onDissolveGroup(path) { store.dissolveGroup(path); }
+function onMoveAsset(asset) { store.modal = { type: 'moveAsset', asset }; }
 
 // Titlebar emits
 function onToggleTheme() { store.toggleTheme(); }
 function onOpenSync() { store.modal = { type: 'tokenConfig', asset: null }; }
 function onToggleWarnings() { store.announce(`当前 warning：${warningCount.value}`); }
+function onToggleRight() {
+  store.toggleRight();
+  // 折叠态变化后同步内联变量：折叠列清除内联（让 dataset 选择器的 0 生效），
+  // 展开列恢复上次拖拽宽度。
+  panelResize.syncCollapse();
+}
+function onResetLayout() {
+  // usePanelResize 在 setup 顶部实例化，resetLayout 清 localStorage + 重置内联变量
+  panelResize.resetLayout();
+  store.announce('布局已恢复默认');
+}
+function onOpenSettings() { store.announce('设置功能开发中'); }
 function onActivateSuggestion(item) { store.activateSuggestion(item); }
 
 // Statusbar emits
@@ -86,19 +117,25 @@ function onToggleTransferDrawer() { store.toggleTransferDrawer(); }
       <code>npm run tauri:dev</code>（开发）或 <code>npm run tauri:build</code>（打包）。
     </div>
 
-    <AppShellLayout>
+    <AppShellLayout
+      :start-resize="panelResize.startResize"
+      :sidebar-collapsed="assetsCollapsed"
+      :right-collapsed="rightCollapsed"
+    >
       <template #titlebar>
         <AppTitleBar
-          :backend-ready="backendStatus.ready"
-          :active-sessions="activeSessions"
           :theme-label="themeLabel"
           :warning-count="warningCount"
+          :right-collapsed="rightCollapsed"
           :search-query="searchState.query"
           :search-state="searchState"
           @update:search-query="store.setGlobalSearchQuery($event)"
           @toggle-theme="onToggleTheme"
           @open-sync="onOpenSync"
           @toggle-warnings="onToggleWarnings"
+          @toggle-right="onToggleRight"
+          @reset-layout="onResetLayout"
+          @open-settings="onOpenSettings"
           @activate-suggestion="onActivateSuggestion"
         />
       </template>
@@ -116,8 +153,15 @@ function onToggleTransferDrawer() { store.toggleTransferDrawer(); }
           @select-asset="onSelectAsset"
           @connect-asset="onConnectAsset"
           @quick-connect="onQuickConnect"
-          @toggle-collapse="store.toggleAssets"
+          @toggle-collapse="onToggleAssets"
           @create-asset="onCreateAsset"
+          @create-group="onCreateGroup"
+          @edit-asset="onEditAsset"
+          @duplicate-asset="onDuplicateAsset"
+          @delete-asset="onDeleteAsset"
+          @move-asset="onMoveAsset"
+          @rename-group="onRenameGroup"
+          @dissolve-group="onDissolveGroup"
         />
       </template>
 

@@ -1,33 +1,21 @@
 <script setup>
 /**
- * ConnectionSidebar — Wave 3 Step 3.2
+ * ConnectionSidebar — Wave 3 Step 3.2（+ 分组管理扩展）
  *
- * Left-region asset tree component for the 5-region shell layout.
+ * 左侧连接资产面板。资产按 group 字段（'/' 分隔多级路径，如 "生产/数据库/主"）
+ * 聚合成递归树，由子组件 AssetGroupNode 递归渲染。
  *
- * Visual style: Tabby/Termius — low visual weight, single-pixel borders,
- * muted group headers, status dots, status-pill tags. No nested cards.
+ * 本组件是 store-agnostic 展示组件：仅消费 props + emit 事件，父级 App.vue 接 store。
  *
- * This component is "store-agnostic": it only consumes props and emits
- * events. Parent (App.vue in Wave 3 Step 3.5) wires Pinia stores to
- * props/emits.
+ * 操作入口（资产）：悬停显示「编辑/删除」快捷按钮 + 右键菜单（编辑/复制/移动/删除）。
+ * 操作入口（分组）：分组头右键菜单（重命名/解散）。「未分组」是保留节点，无分组菜单。
  *
- * Features (AC6):
- *   - Asset tree grouped by `group`, collapsible group headers
- *   - Filter input (AppInput type=search) — real-time, by name/host/
- *     username/group/auth_method/tags
- *   - Quick connect input (mono font) — parses `ssh user@host[:port]`
- *   - Click asset → select-asset emit
- *   - Double-click asset → connect-asset emit
- *   - Active state highlight (border-inline-start accent + app-hover bg)
- *   - Status dot via `.dot` utility + status class
- *   - Collapse/expand sidebar button
- *   - Keyboard navigation (tabindex=0, Enter to connect, Arrow Up/Down)
- *   - Empty state + no-filter-result state
+ * 通过 provide('connectionSidebar', ...) 把 handler/state 注入给 AssetGroupNode，
+ * 避免递归组件层层 emit 透传。
  */
-import { computed, ref } from 'vue';
+import { computed, provide, ref } from 'vue';
 import {
-  ChevronDown,
-  ChevronRight,
+  FolderPlus,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
@@ -35,10 +23,15 @@ import {
   Terminal
 } from 'lucide-vue-next';
 import AppInput from '../ui/AppInput.vue';
+import AppContextMenu from '../ui/AppContextMenu.vue';
+import AssetGroupNode from './AssetGroupNode.vue';
+import { useSessionsStore } from '@/stores/sessions.js';
+import { normalizeStatus } from '@/stores/workbench.js';
 
 const props = defineProps({
   assets: { type: Array, default: () => [] },
-  groupedAssets: { type: Array, default: () => [] },
+  // 分组树根：{ name:'', path:'', parent:'', children:[TreeNode], items:[asset] }
+  groupedAssets: { type: Object, default: () => ({ name: '', path: '', parent: '', children: [], items: [] }) },
   selectedAssetId: { type: String, default: '' },
   assetsCollapsed: { type: Boolean, default: false },
   searchQuery: { type: String, default: '' },
@@ -52,85 +45,118 @@ const emit = defineEmits([
   'connect-asset',
   'quick-connect',
   'toggle-collapse',
-  'create-asset'
+  'create-asset',
+  'create-group',
+  // 以下事件 payload 均为 asset 对象或 group path 字符串
+  'edit-asset',
+  'delete-asset',
+  'duplicate-asset',
+  'move-asset',
+  'rename-group',
+  'dissolve-group'
 ]);
 
 // ============================================================
-// Local UI state — group collapse (component-local, not persisted)
+// 运行时连接态派生：session.status 是唯一权威源（sessions.js 维护）。
+// 侧栏圆点不读 asset.status（连接流程中从不更新），而是查该 asset 是否有
+// connected/connecting 会话。无会话时回退 asset.status（编辑器初始值，通常 Idle → 灰点）。
+// ============================================================
+const sessionsStore = useSessionsStore();
+const connectedAssetIds = computed(() => {
+  const set = new Set();
+  for (const session of sessionsStore.sessions) {
+    if (session.status === 'connected' || session.status === 'connecting') {
+      set.add(session.asset?.id);
+    }
+  }
+  return set;
+});
+
+// ============================================================
+// 折叠态：按完整 path 存储（嵌套下同名子分组需区分）。
 // ============================================================
 const collapsedGroups = ref(new Set());
 
-function toggleGroup(name) {
-  if (collapsedGroups.value.has(name)) {
-    collapsedGroups.value.delete(name);
-    collapsedGroups.value = new Set(collapsedGroups.value);
-  } else {
-    collapsedGroups.value.add(name);
-    collapsedGroups.value = new Set(collapsedGroups.value);
-  }
+function toggleGroup(path) {
+  const next = new Set(collapsedGroups.value);
+  if (next.has(path)) next.delete(path);
+  else next.add(path);
+  collapsedGroups.value = next;
 }
 
-function isGroupCollapsed(name) {
-  return collapsedGroups.value.has(name);
+function isCollapsed(path) {
+  return collapsedGroups.value.has(path);
 }
 
 // ============================================================
-// Computed: filtered groups (performs real-time filter on the
-// grouped view, so large lists (100+) recompute once per change)
+// 搜索过滤：对树递归过滤，保留「自身资产命中 或 任一子孙命中」的子树。
+// 命中时临时展开（忽略 collapsedGroups，由过滤后的节点决定可见性）。
 // ============================================================
-const visibleGroups = computed(() => {
+const visibleTree = computed(() => {
   const query = (props.searchQuery || '').trim().toLowerCase();
   if (!query) return props.groupedAssets;
-  const out = [];
-  for (const group of props.groupedAssets) {
-    const matchInGroupName = group.name.toLowerCase().includes(query);
-    const items = matchInGroupName
-      ? group.items
-      : group.items.filter(asset => {
-          const haystack = [
-            asset.name,
-            asset.host,
-            asset.username,
-            asset.group,
-            asset.auth_method,
-            ...(asset.tags || [])
-          ]
-            .filter(Boolean)
-            .join(' ')
-            .toLowerCase();
-          return haystack.includes(query);
-        });
-    if (items.length) out.push({ name: group.name, items });
-  }
-  return out;
+  return filterNode(props.groupedAssets, query) || emptyRoot();
 });
 
-const hasAssets = computed(() => props.assets.length > 0);
-const hasResults = computed(() => visibleGroups.value.length > 0);
-const hasQuery = computed(() => (props.searchQuery || '').trim().length > 0);
-
-// Flatten visible items for keyboard arrow-key navigation
-const flatAssets = computed(() => {
-  const out = [];
-  for (const group of visibleGroups.value) {
-    if (isGroupCollapsed(group.name)) continue;
-    for (const item of group.items) out.push(item);
-  }
-  return out;
-});
-
-// ============================================================
-// Status normalization — mirrors workbench.js normalizeStatus so the
-// `.dot` utility class receives the expected modifier.
-// ============================================================
-function normalizeStatus(status) {
-  if (status === 'Connected' || status === 'connected') return { label: 'connected', dotClass: 'running' };
-  if (status === 'Warning' || status === 'warning') return { label: 'warning', dotClass: 'warn' };
-  return { label: 'idle', dotClass: '' };
+function emptyRoot() {
+  return { name: '', path: '', parent: '', children: [], items: [] };
 }
 
-function statusClass(status) {
-  return normalizeStatus(status).dotClass;
+function filterNode(node, query) {
+  const matchedItems = (node.items || []).filter(asset => {
+    const haystack = [
+      asset.name, asset.host, asset.username, asset.group,
+      asset.auth_method, ...(asset.tags || [])
+    ].filter(Boolean).join(' ').toLowerCase();
+    return haystack.includes(query);
+  });
+  const filteredChildren = [];
+  for (const child of (node.children || [])) {
+    const fc = filterNode(child, query);
+    if (fc) filteredChildren.push(fc);
+  }
+  // 节点名匹配则保留整棵子树（含所有 items/children）
+  const nameMatch = node.name && node.name.toLowerCase().includes(query);
+  if (nameMatch) {
+    return node;
+  }
+  if (matchedItems.length || filteredChildren.length) {
+    return { ...node, items: matchedItems, children: filteredChildren };
+  }
+  return null;
+}
+
+const hasAssets = computed(() => props.assets.length > 0);
+const hasResults = computed(() => {
+  const root = visibleTree.value;
+  return (root.items?.length || 0) + (root.children?.length || 0) > 0;
+});
+const hasQuery = computed(() => (props.searchQuery || '').trim().length > 0);
+
+// 扁平化可见资产（跳过折叠分组），用于箭头键导航
+const flatAssets = computed(() => {
+  const out = [];
+  walkTree(visibleTree.value, false, out);
+  return out;
+});
+
+function walkTree(node, parentCollapsed, out) {
+  // 有搜索词时忽略折叠态（过滤树已剔除无关项，全部展开便于浏览）
+  const collapsed = hasQuery.value ? false : (parentCollapsed || collapsedGroups.value.has(node.path));
+  if (!collapsed) {
+    for (const item of (node.items || [])) out.push(item);
+  }
+  for (const child of (node.children || [])) {
+    walkTree(child, collapsed, out);
+  }
+}
+
+// ============================================================
+// Status normalization — 复用 workbench.js 导出的 normalizeStatus。
+// ============================================================
+function statusClass(asset) {
+  const runtimeStatus = connectedAssetIds.value.has(asset.id) ? 'connected' : (asset.status || 'Idle');
+  return normalizeStatus(runtimeStatus).dotClass;
 }
 
 function isActiveAsset(asset) {
@@ -142,7 +168,7 @@ function assetBadge(asset) {
 }
 
 // ============================================================
-// Quick connect parser — spec Wave 3 Step 3.2 contract
+// Quick connect parser — `ssh user@host[:port]`
 // ============================================================
 function parseQuickConnect(input) {
   const trimmed = input.trim();
@@ -164,7 +190,7 @@ function onQuickConnectEnter() {
 }
 
 // ============================================================
-// Keyboard navigation — Up/Down to move, Enter to connect
+// Keyboard navigation — Up/Down 移动焦点，Enter 连接
 // ============================================================
 function onAssetKeydown(event, asset) {
   if (event.key === 'Enter') {
@@ -179,21 +205,96 @@ function onAssetKeydown(event, asset) {
     const delta = event.key === 'ArrowDown' ? 1 : -1;
     const next = flatAssets.value[idx + delta];
     if (next) {
-      const el = templateRefAsset(next.id);
+      const el = assetElMap.value.get(next.id);
       if (el && typeof el.focus === 'function') el.focus();
     }
   }
 }
 
-// Lookup DOM node by asset id (scoped ref map)
+// DOM ref 映射（AssetGroupNode 通过 inject 调用 registerAssetEl）
 const assetElMap = ref(new Map());
 function registerAssetEl(id, el) {
   if (el) assetElMap.value.set(id, el);
   else assetElMap.value.delete(id);
 }
-function templateRefAsset(id) {
-  return assetElMap.value.get(id) || null;
+
+// ============================================================
+// 右键菜单：资产 / 分组两套，共用一个 contextMenu ref（带 kind 区分）
+// ============================================================
+const contextMenu = ref({ visible: false, kind: '', x: 0, y: 0, asset: null, path: '' });
+
+function openContextMenu(event, kind, payload) {
+  contextMenu.value = {
+    visible: true,
+    kind,
+    x: event.clientX,
+    y: event.clientY,
+    asset: payload.asset || null,
+    path: payload.path || ''
+  };
 }
+
+function onAssetContextMenu(event, asset) {
+  openContextMenu(event, 'asset', { asset });
+}
+
+function onGroupContextMenu(event, path) {
+  // 「未分组」是保留节点，不提供分组管理菜单
+  if (path === '未分组') return;
+  openContextMenu(event, 'group', { path });
+}
+
+function closeContextMenu() {
+  contextMenu.value = { ...contextMenu.value, visible: false };
+}
+
+const assetMenuItems = computed(() => {
+  if (!contextMenu.value.visible || contextMenu.value.kind !== 'asset') return [];
+  const a = contextMenu.value.asset;
+  if (!a) return [];
+  const make = (label, fn, opts = {}) => ({ label, action: fn, ...opts });
+  return [
+    make('编辑', () => emit('edit-asset', a)),
+    make('复制', () => emit('duplicate-asset', a)),
+    { separator: true },
+    make('移动到分组…', () => emit('move-asset', a)),
+    { separator: true },
+    make('删除', () => emit('delete-asset', a), { danger: true })
+  ];
+});
+
+const groupMenuItems = computed(() => {
+  if (!contextMenu.value.visible || contextMenu.value.kind !== 'group') return [];
+  const path = contextMenu.value.path;
+  if (!path) return [];
+  const make = (label, fn, opts = {}) => ({ label, action: fn, ...opts });
+  return [
+    make('重命名…', () => emit('rename-group', path)),
+    { separator: true },
+    make('解散分组', () => emit('dissolve-group', path), { danger: true })
+  ];
+});
+
+// ============================================================
+// provide：AssetGroupNode 通过 inject('connectionSidebar') 调用这些。
+// 用 ref 函数包裹响应式依赖，避免 provide 快照失效。
+// ============================================================
+provide('connectionSidebar', {
+  isCollapsed,
+  toggleGroup,
+  statusClass,
+  isActiveAsset,
+  assetBadge,
+  onSelectAsset: id => emit('select-asset', id),
+  onConnectAsset: id => emit('connect-asset', id),
+  onAssetKeydown,
+  onAssetContextMenu,
+  onGroupContextMenu,
+  onEditAsset: asset => emit('edit-asset', asset),
+  onDeleteAsset: asset => emit('delete-asset', asset),
+  onDuplicateAsset: asset => emit('duplicate-asset', asset),
+  registerAssetEl
+});
 </script>
 
 <template>
@@ -219,6 +320,15 @@ function templateRefAsset(id) {
           <button
             type="button"
             class="icon-btn"
+            aria-label="新建分组"
+            title="新建分组"
+            @click="emit('create-group')"
+          >
+            <FolderPlus :size="16" />
+          </button>
+          <button
+            type="button"
+            class="icon-btn"
             aria-label="新增连接"
             title="新增连接"
             @click="emit('create-asset')"
@@ -236,7 +346,7 @@ function templateRefAsset(id) {
     </header>
 
     <!-- ============================================================
-         Tree (scrollable middle)
+         Tree (scrollable middle) — 递归渲染分组树
          ============================================================ -->
     <div class="sidebar-tree" role="tree" aria-label="连接资产列表">
       <!-- Empty state: no assets at all -->
@@ -257,51 +367,16 @@ function templateRefAsset(id) {
         <p class="empty-text">无匹配「{{ searchQuery }}」的连接</p>
       </div>
 
-      <!-- Asset tree -->
+      <!-- Asset tree：顶层每个子节点递归渲染。
+           注：buildGroupTree 把所有资产都归入子节点（含「未分组」节点），
+           树根 root.items 恒为空，故此处无需额外渲染顶层直属资产。 -->
       <template v-else>
-        <div
-          v-for="group in visibleGroups"
-          :key="group.name"
-          class="group"
-        >
-          <button
-            type="button"
-            class="group-header"
-            :aria-expanded="String(!isGroupCollapsed(group.name))"
-            @click="toggleGroup(group.name)"
-          >
-            <component
-              :is="isGroupCollapsed(group.name) ? ChevronRight : ChevronDown"
-              :size="12"
-              class="group-chevron"
-            />
-            <span class="group-name">{{ group.name }}</span>
-            <span class="group-count">{{ group.items.length }}</span>
-          </button>
-          <ul v-show="!isGroupCollapsed(group.name)" class="group-items" role="group">
-            <li
-              v-for="asset in group.items"
-              :key="asset.id"
-              :ref="el => registerAssetEl(asset.id, el)"
-              class="asset-node"
-              :class="{ 'is-active': isActiveAsset(asset) }"
-              role="treeitem"
-              tabindex="0"
-              :aria-selected="String(isActiveAsset(asset))"
-              :title="`${asset.name} · ${asset.host} · ${asset.username}`"
-              @click="emit('select-asset', asset.id)"
-              @dblclick="emit('connect-asset', asset.id)"
-              @keydown="onAssetKeydown($event, asset)"
-            >
-              <span class="dot" :class="statusClass(asset.status)" aria-hidden="true"></span>
-              <div class="asset-body">
-                <div class="asset-name">{{ asset.name }}</div>
-                <div class="asset-meta">{{ asset.host }} · {{ asset.username }}</div>
-              </div>
-              <span v-if="assetBadge(asset)" class="asset-badge">{{ assetBadge(asset) }}</span>
-            </li>
-          </ul>
-        </div>
+        <AssetGroupNode
+          v-for="child in visibleTree.children"
+          :key="child.path || child.name"
+          :node="child"
+          :depth="0"
+        />
       </template>
     </div>
 
@@ -322,6 +397,24 @@ function templateRefAsset(id) {
         <span>回车快速连接</span>
       </p>
     </footer>
+
+    <!-- ============================================================
+         右键菜单（资产 / 分组共用 AppContextMenu，按 kind 切 items）
+         ============================================================ -->
+    <AppContextMenu
+      :open="contextMenu.visible && contextMenu.kind === 'asset'"
+      :items="assetMenuItems"
+      :x="contextMenu.x"
+      :y="contextMenu.y"
+      @close="closeContextMenu"
+    />
+    <AppContextMenu
+      :open="contextMenu.visible && contextMenu.kind === 'group'"
+      :items="groupMenuItems"
+      :x="contextMenu.x"
+      :y="contextMenu.y"
+      @close="closeContextMenu"
+    />
   </div>
 </template>
 
@@ -337,6 +430,44 @@ function templateRefAsset(id) {
   background: var(--app-panel);
   color: var(--app-text);
   font-family: var(--font-body);
+}
+
+// ============================================================
+// Collapsed rail — 收起态：缩成 44px 竖排图标栏（展开/新建分组/新增三个按钮）
+// AppShellLayout 的 grid 列宽已响应 data-assets=collapsed 缩到 44px，
+// 这里隐藏所有文字/输入/树/页脚，header 改竖排。
+// ============================================================
+.connection-sidebar.is-collapsed {
+  align-items: center;
+
+  .sidebar-header {
+    padding: var(--space-2) 0;
+    gap: var(--space-3);
+    align-items: center;
+  }
+
+  .title,
+  .sidebar-tree,
+  .sidebar-footer {
+    display: none;
+  }
+  :deep(.app-input) {
+    display: none;
+  }
+
+  .title-row {
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+  .title-actions {
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .icon-btn {
+    width: 28px;
+    height: 28px;
+  }
 }
 
 // ============================================================
@@ -415,65 +546,6 @@ function templateRefAsset(id) {
   padding: var(--space-2) var(--space-1);
 }
 
-.group {
-  display: flex;
-  flex-direction: column;
-  margin-block-end: var(--space-1);
-}
-
-.group-header {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  width: 100%;
-  padding: var(--space-1) var(--space-2);
-  border: none;
-  background: transparent;
-  color: var(--app-muted);
-  cursor: pointer;
-  text-align: start;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  font-size: var(--text-xs);
-  font-weight: 600;
-  border-radius: var(--radius-sm);
-  transition: color var(--motion-fast) var(--ease-standard),
-    background var(--motion-fast) var(--ease-standard);
-}
-
-.group-header:hover {
-  color: var(--app-strong);
-  background: var(--app-hover);
-}
-
-.group-chevron {
-  flex: 0 0 auto;
-  color: var(--app-subtle);
-}
-
-.group-name {
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.group-count {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-  height: 16px;
-  padding: 0 var(--space-1);
-  background: var(--app-control);
-  color: var(--app-muted);
-  border-radius: var(--radius-pill);
-  font-size: 10px;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-}
-
 .group-items {
   list-style: none;
   margin: 0;
@@ -482,9 +554,7 @@ function templateRefAsset(id) {
   flex-direction: column;
 }
 
-// ============================================================
-// Asset node
-// ============================================================
+// 顶层直属资产（树根 items，非分组内）—— 与 AssetGroupNode 内 .asset-node 同款
 .asset-node {
   display: flex;
   align-items: center;
@@ -498,17 +568,12 @@ function templateRefAsset(id) {
   transition: background var(--motion-fast) var(--ease-standard),
     border-color var(--motion-fast) var(--ease-standard);
 }
-
-.asset-node:hover {
-  background: var(--app-hover);
-}
-
+.asset-node:hover { background: var(--app-hover); }
 .asset-node:focus-visible {
   outline: none;
   background: var(--app-hover);
   border-inline-start-color: var(--accent);
 }
-
 .asset-node.is-active {
   background: var(--app-hover);
   border-inline-start-color: var(--accent);
@@ -521,7 +586,6 @@ function templateRefAsset(id) {
   flex-direction: column;
   gap: 1px;
 }
-
 .asset-name {
   font-size: var(--text-sm);
   color: var(--app-strong);
@@ -530,7 +594,6 @@ function templateRefAsset(id) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
 .asset-meta {
   font-size: var(--text-xs);
   color: var(--app-muted);
@@ -539,7 +602,6 @@ function templateRefAsset(id) {
   white-space: nowrap;
   font-family: var(--font-mono);
 }
-
 .asset-badge {
   flex: 0 0 auto;
   display: inline-flex;
@@ -560,8 +622,6 @@ function templateRefAsset(id) {
   white-space: nowrap;
 }
 
-// .dot is provided by global _utilities.scss; modifier classes here
-// pair with the .running / .warn modifiers in that stylesheet.
 .dot {
   flex: 0 0 auto;
   width: 8px;
@@ -569,12 +629,10 @@ function templateRefAsset(id) {
   border-radius: var(--radius-pill);
   background: var(--app-subtle);
 }
-
 .dot.running {
   background: var(--success);
   box-shadow: 0 0 0 2px color-mix(in oklab, var(--success), transparent 72%);
 }
-
 .dot.warn {
   background: var(--warn);
   box-shadow: 0 0 0 2px color-mix(in oklab, var(--warn), transparent 72%);
@@ -593,9 +651,7 @@ function templateRefAsset(id) {
   text-align: center;
 }
 
-.empty-icon {
-  color: var(--app-subtle);
-}
+.empty-icon { color: var(--app-subtle); }
 
 .empty-text {
   margin: 0;
@@ -651,7 +707,5 @@ function templateRefAsset(id) {
   letter-spacing: 0.04em;
 }
 
-.footer-hint svg {
-  color: var(--app-subtle);
-}
+.footer-hint svg { color: var(--app-subtle); }
 </style>

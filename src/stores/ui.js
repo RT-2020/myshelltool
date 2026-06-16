@@ -15,6 +15,7 @@ import {
 // localStorage key（CRITICAL: do NOT rename — Critic 改进 3）
 const THEME_STORAGE_KEY = 'myshelltool-theme';
 const ASSETS_COLLAPSED_KEY = 'myshelltool-assets';
+const RIGHT_COLLAPSED_KEY = 'myshelltool-right';
 
 function readStored(key) {
   try {
@@ -38,6 +39,24 @@ function applyAssetsState(collapsed, persist) {
   if (persist) {
     try {
       localStorage.setItem(ASSETS_COLLAPSED_KEY, collapsed ? 'collapsed' : 'expanded');
+    } catch {
+      /* localStorage 不可用时静默忽略 */
+    }
+  }
+}
+
+/**
+ * 把右侧面板（资源监控+运维摘要）收起状态写入 dataset 并持久化。
+ * 镜像 applyAssetsState：AppShellLayout 用 :global(:root[data-right='collapsed'])
+ * 把 --right-w 覆盖为 0，整列折叠。
+ */
+function applyRightState(collapsed, persist) {
+  if (typeof document !== 'undefined' && document.documentElement) {
+    document.documentElement.dataset.right = collapsed ? 'collapsed' : 'expanded';
+  }
+  if (persist) {
+    try {
+      localStorage.setItem(RIGHT_COLLAPSED_KEY, collapsed ? 'collapsed' : 'expanded');
     } catch {
       /* localStorage 不可用时静默忽略 */
     }
@@ -85,6 +104,7 @@ export const useUiStore = defineStore('ui', () => {
   const theme = ref(normalizeStoredTheme(readStored(THEME_STORAGE_KEY)));
   const systemPrefersDark = ref(readSystemPrefersDark());
   const assetsCollapsed = ref(readStored(ASSETS_COLLAPSED_KEY) === 'collapsed');
+  const rightCollapsed = ref(readStored(RIGHT_COLLAPSED_KEY) === 'collapsed');
   const statusMessage = ref('就绪：连接资产可收起，双击主机打开 SSH 会话。');
   const modal = ref({ type: null, asset: null });
   const searchState = ref({ open: false, query: '', suggestions: [] });
@@ -156,6 +176,15 @@ export const useUiStore = defineStore('ui', () => {
   }
 
   // ============================================================
+  // Actions — 右侧面板收起（资源监控+运维摘要整列）
+  // ============================================================
+  function toggleRight() {
+    rightCollapsed.value = !rightCollapsed.value;
+    applyRightState(rightCollapsed.value, true);
+    announce(rightCollapsed.value ? '右侧面板已收起' : '右侧面板已展开');
+  }
+
+  // ============================================================
   // Actions — setTab（跨 store 编排）
   // ============================================================
   function setTab(tab) {
@@ -193,6 +222,14 @@ export const useUiStore = defineStore('ui', () => {
   function setGlobalSearchQuery(query) {
     searchState.value.query = query;
     const trimmed = query.trim();
+    // 有输入即展开建议下拉；清空则关闭。修复：原先只更新 query/suggestions 而未置
+    // open=true，导致 AppTitleBar 的 isOpen(= open && suggestions.length) 恒为 false，
+    // 下拉永远不显示——这是「全局搜索未接入实际功能」的根因。
+    searchState.value.open = trimmed.length > 0;
+    if (!trimmed) {
+      searchState.value.suggestions = [];
+      return;
+    }
     const sshMatch = trimmed.match(/^ssh\s+([^\s@]+)@([^\s:]+)(?::(\d+))?$/);
     if (sshMatch) {
       searchState.value.suggestions = [{
@@ -260,6 +297,7 @@ export const useUiStore = defineStore('ui', () => {
       systemThemeUnlisten = startSystemThemeListener(matches => { systemPrefersDark.value = matches; });
     }
     applyAssetsState(assetsCollapsed.value, false);
+    applyRightState(rightCollapsed.value, false);
   }
 
   function disposeSystemThemeListener() {
@@ -276,6 +314,7 @@ export const useUiStore = defineStore('ui', () => {
     theme,
     systemPrefersDark,
     assetsCollapsed,
+    rightCollapsed,
     statusMessage,
     modal,
     searchState,
@@ -291,8 +330,9 @@ export const useUiStore = defineStore('ui', () => {
     applyThemeValue,
     initializeTheme,
     disposeSystemThemeListener,
-    // assets / tab actions
+    // 面板折叠 actions
     toggleAssets,
+    toggleRight,
     setTab,
     // search actions
     openGlobalSearch,

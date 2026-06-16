@@ -258,8 +258,8 @@ function openAssetEditor() { uiStore.modal = { type: 'assetEditor', asset: null 
 <style scoped lang="scss">
 @use '@/styles/_tokens' as *;
 
-// Single-pixel chrome edge, no nested card chrome. Tabby-style hairline
-// row separators; no shadow stacks.
+// No nested card chrome — 无圆角无外框：与 grid region 贴合平齐，靠 region
+// 间 1px 分隔线（AppShellLayout 的 border-block-end 等）划分边界，保持整体性。
 .terminal-surface {
   display: flex;
   flex-direction: column;
@@ -269,8 +269,6 @@ function openAssetEditor() { uiStore.modal = { type: 'assetEditor', asset: null 
   background: var(--app-panel);
   color: var(--app-text);
   font-family: var(--font-body);
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-sm);
   overflow: hidden;
 }
 

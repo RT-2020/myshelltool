@@ -206,8 +206,8 @@ const { selectedRemotePaths } = storeToRefs(filesStore);
 <style scoped lang="scss">
 @use '@/styles/_tokens' as *;
 
-// Surface container — Tabby/Termius low chrome. 1px border, no nested card
-// stacking. Local/remote columns separated by border-inline-end on .col--local.
+// Surface container — 无圆角无外框：与 grid region 贴合平齐，靠 region 间 1px
+// 分隔线划分边界，保持整体性。Local/remote 列由 .col--local 的 border-inline-end 分隔。
 .file-surface {
   display: flex;
   flex-direction: column;
@@ -217,8 +217,6 @@ const { selectedRemotePaths } = storeToRefs(filesStore);
   background: var(--app-panel);
   color: var(--app-text);
   font-family: var(--font-body);
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-sm);
   overflow: hidden;
 }
 
@@ -242,7 +240,7 @@ const { selectedRemotePaths } = storeToRefs(filesStore);
 .file-surface-title {
   font-size: var(--text-sm);
   font-weight: 600;
-  color: var(--app-text);
+  color: var(--app-strong); // 统一 center 区标题色：与 .terminal-host 一致
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
