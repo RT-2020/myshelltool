@@ -10,8 +10,10 @@ use std::sync::Arc;
 use rmcp::{
     ServerHandler, ServiceExt,
     model::{
-        CallToolRequestParam, CallToolResult, Implementation, InitializeResult, ListToolsResult,
-        PaginatedRequestParam, ServerCapabilities, ServerInfo,
+        CallToolRequestParam, CallToolResult, GetPromptRequestParam, GetPromptResult,
+        Implementation, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
+        ListResourcesResult, ListToolsResult, PaginatedRequestParam, ReadResourceRequestParams,
+        ReadResourceResult, ServerCapabilities, ServerInfo,
     },
     service::RequestContext,
     ErrorData as McpError,
@@ -81,6 +83,80 @@ impl ServerHandler for MyshellToolMcpServer {
                 }
             }
         }
+    }
+
+    /// 列出 3 个静态资源（Layer 4）。
+    fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParam>,
+        _context: RequestContext<rmcp::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<ListResourcesResult, McpError>> + Send + '_ {
+        let resources = super::resources::list_resources();
+        std::future::ready(Ok(ListResourcesResult {
+            next_cursor: None,
+            resources,
+            meta: None,
+        }))
+    }
+
+    /// 读取资源内容（Layer 4）。
+    fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<rmcp::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<ReadResourceResult, McpError>> + Send + '_ {
+        let asset_path = self.ctx.asset_store_path.clone();
+        std::future::ready(match super::resources::read_resource(&request, &asset_path) {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                log::warn!("MCP read_resource error: {}", e);
+                Err(McpError::invalid_request(e, None))
+            }
+        })
+    }
+
+    /// 列出 resource template（Layer 4）。
+    fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParam>,
+        _context: RequestContext<rmcp::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<ListResourceTemplatesResult, McpError>> + Send + '_
+    {
+        let templates = super::resources::list_resource_templates();
+        std::future::ready(Ok(ListResourceTemplatesResult {
+            next_cursor: None,
+            resource_templates: templates,
+            meta: None,
+        }))
+    }
+
+    /// 列出 3 个诊断 prompt（Layer 5）。
+    fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParam>,
+        _context: RequestContext<rmcp::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<ListPromptsResult, McpError>> + Send + '_ {
+        let prompts = super::prompts::list_prompts();
+        std::future::ready(Ok(ListPromptsResult {
+            next_cursor: None,
+            prompts,
+            meta: None,
+        }))
+    }
+
+    /// 生成 prompt messages（Layer 5）。
+    fn get_prompt(
+        &self,
+        request: GetPromptRequestParam,
+        _context: RequestContext<rmcp::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<GetPromptResult, McpError>> + Send + '_ {
+        std::future::ready(match super::prompts::get_prompt(&request) {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                log::warn!("MCP get_prompt error: {}", e);
+                Err(McpError::invalid_request(e, None))
+            }
+        })
     }
 }
 
