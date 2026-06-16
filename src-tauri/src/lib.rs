@@ -320,14 +320,43 @@ pub fn init_mcp_logger() {
 
 /// MCP stdio server 主入口。被 `src/bin/mcp.rs` 调用。
 ///
-/// Layer 2/3：加载资产/凭据路径 → rmcp stdio serve + 7 个只读工具。
-/// Layer 7（降级）会在此函数开头加 GUI 检测 + 只读降级分支。
+/// Layer 2-5：加载资产/凭据路径 → rmcp stdio serve（三原语）。
+///
+/// Layer 7（v1.0 降级语义）：v1.0 是「MCP 进程独立建连」，**不依赖 GUI 进程**。
+/// 这里的「降级」不是「GUI 未运行」（那是 v1.1 named pipe 场景），而是
+/// 「数据目录未初始化 / 资产库为空」时的优雅处理：
+/// - 数据目录不存在 → 自动创建（日志目录等），记录警告
+/// - 资产库为空 → MCP server 仍正常启动，list_assets 返回空，
+///   disk_usage 等工具调用时给出「请先在 GUI 配置资产」的引导错误
+///
+/// 这样保证 Claude Desktop 始终能连上 MCP server（initialize/tools/list 永远响应），
+/// 即使是全新安装未配置任何资产的状态。
 pub async fn run_mcp_stdio() -> Result<(), String> {
     log::info!("myshelltool-mcp stdio server starting");
     let data_dir = mcp_data_dir();
     let asset_store_path = data_dir.join("connection-assets.json");
     let secret_store_dir = data_dir.join("credentials");
     let known_hosts_path = data_dir.join("known_hosts.json");
+
+    // Layer 7：数据目录降级——确保目录存在，缺失资产库给出警告但不阻断启动。
+    if !data_dir.exists() {
+        log::warn!(
+            "MCP data dir does not exist, creating: {}",
+            data_dir.display()
+        );
+        if let Err(e) = std::fs::create_dir_all(&data_dir) {
+            log::warn!("Failed to create data dir {}: {}", data_dir.display(), e);
+            // 不阻断——工具调用时会自然报错
+        }
+    }
+    if !asset_store_path.exists() {
+        log::warn!(
+            "Asset store not found at {}. list_assets will return empty. \
+             Please configure assets in myshelltool GUI first, or place connection-assets.json in the data dir.",
+            asset_store_path.display()
+        );
+    }
+
     mcp::server::serve_stdio(asset_store_path, secret_store_dir, known_hosts_path)
         .await
         .map_err(|e| format!("MCP server error: {e}"))?;
