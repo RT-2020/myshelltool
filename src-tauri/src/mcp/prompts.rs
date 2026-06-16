@@ -11,7 +11,7 @@
 //! - cleanup_disk：找大文件/旧日志
 
 use rmcp::model::{
-    GetPromptRequestParam, GetPromptResult, Prompt, PromptArgument, PromptMessage,
+    GetPromptRequestParams, GetPromptResult, Prompt, PromptArgument, PromptMessage,
     PromptMessageContent, PromptMessageRole,
 };
 
@@ -38,7 +38,7 @@ pub fn list_prompts() -> Vec<Prompt> {
 
 /// 根据 prompt name + arguments 生成 messages。
 pub fn get_prompt(
-    request: &GetPromptRequestParam,
+    request: &GetPromptRequestParams,
 ) -> Result<GetPromptResult, String> {
     let asset_id = request
         .arguments
