@@ -52,7 +52,7 @@ impl ServerHandler for MyshellToolMcpServer {
         _request: Option<PaginatedRequestParam>,
         _context: RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
-        let tools = tools::list_readonly_tools();
+        let tools = tools::list_all_tools();
         std::future::ready(Ok(ListToolsResult {
             next_cursor: None,
             tools,
