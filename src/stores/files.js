@@ -55,7 +55,8 @@ export const useFilesStore = defineStore('files', () => {
   const manualRemotePathInput = ref('');
   const lastSelectedRemoteIndex = ref(-1);
   const contextMenu = ref({ visible: false, x: 0, y: 0, side: 'remote', entry: null });
-  const transferDrawerOpen = ref(true);
+  // 传输队列抽屉默认收起：用户有传输时状态栏「传输」或文件区 trigger 可展开。
+  const transferDrawerOpen = ref(false);
 
   // 进度事件 unlisten handle（必须 init 后保存，不能跨 store 共享）
   let progressUnlisten = null;

@@ -247,6 +247,21 @@ struct KeyboardInteractiveEvent {
     prompts: Vec<String>,
 }
 
+// Unified session lifecycle status event. Emitted at connect-success,
+// remote-close, and user-disconnect so the frontend can keep a single
+// authoritative `session.status` and derive all status UI from it.
+// (The existing per-session `ssh-closed-{id}` event is preserved for
+// backward compatibility / existing listeners; this is additive.)
+const SESSION_STATUS_EVENT: &str = "ssh-session-status";
+
+#[derive(Clone, Serialize)]
+struct SessionStatusEvent {
+    session_id: String,
+    // "connected" | "disconnected"
+    status: String,
+    reason: Option<String>,
+}
+
 async fn connect_authenticated(
     state: &State<'_, AppState>,
     host: &str,
@@ -513,6 +528,10 @@ pub async fn ssh_connect(
     // (for resource_monitor's MonitorExec path: app.state::<AppState>()) without
     // borrowing the Tauri State<'_, AppState>.
     let app_handle_for_task = emit_app.clone();
+    // Separate clone for the connect-success SESSION_STATUS_EVENT emit below:
+    // both emit_app and app_handle_for_task are moved into the spawned task, so
+    // we need an AppHandle that stays owned here after the spawn.
+    let app_handle_for_status_emit = app_handle_for_task.clone();
 
     // Clone the session id into a task-local binding so the outer `session_id`
     // stays owned and valid for the log + return value below.
@@ -531,6 +550,14 @@ pub async fn ssh_connect(
                         }
                         Some(ChannelMsg::Eof) | None => {
                             let _ = emit_app.emit(&closed_event_name, "remote-closed".to_string());
+                            let _ = emit_app.emit(
+                                SESSION_STATUS_EVENT,
+                                SessionStatusEvent {
+                                    session_id: session_id_task.clone(),
+                                    status: "disconnected".to_string(),
+                                    reason: Some("remote-closed".to_string()),
+                                },
+                            );
                             break;
                         }
                         _ => {}
@@ -559,6 +586,14 @@ pub async fn ssh_connect(
                         Some(SshCommand::Disconnect) | None => {
                             let _ = channel.eof().await;
                             let _ = emit_app.emit(&closed_event_name, "disconnected-by-user".to_string());
+                            let _ = emit_app.emit(
+                                SESSION_STATUS_EVENT,
+                                SessionStatusEvent {
+                                    session_id: session_id_task.clone(),
+                                    status: "disconnected".to_string(),
+                                    reason: Some("disconnected-by-user".to_string()),
+                                },
+                            );
                             break;
                         }
                     }
@@ -568,6 +603,19 @@ pub async fn ssh_connect(
     });
 
     info!("SSH session {session_id} established for {username}@{host}:{port}");
+
+    // Emit unified session-status "connected" so the frontend can update the
+    // authoritative `session.status` and all derived UI (sidebar dot, etc.).
+    // The invoke return value (SshConnectResult.connected) also signals this,
+    // but the event lets a single listener own the status source of truth.
+    let _ = app_handle_for_status_emit.emit(
+        SESSION_STATUS_EVENT,
+        SessionStatusEvent {
+            session_id: session_id.clone(),
+            status: "connected".to_string(),
+            reason: None,
+        },
+    );
 
     Ok(SshConnectResult {
         session_id,

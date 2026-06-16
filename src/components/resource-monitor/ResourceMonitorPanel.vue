@@ -83,6 +83,8 @@ const snapshot = computed(() => rm.snapshot);
         :write-points="rm.diskWriteHistoryPoints"
         :read-rate="rm.diskReadRate"
         :write-rate="rm.diskWriteRate"
+        :disk-total="snapshot?.diskTotal || 0"
+        :disk-used="snapshot?.diskUsed || 0"
       />
     </div>
   </section>
@@ -102,6 +104,7 @@ const snapshot = computed(() => rm.snapshot);
 .rm-panel-head {
   display: flex;
   align-items: center;
+  flex: 0 0 auto; // 固定 header，body 滚动时不被压缩
   padding: var(--space-2) var(--space-3);
   border-block-end: 1px solid var(--app-border);
   background: var(--app-chrome);

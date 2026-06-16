@@ -41,6 +41,10 @@ pub enum ConnectionStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionAssetStore {
     pub assets: Vec<ConnectionAsset>,
+    /// 显式声明的分组路径（含空分组）。`asset.group` 仅存路径，刷新后无法
+    /// 还原无资产的分组，故用一个独立列表持久化。`#[serde(default)]` 兼容旧文件。
+    #[serde(default)]
+    pub groups: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,6 +164,7 @@ pub fn default_asset_store() -> ConnectionAssetStore {
                 AuthMethod::PrivateKey,
             ),
         ],
+        groups: vec![],
     }
 }
 
@@ -195,6 +200,115 @@ pub fn upsert_connection_asset(
         *existing = asset;
     } else {
         store.assets.push(asset);
+    }
+    Ok(())
+}
+
+/// 校验分组路径：各段非空且不含 `/`（分隔符保留给层级）。
+/// 允许空字符串（表示未命名，调用方应已处理），但不允许段内出现 `/`。
+pub fn validate_group_path(path: &str) -> Result<(), String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("group path is empty".to_string());
+    }
+    for segment in trimmed.split('/') {
+        if segment.is_empty() {
+            return Err("group path has empty segment (consecutive '/')".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// 删除指定 id 的连接资产。不存在则报错。
+pub fn remove_connection_asset(store: &mut ConnectionAssetStore, id: &str) -> Result<(), String> {
+    let before = store.assets.len();
+    store.assets.retain(|item| item.id != id);
+    if store.assets.len() == before {
+        return Err(format!("asset id not found: {}", id));
+    }
+    Ok(())
+}
+
+/// 重命名分组路径（含其所有子级）。`old_path` 与 `new_path` 均为完整路径，
+/// 如 "生产/数据库" → "生产/DB"。同步更新 assets.group 与 store.groups。
+pub fn rename_asset_group(
+    store: &mut ConnectionAssetStore,
+    old_path: &str,
+    new_path: &str,
+) -> Result<(), String> {
+    let old_path = old_path.trim();
+    let new_path = new_path.trim();
+    if old_path.is_empty() {
+        return Err("old group path is empty".to_string());
+    }
+    if old_path == "未分组" {
+        return Err("cannot rename the reserved '未分组' group".to_string());
+    }
+    validate_group_path(new_path)?;
+    if new_path == old_path {
+        return Ok(()); // no-op
+    }
+
+    let prefix = format!("{}/", old_path);
+    // 更新 assets.group：精确匹配或前缀匹配（子级路径）
+    for asset in store.assets.iter_mut() {
+        if asset.group == old_path {
+            asset.group = new_path.to_string();
+        } else if asset.group.starts_with(&prefix) {
+            asset.group = format!("{}{}", new_path, &asset.group[old_path.len()..]);
+        }
+    }
+    // 同步 store.groups
+    for g in store.groups.iter_mut() {
+        if *g == old_path {
+            *g = new_path.to_string();
+        } else if g.starts_with(&prefix) {
+            *g = format!("{}{}", new_path, &g[old_path.len()..]);
+        }
+    }
+    // 去重（重命名可能产生重复声明）
+    store.groups.sort();
+    store.groups.dedup();
+    Ok(())
+}
+
+/// 解散分组：将其下所有 asset 提到父级（无父级则「未分组」），
+/// 并从 store.groups 移除该路径及其所有子级声明。
+pub fn dissolve_asset_group(
+    store: &mut ConnectionAssetStore,
+    path: &str,
+) -> Result<(), String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("group path is empty".to_string());
+    }
+    if path == "未分组" {
+        return Err("cannot dissolve the reserved '未分组' group".to_string());
+    }
+
+    // 父级 = 最后一个 '/' 之前的部分；无 '/' 则提到「未分组」
+    let parent = match path.rfind('/') {
+        Some(idx) => &path[..idx],
+        None => "未分组",
+    };
+
+    let prefix = format!("{}/", path);
+    for asset in store.assets.iter_mut() {
+        if asset.group == path || asset.group.starts_with(&prefix) {
+            asset.group = parent.to_string();
+        }
+    }
+    // 移除 path 及其所有子级声明
+    store.groups.retain(|g| *g != path && !g.starts_with(&prefix));
+    Ok(())
+}
+
+/// 声明一个分组路径（支撑新建空分组）。已存在则 no-op。
+pub fn ensure_asset_group(store: &mut ConnectionAssetStore, path: &str) -> Result<(), String> {
+    let path = path.trim();
+    validate_group_path(path)?;
+    if !store.groups.iter().any(|g| g == path) {
+        store.groups.push(path.to_string());
     }
     Ok(())
 }
@@ -413,6 +527,8 @@ mod tests {
             tags: vec!["demo".to_string()],
             status: ConnectionStatus::Idle,
             last_connected: "从未".to_string(),
+            credential_id: None,
+            passphrase_credential_id: None,
         };
 
         let json = serde_json::to_string(&asset).expect("asset serializes");
@@ -473,8 +589,11 @@ mod tests {
         let json = serde_json::to_string(&store).expect("store serializes");
         let lowered = json.to_lowercase();
 
+        // 断言的是「密钥值」不泄漏，而非字段名。
+        // ConnectionAsset 含 credential_id / passphrase_credential_id（仅是引用 id，
+        // 不是密钥本身），故字段名 "passphrase" 合法存在；这里只拦截明文密钥值。
         assert!(!lowered.contains("password_value"));
-        assert!(!lowered.contains("passphrase"));
+        assert!(!lowered.contains("passphrase_value"));
         assert!(!lowered.contains("private_key_data"));
         assert!(!lowered.contains("token_value"));
         assert!(!lowered.contains("secret"));
@@ -514,6 +633,115 @@ mod tests {
         );
 
         assert!(!summary.token_status.configured);
+    }
+
+    #[test]
+    fn removes_connection_asset_by_id() {
+        let mut store = default_asset_store();
+        let id = store.assets[0].id.clone();
+        let before = store.assets.len();
+
+        remove_connection_asset(&mut store, &id).expect("asset removed");
+
+        assert_eq!(store.assets.len(), before - 1);
+        assert!(!store.assets.iter().any(|a| a.id == id));
+        // 不存在的 id 应报错
+        assert!(remove_connection_asset(&mut store, "does-not-exist").is_err());
+    }
+
+    // 测试用便捷构造：仅 id/name/host/group 关键字段，其余默认。
+    fn g_asset(id: &str, name: &str, host: &str, group: &str) -> ConnectionAsset {
+        ConnectionAsset {
+            id: id.to_string(),
+            name: name.to_string(),
+            host: host.to_string(),
+            port: 22,
+            username: "root".to_string(),
+            auth_method: AuthMethod::Password,
+            private_key_path: None,
+            group: group.to_string(),
+            tags: vec![],
+            status: ConnectionStatus::Idle,
+            last_connected: "从未".to_string(),
+            credential_id: None,
+            passphrase_credential_id: None,
+        }
+    }
+
+    #[test]
+    fn rename_group_updates_assets_and_declared_paths() {
+        let mut store = ConnectionAssetStore { assets: vec![], groups: vec![] };
+        // 两条资产在 生产/数据库 下，一条在 生产/web 下
+        store.assets.push(g_asset("a1", "A1", "h1", "生产/数据库"));
+        store.assets.push(g_asset("a2", "A2", "h2", "生产/数据库/主"));
+        store.assets.push(g_asset("a3", "A3", "h3", "生产/web"));
+        store.groups = vec!["生产/数据库".into(), "生产/web".into()];
+
+        rename_asset_group(&mut store, "生产/数据库", "生产/DB").expect("rename ok");
+
+        // a1 精确匹配 → 改；a2 子级前缀 → 改；a3 不在路径下 → 不变
+        assert_eq!(store.assets[0].group, "生产/DB");
+        assert_eq!(store.assets[1].group, "生产/DB/主");
+        assert_eq!(store.assets[2].group, "生产/web");
+        // declared groups 同步更新
+        assert!(store.groups.contains(&"生产/DB".to_string()));
+        assert!(!store.groups.contains(&"生产/数据库".to_string()));
+    }
+
+    #[test]
+    fn rename_group_rejects_reserved_ungrouped() {
+        let mut store = default_asset_store();
+        // 「未分组」保留，不可重命名
+        assert!(rename_asset_group(&mut store, "未分组", "Other").is_err());
+    }
+
+    #[test]
+    fn dissolve_group_moves_assets_to_parent() {
+        let mut store = ConnectionAssetStore { assets: vec![], groups: vec![] };
+        store.assets.push(g_asset("a1", "A1", "h1", "生产/数据库"));
+        store.assets.push(g_asset("a2", "A2", "h2", "生产/数据库/主"));
+        store.assets.push(g_asset("a3", "A3", "h3", "生产"));
+        store.groups = vec!["生产/数据库".into(), "生产".into()];
+
+        dissolve_asset_group(&mut store, "生产/数据库").expect("dissolve ok");
+
+        // a1 → 父级 生产；a2 → 父级 生产；a3 不变
+        assert_eq!(store.assets[0].group, "生产");
+        assert_eq!(store.assets[1].group, "生产");
+        assert_eq!(store.assets[2].group, "生产");
+        // declared: 生产/数据库 移除，生产 保留
+        assert!(!store.groups.contains(&"生产/数据库".to_string()));
+        assert!(store.groups.contains(&"生产".to_string()));
+    }
+
+    #[test]
+    fn dissolve_top_level_group_falls_back_to_ungrouped() {
+        let mut store = ConnectionAssetStore {
+            assets: vec![g_asset("a1", "A1", "h1", "测试组")],
+            groups: vec!["测试组".into()],
+        };
+        dissolve_asset_group(&mut store, "测试组").expect("dissolve ok");
+        // 顶级分组无父级 → 提到「未分组」
+        assert_eq!(store.assets[0].group, "未分组");
+        assert!(store.groups.is_empty());
+    }
+
+    #[test]
+    fn ensure_group_persists_empty_group() {
+        let mut store = default_asset_store();
+        ensure_asset_group(&mut store, "生产/数据库").expect("ensure ok");
+        assert!(store.groups.contains(&"生产/数据库".to_string()));
+        // 幂等：再 ensure 不重复
+        ensure_asset_group(&mut store, "生产/数据库").expect("ensure ok");
+        assert_eq!(store.groups.iter().filter(|g| *g == "生产/数据库").count(), 1);
+    }
+
+    #[test]
+    fn validate_group_path_rejects_empty_segments() {
+        assert!(validate_group_path("生产/数据库").is_ok());
+        assert!(validate_group_path("").is_err());
+        assert!(validate_group_path("生产//数据库").is_err()); // 连续 '/'
+        assert!(validate_group_path("生产/").is_err()); // 末尾空段
     }
 
     fn temp_store_path(label: &str) -> std::path::PathBuf {

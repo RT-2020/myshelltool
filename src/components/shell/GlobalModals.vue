@@ -54,6 +54,16 @@ const mkdirName = ref('');
 const renameTarget = reactive({ path: '', current: '', next: '' });
 const keyboardResponses = reactive({});
 
+// ---- 分组管理 / 删除确认 表单状态 ----
+// renameGroup: 输入新分组名（单段，禁 '/');由 modal.value.path 提供旧路径
+const renameGroupInput = ref('');
+// createGroup: 输入分组路径（可含 '/' 建子级）
+const createGroupInput = ref('');
+// moveAsset: 目标分组路径
+const moveGroupInput = ref('');
+// assetEditor 内联校验错误（替代 window.alert）
+const assetFormError = ref('');
+
 const authMethodOptions = [
   { label: 'Password', value: 'Password' },
   { label: 'PrivateKey', value: 'PrivateKey' }
@@ -84,6 +94,10 @@ const modalTitle = computed(() => {
     case 'localMkdir': return '新建本地目录';
     case 'localRename': return '重命名本地条目';
     case 'terminalSearch': return '终端搜索';
+    case 'confirmDelete': return '删除连接资产';
+    case 'renameGroup': return '重命名分组';
+    case 'createGroup': return '新建分组';
+    case 'moveAsset': return '移动到分组';
     default: return '提示';
   }
 });
@@ -94,6 +108,14 @@ const assetCredentialHint = computed(() => {
   return '尚未存储密码';
 });
 
+// 移动/新建分组时可选的分组建议列表：显式声明 ∪ 资产现有 group，去重，含「未分组」。
+const moveGroupOptions = computed(() => {
+  const set = new Set(['未分组']);
+  for (const g of (store.declaredGroups || [])) set.add(g);
+  for (const a of (store.assets || [])) if (a.group) set.add(a.group);
+  return [...set];
+});
+
 // ============================================================
 // Sync form state when modal type changes (mirrors App.vue watch).
 // ============================================================
@@ -101,6 +123,19 @@ watch(() => modal.value.type, type => {
   if (type === 'assetEditor') {
     Object.assign(editingAsset, modal.value.asset ? cloneAsset(modal.value.asset) : emptyAsset());
     Object.assign(editingCredential, emptyCredential());
+    assetFormError.value = '';
+  }
+  if (type === 'renameGroup') {
+    // 默认填入当前分组名的最后一段（方便就地改名）
+    const path = modal.value.path || '';
+    renameGroupInput.value = path.split('/').pop() || '';
+  }
+  if (type === 'createGroup') {
+    createGroupInput.value = '';
+  }
+  if (type === 'moveAsset') {
+    // 默认填入资产当前分组
+    moveGroupInput.value = modal.value.asset?.group || '未分组';
   }
   if (type === 'tunnelCreate') {
     Object.assign(tunnelForm, emptyTunnelForm());
@@ -179,9 +214,10 @@ function submitModal() {
   switch (modal.value.type) {
     case 'assetEditor':
       if (editingAsset.auth_method === 'Password' && !editingAsset.credential_id && !editingCredential.password) {
-        window.alert('Password 认证需要密码：首次保存请填写密码字段，否则无法连接');
+        assetFormError.value = 'Password 认证首次保存需填写密码字段，否则无法连接。';
         return;
       }
+      assetFormError.value = '';
       store.saveAsset(
         { ...editingAsset, tags: splitTags(editingAsset.tags) },
         {
@@ -190,6 +226,33 @@ function submitModal() {
         }
       );
       return;
+    case 'confirmDelete':
+      store.deleteAsset(modal.value.asset?.id);
+      return;
+    case 'renameGroup': {
+      const newName = renameGroupInput.value.trim();
+      if (!newName) return;
+      if (newName.includes('/')) {
+        // 单段重命名禁 '/'；改层级请用新建分组
+        return;
+      }
+      const oldPath = modal.value.path || '';
+      const parent = oldPath.includes('/') ? oldPath.slice(0, oldPath.lastIndexOf('/')) : '';
+      const newPath = parent ? `${parent}/${newName}` : newName;
+      store.renameGroup(oldPath, newPath);
+      return;
+    }
+    case 'createGroup': {
+      const path = createGroupInput.value.trim();
+      if (!path) return;
+      store.createGroup(path);
+      return;
+    }
+    case 'moveAsset': {
+      const target = moveGroupInput.value.trim() || '未分组';
+      store.moveAsset(modal.value.asset?.id, target);
+      return;
+    }
     case 'tokenConfig':
       store.saveToken(tokenInput.value).then(saved => {
         if (saved) tokenInput.value = '';
@@ -292,6 +355,7 @@ function denyHostKey() {
             <strong>凭据</strong>
             <p class="muted">{{ assetCredentialHint }}</p>
           </div>
+          <p v-if="assetFormError" class="form-error">{{ assetFormError }}</p>
           <div class="grid-2">
             <label v-if="editingAsset.auth_method === 'Password'" class="stack">
               <span class="muted">密码（明文不会回显，仅保存到本地安全存储）
@@ -399,6 +463,50 @@ function denyHostKey() {
           <p class="muted">终端搜索由工具栏触发，此入口仅作兼容。</p>
         </div>
 
+        <!-- confirmDelete -->
+        <div v-else-if="modal.type === 'confirmDelete'" class="stack">
+          <p>将永久删除连接「<strong>{{ modal.asset?.name }}</strong>」
+            <span class="num muted">（{{ modal.asset?.host }} · {{ modal.asset?.username }}）</span></p>
+          <p class="muted">同时清除已保存的密码 / 密钥凭据。此操作不可撤销。</p>
+        </div>
+
+        <!-- renameGroup -->
+        <div v-else-if="modal.type === 'renameGroup'" class="stack">
+          <p class="muted">重命名分组「{{ modal.path }}」的最后一段名称。
+            （改层级路径请用「新建分组」+「移动」组合）</p>
+          <label class="stack"><span>新名称（不含 '/'）</span>
+            <AppInput :model-value="renameGroupInput" placeholder="分组名"
+              @update:model-value="v => renameGroupInput = v" />
+          </label>
+        </div>
+
+        <!-- createGroup -->
+        <div v-else-if="modal.type === 'createGroup'" class="stack">
+          <p class="muted">输入分组路径，可用「/」创建多级嵌套分组，如「生产/数据库」。</p>
+          <label class="stack"><span>分组路径</span>
+            <AppInput :model-value="createGroupInput" placeholder="生产/数据库"
+              @update:model-value="v => createGroupInput = v" />
+          </label>
+        </div>
+
+        <!-- moveAsset -->
+        <div v-else-if="modal.type === 'moveAsset'" class="stack">
+          <p>移动连接「<strong>{{ modal.asset?.name }}</strong>」到分组：</p>
+          <label class="stack"><span>目标分组（可输入新路径或选已有）</span>
+            <!-- 用原生 input 而非 AppInput：AppInput 不透传 list 属性，
+                 移动分组需要 datalist 自动补全 + 允许输入新路径，故此处用裸 input。 -->
+            <input
+              class="native-input"
+              v-model="moveGroupInput"
+              list="group-list-move"
+              placeholder="未分组 或 生产/数据库"
+            />
+            <datalist id="group-list-move">
+              <option v-for="g in moveGroupOptions" :key="g" :value="g"></option>
+            </datalist>
+          </label>
+        </div>
+
         <!-- default: tokenConfig / settingsHub -->
         <div v-else class="stack">
           <p>token 仅写入本地安全存储。界面提交后只展示"已配置"或"未配置"。</p>
@@ -413,7 +521,13 @@ function denyHostKey() {
       <div class="modal-actions">
         <button v-if="modal.type === 'hostKeyVerify'" class="btn danger" @click="denyHostKey">拒绝</button>
         <button class="btn" id="modalSecondary" @click="closeModal">取消</button>
-        <button class="btn primary" id="modalPrimary" @click="submitModal">确认</button>
+        <button
+          v-if="modal.type === 'confirmDelete'"
+          class="btn danger"
+          data-modal-primary-danger
+          @click="submitModal"
+        >删除</button>
+        <button v-else class="btn primary" id="modalPrimary" @click="submitModal">确认</button>
       </div>
     </div>
   </div>
@@ -533,4 +647,34 @@ function denyHostKey() {
 }
 .callout strong { display: block; margin-bottom: 4px; }
 .num { font-family: ui-monospace, monospace; }
+
+/* 分组移动用的原生 input（AppInput 不透传 list 属性，故裸 input 对齐 AppInput 视觉）。 */
+.native-input {
+  width: 100%;
+  padding: 6px 10px;
+  background: var(--app-control);
+  color: var(--app-text);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-family: var(--font-body);
+  outline: none;
+  transition: border-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard);
+}
+.native-input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+/* assetEditor 内联校验错误（替代 window.alert）。 */
+.form-error {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in oklab, var(--danger), transparent 50%);
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklab, var(--danger), transparent 88%);
+  color: var(--danger);
+  font-size: var(--text-xs);
+}
 </style>

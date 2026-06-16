@@ -28,6 +28,8 @@ struct ConnectionAssetList {
     source: &'static str,
     count: usize,
     assets: Vec<myshelltool_core::ConnectionAsset>,
+    /// 显式声明的分组路径（含空分组）。与 assets 一起同步到前端 declaredGroups。
+    groups: Vec<String>,
 }
 
 #[tauri::command]
@@ -40,11 +42,12 @@ fn backend_status() -> BackendStatus {
 
 #[tauri::command]
 fn list_connection_assets(state: State<'_, AppState>) -> Result<ConnectionAssetList, String> {
-    let assets = myshelltool_core::load_connection_asset_store(&state.asset_store_path)?.assets;
+    let store = myshelltool_core::load_connection_asset_store(&state.asset_store_path)?;
     Ok(ConnectionAssetList {
         source: "local asset store",
-        count: assets.len(),
-        assets,
+        count: store.assets.len(),
+        assets: store.assets,
+        groups: store.groups,
     })
 }
 
@@ -60,6 +63,63 @@ fn save_connection_asset(
         source: "local asset store",
         count: store.assets.len(),
         assets: store.assets,
+        groups: store.groups,
+    })
+}
+
+#[tauri::command]
+fn delete_connection_asset(state: State<'_, AppState>, id: String) -> Result<ConnectionAssetList, String> {
+    let mut store = myshelltool_core::load_connection_asset_store(&state.asset_store_path)?;
+    myshelltool_core::remove_connection_asset(&mut store, &id)?;
+    myshelltool_core::save_connection_asset_store(&state.asset_store_path, &store)?;
+    Ok(ConnectionAssetList {
+        source: "local asset store",
+        count: store.assets.len(),
+        assets: store.assets,
+        groups: store.groups,
+    })
+}
+
+#[tauri::command]
+fn rename_asset_group(
+    state: State<'_, AppState>,
+    old_path: String,
+    new_path: String,
+) -> Result<ConnectionAssetList, String> {
+    let mut store = myshelltool_core::load_connection_asset_store(&state.asset_store_path)?;
+    myshelltool_core::rename_asset_group(&mut store, &old_path, &new_path)?;
+    myshelltool_core::save_connection_asset_store(&state.asset_store_path, &store)?;
+    Ok(ConnectionAssetList {
+        source: "local asset store",
+        count: store.assets.len(),
+        assets: store.assets,
+        groups: store.groups,
+    })
+}
+
+#[tauri::command]
+fn dissolve_asset_group(state: State<'_, AppState>, path: String) -> Result<ConnectionAssetList, String> {
+    let mut store = myshelltool_core::load_connection_asset_store(&state.asset_store_path)?;
+    myshelltool_core::dissolve_asset_group(&mut store, &path)?;
+    myshelltool_core::save_connection_asset_store(&state.asset_store_path, &store)?;
+    Ok(ConnectionAssetList {
+        source: "local asset store",
+        count: store.assets.len(),
+        assets: store.assets,
+        groups: store.groups,
+    })
+}
+
+#[tauri::command]
+fn create_asset_group(state: State<'_, AppState>, path: String) -> Result<ConnectionAssetList, String> {
+    let mut store = myshelltool_core::load_connection_asset_store(&state.asset_store_path)?;
+    myshelltool_core::ensure_asset_group(&mut store, &path)?;
+    myshelltool_core::save_connection_asset_store(&state.asset_store_path, &store)?;
+    Ok(ConnectionAssetList {
+        source: "local asset store",
+        count: store.assets.len(),
+        assets: store.assets,
+        groups: store.groups,
     })
 }
 
@@ -171,6 +231,10 @@ pub fn run() {
             backend_status,
             list_connection_assets,
             save_connection_asset,
+            delete_connection_asset,
+            rename_asset_group,
+            dissolve_asset_group,
+            create_asset_group,
             save_sync_settings,
             save_credential,
             get_credential_status,

@@ -37,8 +37,11 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   // ============================================================
   // 跨域 Computed — warningCount 同时依赖 assets 与 tunnels
   // ============================================================
+  // warningCount 反映运行时真实告警：异常会话（status='error'）+ 隧道错误。
+  // 旧实现从 asset.status 过滤，但 asset.status 在连接流程中从不更新（永远是
+  // 'Idle'），导致计数恒为 tunnel error 数。改为派生 session + tunnel。
   const warningCount = computed(() =>
-    assetsStore.assets.filter(asset => normalizeStatus(asset.status).label === 'warning').length
+    sessionsStore.sessions.filter(session => session.status === 'error').length
     + tunnelsStore.tunnels.filter(tunnel => tunnel.error).length
   );
 
@@ -75,6 +78,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
       uiStore.backendStatus = status;
       assetsStore.assetSource = { ...assetResult, count: assetResult.count ?? assetResult.assets?.length ?? 0 };
       assetsStore.assets = (assetResult.assets || []).map(normalizeAsset);
+      assetsStore.declaredGroups = assetResult.groups || [];
       assetsStore.githubPatConfigured = Boolean(credential.exists);
       tunnelsStore.tunnels = (tunnelResult || []).map(normalizeTunnelStatus);
     } catch (error) {
@@ -179,8 +183,16 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     themeLabel: computed(() => uiStore.themeLabel),
     systemPrefersDark: computed(() => uiStore.systemPrefersDark),
     assetsCollapsed: computed(() => uiStore.assetsCollapsed),
+    rightCollapsed: computed(() => uiStore.rightCollapsed),
     statusMessage: computed(() => uiStore.statusMessage),
-    modal: computed(() => uiStore.modal),
+    // modal 必须可写：App.vue onCreateAsset / GlobalModals closeModal 等通过
+    // `store.modal = {...}` 赋值。纯 computed 是只读的，赋值静默失败（曾导致
+    // "新建连接打不开" / modal 无法关闭）。这里加 setter 转发到 uiStore.modal，
+    // 与 workbench bridge setter（L130/143/150/157）行为一致。
+    modal: computed({
+      get: () => uiStore.modal,
+      set: (v) => { uiStore.modal = v; }
+    }),
     searchState: computed(() => uiStore.searchState),
     backendStatusText: computed(() => uiStore.backendStatusText),
     backendMode: computed(() => uiStore.backendMode),
@@ -190,6 +202,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     selectedAssetId: computed(() => assetsStore.selectedAssetId),
     selectedAsset: computed(() => assetsStore.selectedAsset),
     groupedAssets: computed(() => assetsStore.groupedAssets),
+    declaredGroups: computed(() => assetsStore.declaredGroups),
     githubPatConfigured: computed(() => assetsStore.githubPatConfigured),
     assetSourceText: computed(() => assetsStore.assetSourceText),
     syncText: computed(() => assetsStore.syncText),
@@ -228,12 +241,19 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     setTab: uiStore.setTab,
     toggleTheme: uiStore.toggleTheme,
     toggleAssets: uiStore.toggleAssets,
+    toggleRight: uiStore.toggleRight,
     openGlobalSearch: uiStore.openGlobalSearch,
     closeGlobalSearch: uiStore.closeGlobalSearch,
     setGlobalSearchQuery: uiStore.setGlobalSearchQuery,
     activateSuggestion: uiStore.activateSuggestion,
     // --- assets re-export actions ---
     saveAsset: assetsStore.saveAsset,
+    deleteAsset: assetsStore.deleteAsset,
+    duplicateAsset: assetsStore.duplicateAsset,
+    moveAsset: assetsStore.moveAsset,
+    renameGroup: assetsStore.renameGroup,
+    dissolveGroup: assetsStore.dissolveGroup,
+    createGroup: assetsStore.createGroup,
     saveToken: assetsStore.saveToken,
     deleteToken: assetsStore.deleteToken,
     // --- files re-export actions ---
@@ -306,8 +326,10 @@ export const useWorkbenchStore = defineStore('workbench', () => {
 });
 
 export function normalizeStatus(status) {
-  if (status === 'Connected' || status === 'connected') return { label: 'connected', dotClass: ' running' };
-  if (status === 'Warning' || status === 'warning') return { label: 'warning', dotClass: ' warn' };
+  // dotClass 不带前导空格（Vue class 绑定会自动处理空格），与
+  // ConnectionSidebar.vue 本地副本统一，避免两份实现漂移。
+  if (status === 'Connected' || status === 'connected') return { label: 'connected', dotClass: 'running' };
+  if (status === 'Warning' || status === 'warning') return { label: 'warning', dotClass: 'warn' };
   return { label: 'idle', dotClass: '' };
 }
 

@@ -113,6 +113,7 @@ const summaryRows = computed(() => {
 .ops-head {
   display: flex;
   align-items: center;
+  flex: 0 0 auto; // 固定 header，body 滚动时不被压缩
   padding: var(--space-2) var(--space-3);
   border-block-end: 1px solid var(--app-border);
   background: var(--app-chrome);
