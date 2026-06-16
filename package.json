@@ -10,7 +10,11 @@
     "test:core": "cargo test --manifest-path crates/myshelltool-core/Cargo.toml",
     "test:ui": "node tests/ui-smoke.mjs && node tests/ui-host-key.mjs",
     "tauri:build": "tauri build",
-    "tauri:dev": "tauri dev"
+    "tauri:dev": "tauri dev",
+    "mcp:build": "cargo build --manifest-path src-tauri/Cargo.toml --bin myshelltool-mcp",
+    "mcp:build:release": "cargo build --manifest-path src-tauri/Cargo.toml --release --bin myshelltool-mcp",
+    "dev:all": "node scripts/mcp-dev-watch.mjs --with-gui",
+    "mcp:watch": "node scripts/mcp-dev-watch.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.9.5",

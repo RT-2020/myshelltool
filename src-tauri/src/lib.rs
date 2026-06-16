@@ -284,14 +284,18 @@ pub fn run() {
 ///
 /// 优先级：
 /// 1. 环境变量 `MYSHELLTOOL_DATA_DIR`（Claude Desktop 配置里可显式指定）
-/// 2. `%APPDATA%/myshelltool`（与 GUI 的 Tauri app_data_dir 约定一致，
-///    保证 GUI 与 MCP 读同一份资产/凭据/known_hosts）
+/// 2. `%APPDATA%/com.redtei.myshelltool`（与 GUI 的 Tauri app_data_dir 一致，
+///    目录名取自 tauri.conf.json 的 identifier，保证 GUI 与 MCP 读同一份
+///    资产/凭据/known_hosts）
+///
+/// 注意：Tauri 2 的 app_data_dir 用 **identifier**（com.redtei.myshelltool）
+/// 作目录名，不是 productName（myshelltool）——两者不能混。
 fn mcp_data_dir() -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("MYSHELLTOOL_DATA_DIR") {
         return std::path::PathBuf::from(dir);
     }
     let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
-    std::path::PathBuf::from(appdata).join("myshelltool")
+    std::path::PathBuf::from(appdata).join("com.redtei.myshelltool")
 }
 
 /// 初始化 MCP 专用 logger。
