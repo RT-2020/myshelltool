@@ -1,4 +1,6 @@
+mod dangerous_commands;
 mod fs_local;
+mod mcp;
 mod resource_monitor;
 mod ssh;
 
@@ -274,4 +276,26 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run myshelltool");
+}
+
+// ─── MCP server 入口（D1 双二进制：myshelltool-mcp.exe console 子系统调用）───
+
+/// 初始化 MCP 专用 logger。
+///
+/// 与 GUI 的 FileLogger 不同：MCP 子进程模式**绝不向 stdout 输出任何日志**
+/// （会破坏 JSON-RPC 协议帧解析），仅写 stderr + 文件。
+/// Layer 0 阶段为桩，Layer 2 接入 rmcp 时落地完整实现。
+pub fn init_mcp_logger() {
+    // TODO(Layer 2): 初始化 stderr + 文件双写 logger
+    eprintln!("[myshelltool-mcp] logger stub initialized");
+}
+
+/// MCP stdio server 主入口。被 `src/bin/mcp.rs` 调用。
+///
+/// Layer 0 阶段为桩：仅打印启动信息后返回，验证双二进制脚手架可编译可运行。
+/// Layer 2 落地 rmcp stdio server 主循环（加载资产 + 构造 headless manager + serve）。
+pub async fn run_mcp_stdio() -> Result<(), String> {
+    log::info!("myshelltool-mcp stdio server starting (Layer 0 stub)");
+    eprintln!("[myshelltool-mcp] run_mcp_stdio stub ready (Layer 0 scaffold OK, awaiting Layer 2 rmcp wiring)");
+    Ok(())
 }
