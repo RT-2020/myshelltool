@@ -1,73 +1,107 @@
-//! MCP stdio server 主循环 + ServerHandler 实现（Layer 2）。
+//! MCP stdio server 主循环 + ServerHandler 实现（Layer 2 + Layer 3）。
 //!
-//! M2 阶段：建立 rmcp stdio server，响应 `initialize`（返回 serverInfo +
-//! capabilities）与 `tools/list`（返回空列表，Layer 3 填充）。
+//! M2：rmcp stdio server 骨架（get_info）
+//! M3：接入 list_tools（7 个只读工具）+ call_tool（headless exec）
 //!
-//! 见 docs/plans/MCP服务接入-实施计划.md §4（Layer 2）。
-//!
-//! API 依据：rmcp 1.7.0（本地 cargo 缓存源码核查，2026-06-16）
-//! - `ServerHandler::get_info(&self) -> ServerInfo`（= `InitializeResult`）
-//! - `ServerInfo` 经 `InitializeResult::new(caps).with_server_info(impl_info)` 构造
-//! - `serve` 在 `ServiceExt` trait 上，需 `use rmcp::ServiceExt`
-//! - transport 用 `rmcp::transport::stdio()`（返回 `(Stdin, Stdout)` 元组，
-//!   实现 `IntoTransport`）
+//! 见 docs/plans/MCP服务接入-实施计划.md §4-§5。
+
+use std::sync::Arc;
 
 use rmcp::{
     ServerHandler, ServiceExt,
-    model::{Implementation, InitializeResult, ServerCapabilities, ServerInfo},
+    model::{
+        CallToolRequestParam, CallToolResult, Implementation, InitializeResult, ListToolsResult,
+        PaginatedRequestParam, ServerCapabilities, ServerInfo,
+    },
+    service::RequestContext,
+    ErrorData as McpError,
 };
 
-/// MCP server handler。
-///
-/// M2 阶段为最小骨架：仅实现 `get_info` 返回服务元数据。
-/// Layer 3/4/5 在此 struct 上追加 list_tools / call_tool /
-/// list_resources / list_prompts 等方法。
-#[derive(Clone, Debug)]
-pub struct MyshellToolMcpServer;
+use super::tools::{self, McpToolContext};
 
-impl MyshellToolMcpServer {
-    pub fn new() -> Self {
-        Self
-    }
+/// MCP server handler。持有工具上下文（资产库/凭据路径）。
+#[derive(Clone)]
+pub struct MyshellToolMcpServer {
+    ctx: Arc<McpToolContext>,
 }
 
-impl Default for MyshellToolMcpServer {
-    fn default() -> Self {
-        Self::new()
+impl MyshellToolMcpServer {
+    pub fn new(ctx: McpToolContext) -> Self {
+        Self {
+            ctx: Arc::new(ctx),
+        }
     }
 }
 
 impl ServerHandler for MyshellToolMcpServer {
-    /// 返回服务元数据 + 能力声明。
-    ///
-    /// 声明支持 tools（Layer 3）、resources（Layer 4）、prompts（Layer 5）。
-    /// M2 阶段三原语实现为空，但 capabilities 先声明，避免客户端误判不支持。
     fn get_info(&self) -> ServerInfo {
-        // ServerCapabilities 是 #[non_exhaustive]，必须用 builder 构造。
         let capabilities = ServerCapabilities::builder()
             .enable_tools()
             .enable_resources()
             .enable_prompts()
             .build();
-        InitializeResult::new(capabilities)
-            .with_server_info(Implementation::new(
-                "myshelltool",
-                env!("CARGO_PKG_VERSION"),
-            ))
+        InitializeResult::new(capabilities).with_server_info(Implementation::new(
+            "myshelltool",
+            env!("CARGO_PKG_VERSION"),
+        ))
+    }
+
+    /// 返回 M3 阶段的 7 个只读工具。
+    fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParam>,
+        _context: RequestContext<rmcp::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
+        let tools = tools::list_readonly_tools();
+        std::future::ready(Ok(ListToolsResult {
+            next_cursor: None,
+            tools,
+            meta: None,
+        }))
+    }
+
+    /// 分发工具调用到 tools::call_tool。
+    fn call_tool(
+        &self,
+        request: CallToolRequestParam,
+        _context: RequestContext<rmcp::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
+        let ctx = self.ctx.clone();
+        let name = request.name.clone();
+        async move {
+            match tools::call_tool(name.as_ref(), request, &ctx).await {
+                Ok(result) => Ok(result),
+                Err(e) => {
+                    log::warn!("MCP call_tool error: {}", e);
+                    // 用 is_error 的 CallToolResult 返回，而非 McpError
+                    // （MCP 规范建议工具失败用 isError 标记，不抛协议错误）
+                    let mut result = CallToolResult::success(vec![rmcp::model::Content::text(e)]);
+                    result.is_error = Some(true);
+                    Ok(result)
+                }
+            }
+        }
     }
 }
 
 /// MCP stdio server 主入口（被 `lib::run_mcp_stdio` 调用）。
 ///
-/// Layer 2：落地 rmcp stdio serve 主循环，替换 M1 的桩。
-/// - 用 `rmcp::transport::stdio()` 绑定 stdin/stdout 作 JSON-RPC 通道
-/// - rmcp 内部独占 stdout（仅写协议帧），我们的日志必须只写 stderr
-/// - Layer 7（降级）会在此函数开头加 GUI 检测 + 只读降级分支
-pub async fn serve_stdio() -> Result<(), Box<dyn std::error::Error>> {
+/// Layer 2/3：加载资产/凭据路径 → 构造 McpToolContext → rmcp stdio serve。
+pub async fn serve_stdio(
+    asset_store_path: std::path::PathBuf,
+    secret_store_dir: std::path::PathBuf,
+    known_hosts_path: std::path::PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
     log::info!("myshelltool-mcp stdio server starting");
+    log::info!(
+        "assets: {} | secrets: {} | known_hosts: {}",
+        asset_store_path.display(),
+        secret_store_dir.display(),
+        known_hosts_path.display()
+    );
 
-    let handler = MyshellToolMcpServer::new();
-    // transport::stdio() 返回 (Stdin, Stdout) 元组，实现 IntoTransport。
+    let ctx = McpToolContext::new(asset_store_path, secret_store_dir, known_hosts_path);
+    let handler = MyshellToolMcpServer::new(ctx);
     let transport = rmcp::transport::stdio();
     let service = handler.serve(transport).await?;
 

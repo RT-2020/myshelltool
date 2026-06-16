@@ -320,12 +320,15 @@ pub fn init_mcp_logger() {
 
 /// MCP stdio server 主入口。被 `src/bin/mcp.rs` 调用。
 ///
-/// Layer 2：落地 rmcp stdio serve 主循环（替换 M1 的桩）。
+/// Layer 2/3：加载资产/凭据路径 → rmcp stdio serve + 7 个只读工具。
 /// Layer 7（降级）会在此函数开头加 GUI 检测 + 只读降级分支。
 pub async fn run_mcp_stdio() -> Result<(), String> {
     log::info!("myshelltool-mcp stdio server starting");
-    // Layer 2：rmcp stdio serve（assets/manager 加载留待 Layer 3 需要时）
-    mcp::server::serve_stdio()
+    let data_dir = mcp_data_dir();
+    let asset_store_path = data_dir.join("connection-assets.json");
+    let secret_store_dir = data_dir.join("credentials");
+    let known_hosts_path = data_dir.join("known_hosts.json");
+    mcp::server::serve_stdio(asset_store_path, secret_store_dir, known_hosts_path)
         .await
         .map_err(|e| format!("MCP server error: {e}"))?;
     Ok(())
