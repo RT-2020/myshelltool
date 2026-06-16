@@ -182,6 +182,7 @@ pub struct SshSessionManager {
 }
 
 impl SshSessionManager {
+    /// GUI 模式构造（持有 AppHandle，host key/keyboard 可经事件弹窗）。
     pub fn new(app: AppHandle, secret_store_dir: PathBuf, known_hosts_path: PathBuf) -> Self {
         Self {
             sessions: HashMap::new(),
@@ -204,6 +205,16 @@ impl SshSessionManager {
         session_id: &str,
     ) -> Option<tokio::sync::mpsc::UnboundedSender<SshCommand>> {
         self.sessions.get(session_id).map(|s| s.cmd_tx.clone())
+    }
+
+    /// 当前活跃会话 ID 列表（MCP `list_sessions` 工具用）。
+    pub fn list_session_ids(&self) -> Vec<String> {
+        self.sessions.keys().cloned().collect()
+    }
+
+    /// 会话是否存在（MCP 工具参数校验用）。
+    pub fn has_session(&self, session_id: &str) -> bool {
+        self.sessions.contains_key(session_id)
     }
 }
 
@@ -1702,4 +1713,236 @@ fn save_known_hosts(path: &PathBuf, hosts: &HashMap<String, KnownHostEntry>) -> 
     }
     let json = serde_json::to_string_pretty(hosts).map_err(|e| e.to_string())?;
     std::fs::write(path, json).map_err(|e| e.to_string())
+}
+
+// ─── Headless 会话支持（MCP 进程用，D4：仅服务已在 GUI 信任过的资产）───
+//
+// 与 GUI 的 SshSessionManager 路径完全隔离，零回归风险：
+// - HeadlessSshClient 不持 AppHandle（无法弹窗），check_server_key 对
+//   known_hosts 未记录/变更的主机直接返回 Ok(false) 拒绝连接。
+// - connect_headless 接收裸参数（不依赖 State/AppState）。
+// - exec_command_once 走 channel_open_session + exec，一次性返回输出，
+//   不建立持久 PTY，符合只读工具（df/uptime/...）的语义。
+
+/// Headless SSH Handler（MCP 进程用）。
+pub struct HeadlessSshClient {
+    host_port: String,
+    known_hosts_path: PathBuf,
+}
+
+#[async_trait::async_trait]
+impl client::Handler for HeadlessSshClient {
+    type Error = russh::Error;
+
+    async fn check_server_key(
+        &mut self,
+        server_public_key: &russh::keys::ssh_key::PublicKey,
+    ) -> Result<bool, Self::Error> {
+        let key_bytes = server_public_key.public_key_bytes();
+        let key_hex = bytes_to_hex(&key_bytes);
+        let known = load_known_hosts(&self.known_hosts_path);
+
+        if let Some(entry) = known.get(&self.host_port) {
+            if entry.key_hex == key_hex {
+                info!(
+                    "headless check_server_key: {} matched known_hosts, accepting",
+                    self.host_port
+                );
+                return Ok(true);
+            }
+            warn!(
+                "headless check_server_key: {} key mismatch (expected {}, got {})",
+                self.host_port, entry.key_hex, key_hex
+            );
+        } else {
+            warn!(
+                "headless check_server_key: {} not in known_hosts, rejecting (headless mode requires pre-trust via GUI)",
+                self.host_port
+            );
+        }
+        // D4：headless 模式不弹窗，未知/变更主机直接拒绝。
+        Ok(false)
+    }
+}
+
+/// Headless 连接参数（不依赖 Tauri State）。
+pub struct HeadlessConnectParams {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub password: String,
+    pub credential_id: Option<String>,
+    pub auth_method: Option<String>,
+    pub private_key_path: Option<String>,
+    pub passphrase: Option<String>,
+    pub passphrase_credential_id: Option<String>,
+    pub secret_store_dir: PathBuf,
+    pub known_hosts_path: PathBuf,
+}
+
+/// Headless 建连（MCP 进程用）。
+///
+/// 复用 connect_authenticated 的认证逻辑（密码/私钥/keyboard-interactive
+/// 自动响应密码类 prompt），但不走 GUI 弹窗。host key 未信任由
+/// HeadlessSshClient 直接拒绝。
+pub async fn connect_headless(
+    params: &HeadlessConnectParams,
+) -> Result<client::Handle<HeadlessSshClient>, String> {
+    let config = Arc::new(client::Config::default());
+    let host_port = format!("{}:{}", params.host, params.port);
+    let handler = HeadlessSshClient {
+        host_port: host_port.clone(),
+        known_hosts_path: params.known_hosts_path.clone(),
+    };
+
+    let mut handle = client::connect(config, (params.host.as_str(), params.port), handler)
+        .await
+        .map_err(|e| format!("SSH connect failed: {e}"))?;
+
+    // 解析密码（从凭据存储或参数）
+    let resolved_password: Option<String> = if params.auth_method.as_deref() == Some("PrivateKey") {
+        None
+    } else if params.password.is_empty() {
+        if let Some(ref cred_id) = params.credential_id {
+            Some(
+                myshelltool_core::SecretStore::new(&params.secret_store_dir)
+                    .read(cred_id.as_str())
+                    .map_err(|e| format!("Failed to read credential: {e}"))?
+                    .ok_or_else(|| "Stored credential not found".to_string())?,
+            )
+        } else {
+            return Err("No password provided and no stored credential".to_string());
+        }
+    } else {
+        Some(params.password.clone())
+    };
+
+    // 认证
+    let auth_ok = if params.auth_method.as_deref() == Some("PrivateKey") {
+        let key_path = params
+            .private_key_path
+            .as_deref()
+            .unwrap_or("~/.ssh/id_ed25519");
+        let expanded = expand_home_path(key_path);
+        let resolved_passphrase = if let Some(ref cred_id) = params.passphrase_credential_id {
+            myshelltool_core::SecretStore::new(&params.secret_store_dir)
+                .read(cred_id.as_str())
+                .map_err(|e| format!("Failed to read passphrase: {e}"))?
+        } else {
+            params.passphrase.as_deref().and_then(|p| {
+                if p.is_empty() {
+                    None
+                } else {
+                    Some(p.to_string())
+                }
+            })
+        };
+        let key_data = std::fs::read(&expanded)
+            .map_err(|e| format!("Failed to read key file '{}': {e}", expanded))?;
+        let key_str = String::from_utf8_lossy(&key_data);
+        let key_pair = russh::keys::decode_secret_key(&key_str, resolved_passphrase.as_deref())
+            .map_err(|e| format!("Failed to load private key: {e}"))?;
+        let key_with_hash = russh::keys::key::PrivateKeyWithHashAlg::new(Arc::new(key_pair), None)
+            .map_err(|e| format!("Key wrap failed: {e}"))?;
+        handle
+            .authenticate_publickey(&params.username, key_with_hash)
+            .await
+            .map_err(|e| format!("Public key auth failed: {e}"))?
+    } else {
+        handle
+            .authenticate_password(
+                &params.username,
+                resolved_password.as_deref().unwrap_or(""),
+            )
+            .await
+            .map_err(|e| format!("Auth failed: {e}"))?
+    };
+
+    if !auth_ok {
+        // headless: 尝试 keyboard-interactive，但只用密码自动响应；
+        // 非密码类 prompt（MFA 等）无法弹窗，直接失败。
+        let resp = handle
+            .authenticate_keyboard_interactive_start(&params.username, None::<String>)
+            .await
+            .map_err(|e| format!("Keyboard-interactive start failed: {e}"))?;
+        match resp {
+            client::KeyboardInteractiveAuthResponse::Success => {}
+            client::KeyboardInteractiveAuthResponse::Failure => {
+                return Err("Authentication failed".to_string());
+            }
+            client::KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } => {
+                let all_password_like = !prompts.is_empty()
+                    && prompts.iter().all(|p| {
+                        let lower = p.prompt.to_lowercase();
+                        lower.contains("password")
+                            || lower.contains("passphrase")
+                            || lower.contains("密码")
+                    });
+                if all_password_like && resolved_password.is_some() {
+                    let pwd = resolved_password.as_deref().unwrap();
+                    let responses: Vec<String> = prompts.iter().map(|_| pwd.to_string()).collect();
+                    let resp = handle
+                        .authenticate_keyboard_interactive_respond(responses)
+                        .await
+                        .map_err(|e| format!("Keyboard-interactive respond failed: {e}"))?;
+                    match resp {
+                        client::KeyboardInteractiveAuthResponse::Success => {}
+                        _ => {
+                            return Err(
+                                "Authentication failed (keyboard-interactive)".to_string()
+                            );
+                        }
+                    }
+                } else {
+                    return Err(
+                        "Headless mode cannot handle non-password interactive prompts (MFA etc.); please connect via GUI first"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+    }
+
+    info!("headless auth succeeded for {}@{}", params.username, host_port);
+    Ok(handle)
+}
+
+/// 在已认证的会话上执行一次性命令，返回 stdout（+ stderr 合并）。
+///
+/// 走 channel_open_session + exec，命令执行完通道即关闭。
+/// 适用于只读查询（df/uptime/systemctl status 等），不适合交互式程序。
+pub async fn exec_command_once(
+    handle: &client::Handle<HeadlessSshClient>,
+    command: &str,
+) -> Result<String, String> {
+    let mut channel = handle
+        .channel_open_session()
+        .await
+        .map_err(|e| format!("Channel open failed: {e}"))?;
+    channel
+        .exec(true, command.to_string())
+        .await
+        .map_err(|e| format!("Command exec failed: {e}"))?;
+
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+    while let Some(msg) = channel.wait().await {
+        match msg {
+            ChannelMsg::Data { data } => output.extend_from_slice(&data),
+            ChannelMsg::ExtendedData { data, ext: _ } => errors.extend_from_slice(&data),
+            ChannelMsg::Eof | ChannelMsg::ExitStatus { .. } => break,
+            _ => {}
+        }
+    }
+
+    let mut result = String::from_utf8_lossy(&output).to_string();
+    if !errors.is_empty() {
+        let err_str = String::from_utf8_lossy(&errors).trim().to_string();
+        if !err_str.is_empty() {
+            result.push('\n');
+            result.push_str("[stderr] ");
+            result.push_str(&err_str);
+        }
+    }
+    Ok(result)
 }

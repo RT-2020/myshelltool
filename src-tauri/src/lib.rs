@@ -1,4 +1,6 @@
+mod dangerous_commands;
 mod fs_local;
+mod mcp;
 mod resource_monitor;
 mod ssh;
 
@@ -274,4 +276,93 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run myshelltool");
+}
+
+// ─── MCP server 入口（D1 双二进制：myshelltool-mcp.exe console 子系统调用）───
+
+/// 解析 MCP 进程的数据目录。
+///
+/// 优先级：
+/// 1. 环境变量 `MYSHELLTOOL_DATA_DIR`（Claude Desktop 配置里可显式指定）
+/// 2. `%APPDATA%/com.redtei.myshelltool`（与 GUI 的 Tauri app_data_dir 一致，
+///    目录名取自 tauri.conf.json 的 identifier，保证 GUI 与 MCP 读同一份
+///    资产/凭据/known_hosts）
+///
+/// 注意：Tauri 2 的 app_data_dir 用 **identifier**（com.redtei.myshelltool）
+/// 作目录名，不是 productName（myshelltool）——两者不能混。
+fn mcp_data_dir() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("MYSHELLTOOL_DATA_DIR") {
+        return std::path::PathBuf::from(dir);
+    }
+    let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(appdata).join("com.redtei.myshelltool")
+}
+
+/// 初始化 MCP 专用 logger。
+///
+/// 复用 GUI 的 `FileLogger`（stderr + 文件双写，仅 Info 及以上）——
+/// 它本来就**绝不写 stdout**（会破坏 JSON-RPC 协议帧解析），符合 MCP 要求。
+///
+/// 日志路径：`<data_dir>/logs/myshelltool-mcp.log`（与 GUI 日志分开，便于排查）。
+pub fn init_mcp_logger() {
+    let log_path = mcp_data_dir().join("logs").join("myshelltool-mcp.log");
+    match FileLogger::new(&log_path) {
+        Ok(logger) => {
+            if let Err(e) = log::set_boxed_logger(Box::new(logger))
+                .map(|()| log::set_max_level(log::LevelFilter::Info))
+            {
+                eprintln!("[myshelltool-mcp] failed to set logger: {e}");
+            }
+            log::info!("myshelltool-mcp logger initialized, log: {}", log_path.display());
+        }
+        Err(e) => {
+            // 日志初始化失败不致命：退化为仅 stderr
+            eprintln!("[myshelltool-mcp] failed to open log file {}: {e}", log_path.display());
+        }
+    }
+}
+
+/// MCP stdio server 主入口。被 `src/bin/mcp.rs` 调用。
+///
+/// Layer 2-5：加载资产/凭据路径 → rmcp stdio serve（三原语）。
+///
+/// Layer 7（v1.0 降级语义）：v1.0 是「MCP 进程独立建连」，**不依赖 GUI 进程**。
+/// 这里的「降级」不是「GUI 未运行」（那是 v1.1 named pipe 场景），而是
+/// 「数据目录未初始化 / 资产库为空」时的优雅处理：
+/// - 数据目录不存在 → 自动创建（日志目录等），记录警告
+/// - 资产库为空 → MCP server 仍正常启动，list_assets 返回空，
+///   disk_usage 等工具调用时给出「请先在 GUI 配置资产」的引导错误
+///
+/// 这样保证 Claude Desktop 始终能连上 MCP server（initialize/tools/list 永远响应），
+/// 即使是全新安装未配置任何资产的状态。
+pub async fn run_mcp_stdio() -> Result<(), String> {
+    log::info!("myshelltool-mcp stdio server starting");
+    let data_dir = mcp_data_dir();
+    let asset_store_path = data_dir.join("connection-assets.json");
+    let secret_store_dir = data_dir.join("credentials");
+    let known_hosts_path = data_dir.join("known_hosts.json");
+
+    // Layer 7：数据目录降级——确保目录存在，缺失资产库给出警告但不阻断启动。
+    if !data_dir.exists() {
+        log::warn!(
+            "MCP data dir does not exist, creating: {}",
+            data_dir.display()
+        );
+        if let Err(e) = std::fs::create_dir_all(&data_dir) {
+            log::warn!("Failed to create data dir {}: {}", data_dir.display(), e);
+            // 不阻断——工具调用时会自然报错
+        }
+    }
+    if !asset_store_path.exists() {
+        log::warn!(
+            "Asset store not found at {}. list_assets will return empty. \
+             Please configure assets in myshelltool GUI first, or place connection-assets.json in the data dir.",
+            asset_store_path.display()
+        );
+    }
+
+    mcp::server::serve_stdio(asset_store_path, secret_store_dir, known_hosts_path)
+        .await
+        .map_err(|e| format!("MCP server error: {e}"))?;
+    Ok(())
 }
