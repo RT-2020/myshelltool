@@ -49,8 +49,8 @@ impl McpToolContext {
     }
 }
 
-/// 返回 M3 阶段的 7 个只读工具 schema。
-pub fn list_readonly_tools() -> Vec<Tool> {
+/// 返回 M4 阶段的全部工具 schema（7 只读 + 2 高危 = 9 个）。
+pub fn list_all_tools() -> Vec<Tool> {
     vec![
         Tool::new(
             "list_assets",
@@ -107,6 +107,39 @@ pub fn list_readonly_tools() -> Vec<Tool> {
             "获取指定资产的资源监控快照（CPU/内存/网络/磁盘，M3 桩，M4 接入完整轮询）",
             schema_with_required_session(),
         ),
+        // ─── 高危工具（M4，经 Layer 6 审批）───
+        Tool::new(
+            "ssh_exec",
+            "在指定资产上执行任意 Shell 命令。高危：命令经三层审批——白名单自动执行，黑名单/未知命令被拒绝并返回三段式说明（AI意图+真实命令+后果）。调用时必须如实声明 intent 意图。",
+            json!({
+                "type": "object",
+                "properties": {
+                    "asset_id": { "type": "string", "description": "资产 ID（先用 list_assets 查看）" },
+                    "command": { "type": "string", "description": "要执行的 Shell 命令" },
+                    "intent": { "type": "string", "description": "AI 对此命令的真实意图说明（用于审批对照识破伪装）" }
+                },
+                "required": ["asset_id", "command", "intent"]
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+        ),
+        Tool::new(
+            "sftp_remove",
+            "删除指定资产上的远程文件或目录。高危：始终需要审批，v1.0 模式下默认拒绝（需 GUI 手动操作）。",
+            json!({
+                "type": "object",
+                "properties": {
+                    "asset_id": { "type": "string", "description": "资产 ID" },
+                    "path": { "type": "string", "description": "要删除的远程路径" },
+                    "intent": { "type": "string", "description": "AI 对此删除操作的真实意图说明" }
+                },
+                "required": ["asset_id", "path", "intent"]
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+        ),
     ]
 }
 
@@ -141,6 +174,18 @@ pub async fn call_tool(
         }
         "sftp_list" => Ok(error_result("sftp_list 在 M3 阶段为桩，将在 M4 完善")),
         "resource_monitor_snapshot" => Ok(error_result("resource_monitor_snapshot 在 M3 阶段为桩，将在 M4 完善")),
+        // ─── 高危工具（M4，Layer 6 审批）───
+        "ssh_exec" => tool_ssh_exec(ctx, &arguments).await,
+        "sftp_remove" => {
+            // v1.0：删除操作默认拒绝（跨进程弹窗需 v1.1 named pipe）
+            let intent = arguments.get("intent").and_then(|v| v.as_str()).unwrap_or("");
+            let path = arguments.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            Ok(error_result(&format!(
+                "【操作已被 MCP 审批拦截】\n\n【AI 声明意图】{}\n\n【真实命令】sftp_remove path={}\n\n【后果预测】将删除远程文件/目录，可能不可恢复。\n\nv1.0 模式下删除操作默认拒绝，请在 myshelltool GUI 中手动操作。",
+                if intent.is_empty() { "(AI 未声明意图)" } else { intent },
+                path
+            )))
+        }
         _ => Ok(error_result(&format!("未知工具: {}", name))),
     }
 }
@@ -174,6 +219,54 @@ async fn tool_list_assets(ctx: &McpToolContext) -> Result<CallToolResult, String
         "groups": store.groups,
     });
     Ok(text_result(&serde_json::to_string_pretty(&result).unwrap_or_default()))
+}
+
+/// ssh_exec：高危工具，经 Layer 6 审批后执行。
+///
+/// 三层审批（D9 + approval.rs）：
+/// - command 命中白名单（READONLY_WHITELIST）→ 自动执行
+/// - command 命中黄名单（v1.0 暂无，v1.1 按资产配置）→ 自动执行
+/// - command 命中黑名单（dangerous_commands 16 条）→ 拒绝 + 三段式
+/// - command 未知（不在任何名单）→ 拒绝（fail-secure 默认拒）
+async fn tool_ssh_exec(
+    ctx: &McpToolContext,
+    args: &Map<String, serde_json::Value>,
+) -> Result<CallToolResult, String> {
+    let asset_id = args
+        .get("asset_id")
+        .and_then(|v| v.as_str())
+        .ok_or("缺少 asset_id 参数")?;
+    let command = args
+        .get("command")
+        .and_then(|v| v.as_str())
+        .ok_or("缺少 command 参数")?;
+    let intent = args
+        .get("intent")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    log::info!(
+        "ssh_exec: asset={} intent={:?} command={:?}",
+        asset_id,
+        intent,
+        command
+    );
+
+    // Layer 6 审批
+    let decision =
+        super::approval::evaluate(command, intent, super::approval::READONLY_WHITELIST, &[]);
+    match decision {
+        super::approval::ApprovalDecision::AutoExecute => {
+            // 白名单放行，执行命令
+            log::info!("ssh_exec: approved, executing");
+            exec_on_asset(ctx, args, command).await
+        }
+        super::approval::ApprovalDecision::Reject(reason) => {
+            // v1.0：进程内拒绝，返回 isError + 三段式
+            log::warn!("ssh_exec: rejected by approval");
+            Ok(error_result(&reason))
+        }
+    }
 }
 
 /// 在指定资产上执行一次性命令（headless 建连 + exec + 断开）。
