@@ -1,15 +1,15 @@
 //! MCP 工具调用审批（Layer 6）。
 //!
-//! v1.0：进程内拒绝（Reject），黑名单/未知直接 isError。
+//! v1.0：进程内拒绝（黑名单/未知直接 isError）。
 //! v1.1：高危命令走 MCP elicitation（RequestElicitation），在客户端界面内
-//!   弹确认框（三段式），用户 accept 才执行。客户端不支持 elicitation 时
-//!   自动降级为 v1.0 的 Reject。
+//!   弹确认框（三段式），用户 accept 才执行。客户端不支持 elicitation 时，
+//!   降级逻辑由 server.rs 的 NotSupported 分支处理（返回错误结果）。
 //!
 //! 三层审批（D9）：
 //! - 白名单 → AutoExecute
 //! - 黄名单 → AutoExecute（+ 日志）
-//! - 黑名单 → RequestElicitation（v1.1：客户端确认）/ Reject（v1.0 降级）
-//! - 未知命令 → RequestElicitation（v1.1：让用户决定）/ Reject（v1.0 降级）
+//! - 黑名单 → RequestElicitation（v1.1：客户端确认）
+//! - 未知命令 → RequestElicitation（v1.1：让用户决定）
 
 use crate::dangerous_commands::{self, CommandRisk, DangerousMatch};
 
@@ -17,8 +17,6 @@ use crate::dangerous_commands::{self, CommandRisk, DangerousMatch};
 pub enum ApprovalDecision {
     /// 自动执行（白名单/黄名单）。
     AutoExecute,
-    /// 拒绝执行，附带三段式理由（v1.0 降级路径：客户端不支持 elicitation 时）。
-    Reject(String),
     /// 需要用户确认（v1.1：经 MCP elicitation 在客户端界面内弹确认框）。
     RequestElicitation(ElicitationInfo),
 }
@@ -52,7 +50,7 @@ impl ElicitationInfo {
         )
     }
 
-    /// v1.0 降级用的拒绝文本（客户端不支持 elicitation 时）。
+    /// 降级用的拒绝文本（客户端不支持 elicitation 时，server.rs NotSupported 分支调用）。
     pub fn to_rejection(&self) -> String {
         format_rejection(&self.intent, &self.command, &self.consequence)
     }
@@ -103,16 +101,17 @@ pub fn evaluate(
 
 /// 三段式拒绝信息格式（D5+D9：AI意图 + 真实命令 + 后果预测）。
 ///
-/// 这是 v1.0 的核心安全呈现：即使 AI 在 intent 里声称「查看日志」，
-/// 但 command 是 `rm -rf /var/log`，用户（或读 error 的 LLM）能通过
-/// 三段对照识破伪装。
+/// 用于 elicitation 不可用时的降级路径（server.rs NotSupported 分支）：
+/// 即使 AI 在 intent 里声称「查看日志」，但 command 是 `rm -rf /var/log`，
+/// 用户（或读 error 的 LLM）能通过三段对照识破伪装。
 fn format_rejection(intent: &str, command: &str, consequence: &str) -> String {
     format!(
         "【操作已被 MCP 审批拦截】\n\n\
          【AI 声明意图】{}\n\n\
          【真实命令】{}\n\n\
          【后果预测】{}\n\n\
-         此命令在 v1.0 模式下被拒绝。如确需执行，请在 myshelltool GUI 中手动操作。",
+         当前客户端不支持 elicitation 确认框，此命令被拒绝。\
+         如确需执行，请在支持 elicitation 的客户端（Claude Desktop 等）中操作。",
         if intent.is_empty() { "(AI 未声明意图)" } else { intent },
         command,
         consequence,
@@ -199,28 +198,35 @@ mod tests {
     }
 
     #[test]
-    fn dangerous_command_rejected_with_three_sections() {
+    fn dangerous_command_triggers_elicitation_with_three_sections() {
         let d = evaluate("rm -rf /var/log", "清理日志", READONLY_WHITELIST, &[]);
         match d {
-            ApprovalDecision::Reject(msg) => {
+            ApprovalDecision::RequestElicitation(info) => {
+                // 三段式信息完整
+                assert_eq!(info.intent, "清理日志");
+                assert_eq!(info.command, "rm -rf /var/log");
+                assert!(info.consequence.contains("递归"));
+                // to_message 包含三段
+                let msg = info.to_message();
                 assert!(msg.contains("【AI 声明意图】清理日志"));
                 assert!(msg.contains("【真实命令】rm -rf /var/log"));
                 assert!(msg.contains("【后果预测】"));
-                assert!(msg.contains("递归"));
             }
-            _ => panic!("expected Reject"),
+            _ => panic!("expected RequestElicitation"),
         }
     }
 
     #[test]
-    fn unknown_command_rejected_fail_secure() {
+    fn unknown_command_triggers_elicitation() {
         let d = evaluate("echo hello", "", READONLY_WHITELIST, &[]);
         match d {
-            ApprovalDecision::Reject(msg) => {
-                assert!(msg.contains("fail-secure"));
+            ApprovalDecision::RequestElicitation(info) => {
+                // intent 为空时 message 标注「未声明意图」
+                assert!(info.intent.is_empty());
+                let msg = info.to_message();
                 assert!(msg.contains("AI 未声明意图"));
             }
-            _ => panic!("expected Reject"),
+            _ => panic!("expected RequestElicitation"),
         }
     }
 
@@ -235,11 +241,11 @@ mod tests {
     fn mkfs_consequence_mentioned() {
         let d = evaluate("mkfs.ext4 /dev/sda1", "格式化", &[], &[]);
         match d {
-            ApprovalDecision::Reject(msg) => {
-                assert!(msg.contains("格式化"));
-                assert!(msg.contains("数据"));
+            ApprovalDecision::RequestElicitation(info) => {
+                assert!(info.consequence.contains("格式化"));
+                assert!(info.consequence.contains("数据"));
             }
-            _ => panic!("expected Reject"),
+            _ => panic!("expected RequestElicitation"),
         }
     }
 }

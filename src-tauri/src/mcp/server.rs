@@ -190,10 +190,6 @@ impl ServerHandler for MyshellToolMcpServer {
                     super::approval::ApprovalDecision::AutoExecute => {
                         // 白名单命令，直接放行
                     }
-                    super::approval::ApprovalDecision::Reject(reason) => {
-                        // 降级路径（不应走到这里，evaluate 对高危返回 RequestElicitation）
-                        return Ok(error_result(&reason));
-                    }
                     super::approval::ApprovalDecision::RequestElicitation(info) => {
                         // v1.1 核心：经 elicitation 在客户端界面内确认
                         match try_elicit(&context.peer, &info).await {
@@ -206,7 +202,7 @@ impl ServerHandler for MyshellToolMcpServer {
                                 return Ok(error_result(&reason));
                             }
                             ElicitOutcome::NotSupported(reason) => {
-                                // 客户端不支持 elicitation → 降级 v1.0 进程内拒绝
+                                // 客户端不支持 elicitation → 降级为进程内拒绝
                                 log::warn!("elicitation not supported, degrading to reject: {}", reason);
                                 return Ok(error_result(&reason));
                             }
