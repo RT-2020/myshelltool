@@ -73,6 +73,13 @@ pub struct McpApprovalEvent {
     pub consequence: String,
 }
 
+// ─── v1.2：MCP 就绪探测 ───
+//
+// 「MCP 能否正常工作」的检测已从运行时状态机改为无状态按需探测（probe.rs）：
+// GUI 主动 spawn myshelltool-mcp.exe + initialize 握手。本 pipe 模块不再维护
+// 任何「连接状态」——pipe 的职责回归纯粹：MCP exe 复用 GUI 的 SSH 会话 + 审批降级。
+// 删掉的过度设计：McpConnectionState/Registry、心跳登记、reaper、事件推送。
+
 // ─── GUI 端：pipe server ───
 
 /// 启动 named pipe server（GUI 进程调用，应在 setup hook 中 spawn）。
@@ -113,6 +120,8 @@ pub async fn run_pipe_server(
             continue;
         }
 
+        // pipe 的职责回归纯粹：复用 SSH 会话 + 审批降级。不再维护连接状态
+        //（「MCP 能否工作」改由 probe.rs 无状态探测回答，与 pipe 无关）。
         let ssh = ssh_sessions.clone();
         let app = app.clone();
         let pending = approval_pending.clone();

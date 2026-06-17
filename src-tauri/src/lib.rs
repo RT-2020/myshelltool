@@ -45,6 +45,132 @@ fn backend_status() -> BackendStatus {
     }
 }
 
+// ─── v1.2：MCP 服务可观测性（前端状态栏/管理面板的聚合查询）───
+//
+// 把 pipe server 维护的连接状态 + MCP server 的静态能力声明（tools/resources/prompts）
+// + 数据目录路径聚合成一个 DTO，供前端 mcp store 一次性拉取。
+//
+// 工具的「只读/高危」标记：rmcp 协议层 annotations 当前全为 None（见 tools.rs），
+// 这里在 Rust 端按 approval.rs 的判定语义补上 tag 字段，让前端无需硬编码映射表。
+// approval.rs 的真实运行时判定逻辑不变，这里只是给 UI 展示用的静态标签。
+
+/// MCP 工具/UI 条目（精简 DTO，避免直接序列化 rmcp 复杂类型）。
+#[derive(Debug, Clone, Serialize)]
+struct McpToolInfo {
+    name: String,
+    description: String,
+    /// "readonly" | "dangerous"
+    tag: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct McpResourceInfo {
+    uri: String,
+    name: String,
+    is_template: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct McpPromptInfo {
+    name: String,
+    description: String,
+    arguments: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct McpStatus {
+    /// MCP server 协议层名字（静态声明，与 rmcp get_info 一致）。
+    server_name: &'static str,
+    /// GUI 自身版本（Cargo 包版本，与 tauri.conf.json 对齐）。
+    server_version: &'static str,
+    /// Windows named pipe 路径。
+    pipe_name: &'static str,
+    /// MCP 进程读写的数据目录（GUI 与 MCP 共享同一份资产/凭据）。
+    data_dir: String,
+    /// v1.2：MCP 就绪探测结果（无状态、按需）。这是状态灯的唯一信号源——
+    /// GUI 主动 spawn myshelltool-mcp.exe + initialize 握手，回答「能否正常工作」。
+    probe: mcp::probe::McpProbeResult,
+    /// MCP 暴露的 9 个工具（7 只读 + 2 高危）。
+    tools: Vec<McpToolInfo>,
+    /// 3 静态资源 + 1 template。
+    resources: Vec<McpResourceInfo>,
+    /// 3 个诊断 prompt。
+    prompts: Vec<McpPromptInfo>,
+}
+
+/// 工具名 → 静态标签。语义镜像 approval.rs 的判定：
+/// - ssh_exec：白名单只读放行，其余高危
+/// - sftp_remove：恒高危
+/// - 其余 7 个：纯只读
+fn tool_tag(name: &str) -> &'static str {
+    match name {
+        "ssh_exec" | "sftp_remove" => "dangerous",
+        _ => "readonly",
+    }
+}
+
+#[tauri::command]
+async fn mcp_status(_state: State<'_, AppState>) -> Result<McpStatus, String> {
+    // v1.2：无状态探测——现场 spawn myshelltool-mcp.exe + initialize 握手。
+    // 不依赖 State（探测是纯函数），_state 保留以维持 Tauri 命令签名一致性。
+    let probe = mcp::probe::probe_mcp(None).await;
+
+    // 静态能力声明：直接复用 mcp 模块的 schema 构造函数，保证与协议实际暴露一致。
+    let tools: Vec<McpToolInfo> = mcp::tools::list_all_tools()
+        .into_iter()
+        .map(|t| {
+            // rmcp Tool 的 name/description 是 Cow<'_, str>（非 String），
+            // annotations 当前无（None）。用静态 tag 表补充只读/高危标记。
+            let tag = tool_tag(&t.name);
+            McpToolInfo {
+                name: t.name.to_string(),
+                description: t.description.map(|d| d.to_string()).unwrap_or_default(),
+                tag,
+            }
+        })
+        .collect();
+    let resources: Vec<McpResourceInfo> = mcp::resources::list_resources()
+        .into_iter()
+        .map(|r| McpResourceInfo {
+            uri: r.uri.to_string(),
+            name: r.name.clone(),
+            is_template: false,
+        })
+        .chain(
+            mcp::resources::list_resource_templates()
+                .into_iter()
+                .map(|t| McpResourceInfo {
+                    uri: t.uri_template.to_string(),
+                    name: t.name.clone(),
+                    is_template: true,
+                }),
+        )
+        .collect();
+    let prompts: Vec<McpPromptInfo> = mcp::prompts::list_prompts()
+        .into_iter()
+        .map(|p| McpPromptInfo {
+            name: p.name.clone(),
+            description: p.description.clone().unwrap_or_default(),
+            arguments: p
+                .arguments
+                .as_ref()
+                .map(|args| args.iter().map(|a| a.name.clone()).collect())
+                .unwrap_or_default(),
+        })
+        .collect();
+
+    Ok(McpStatus {
+        server_name: "myshelltool",
+        server_version: env!("CARGO_PKG_VERSION"),
+        pipe_name: mcp::pipe::PIPE_NAME,
+        data_dir: mcp_data_dir().to_string_lossy().to_string(),
+        probe,
+        tools,
+        resources,
+        prompts,
+    })
+}
+
 #[tauri::command]
 fn list_connection_assets(state: State<'_, AppState>) -> Result<ConnectionAssetList, String> {
     let store = myshelltool_core::load_connection_asset_store(&state.asset_store_path)?;
@@ -240,9 +366,11 @@ pub fn run() {
             // v1.1 M8：启动 MCP named pipe server，让 myshelltool-mcp.exe
             // 能复用 GUI 已建立的 SSH 会话（避免 headless 重连 + 二次 host key 验证）。
             // v1.1 审批降级：MCP 客户端不支持 elicitation 时，经此 pipe 委托 GUI 弹窗。
+            // pipe 的职责回归纯粹（v1.2 删掉了连接状态追踪），「MCP 能否工作」改由
+            // probe.rs 无状态探测回答，与 pipe 无关。
             //
             // 从已 manage 的 AppState 抽取 ssh_sessions + approval_pending 的 Arc
-            // （照 resource_monitor 的抽取范式），连同 AppHandle clone 给独立 spawn 的
+            //（照 resource_monitor 的抽取范式），连同 AppHandle clone 给独立 spawn 的
             // pipe server 任务。pipe 挂了不影响 GUI。
             //
             // 注意：setup hook 是同步上下文，此时 Tokio runtime 尚未在当前线程
@@ -258,6 +386,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             backend_status,
+            // v1.2：MCP 服务可观测性聚合查询（前端状态栏/管理面板）
+            mcp_status,
             list_connection_assets,
             save_connection_asset,
             delete_connection_asset,

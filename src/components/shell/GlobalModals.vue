@@ -30,6 +30,7 @@ import { useWorkbenchStore } from '@/stores/workbench.js';
 import AppButton from '@/components/ui/AppButton.vue';
 import AppInput from '@/components/ui/AppInput.vue';
 import AppSelect from '@/components/ui/AppSelect.vue';
+import McpPanelContent from '@/components/shell/McpPanelContent.vue';
 
 const store = useWorkbenchStore();
 const {
@@ -91,6 +92,7 @@ const modalTitle = computed(() => {
     case 'hostKeyVerify': return '主机密钥验证';
     case 'keyboardInteractive': return '键盘交互认证';
     case 'mcpApproval': return '⚠️ MCP 高危操作审批';
+    case 'mcpPanel': return 'MCP 服务管理';
     case 'mkdir': return '新建远程目录';
     case 'rename': return '重命名远程条目';
     case 'localMkdir': return '新建本地目录';
@@ -454,6 +456,9 @@ function denyMcpApproval() {
           <p class="muted">此请求来自 MCP 客户端（如 ZCode），因客户端不支持原生确认框，改由本应用弹窗确认。</p>
         </div>
 
+        <!-- v1.2 mcpPanel：MCP 服务可观测与配置引导（内容抽到子组件，避免本 SFC 超 500 行） -->
+        <McpPanelContent v-else-if="modal.type === 'mcpPanel'" />
+
         <!-- mkdir / localMkdir / rename / localRename (forms render here;
              triggers live in FileSurface). -->
         <div v-else-if="modal.type === 'mkdir'" class="stack">
@@ -549,7 +554,8 @@ function denyMcpApproval() {
         <button v-if="modal.type === 'hostKeyVerify'" class="btn danger" @click="denyHostKey">拒绝</button>
         <!-- v1.1 mcpApproval：高危操作，「拒绝」用 danger 按钮 -->
         <button v-if="modal.type === 'mcpApproval'" class="btn danger" @click="denyMcpApproval">拒绝执行</button>
-        <button class="btn" id="modalSecondary" @click="closeModal">取消</button>
+        <!-- mcpPanel / mcpApproval 等只读或确认型面板隐藏「取消」 -->
+        <button v-if="modal.type !== 'mcpPanel'" class="btn" id="modalSecondary" @click="closeModal">取消</button>
         <button
           v-if="modal.type === 'confirmDelete'"
           class="btn danger"
@@ -563,6 +569,8 @@ function denyMcpApproval() {
           data-modal-primary-danger
           @click="submitModal"
         >确认执行</button>
+        <!-- v1.2 mcpPanel：只读面板，主按钮文案「关闭」（submitModal default 分支即 closeModal） -->
+        <button v-else-if="modal.type === 'mcpPanel'" class="btn primary" id="modalPrimary" @click="submitModal">关闭</button>
         <button v-else class="btn primary" id="modalPrimary" @click="submitModal">确认</button>
       </div>
     </div>

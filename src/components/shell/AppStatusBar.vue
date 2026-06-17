@@ -18,10 +18,12 @@ const props = defineProps({
   runningTunnels: { type: Number, default: 0 },
   totalTunnels: { type: Number, default: 0 },
   warningCount: { type: Number, default: 0 },
-  syncText: { type: String, default: '' }
+  syncText: { type: String, default: '' },
+  // v1.2：MCP client 是否连着 GUI pipe（外部 LLM 宿主是否启动了 MCP exe）。
+  mcpConnected: { type: Boolean, default: false }
 });
 
-const emit = defineEmits(['click-status', 'toggle-transfer-drawer']);
+const emit = defineEmits(['click-status', 'toggle-transfer-drawer', 'open-mcp-panel']);
 
 const sshLabel = computed(() => (props.activeSessions > 0 ? 'connected' : 'idle'));
 </script>
@@ -59,6 +61,16 @@ const sshLabel = computed(() => (props.activeSessions > 0 ? 'connected' : 'idle'
 
     <template #right>
       <span v-if="syncText" class="sync-text">{{ syncText }}</span>
+      <button
+        type="button"
+        class="mcp-indicator"
+        :class="{ connected: mcpConnected }"
+        :title="mcpConnected ? 'MCP 可用：检测到 MCP 进程心跳，可被外部 LLM 宿主调用 — 点击查看详情与配置' : 'MCP 不可用：未检测到 MCP 进程心跳 — 点击查看如何接入 Claude Desktop / Cursor'"
+        @click="emit('open-mcp-panel')"
+      >
+        <span class="dot" :class="{ running: mcpConnected }" aria-hidden="true"></span>
+        MCP {{ mcpConnected ? '可用' : '不可用' }}
+      </button>
       <span class="tunnels">tunnels {{ runningTunnels }}/{{ totalTunnels }}</span>
       <span class="warnings">
         <span class="dot warn" aria-hidden="true"></span>
@@ -140,6 +152,28 @@ const sshLabel = computed(() => (props.activeSessions > 0 ? 'connected' : 'idle'
 
 .sync-text {
   color: var(--app-muted);
+}
+
+.mcp-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--app-muted);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.mcp-indicator:hover {
+  color: var(--app-strong);
+}
+
+.mcp-indicator.connected {
+  color: var(--app-strong);
 }
 
 .tunnels {
