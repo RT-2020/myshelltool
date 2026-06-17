@@ -52,31 +52,6 @@ pub struct ConnectionAssetStore {
     pub groups: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SyncSettings {
-    pub enabled: bool,
-    pub endpoint: String,
-    pub interval_minutes: u16,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TokenConfigInput {
-    pub token: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TokenStatus {
-    pub configured: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SyncSettingsSummary {
-    pub enabled: bool,
-    pub endpoint: String,
-    pub interval_minutes: u16,
-    pub token_status: TokenStatus,
-}
-
 pub fn default_asset_store() -> ConnectionAssetStore {
     ConnectionAssetStore {
         assets: vec![
@@ -344,23 +319,6 @@ pub fn save_connection_asset_store(
     }
     let json = serde_json::to_string_pretty(store).map_err(|error| error.to_string())?;
     fs::write(path, json).map_err(|error| error.to_string())
-}
-
-pub fn summarize_sync_settings(
-    settings: SyncSettings,
-    token_input: TokenConfigInput,
-) -> SyncSettingsSummary {
-    SyncSettingsSummary {
-        enabled: settings.enabled,
-        endpoint: settings.endpoint,
-        interval_minutes: settings.interval_minutes,
-        token_status: TokenStatus {
-            configured: token_input
-                .token
-                .as_deref()
-                .is_some_and(|token| !token.trim().is_empty()),
-        },
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -691,42 +649,6 @@ mod tests {
         assert!(!lowered.contains("private_key_data"));
         assert!(!lowered.contains("token_value"));
         assert!(!lowered.contains("secret"));
-    }
-
-    #[test]
-    fn summarizes_token_status_without_echoing_token() {
-        let token = "test-token-must-not-appear";
-        let summary = summarize_sync_settings(
-            SyncSettings {
-                enabled: true,
-                endpoint: "https://sync.example.invalid".to_string(),
-                interval_minutes: 15,
-            },
-            TokenConfigInput {
-                token: Some(token.to_string()),
-            },
-        );
-
-        let json = serde_json::to_string(&summary).expect("summary serializes");
-
-        assert!(summary.token_status.configured);
-        assert!(!json.contains(token));
-    }
-
-    #[test]
-    fn blank_token_is_not_configured() {
-        let summary = summarize_sync_settings(
-            SyncSettings {
-                enabled: false,
-                endpoint: "".to_string(),
-                interval_minutes: 60,
-            },
-            TokenConfigInput {
-                token: Some("   ".to_string()),
-            },
-        );
-
-        assert!(!summary.token_status.configured);
     }
 
     #[test]
