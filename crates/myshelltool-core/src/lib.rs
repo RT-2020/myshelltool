@@ -1,3 +1,6 @@
+// v1.3 Gist 同步加密内核（独立模块，纯函数可单测）
+pub mod crypto;
+
 use serde::{Deserialize, Serialize};
 use std::{fs, path::Path};
 
