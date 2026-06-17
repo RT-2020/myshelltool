@@ -1,4 +1,5 @@
 mod dangerous_commands;
+mod dpapi_codec;
 mod fs_local;
 mod mcp;
 mod resource_monitor;
@@ -268,7 +269,7 @@ fn save_credential(
     id: String,
     secret: String,
 ) -> Result<myshelltool_core::CredentialStatus, String> {
-    let store = myshelltool_core::SecretStore::new(&state.secret_store_dir);
+    let store = myshelltool_core::SecretStore::new(&state.secret_store_dir, Box::new(dpapi_codec::DpapiCodec));
     store.save(&id, &secret)?;
     store.get_status(&id)
 }
@@ -278,13 +279,13 @@ fn get_credential_status(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<myshelltool_core::CredentialStatus, String> {
-    let store = myshelltool_core::SecretStore::new(&state.secret_store_dir);
+    let store = myshelltool_core::SecretStore::new(&state.secret_store_dir, Box::new(dpapi_codec::DpapiCodec));
     store.get_status(&id)
 }
 
 #[tauri::command]
 fn delete_credential(state: State<'_, AppState>, id: String) -> Result<bool, String> {
-    let store = myshelltool_core::SecretStore::new(&state.secret_store_dir);
+    let store = myshelltool_core::SecretStore::new(&state.secret_store_dir, Box::new(dpapi_codec::DpapiCodec));
     store.delete(&id)
 }
 

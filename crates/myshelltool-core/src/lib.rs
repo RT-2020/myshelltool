@@ -371,13 +371,78 @@ pub struct CredentialStatus {
     pub label: String,
 }
 
+/// 凭据加密编解码抽象。
+///
+/// 设计动机：myshelltool-core 必须保持「无平台依赖、可跨平台 cargo test」，
+/// 而 DPAPI 是 Windows-only。故 core 只定义 trait + 提供跨平台实现（LegacyXorCodec
+/// 兼容旧文件 + PlaintextCodec 测试用），DPAPI 实现放 src-tauri 层（#[cfg(windows)]）
+/// 并在构造 SecretStore 时注入。
+///
+/// 格式约定（磁盘字节流）：
+/// - 新格式：`MAGIC_DPAPI` + codec 加密后的密文。MAGIC 让 read() 能探测格式。
+/// - 旧格式：无 MAGIC 头，是 LegacyXorCodec 的输出（向后兼容，读时懒迁移）。
+pub trait SecretCodec: Send + Sync {
+    /// 加密明文 → 密文字节（不含 MAGIC，MAGIC 由 SecretStore 统一加）。
+    fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, String>;
+    /// 解密密文字节（已剥 MAGIC）→ 明文。
+    fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, String>;
+}
+
+/// 新格式文件头。读到这个前缀 = 新格式；否则当旧 XOR 处理（懒迁移）。
+const MAGIC_DPAPI: &[u8] = b"DPAPI1";
+
+/// 旧版 XOR 编解码（保留用于读旧 .cred 文件 + 跨平台测试）。
+///
+/// 安全性：逐字节可逆混淆，非加密。仅用于向后兼容，新写入永远走注入的 codec。
+pub struct LegacyXorCodec;
+
+impl SecretCodec for LegacyXorCodec {
+    fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, String> {
+        Ok(xor_transform(plaintext))
+    }
+    fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, String> {
+        Ok(xor_transform(ciphertext))
+    }
+}
+
+/// 明文编解码（测试用）。不做任何加密，仅用于验证 SecretStore 的格式探测/迁移逻辑。
+pub struct PlaintextCodec;
+
+impl SecretCodec for PlaintextCodec {
+    fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, String> {
+        Ok(plaintext.to_vec())
+    }
+    fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, String> {
+        Ok(ciphertext.to_vec())
+    }
+}
+
+/// XOR 编解码的共享实现（encode/decode 互逆，故同一函数）。
+fn xor_transform(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len());
+    for (i, &byte) in data.iter().enumerate() {
+        out.push(byte ^ ((i as u8).wrapping_add(0x5A)));
+    }
+    out
+}
+
+/// 探测字节流是否为新格式（有 MAGIC 头）。
+fn is_new_format(data: &[u8]) -> bool {
+    data.len() >= MAGIC_DPAPI.len() && &data[..MAGIC_DPAPI.len()] == MAGIC_DPAPI
+}
+
 pub struct SecretStore {
     dir: std::path::PathBuf,
+    codec: Box<dyn SecretCodec>,
 }
 
 impl SecretStore {
-    pub fn new(dir: impl Into<std::path::PathBuf>) -> Self {
-        Self { dir: dir.into() }
+    /// 构造凭据存储。`codec` 决定新写入的加密方式（src-tauri 传 DpapiCodec）。
+    pub fn new(dir: impl Into<std::path::PathBuf>, codec: Box<dyn SecretCodec>) -> Self {
+        Self {
+            dir: dir.into(),
+            codec,
+        }
     }
 
     pub fn save(&self, id: &str, secret: &str) -> Result<(), String> {
@@ -387,8 +452,12 @@ impl SecretStore {
         }
         fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
         let path = self.dir.join(id);
-        let encoded = encode_secret(secret);
-        fs::write(path, encoded).map_err(|e| e.to_string())
+        // 新写入永远用注入的 codec 加密 + MAGIC 头
+        let encrypted = self.codec.encrypt(secret.as_bytes())?;
+        let mut payload = Vec::with_capacity(MAGIC_DPAPI.len() + encrypted.len());
+        payload.extend_from_slice(MAGIC_DPAPI);
+        payload.extend_from_slice(&encrypted);
+        fs::write(path, payload).map_err(|e| e.to_string())
     }
 
     pub fn get_status(&self, id: &str) -> Result<CredentialStatus, String> {
@@ -403,7 +472,7 @@ impl SecretStore {
 
     pub fn delete(&self, id: &str) -> Result<bool, String> {
         let id = sanitize_credential_id(id)?;
-        let path = self.dir.join(&id);
+        let path = self.dir.join(id);
         if !path.exists() {
             return Ok(false);
         }
@@ -432,14 +501,51 @@ impl SecretStore {
         Ok(result)
     }
 
+    /// 读取凭据。
+    ///
+    /// 格式探测 + 懒迁移：读到旧 XOR 格式文件时，用 LegacyXorCodec 解密，
+    /// 然后用当前 codec 重新加密写回（下次读就是新格式）。迁移失败不阻断读取
+    ///（返回解密后的明文即可，迁移是 best-effort）。
     pub fn read(&self, id: &str) -> Result<Option<String>, String> {
         let id = sanitize_credential_id(id)?;
         let path = self.dir.join(&id);
         if !path.exists() {
             return Ok(None);
         }
-        let encoded = fs::read(&path).map_err(|e| e.to_string())?;
-        Ok(Some(decode_secret(&encoded)))
+        let raw = fs::read(&path).map_err(|e| e.to_string())?;
+        if raw.is_empty() {
+            return Ok(None);
+        }
+
+        let plaintext_bytes = if is_new_format(&raw) {
+            // 新格式：剥 MAGIC 头，用注入的 codec 解密
+            let ciphertext = &raw[MAGIC_DPAPI.len()..];
+            self.codec.decrypt(ciphertext)?
+        } else {
+            // 旧格式（XOR）：用 LegacyXorCodec 解密，然后懒迁移到新格式
+            let legacy = LegacyXorCodec;
+            let plaintext = legacy.decrypt(&raw)?;
+            // 懒迁移：best-effort，失败仅记日志不阻断读取
+            if let Err(e) = self.rewrite_with_new_format(&id, &plaintext) {
+                // 迁移失败不影响本次返回明文，但记录便于排查
+                eprintln!("[SecretStore] lazy migration failed for {id}: {e}");
+            }
+            plaintext
+        };
+
+        Ok(Some(
+            String::from_utf8(plaintext_bytes).map_err(|e| e.to_string())?,
+        ))
+    }
+
+    /// 懒迁移辅助：用当前 codec 重新加密明文并写回。best-effort。
+    fn rewrite_with_new_format(&self, id: &str, plaintext: &[u8]) -> Result<(), String> {
+        let path = self.dir.join(id);
+        let encrypted = self.codec.encrypt(plaintext)?;
+        let mut payload = Vec::with_capacity(MAGIC_DPAPI.len() + encrypted.len());
+        payload.extend_from_slice(MAGIC_DPAPI);
+        payload.extend_from_slice(&encrypted);
+        fs::write(path, payload).map_err(|e| e.to_string())
     }
 }
 
@@ -452,23 +558,6 @@ fn sanitize_credential_id(id: &str) -> Result<String, String> {
         return Err("credential id must contain alphanumeric characters".to_string());
     }
     Ok(format!("{}.cred", sanitized))
-}
-
-fn encode_secret(secret: &str) -> Vec<u8> {
-    let bytes = secret.as_bytes();
-    let mut encoded = Vec::with_capacity(bytes.len());
-    for (i, &byte) in bytes.iter().enumerate() {
-        encoded.push(byte ^ ((i as u8).wrapping_add(0x5A)));
-    }
-    encoded
-}
-
-fn decode_secret(encoded: &[u8]) -> String {
-    let mut decoded = Vec::with_capacity(encoded.len());
-    for (i, &byte) in encoded.iter().enumerate() {
-        decoded.push(byte ^ ((i as u8).wrapping_add(0x5A)));
-    }
-    String::from_utf8(decoded).unwrap_or_default()
 }
 
 fn zero_memory(data: &[u8]) {
@@ -765,7 +854,7 @@ mod tests {
     #[test]
     fn secret_store_saves_and_checks_status() {
         let dir = temp_secret_dir("save");
-        let store = SecretStore::new(&dir);
+        let store = SecretStore::new(&dir, Box::new(PlaintextCodec));
         store.save("github-pat", "ghp_test_secret_value").expect("save succeeds");
 
         let status = store.get_status("github-pat").expect("status succeeds");
@@ -777,7 +866,7 @@ mod tests {
     #[test]
     fn secret_store_rejects_empty_secret() {
         let dir = temp_secret_dir("empty");
-        let store = SecretStore::new(&dir);
+        let store = SecretStore::new(&dir, Box::new(PlaintextCodec));
         assert!(store.save("test", "   ").is_err());
         let _ = fs::remove_dir_all(dir);
     }
@@ -785,7 +874,7 @@ mod tests {
     #[test]
     fn secret_store_deletes_credential() {
         let dir = temp_secret_dir("delete");
-        let store = SecretStore::new(&dir);
+        let store = SecretStore::new(&dir, Box::new(PlaintextCodec));
         store.save("test-cred", "secret123").expect("save");
         let deleted = store.delete("test-cred").expect("delete");
         assert!(deleted);
@@ -795,14 +884,59 @@ mod tests {
     }
 
     #[test]
-    fn secret_store_file_does_not_contain_plaintext() {
+    fn secret_store_codec_output_does_not_contain_plaintext() {
+        // 用 LegacyXorCodec（非明文 codec）验证：存盘后文件不含明文 secret。
+        // PlaintextCodec 是明文，不能用于此断言。
         let dir = temp_secret_dir("plaintext");
-        let store = SecretStore::new(&dir);
+        let store = SecretStore::new(&dir, Box::new(LegacyXorCodec));
         let secret = "my-super-secret-token-value";
         store.save("scan-test", secret).expect("save");
 
-        let content = fs::read_to_string(dir.join("scan-test.cred")).expect("read file");
-        assert!(!content.contains(secret));
+        let bytes = fs::read(dir.join("scan-test.cred")).expect("read file");
+        let content_str = String::from_utf8_lossy(&bytes);
+        assert!(!content_str.contains(secret), "密文不应含明文");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn secret_store_lazy_migrates_legacy_xor_to_new_format() {
+        // 验证懒迁移：手写一个旧 XOR 格式文件（无 MAGIC 头），
+        // read() 应能用 LegacyXorCodec 解出，并用新 codec 重写（加 MAGIC 头）。
+        let dir = temp_secret_dir("migrate");
+        let secret = "legacy-secret-to-migrate";
+
+        // 手写旧格式：纯 XOR 字节，无 MAGIC 头
+        let legacy_bytes = xor_transform(secret.as_bytes());
+        fs::write(dir.join("legacy.cred"), &legacy_bytes).expect("write legacy");
+
+        // 用 PlaintextCodec 构造 store（新格式 = MAGIC + 明文）
+        let store = SecretStore::new(&dir, Box::new(PlaintextCodec));
+        let read_back = store.read("legacy").expect("read legacy").expect("some");
+        assert_eq!(read_back, secret, "懒迁移后应能读出明文");
+
+        // 迁移后文件应有 MAGIC 头（新格式）
+        let after = fs::read(dir.join("legacy.cred")).expect("read after migrate");
+        assert!(is_new_format(&after), "迁移后应为新格式（有 MAGIC 头）");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn secret_store_roundtrip_with_new_format() {
+        // 新写入 → 读取 往返测试（新格式，有 MAGIC 头）
+        let dir = temp_secret_dir("roundtrip");
+        let store = SecretStore::new(&dir, Box::new(LegacyXorCodec));
+        let secret = "roundtrip-secret-2026";
+        store.save("rt", secret).expect("save");
+
+        // 文件应是新格式
+        let bytes = fs::read(dir.join("rt.cred")).expect("read file");
+        assert!(is_new_format(&bytes), "新写入应为新格式");
+
+        // 读回应等于原文
+        let read_back = store.read("rt").expect("read").expect("some");
+        assert_eq!(read_back, secret);
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -810,7 +944,7 @@ mod tests {
     #[test]
     fn secret_store_list_returns_saved_credentials() {
         let dir = temp_secret_dir("list");
-        let store = SecretStore::new(&dir);
+        let store = SecretStore::new(&dir, Box::new(PlaintextCodec));
         store.save("cred-a", "secret_a").expect("save a");
         store.save("cred-b", "secret_b").expect("save b");
 
@@ -823,7 +957,7 @@ mod tests {
     #[test]
     fn secret_store_rejects_invalid_id() {
         let dir = temp_secret_dir("invalid");
-        let store = SecretStore::new(&dir);
+        let store = SecretStore::new(&dir, Box::new(PlaintextCodec));
         assert!(store.save("!@#$%", "secret").is_err());
         let _ = fs::remove_dir_all(dir);
     }

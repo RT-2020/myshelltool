@@ -413,7 +413,7 @@ async fn connect_authenticated(
     } else if password.is_empty() {
         if let Some(ref cred_id) = credential_id {
             Some(
-                myshelltool_core::SecretStore::new(&secret_store_dir)
+                myshelltool_core::SecretStore::new(&secret_store_dir, Box::new(crate::dpapi_codec::DpapiCodec))
                     .read(cred_id)
                     .map_err(|e| format!("Failed to read credential: {e}"))?
                     .ok_or_else(|| "Stored credential not found".to_string())?,
@@ -429,7 +429,7 @@ async fn connect_authenticated(
         let key_path = private_key_path.as_deref().unwrap_or("~/.ssh/id_ed25519");
         let expanded = expand_home_path(key_path);
         let resolved_passphrase = if let Some(ref cred_id) = passphrase_credential_id {
-            myshelltool_core::SecretStore::new(&secret_store_dir)
+            myshelltool_core::SecretStore::new(&secret_store_dir, Box::new(crate::dpapi_codec::DpapiCodec))
                 .read(cred_id)
                 .map_err(|e| format!("Failed to read passphrase: {e}"))?
         } else {
@@ -1912,7 +1912,7 @@ pub async fn connect_headless(
     } else if params.password.is_empty() {
         if let Some(ref cred_id) = params.credential_id {
             Some(
-                myshelltool_core::SecretStore::new(&params.secret_store_dir)
+                myshelltool_core::SecretStore::new(&params.secret_store_dir, Box::new(crate::dpapi_codec::DpapiCodec))
                     .read(cred_id.as_str())
                     .map_err(|e| format!("Failed to read credential: {e}"))?
                     .ok_or_else(|| "Stored credential not found".to_string())?,
@@ -1932,7 +1932,7 @@ pub async fn connect_headless(
             .unwrap_or("~/.ssh/id_ed25519");
         let expanded = expand_home_path(key_path);
         let resolved_passphrase = if let Some(ref cred_id) = params.passphrase_credential_id {
-            myshelltool_core::SecretStore::new(&params.secret_store_dir)
+            myshelltool_core::SecretStore::new(&params.secret_store_dir, Box::new(crate::dpapi_codec::DpapiCodec))
                 .read(cred_id.as_str())
                 .map_err(|e| format!("Failed to read passphrase: {e}"))?
         } else {
