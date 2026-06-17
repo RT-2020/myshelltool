@@ -174,15 +174,14 @@ pub async fn call_tool(
         }
         "sftp_list" => Ok(error_result("sftp_list 在 M3 阶段为桩，将在 M4 完善")),
         "resource_monitor_snapshot" => Ok(error_result("resource_monitor_snapshot 在 M3 阶段为桩，将在 M4 完善")),
-        // ─── 高危工具（M4，Layer 6 审批）───
+        // ─── 高危工具（审批在 server.rs call_tool 拦截层做）───
         "ssh_exec" => tool_ssh_exec(ctx, &arguments).await,
         "sftp_remove" => {
-            // v1.0：删除操作默认拒绝（跨进程弹窗需 v1.1 named pipe）
-            let intent = arguments.get("intent").and_then(|v| v.as_str()).unwrap_or("");
+            // v1.1：审批已移至 server.rs（elicitation 确认）。
+            // 能走到这里说明用户已确认删除。实际删除执行待后续完善。
             let path = arguments.get("path").and_then(|v| v.as_str()).unwrap_or("");
             Ok(error_result(&format!(
-                "【操作已被 MCP 审批拦截】\n\n【AI 声明意图】{}\n\n【真实命令】sftp_remove path={}\n\n【后果预测】将删除远程文件/目录，可能不可恢复。\n\nv1.0 模式下删除操作默认拒绝，请在 myshelltool GUI 中手动操作。",
-                if intent.is_empty() { "(AI 未声明意图)" } else { intent },
+                "用户已确认删除 {}，但 sftp_remove 的执行逻辑尚未实现（v1.1 专注 elicitation 审批 + 会话复用，删除执行留后续版本）",
                 path
             )))
         }
@@ -252,21 +251,9 @@ async fn tool_ssh_exec(
         command
     );
 
-    // Layer 6 审批
-    let decision =
-        super::approval::evaluate(command, intent, super::approval::READONLY_WHITELIST, &[]);
-    match decision {
-        super::approval::ApprovalDecision::AutoExecute => {
-            // 白名单放行，执行命令
-            log::info!("ssh_exec: approved, executing");
-            exec_on_asset(ctx, args, command).await
-        }
-        super::approval::ApprovalDecision::Reject(reason) => {
-            // v1.0：进程内拒绝，返回 isError + 三段式
-            log::warn!("ssh_exec: rejected by approval");
-            Ok(error_result(&reason))
-        }
-    }
+    // v1.1：审批已移至 server.rs call_tool 的 elicitation 拦截层。
+    // 能走到这里说明命令已被审批通过（白名单自动放行 / 用户 elicitation 确认）。
+    exec_on_asset(ctx, args, command).await
 }
 
 /// 在指定资产上执行一次性命令（headless 建连 + exec + 断开）。

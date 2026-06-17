@@ -1,16 +1,15 @@
-//! MCP 工具调用审批（Layer 6，v1.0：进程内拒绝）。
+//! MCP 工具调用审批（Layer 6）。
 //!
-//! 见 docs/plans/MCP服务接入-实施计划.md §7（Layer 6）。
+//! v1.0：进程内拒绝（Reject），黑名单/未知直接 isError。
+//! v1.1：高危命令走 MCP elicitation（RequestElicitation），在客户端界面内
+//!   弹确认框（三段式），用户 accept 才执行。客户端不支持 elicitation 时
+//!   自动降级为 v1.0 的 Reject。
 //!
-//! v1.0（D2-B 独立会话）：MCP 进程内做命令层检测，命中黑名单/未知 →
-//! 直接拒绝，返回 isError + 三段式信息（AI意图 + 真实命令 + 后果预测）。
-//! 不弹 GUI 弹窗（跨进程弹窗依赖 v1.1 的 named pipe 桥接）。
-//!
-//! 三层审批（D9 决策，fail-secure 默认拒）：
-//! - 命中白名单 → AutoExecute
-//! - 命中黄名单 → AutoExecute（+ 日志）
-//! - 命中黑名单 → Reject（三段式）
-//! - 未知命令 → Reject（三段式，默认拒）
+//! 三层审批（D9）：
+//! - 白名单 → AutoExecute
+//! - 黄名单 → AutoExecute（+ 日志）
+//! - 黑名单 → RequestElicitation（v1.1：客户端确认）/ Reject（v1.0 降级）
+//! - 未知命令 → RequestElicitation（v1.1：让用户决定）/ Reject（v1.0 降级）
 
 use crate::dangerous_commands::{self, CommandRisk, DangerousMatch};
 
@@ -18,8 +17,45 @@ use crate::dangerous_commands::{self, CommandRisk, DangerousMatch};
 pub enum ApprovalDecision {
     /// 自动执行（白名单/黄名单）。
     AutoExecute,
-    /// 拒绝执行，附带三段式理由（v1.0：进程内拒绝，不弹窗）。
+    /// 拒绝执行，附带三段式理由（v1.0 降级路径：客户端不支持 elicitation 时）。
     Reject(String),
+    /// 需要用户确认（v1.1：经 MCP elicitation 在客户端界面内弹确认框）。
+    RequestElicitation(ElicitationInfo),
+}
+
+/// elicitation 请求信息（三段式：AI意图 + 真实命令 + 后果预测）。
+#[derive(Debug, Clone)]
+pub struct ElicitationInfo {
+    /// AI 声明的意图（来自工具调用的 intent 参数）。
+    pub intent: String,
+    /// 真实要执行的命令。
+    pub command: String,
+    /// 后果预测（基于命中的危险模式）。
+    pub consequence: String,
+}
+
+impl ElicitationInfo {
+    /// 格式化为 elicitation 的 message 文本（用户看到的确认框内容）。
+    pub fn to_message(&self) -> String {
+        let intent_display = if self.intent.is_empty() {
+            "(AI 未声明意图)"
+        } else {
+            &self.intent
+        };
+        format!(
+            "⚠️ 高危操作审批\n\n\
+             【AI 声明意图】{}\n\n\
+             【真实命令】{}\n\n\
+             【后果预测】{}\n\n\
+             确认要执行此操作吗？",
+            intent_display, self.command, self.consequence
+        )
+    }
+
+    /// v1.0 降级用的拒绝文本（客户端不支持 elicitation 时）。
+    pub fn to_rejection(&self) -> String {
+        format_rejection(&self.intent, &self.command, &self.consequence)
+    }
 }
 
 /// 评估一条命令的审批决策。
@@ -45,18 +81,22 @@ pub fn evaluate(
         }
         CommandRisk::Dangerous(m) => {
             log::warn!(
-                "approval: command rejected (blacklist hit: pattern={})",
+                "approval: dangerous command, requesting elicitation (pattern={})",
                 m.pattern
             );
-            ApprovalDecision::Reject(format_rejection(intent, command, &predict_consequence(&m)))
+            ApprovalDecision::RequestElicitation(ElicitationInfo {
+                intent: intent.to_string(),
+                command: command.to_string(),
+                consequence: predict_consequence(&m),
+            })
         }
         CommandRisk::Unknown => {
-            log::warn!("approval: command rejected (unknown, fail-secure default deny)");
-            ApprovalDecision::Reject(format_rejection(
-                intent,
-                command,
-                "此命令不在已知安全名单内。按 fail-secure 原则默认拒绝——如需执行该命令，请在 myshelltool GUI 中手动操作。",
-            ))
+            log::warn!("approval: unknown command, requesting elicitation (user decides)");
+            ApprovalDecision::RequestElicitation(ElicitationInfo {
+                intent: intent.to_string(),
+                command: command.to_string(),
+                consequence: "此命令不在已知安全名单内，需要用户确认。".to_string(),
+            })
         }
     }
 }
