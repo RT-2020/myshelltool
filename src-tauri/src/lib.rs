@@ -182,8 +182,11 @@ impl log::Log for FileLogger {
 
     fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
+            // 本地时间前缀（便于按时间排查问题；chrono 处理时区/闰秒等）。
+            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
             let msg = format!(
-                "[{} {}] {}\n",
+                "[{} {} {}] {}\n",
+                now,
                 record.level(),
                 record.target(),
                 record.args()
