@@ -1,5 +1,7 @@
 // v1.3 Gist 同步加密内核（独立模块，纯函数可单测）
 pub mod crypto;
+// v1.3 Gist 同步引擎（载荷结构 + 加解密封装 + 冲突检测，纯逻辑无 HTTP）
+pub mod sync;
 
 use serde::{Deserialize, Serialize};
 use std::{fs, path::Path};
