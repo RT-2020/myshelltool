@@ -27,7 +27,7 @@ cd src-tauri && cargo build --release --bin myshelltool-mcp
 
 ## 二、数据目录与资产配置
 
-MCP 进程默认从 `%APPDATA%\myshelltool\` 读取数据（与 GUI 共享）：
+MCP 进程默认从 `%APPDATA%\com.redtei.myshelltool\` 读取数据（与 GUI 共享，目录名取 tauri.conf.json 的 identifier）：
 
 | 文件 | 用途 |
 |------|------|
