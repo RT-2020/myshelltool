@@ -194,16 +194,13 @@ async fn dispatch(
 
 /// MCP 进程端的 pipe 客户端。
 ///
-/// 一次性连接：构造时 connect，发请求收响应，用完 drop。
-/// 连接失败表示 GUI 未运行（或 pipe 未就绪），调用方应降级 headless。
+/// 单连接 + `tokio::io::split` 分离读写。协议是单工轮转（发一条等一条），
+/// 读写不会并发，但 split 后两端可独立持有（reader 在等响应时 writer 可释放）。
 ///
-/// 注意：Windows named pipe 是全双工，但 tokio 的 `NamedPipeClient` 未实现
-/// `Clone`，无法像 TCP 那样 split 后两端独立移动。这里用「开两个独立连接」
-/// 的折中——一条专写、一条专读，凑出读写分离。协议是单工轮转（发一条等一条），
-/// 不需要并发读写，两个连接够用。
+/// 连接失败表示 GUI 未运行（或 pipe 未就绪），调用方应降级 headless。
 pub struct PipeClient {
-    writer: tokio::net::windows::named_pipe::NamedPipeClient,
-    reader: BufReader<tokio::net::windows::named_pipe::NamedPipeClient>,
+    writer: tokio::io::WriteHalf<tokio::net::windows::named_pipe::NamedPipeClient>,
+    reader: BufReader<tokio::io::ReadHalf<tokio::net::windows::named_pipe::NamedPipeClient>>,
 }
 
 impl PipeClient {
@@ -213,15 +210,14 @@ impl PipeClient {
     pub fn connect() -> Result<Self, String> {
         use tokio::net::windows::named_pipe::ClientOptions;
 
-        let writer = ClientOptions::new()
+        let stream = ClientOptions::new()
             .open(PIPE_NAME)
             .map_err(|e| format!("pipe connect failed (GUI 未运行?): {e}"))?;
-        let reader_client = ClientOptions::new()
-            .open(PIPE_NAME)
-            .map_err(|e| format!("pipe connect (reader) failed: {e}"))?;
+        // 单连接 split 成读写两半（与 GUI 端 handle_client 的 split 对称）。
+        let (read_half, write_half) = tokio::io::split(stream);
         Ok(Self {
-            writer,
-            reader: BufReader::new(reader_client),
+            writer: write_half,
+            reader: BufReader::new(read_half),
         })
     }
 

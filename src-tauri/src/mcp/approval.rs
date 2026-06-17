@@ -50,10 +50,13 @@ impl ElicitationInfo {
         )
     }
 
-    /// 降级用的拒绝文本（客户端不支持 elicitation 时，server.rs NotSupported 分支调用）。
-    pub fn to_rejection(&self) -> String {
-        format_rejection(&self.intent, &self.command, &self.consequence)
-    }
+/// 降级用的拒绝文本（客户端不支持 elicitation 时，server.rs NotSupported 分支调用）。
+///
+/// fail-secure 拒绝：不支持 elicitation 的客户端（如 ZCode 用 AskUserQuestion）
+/// 无法满足高危操作的安全审批要求，直接拒绝。只读命令不受影响（走白名单自动放行）。
+pub fn to_rejection(&self) -> String {
+    format_rejection(&self.intent, &self.command, &self.consequence)
+}
 }
 
 /// 评估一条命令的审批决策。
@@ -99,19 +102,22 @@ pub fn evaluate(
     }
 }
 
-/// 三段式拒绝信息格式（D5+D9：AI意图 + 真实命令 + 后果预测）。
+/// 三段式确认信息格式（D5+D9：AI意图 + 真实命令 + 后果预测）。
 ///
-/// 用于 elicitation 不可用时的降级路径（server.rs NotSupported 分支）：
-/// 即使 AI 在 intent 里声称「查看日志」，但 command 是 `rm -rf /var/log`，
-/// 用户（或读 error 的 LLM）能通过三段对照识破伪装。
+/// 用于 elicitation 不可用时的降级路径（server.rs NotSupported 分支）。
+/// 语义为 fail-secure 拒绝：不支持 elicitation 的客户端（如 ZCode）无法
+/// 完成高危操作的安全确认，直接拒绝。即使用户在 intent 里声称「查看日志」，
+/// 但 command 是 `rm -rf /var/log`，三段对照也能让用户（或读 error 的 LLM）
+/// 识破伪装。若确需执行，用户应在支持 elicitation 的客户端（Claude Desktop）
+/// 中操作，或在 myshelltool GUI 手动执行。
 fn format_rejection(intent: &str, command: &str, consequence: &str) -> String {
     format!(
-        "【操作已被 MCP 审批拦截】\n\n\
+        "【高危操作已被拒绝】当前客户端不支持 MCP elicitation 确认框，无法完成安全审批。\n\n\
          【AI 声明意图】{}\n\n\
          【真实命令】{}\n\n\
          【后果预测】{}\n\n\
-         当前客户端不支持 elicitation 确认框，此命令被拒绝。\
-         如确需执行，请在支持 elicitation 的客户端（Claude Desktop 等）中操作。",
+         如确需执行此高危操作，请改用支持 elicitation 的客户端（如 Claude Desktop），\
+         或在 myshelltool GUI 中手动执行。只读命令（df/uptime/systemctl status 等）不受此限制。",
         if intent.is_empty() { "(AI 未声明意图)" } else { intent },
         command,
         consequence,

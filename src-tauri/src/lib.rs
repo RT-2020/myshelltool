@@ -233,11 +233,15 @@ pub fn run() {
             //
             // 从已 manage 的 AppState 抽取 ssh_sessions 的 Arc（照 resource_monitor
             // 的抽取范式），clone 给独立 spawn 的 pipe server 任务。pipe 挂了不影响 GUI。
+            //
+            // 注意：setup hook 是同步上下文，此时 Tokio runtime 尚未在当前线程
+            // 就绪——裸 `tokio::spawn` 会 panic「no reactor running」。
+            // 必须用 `tauri::async_runtime::spawn`，它会绑定到 Tauri 管理的 runtime。
             let pipe_ssh_mgr = app
                 .state::<AppState>()
                 .ssh_sessions
                 .clone();
-            tokio::spawn(mcp::pipe::run_pipe_server(pipe_ssh_mgr));
+            tauri::async_runtime::spawn(mcp::pipe::run_pipe_server(pipe_ssh_mgr));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
