@@ -10,6 +10,7 @@
 
 pub mod approval;
 pub mod pipe;
+pub mod probe;
 pub mod prompts;
 pub mod resources;
 pub mod server;
