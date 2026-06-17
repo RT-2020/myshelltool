@@ -303,6 +303,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     activeSessions: computed(() => sessionsStore.activeSessions),
     hostKeyPrompt: computed(() => sessionsStore.hostKeyPrompt),
     keyboardPrompt: computed(() => sessionsStore.keyboardPrompt),
+    // v1.1：MCP 审批弹窗 payload + 回传 action
+    mcpApprovalPrompt: computed(() => sessionsStore.mcpApprovalPrompt),
     terminalFontSize: computed(() => sessionsStore.terminalFontSize),
     terminalAsideOpen: computed(() => sessionsStore.terminalAsideOpen),
     terminalSearch: computed(() => sessionsStore.terminalSearch),
@@ -313,6 +315,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     runTerminalAction: sessionsStore.runTerminalAction,
     resolveHostKeyPrompt: sessionsStore.resolveHostKeyPrompt,
     resolveKeyboardPrompt: sessionsStore.resolveKeyboardPrompt,
+    // v1.1：MCP 审批确认框回传
+    resolveMcpApproval: sessionsStore.resolveMcpApproval,
     openTerminalSearchInline: sessionsStore.openTerminalSearchInline,
     closeTerminalSearchInline: sessionsStore.closeTerminalSearchInline,
     setTerminalSearchQuery: sessionsStore.setTerminalSearchQuery,

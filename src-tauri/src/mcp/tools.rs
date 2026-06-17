@@ -213,6 +213,8 @@ async fn tool_list_sessions() -> Result<CallToolResult, String> {
         host: None,
         port: None,
         username: None,
+        intent: None,
+        consequence: None,
     };
 
     match client.request(&req).await {

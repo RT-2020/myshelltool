@@ -17,6 +17,9 @@ pub struct AppState {
     pub secret_store_dir: PathBuf,
     pub ssh_sessions: Arc<AsyncMutex<ssh::SshSessionManager>>,
     pub resource_monitors: Arc<Mutex<resource_monitor::ResourceMonitorState>>,
+    /// v1.1：MCP 审批弹窗 pending 表（request_id → oneshot sender）。
+    /// GUI pipe server dispatch emit 弹窗后在此存 sender，前端回传命令从此取。
+    pub mcp_approval_pending: mcp::pipe::ApprovalPending,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -224,27 +227,33 @@ pub fn run() {
 
             // Option A：ssh.rs 全部命令统一通过 State<'_, AppState> 解析。
             // 不再需要双 manage hack——参见 .omc/plans/followup-ssh-state-unify.md（已完成）。
+            let mcp_approval_pending: mcp::pipe::ApprovalPending =
+                Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
             app.manage(AppState {
                 asset_store_path: app_data_dir.join("connection-assets.json"),
                 secret_store_dir: app_data_dir.join("credentials"),
                 ssh_sessions: ssh_mgr,
                 resource_monitors: Arc::new(Mutex::new(resource_monitor::ResourceMonitorState::default())),
+                mcp_approval_pending: mcp_approval_pending.clone(),
             });
 
             // v1.1 M8：启动 MCP named pipe server，让 myshelltool-mcp.exe
             // 能复用 GUI 已建立的 SSH 会话（避免 headless 重连 + 二次 host key 验证）。
+            // v1.1 审批降级：MCP 客户端不支持 elicitation 时，经此 pipe 委托 GUI 弹窗。
             //
-            // 从已 manage 的 AppState 抽取 ssh_sessions 的 Arc（照 resource_monitor
-            // 的抽取范式），clone 给独立 spawn 的 pipe server 任务。pipe 挂了不影响 GUI。
+            // 从已 manage 的 AppState 抽取 ssh_sessions + approval_pending 的 Arc
+            // （照 resource_monitor 的抽取范式），连同 AppHandle clone 给独立 spawn 的
+            // pipe server 任务。pipe 挂了不影响 GUI。
             //
             // 注意：setup hook 是同步上下文，此时 Tokio runtime 尚未在当前线程
             // 就绪——裸 `tokio::spawn` 会 panic「no reactor running」。
             // 必须用 `tauri::async_runtime::spawn`，它会绑定到 Tauri 管理的 runtime。
-            let pipe_ssh_mgr = app
-                .state::<AppState>()
-                .ssh_sessions
-                .clone();
-            tauri::async_runtime::spawn(mcp::pipe::run_pipe_server(pipe_ssh_mgr));
+            let state = app.state::<AppState>();
+            tauri::async_runtime::spawn(mcp::pipe::run_pipe_server(
+                state.ssh_sessions.clone(),
+                app.handle().clone(),
+                state.mcp_approval_pending.clone(),
+            ));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -266,6 +275,8 @@ pub fn run() {
             ssh::ssh_disconnect,
             ssh::ssh_confirm_host_key,
             ssh::ssh_keyboard_response,
+            // v1.1：MCP 审批弹窗回传（前端用户点击确认/拒绝后调用）
+            mcp::pipe::mcp_approval_resolve,
             ssh::sftp_list_dir,
             ssh::sftp_read_file,
             ssh::sftp_write_file,
