@@ -2214,6 +2214,7 @@ name = "myshelltool"
 version = "0.3.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "log",
  "myshelltool-core",
  "regex",

@@ -32,6 +32,8 @@ rmcp = { version = "~1.7", features = ["server", "transport-io", "elicitation", 
 regex = "1"
 # MCP v1.1 elicitation：elicit::<T>() 需要 schemars 直接依赖（生成 JSON Schema）
 schemars = "1"
+# 日志时间戳（FileLogger 的 [YYYY-MM-DD HH:MM:SS] 前缀）
+chrono = "0.4"
 
 # MCP server 独立 bin（D1 双二进制：GUI + console 子系统 MCP）
 [[bin]]
