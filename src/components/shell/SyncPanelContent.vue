@@ -14,7 +14,7 @@
  */
 import { computed, ref } from 'vue';
 import { storeToRefs } from 'pinia';
-import { CloudUpload, CloudDownload, KeyRound, AlertTriangle, RefreshCw } from 'lucide-vue-next';
+import { CloudUpload, CloudDownload, KeyRound, AlertTriangle } from 'lucide-vue-next';
 import { useWorkbenchStore } from '@/stores/workbench.js';
 import AppButton from '@/components/ui/AppButton.vue';
 import AppInput from '@/components/ui/AppInput.vue';
@@ -46,43 +46,38 @@ const canSetup = computed(() =>
 // ─── 操作 ───
 async function onSetup() {
   if (!canSetup.value) return;
-  try {
-    const result = await store.syncSetup(setupPassword.value, setupGistId.value.trim());
-    if (result?.kind === 'PulledRemote') {
-      // 拉取成功后，前端需要把 assets_json 导入资产列表
-      //（通过 list_connection_assets 重新拉取，因为后端已处理）
-      await store.listAssets();
-    }
-    setupPassword.value = '';
-    setupPasswordConfirm.value = '';
-    setupGistId.value = '';
-  } catch { /* flashMessage 已在 store 处理 */ }
+  const result = await store.syncSetup(setupPassword.value, setupGistId.value.trim());
+  if (!result) return; // 失败：flashMessage 已在 store 通知用户
+  if (result.kind === 'PulledRemote') {
+    // 拉取成功后刷新资产列表（后端已写入本地 connection-assets.json）
+    await store.listAssets();
+  }
+  setupPassword.value = '';
+  setupPasswordConfirm.value = '';
+  setupGistId.value = '';
 }
 
 async function onPush() {
   if (!opPassword.value) return;
-  try {
-    await store.syncPush(opPassword.value);
-    opPassword.value = '';
-  } catch { /* */ }
+  const result = await store.syncPush(opPassword.value);
+  if (result) opPassword.value = '';
 }
 
 async function onPull() {
   if (!opPassword.value) return;
-  try {
-    await store.syncPull(opPassword.value);
-    // pull 可能更新了本地 assets，刷新资产列表
+  const result = await store.syncPull(opPassword.value);
+  if (!result) return;
+  // pull 成功（含 PullRemote/Conflict 解决后）刷新资产列表
+  if (result.decision === 'Pulled') {
     await store.listAssets();
-    opPassword.value = '';
-  } catch { /**/ }
+  }
+  opPassword.value = '';
 }
 
 async function onResolveConflict(choice) {
-  try {
-    await store.syncResolveConflict(opPassword.value, choice);
-    await store.listAssets();
-    opPassword.value = '';
-  } catch { /**/ }
+  await store.syncResolveConflict(opPassword.value, choice);
+  await store.listAssets();
+  opPassword.value = '';
 }
 
 function onDismissConflict() {
@@ -91,17 +86,18 @@ function onDismissConflict() {
 
 async function onResetPassword() {
   if (!resetOldPassword.value || !resetNewPassword.value || resetNewPassword.value.length < 6) return;
-  try {
-    await store.syncResetMasterPassword(resetOldPassword.value, resetNewPassword.value);
-    resetOldPassword.value = '';
-    resetNewPassword.value = '';
-    showReset.value = false;
-  } catch { /**/ }
+  const ok = await store.syncResetMasterPassword(resetOldPassword.value, resetNewPassword.value);
+  if (ok === undefined) return; // store 失败返回 undefined，flashMessage 已通知
+  resetOldPassword.value = '';
+  resetNewPassword.value = '';
+  showReset.value = false;
 }
 
+// 清空二次确认（内联，不用 window.confirm——AGENTS.md 红线）
+const confirmingClear = ref(false);
 async function onClearSync() {
-  if (!confirm('确定清空同步配置？本地资产不受影响，但 Gist 上的远端数据需手动去 GitHub 删除。')) return;
   await store.syncClear();
+  confirmingClear.value = false;
 }
 
 function fmtTime(iso) {
@@ -231,9 +227,18 @@ function assetSummary(jsonStr) {
         </div>
       </div>
 
-      <!-- 清空（逃生口） -->
+      <!-- 清空（逃生口）—— 内联二次确认，不用 window.confirm（AGENTS.md 红线） -->
       <div class="sub-section">
-        <button class="link-btn danger-link" @click="onClearSync">清空同步配置（忘了主密码时用）</button>
+        <button v-if="!confirmingClear" class="link-btn danger-link" @click="confirmingClear = true">
+          清空同步配置（忘了主密码时用）
+        </button>
+        <div v-else class="confirm-clear">
+          <p class="warn-inline">确定清空？本地资产不受影响，但 Gist 上的远端数据需手动去 GitHub 删除。</p>
+          <div class="actions">
+            <AppButton variant="danger" size="sm" :disabled="syncLoading" @click="onClearSync">确认清空</AppButton>
+            <AppButton variant="ghost" size="sm" @click="confirmingClear = false">取消</AppButton>
+          </div>
+        </div>
       </div>
     </div>
   </div>

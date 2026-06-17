@@ -3,7 +3,7 @@
 //! 粘合 core 层（crypto + sync 纯逻辑）与 HTTP（reqwest 调 Gist API）+ 本地文件
 //! （connection-assets.json + sync-state.json）+ 凭据（SecretStore 读 github-pat）。
 //!
-//! 6 个命令（前端经 invokeBackend 调用）：
+//! 7 个命令（前端经 invokeBackend 调用）：
 //! - sync_setup：首次设置（主密码 + 可选 gist_id 拉取已有）
 //! - sync_push：加密本地资产 → 上传 Gist
 //! - sync_pull：拉 Gist → 解密 → 冲突检测 → 返回决策（前端据此弹窗或直接覆盖）
@@ -60,6 +60,27 @@ fn read_github_pat(state: &AppState) -> Result<String, String> {
     store
         .read("github-pat")?
         .ok_or_else(|| "未配置 GitHub PAT（请先在设置中配置）".to_string())
+}
+
+/// 读本地资产 JSON。
+///
+/// **文件不存在 → 降级为空资产**（首次使用、尚未创建 connection-assets.json 的合法场景）。
+/// **其他 IO 错误（权限/磁盘/损坏）→ 返回 Err**（绝不能静默降级成空资产再覆盖远端，
+/// 那会静默销毁 Gist 上的备份）。
+///
+/// 这是对原 `unwrap_or_else(|_| empty)` masking fallback 的根因修复：
+/// 原版把 NotFound 和真错误一并吞了，sync_push 会在资产文件损坏时把空资产推到 Gist。
+fn read_local_assets(state: &AppState) -> Result<String, String> {
+    match std::fs::read_to_string(&state.asset_store_path) {
+        Ok(json) => Ok(json),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(r#"{"assets":[],"groups":[]}"#.to_string())
+        }
+        Err(e) => Err(format!(
+            "读取本地资产文件失败（{}）：{e}",
+            state.asset_store_path.display()
+        )),
+    }
 }
 
 // ─── Gist API 客户端 ───
@@ -119,6 +140,10 @@ async fn gist_create(pat: &str, content: &str) -> Result<(String, Option<String>
         .map_err(|e| format!("Gist create 请求失败: {e}"))?;
 
     let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("Gist create 失败 (HTTP {status}): {text}"));
+    }
     let gist: GistResponse = resp
         .json()
         .await
@@ -180,6 +205,10 @@ async fn gist_update(pat: &str, gist_id: &str, content: &str) -> Result<Option<S
         .map_err(|e| format!("Gist update 请求失败: {e}"))?;
 
     let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("Gist update 失败 (HTTP {status}): {text}"));
+    }
     let gist: GistResponse = resp
         .json()
         .await
@@ -279,8 +308,7 @@ pub async fn sync_setup(
         Ok(SyncSetupResult::PulledRemote { assets_json })
     } else {
         // 首次推送：加密当前本地资产 → 创建 Gist
-        let local_json =
-            std::fs::read_to_string(&state.asset_store_path).unwrap_or_else(|_| r#"{"assets":[],"groups":[]}"#.to_string());
+        let local_json = read_local_assets(&state)?;
         let payload = sync::pack(&local_json, &master_password, 1)?;
         let payload_json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
         let (new_gist_id, updated_at) = gist_create(&pat, &payload_json).await?;
@@ -317,8 +345,7 @@ pub async fn sync_push(
         .ok_or_else(|| "未配置同步（请先 sync_setup）".to_string())?;
     let pat = read_github_pat(&state)?;
 
-    let local_json =
-        std::fs::read_to_string(&state.asset_store_path).unwrap_or_else(|_| r#"{"assets":[],"groups":[]}"#.to_string());
+    let local_json = read_local_assets(&state)?;
     let new_rev = sync_state.local_rev.unwrap_or(0) + 1;
     let payload = sync::pack(&local_json, &master_password, new_rev)?;
     let payload_json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
@@ -403,8 +430,7 @@ pub async fn sync_pull(
         SyncDecision::PushLocal => Ok(SyncPullResult::LocalNewer),
         SyncDecision::Conflict => {
             // 冲突：返回双方 JSON，前端弹窗让用户选
-            let local_json = std::fs::read_to_string(&state.asset_store_path)
-                .unwrap_or_else(|_| r#"{"assets":[],"groups":[]}"#.to_string());
+            let local_json = read_local_assets(&state)?;
             let remote_json = sync::unpack(&remote_payload, &master_password)?;
             Ok(SyncPullResult::Conflict {
                 local_json,
@@ -438,8 +464,7 @@ pub async fn sync_resolve_conflict(
     match choice.as_str() {
         "local" => {
             // 用本地覆盖远端：推送本地
-            let local_json = std::fs::read_to_string(&state.asset_store_path)
-                .unwrap_or_else(|_| r#"{"assets":[],"groups":[]}"#.to_string());
+            let local_json = read_local_assets(&state)?;
             let new_rev = remote_rev + 1;
             let payload = sync::pack(&local_json, &master_password, new_rev)?;
             let payload_json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
@@ -530,6 +555,14 @@ fn mask_gist_id(id: &str) -> String {
 }
 
 /// 粗略判定本地资产是否在上次同步后变更过：比较文件 mtime vs last_synced_at。
+///
+/// **已知局限**（列为 follow-up，根治需改用 content hash 比较）：
+/// - 秒级粒度：同一秒内"保存→立即 pull"可能漏报（mtime 截到秒）
+/// - 钟差：last_synced_at 来自 GitHub 服务器钟，本地钟慢时可能误判
+/// - rsync -p / 备份还原保留旧 mtime 会漏报
+///
+/// **保守原则**：任何不确定（从没同步/时间解析失败/mtime 读失败）都返回 true
+///（视为有变更），避免 pull 静默覆盖本地未保存的修改。
 fn has_local_changes_since_last_sync(state: &AppState, sync_state: &SyncState) -> bool {
     let last_synced = match &sync_state.last_synced_at {
         Some(t) => t,
@@ -539,12 +572,14 @@ fn has_local_changes_since_last_sync(state: &AppState, sync_state: &SyncState) -
         Ok(t) => t.with_timezone(&chrono::Utc),
         Err(_) => return true, // 时间解析失败，保守视为有变更
     };
+    // mtime 读失败 → 保守判有变更（u64::MAX > 任何 sync_secs）。
+    // 原版 unwrap_or(0) 会永远判"无变更"导致 pull 静默覆盖，是 masking fallback。
     let file_mtime = std::fs::metadata(&state.asset_store_path)
         .ok()
         .and_then(|m| m.modified().ok())
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .unwrap_or(u64::MAX);
     let sync_secs = last_synced_time.timestamp().max(0) as u64;
     file_mtime > sync_secs
 }
