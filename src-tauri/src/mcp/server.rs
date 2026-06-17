@@ -71,14 +71,50 @@ fn check_approval_needed(
     }
 }
 
+/// 客户端不支持 elicitation 时的降级路径。
+///
+/// v1.1 三级降级：elicitation 不支持 → 尝试 GUI pipe 弹窗审批 → pipe 也不行才 fail-secure 拒绝。
+///
+/// - pipe 连通且用户操作 → `Accepted` / `Declined`
+/// - pipe 连不上（GUI 离线）或通信故障 → `NotSupported`（fail-secure 拒绝，调用方返回 error）
+async fn degrade_to_pipe_or_reject(info: &ElicitationInfo) -> ElicitOutcome {
+    log::info!(
+        "elicitation not supported by client, trying GUI pipe approval as fallback"
+    );
+    match super::pipe::request_approval_via_pipe(
+        &info.intent,
+        &info.command,
+        &info.consequence,
+    )
+    .await
+    {
+        Ok(Some(true)) => ElicitOutcome::Accepted,
+        Ok(Some(false)) => {
+            ElicitOutcome::Declined("用户在 myshelltool GUI 确认框中拒绝了".to_string())
+        }
+        Ok(None) => {
+            // GUI 未运行 → fail-secure 拒绝
+            log::warn!(
+                "GUI pipe not available (GUI 离线), fail-secure reject for high-risk command"
+            );
+            ElicitOutcome::NotSupported(info.to_rejection())
+        }
+        Err(e) => {
+            log::warn!("GUI pipe approval failed ({e}), fail-secure reject");
+            ElicitOutcome::NotSupported(info.to_rejection())
+        }
+    }
+}
+
 /// 尝试经 MCP elicitation 向用户确认。
 ///
-/// 客户端支持时弹出确认框（三段式），不支持时返回 NotSupported 降级。
+/// v1.1 三级审批：elicitation（客户端原生框）→ GUI pipe 弹窗 → fail-secure 拒绝。
 async fn try_elicit(peer: &Peer<rmcp::RoleServer>, info: &ElicitationInfo) -> ElicitOutcome {
     // 先检查客户端是否声明了 elicitation 能力
     let modes = peer.supported_elicitation_modes();
     if modes.is_empty() {
-        return ElicitOutcome::NotSupported(info.to_rejection());
+        // 客户端不支持 elicitation → 走 GUI pipe 降级
+        return degrade_to_pipe_or_reject(info).await;
     }
 
     // 发起 elicitation（message = 三段式确认文本）
@@ -87,7 +123,7 @@ async fn try_elicit(peer: &Peer<rmcp::RoleServer>, info: &ElicitationInfo) -> El
     //   Ok(None) = 用户没提供内容
     //   Err(UserDeclined) = 用户拒绝
     //   Err(UserCancelled) = 用户取消
-    //   Err(CapabilityNotSupported) = 客户端不支持 → 降级
+    //   Err(CapabilityNotSupported) = 客户端不支持 → 走 GUI pipe 降级
     match peer.elicit::<ApprovalForm>(info.to_message()).await {
         Ok(Some(form)) => {
             if form.confirmed {
@@ -104,11 +140,12 @@ async fn try_elicit(peer: &Peer<rmcp::RoleServer>, info: &ElicitationInfo) -> El
             ElicitOutcome::Declined("用户取消了确认".to_string())
         }
         Err(rmcp::service::ElicitationError::CapabilityNotSupported) => {
-            ElicitOutcome::NotSupported(info.to_rejection())
+            // 客户端运行时不支持 → 走 GUI pipe 降级
+            degrade_to_pipe_or_reject(info).await
         }
         Err(e) => {
-            log::warn!("elicitation error: {:?}, degrading to reject", e);
-            ElicitOutcome::NotSupported(info.to_rejection())
+            log::warn!("elicitation error: {:?}, trying GUI pipe fallback", e);
+            degrade_to_pipe_or_reject(info).await
         }
     }
 }
