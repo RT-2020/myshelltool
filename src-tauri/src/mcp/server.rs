@@ -134,10 +134,24 @@ async fn try_elicit(peer: &Peer<rmcp::RoleServer>, info: &ElicitationInfo) -> El
         }
         Ok(None) => ElicitOutcome::Declined("用户未提供确认".to_string()),
         Err(rmcp::service::ElicitationError::UserDeclined) => {
-            ElicitOutcome::Declined("用户拒绝了此操作".to_string())
+            // 无法区分「用户真拒绝」和「客户端自动拒绝」（如 Codex 伪支持
+            // elicitation：握手时声明能力，运行时自动 Decline 所有请求）。
+            // 降级走 GUI pipe：GUI 在线则弹窗让用户真确认（Codex 场景），
+            // GUI 离线则 fail-secure 拒绝（真拒绝场景，Claude Code 无 GUI 时）。
+            // 副作用：Claude Code + GUI 在线时用户拒了会再弹一次 GUI 窗，
+            // 但这只是冗余无害（用户可再拒一次）。
+            log::info!(
+                "elicitation UserDeclined (可能客户端自动拒绝如 Codex), trying GUI pipe fallback"
+            );
+            degrade_to_pipe_or_reject(info).await
         }
         Err(rmcp::service::ElicitationError::UserCancelled) => {
-            ElicitOutcome::Declined("用户取消了确认".to_string())
+            // 同 UserDeclined：客户端可能自动 Cancel（未实现确认 UI），
+            // 降级 GUI pipe 给用户第二次确认机会。
+            log::info!(
+                "elicitation UserCancelled (可能客户端未实现确认 UI), trying GUI pipe fallback"
+            );
+            degrade_to_pipe_or_reject(info).await
         }
         Err(rmcp::service::ElicitationError::CapabilityNotSupported) => {
             // 客户端运行时不支持 → 走 GUI pipe 降级
