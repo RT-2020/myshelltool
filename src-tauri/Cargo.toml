@@ -25,10 +25,13 @@ serde_json = "1"
 russh-sftp = "2"
 log = { version = "0.4", features = ["std"] }
 
-# MCP server 接入（D3 锁定 rmcp ~1.7，MCP 协议 2025-03-26 基线）
-rmcp = { version = "~1.7", features = ["server", "transport-io"] }
+# MCP server 接入（D3 锁定 rmcp ~1.7，MCP 协议 2025-06-18 基线）
+# v1.1：加 elicitation feature（高危命令客户端内确认）+ schemars（elicit<T> 泛型版需要）
+rmcp = { version = "~1.7", features = ["server", "transport-io", "elicitation", "schemars"] }
 # 危险命令检测（D5：翻译 dangerousCommands.js，GUI 与 MCP 共享）
 regex = "1"
+# MCP v1.1 elicitation：elicit::<T>() 需要 schemars 直接依赖（生成 JSON Schema）
+schemars = "1"
 
 # MCP server 独立 bin（D1 双二进制：GUI + console 子系统 MCP）
 [[bin]]
