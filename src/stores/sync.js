@@ -76,7 +76,7 @@ export const useSyncStore = defineStore('sync', () => {
       return result;
     } catch (error) {
       flashMessage(`✗ ${error?.message || error}`, true);
-      throw error;
+      return null;
     } finally {
       loading.value = false;
     }
@@ -94,7 +94,7 @@ export const useSyncStore = defineStore('sync', () => {
       return result;
     } catch (error) {
       flashMessage(`✗ 推送失败：${error?.message || error}`, true);
-      throw error;
+      return null;
     } finally {
       loading.value = false;
     }
@@ -134,7 +134,7 @@ export const useSyncStore = defineStore('sync', () => {
       return result;
     } catch (error) {
       flashMessage(`✗ 拉取失败：${error?.message || error}`, true);
-      throw error;
+      return null;
     } finally {
       loading.value = false;
     }
@@ -160,7 +160,7 @@ export const useSyncStore = defineStore('sync', () => {
       flashMessage(choice === 'local' ? '✓ 已用本地覆盖远端' : '✓ 已用远端覆盖本地');
     } catch (error) {
       flashMessage(`✗ 冲突解决失败：${error?.message || error}`, true);
-      throw error;
+      return;
     } finally {
       loading.value = false;
     }
@@ -178,7 +178,7 @@ export const useSyncStore = defineStore('sync', () => {
       flashMessage('✓ 主密码已重置');
     } catch (error) {
       flashMessage(`✗ ${error?.message || error}`, true);
-      throw error;
+      return null;
     } finally {
       loading.value = false;
     }
@@ -195,7 +195,7 @@ export const useSyncStore = defineStore('sync', () => {
       flashMessage('已清空同步配置');
     } catch (error) {
       flashMessage(`✗ ${error?.message || error}`, true);
-      throw error;
+      return null;
     } finally {
       loading.value = false;
     }
