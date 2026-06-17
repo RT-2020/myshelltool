@@ -68,13 +68,13 @@ myshelltool 有**两种身份**：
 - **SSH 隧道** — Local forwarding、Dynamic SOCKS5 代理
 - **资源监控** — 远程 CPU/内存/网络/磁盘实时图表
 
-### MCP Server（v0.2.0+）
+### MCP Server（v0.3.0+）
 
-- **9 个 Tools** — AI 能查磁盘/系统/服务状态，高危命令被三层审批拦截
+- **9 个 Tools** — AI 能查磁盘/系统/服务状态，高危命令走客户端内审批
 - **4 个 Resources** — 资产/会话/known-hosts 可被 AI 随机读取
 - **3 个 Prompts** — 诊断/安全审计/磁盘清理的结构化引导
-- **三层安全审批** — 白名单自动 / 黄名单自动 / 黑名单+未知拒绝（fail-secure）
-- **三段式拒绝** — AI 意图 + 真实命令 + 后果预测，识破 AI 伪装
+- **Elicitation 审批**（v1.1）— 高危命令在 Claude/Cursor 界面内弹确认框（三段式），不再切到 myshelltool GUI
+- **会话复用**（v1.1）— MCP 经 named pipe 复用 GUI 已建立的 SSH 会话，避免重连 + 二次 host key 验证；GUI 离线时自动降级独立建连
 - **Host key 安全门** — MCP 仅服务已在 GUI 信任过的资产
 
 ---
@@ -108,7 +108,7 @@ npm run tauri:dev
 
 ```bash
 npm run tauri:build
-# 产物：src-tauri/target/release/bundle/nsis/myshelltool_0.2.0_x64-setup.exe
+# 产物：src-tauri/target/release/bundle/nsis/myshelltool_0.3.0_x64-setup.exe
 ```
 
 ---
@@ -209,14 +209,16 @@ Claude 会调用 `list_assets` 返回你配置的服务器列表。
 | 工具 | 说明 | 审批 |
 |------|------|------|
 | `list_assets` | 列出连接资产（脱敏）| 自动 |
-| `list_sessions` | 活跃会话列表 | 自动 |
+| `list_sessions` | 活跃会话列表（v1.1 经 pipe 查 GUI 真实会话）| 自动 |
 | `disk_usage` | 磁盘使用（df -h）| 自动 |
 | `system_status` | uptime/内存/负载/top | 自动 |
 | `service_status` | systemctl status | 自动 |
 | `sftp_list` | SFTP 目录列表 | 自动 |
 | `resource_monitor_snapshot` | 资源监控快照 | 自动 |
-| `ssh_exec` | **任意命令**（三层审批）| 黑名单/未知拒绝 |
-| `sftp_remove` | **删除文件**（v1.0 默认拒）| 拒绝 |
+| `ssh_exec` | **任意命令** | 白名单自动 / 其余 elicitation 确认 |
+| `sftp_remove` | **删除文件** | 始终 elicitation 确认 |
+
+> v1.1 起，`ssh_exec`/`sftp_remove` 经 MCP elicitation 在客户端界面内弹确认框（三段式：AI 意图 + 真实命令 + 后果），用户 accept 才执行。客户端不支持 elicitation 时降级为拒绝。
 
 **Resources（4 个）**：`myshelltool://assets` / `://sessions` / `://known-hosts` / `://sessions/{id}/log`
 
@@ -224,18 +226,24 @@ Claude 会调用 `list_assets` 返回你配置的服务器列表。
 
 ### 安全机制
 
-**三层审批（fail-secure 默认拒）**：
+**审批分层**：
 - **白名单**（df/uptime/systemctl status 等 20 条只读命令）→ 自动执行
-- **黑名单**（rm -rf / mkfs / dd / fork bomb / shutdown 等 16 条正则）→ 拒绝
-- **未知命令** → 拒绝（宁可误拦，不可漏放）
+- **其余命令**（黑名单 + 未知）→ 经 elicitation 在客户端界面内弹确认框，用户 accept 才执行
+- 客户端不支持 elicitation 时降级为拒绝（fail-secure，宁可误拦不可漏放）
 
-**三段式拒绝信息**——被拒命令返回：
+**三段式确认信息**——高危命令触发确认框时显示：
 ```
+⚠️ 高危操作审批
+
 【AI 声明意图】<AI 声称的意图>
 【真实命令】<实际要执行的命令>
 【后果预测】<该命令的后果说明>
+
+确认要执行此操作吗？
 ```
-通过三段对照可识破 AI 伪装（如 intent 说「查看日志」但 command 是 `rm -rf /var/log`）。
+通过三段对照可识破 AI 伪装（如 intent 说「查看日志」但 command 是 `rm -rf /var/log`）。降级拒绝时返回同结构文本。
+
+**会话复用安全**（v1.1）：MCP 经 named pipe `\\.\pipe\myshelltool-mcp` 复用 GUI 会话，仅限同用户会话内的 GUI 进程；pipe 不可用时自动降级独立建连（仍受 host key 门约束）。
 
 **Host key 安全门（D4）**：MCP 仅服务已在 GUI 信任过的资产，未知主机直接拒绝。
 
@@ -395,26 +403,25 @@ cd src-tauri && cargo check   # Rust 类型检查（Windows build 兜底）
 
 **决策**：继续使用 Tauri 2.x，不切换 Qt 或 Electron。加权评分 Tauri 48.5 > Electron 41 > Qt 36。
 
-### MCP 架构：双二进制 + 独立会话（v0.2.0）
+### MCP 架构：双二进制 + 会话复用（v0.3.0）
 
 详见 `docs/specs/MCP服务接入-需求规格.md`。
 
 **决策**：
 - **双二进制**：`myshelltool.exe`（GUI，windows 子系统）+ `myshelltool-mcp.exe`（console 子系统），共享 `myshelltool_lib`。因 `windows_subsystem` 是链接时属性，无法运行时切换。
 - **stdio 传输**：MCP 被 Claude Desktop 拉起为子进程，通过 stdin/stdout 收发 JSON-RPC。
-- **v0.2.0 独立会话**：MCP 进程自己 headless 建连（不复用 GUI 会话）。
-- **v0.3.0 计划**：named pipe 桥接，MCP 复用 GUI 已建立的会话（更高效，但需跨进程 IPC）。
+- **v0.3.0 会话复用**：MCP 优先经 named pipe `\\.\pipe\myshelltool-mcp` 复用 GUI 已建立的 SSH 会话（免重连 + 二次 host key 验证）；GUI 离线时自动降级独立 headless 建连。
+- **v0.3.0 elicitation 审批**：高危命令经 MCP elicitation 在客户端界面内弹确认框，不切到 myshelltool GUI。
 
 ---
 
 ## 已知限制与 Follow-ups
 
-### MCP（v0.2.0）
+### MCP（v0.3.0）
 
-- 会话不与 GUI 共享（v0.3.0 named pipe 解决）
-- 删除操作（sftp_remove）默认拒绝（v0.3.0 加 GUI 弹窗确认）
-- headless 模式不支持 MFA（仅密码/私钥/keyboard-interactive 密码类 prompt）
-- sftp_upload / 隧道工具未实现（v0.3.0）
+- headless 降级模式不支持 MFA（仅密码/私钥/keyboard-interactive 密码类 prompt）
+- sftp_upload / 隧道工具未实现（后续版本）
+- elicitation 确认框的客户端兼容性：Claude Desktop 支持，部分轻量客户端可能降级为拒绝
 
 ### GUI
 
