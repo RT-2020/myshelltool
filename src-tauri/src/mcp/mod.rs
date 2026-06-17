@@ -6,8 +6,10 @@
 //! - Layer 4：`resources` — 3 静态资源 + 1 template（M5 完成）
 //! - Layer 5：`prompts` — 3 个诊断 prompt（M5 完成）
 //! - Layer 6：`approval` — 三层审批 + 三段式拒绝（M4 v1.0 完成）
+//! - Layer 8：`pipe` — named pipe 桥接，MCP 进程复用 GUI 的 SSH 会话（v1.1 M8）
 
 pub mod approval;
+pub mod pipe;
 pub mod prompts;
 pub mod resources;
 pub mod server;

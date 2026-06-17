@@ -227,6 +227,17 @@ pub fn run() {
                 ssh_sessions: ssh_mgr,
                 resource_monitors: Arc::new(Mutex::new(resource_monitor::ResourceMonitorState::default())),
             });
+
+            // v1.1 M8：启动 MCP named pipe server，让 myshelltool-mcp.exe
+            // 能复用 GUI 已建立的 SSH 会话（避免 headless 重连 + 二次 host key 验证）。
+            //
+            // 从已 manage 的 AppState 抽取 ssh_sessions 的 Arc（照 resource_monitor
+            // 的抽取范式），clone 给独立 spawn 的 pipe server 任务。pipe 挂了不影响 GUI。
+            let pipe_ssh_mgr = app
+                .state::<AppState>()
+                .ssh_sessions
+                .clone();
+            tokio::spawn(mcp::pipe::run_pipe_server(pipe_ssh_mgr));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
