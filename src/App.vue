@@ -91,7 +91,12 @@ function onMoveAsset(asset) { store.modal = { type: 'moveAsset', asset }; }
 
 // Titlebar emits
 function onToggleTheme() { store.toggleTheme(); }
-function onOpenSync() { store.modal = { type: 'tokenConfig', asset: null }; }
+function onOpenSync() {
+  // v1.3：标题栏「同步」→ 打开 Gist 同步管理面板（setup/push/pull/冲突/重置/清空）。
+  // PAT 配置作为 syncPanel 内的前置提示（未配 PAT 时面板会引导）。
+  store.syncRefreshStatus();
+  store.modal = { type: 'syncPanel' };
+}
 function onToggleWarnings() { store.announce(`当前 warning：${warningCount.value}`); }
 function onToggleRight() {
   store.toggleRight();

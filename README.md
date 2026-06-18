@@ -12,6 +12,7 @@
 - [功能特性](#功能特性)
 - [快速开始](#快速开始)
 - [GUI 使用](#gui-使用)
+- [Gist 资产同步（跨机器）](#gist-资产同步跨机器)
 - [MCP Server 配置（让 AI 调用）](#mcp-server-配置让-ai-调用)
   - [Claude Desktop](#claude-desktop)
   - [Cursor](#cursor)
@@ -67,6 +68,13 @@ myshelltool 有**两种身份**：
 - **文件传输队列** — 分块传输、实时进度、失败重试
 - **SSH 隧道** — Local forwarding、Dynamic SOCKS5 代理
 - **资源监控** — 远程 CPU/内存/网络/磁盘实时图表
+
+### Gist 资产同步（v0.3.0+）
+
+- **跨机器同步连接资产** — 把 `connection-assets.json`（连接元数据，**不含密码**）加密后推送到 GitHub Gist，换机器/重装时一键拉回
+- **端到端加密** — 用户主密码经 Argon2id 派生密钥 + AES-256-GCM 加密，GitHub 服务端只见密文
+- **冲突检测** — 双向同步时检测本地/远端都改动，弹框让用户选本地覆盖 / 远端覆盖
+- **凭据不外泄** — GitHub PAT 走 SecretStore（v1.3 起基于 Windows DPAPI），密码/passphrase **绝不**进入同步载荷
 
 ### MCP Server（v0.3.0+）
 
@@ -136,6 +144,44 @@ npm run tauri:build
 | 远程编辑 | 文件区右键 → 「编辑」（Monaco 编辑器打开） |
 | 开隧道 | 侧栏「隧道」→ 新增 → 选类型（local/SOCKS5） |
 | 资源监控 | 连接后右侧「资源监控」面板自动刷新 |
+
+---
+
+## Gist 资产同步（跨机器）
+
+把连接资产（主机/端口/用户名/分组等元数据）加密同步到 GitHub Gist，换机器或重装系统时一键拉回。**密码/passphrase 不同步**，每台机器各自保管。
+
+### 前置：准备 GitHub PAT
+
+1. 到 GitHub → Settings → Developer settings → Personal access tokens → **Fine-grained tokens**
+2. 新建一个 token，**只需 Gist 权限**（Account permissions → Gists → Read and write），过期时间自定
+3. 复制 token（`github_pat_...` 开头）
+
+### 配置同步
+
+1. GUI 顶部菜单 → 打开「资产同步（Gist）」面板
+2. **首次使用**：粘贴 GitHub PAT 保存（存入 SecretStore，离开本机不解密），然后输入主密码（≥6 位，用于加密同步载荷）+ 确认 → 点「初始化」
+   - 会在你的 GitHub 自动创建一个 secret Gist，gist_id 记录到本地 `sync-state.json`
+3. **换机器拉取已有同步**：粘贴 PAT + 输入**原主密码** + 填入已有 `gist_id` → 点「初始化」，本地资产会被远端覆盖
+
+### 日常使用
+
+| 操作 | 说明 |
+|------|------|
+| **推送（Push）** | 输入主密码 → 把当前本地资产加密推送到 Gist，覆盖远端 |
+| **拉取（Pull）** | 输入主密码 → 从 Gist 拉取并解密，**覆盖本地**资产 |
+| **冲突解决** | 若本地和远端相对上次同步都有改动，会弹框显示双方摘要，让你选「用本地覆盖远端」或「用远端覆盖本地」 |
+| **重置主密码** | 需验证旧密码，新密码立即用于下次推送的加密（已推送的旧载荷需用旧密码拉取） |
+| **清空同步** | 删除本地 sync-state（**不会**删 GitHub 上的 Gist，需手动到 GitHub 删除） |
+
+> ⚠️ **主密码丢失无法找回**：主密码只在你脑子里，忘了就无法解密已推送的 Gist。建议用密码管理器保存。
+
+### 安全模型
+
+- **加密**：Argon2id（从主密码 + 随机 salt 派生 256-bit 密钥）+ AES-256-GCM（认证加密，防篡改）。每次推送用新的随机 salt 和 nonce，相同内容每次密文都不同。
+- **不同步的内容**：密码、passphrase、私钥、GitHub PAT —— 这些只在本地 SecretStore。
+- **同步的内容**：`connection-assets.json`（名称、host、port、用户名、分组、标签、认证方式**类型**、私钥路径）。私钥文件本身不同步，只同步路径。
+- **GitHub 侧**：Gist 设为 secret（不公开列出，但**有 gist_id 的人仍可访问**），且内容是密文，泄露也无法直接解密。
 
 ---
 
@@ -383,6 +429,7 @@ cd src-tauri && cargo check   # Rust 类型检查（Windows build 兜底）
 ## 安全设计
 
 - **凭据隔离**：密码/私钥/passphrase 只走本地 SecretStore，不进资产 JSON / 日志 / 错误信息
+- **凭据存储**（v1.3 升级）：SecretStore 从弱 XOR 混淆升级到 **Windows DPAPI**（`CryptProtectData`）。旧 `.cred` 文件在首次读取时自动懒迁移到新格式，迁移后只能用当前 Windows 账户解密（换账户/换机器需重新输入密码）。GitHub PAT 同样走 DPAPI。
 - **Host key 强制验证**：首次连接必须人工确认指纹，变更阻止连接并警告
 - **危险操作确认**：删除/覆盖/批量操作必须弹窗确认
 - **MCP 三层审批**：白名单自动 / 黑名单拒绝 / 未知拒绝（fail-secure）
@@ -391,7 +438,8 @@ cd src-tauri && cargo check   # Rust 类型检查（Windows build 兜底）
 ### 残余风险（已知，已留档）
 
 - **提示词注入**（行业级未解难题）：AI 可能被远程内容诱导执行恶意命令。v0.2.0 靠三段式拒绝让人工识破，无技术拦截。
-- **凭据存储强度**：当前 SecretStore 是弱 XOR 混淆（非加密），后续计划升级到 Windows DPAPI。
+- **DPAPI 绑定 Windows 账户**：v1.3 起凭据用 DPAPI 加密，安全性强于 XOR，但代价是**绑定到当前 Windows 用户账户**——同机换账户、或把 `%APPDATA%\com.redtei.myshelltool\credentials\` 拷到别的机器，都无法解密，需重新输入密码。
+- **Gist 主密码无法找回**：资产同步的主密码只存在用户记忆中，丢失则无法解密已推送的 Gist。
 
 ---
 
@@ -427,7 +475,6 @@ cd src-tauri && cargo check   # Rust 类型检查（Windows build 兜底）
 
 - `sftp_download_with_progress` 仍返回整块 `Vec<u8>`（upload 已分块）
 - `start_remote_forward` 是桩函数（local/dynamic SOCKS5 已实现）
-- GitHub/Git 资产同步未实现（规划中的差异化功能）
 - ProxyJump/跳板链未实现
 
 ---

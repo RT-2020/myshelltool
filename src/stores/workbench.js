@@ -13,6 +13,7 @@ import { useTunnelsStore } from './tunnels.js';
 import { useAssetsStore } from './assets.js';
 import { useUiStore } from './ui.js';
 import { useMcpStore } from './mcp.js';
+import { useSyncStore } from './sync.js';
 
 export const useWorkbenchStore = defineStore('workbench', () => {
   // ============================================================
@@ -28,6 +29,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   const assetsStore = useAssetsStore();
   const uiStore = useUiStore();
   const mcpStore = useMcpStore();
+  const syncStore = useSyncStore();
 
   // ============================================================
   // 公共 announce — 委托到 uiStore（statusMessage 的 owner）
@@ -109,6 +111,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     // v1.2：MCP 探测是无状态按需调用（无事件监听），启动时主动探测一次，
     // 让状态灯打开程序即可见结果。
     mcpStore.refresh();
+    // v1.3：启动时刷新同步状态（供状态栏展示真实同步配置状态）
+    syncStore.refreshStatus();
     await Promise.all([
       sessionsStore.setupEventListeners(),
       filesStore.setupEventListeners()
@@ -211,7 +215,23 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     declaredGroups: computed(() => assetsStore.declaredGroups),
     githubPatConfigured: computed(() => assetsStore.githubPatConfigured),
     assetSourceText: computed(() => assetsStore.assetSourceText),
-    syncText: computed(() => assetsStore.syncText),
+    // v1.3：syncText 改为真实同步状态（来自 syncStore，含 push/pull 结果），
+    // 而非 assetsStore 的 PAT 配置状态。
+    syncText: computed(() => syncStore.syncText),
+    // --- v1.3 sync re-export ---
+    syncConfigured: computed(() => syncStore.configured),
+    syncLastSyncedAt: computed(() => syncStore.lastSyncedAt),
+    syncGistIdMasked: computed(() => syncStore.gistIdMasked),
+    syncConflict: computed(() => syncStore.conflict),
+    syncLoading: computed(() => syncStore.loading),
+    syncRefreshStatus: () => syncStore.refreshStatus(),
+    syncSetup: syncStore.setup,
+    syncPush: syncStore.push,
+    syncPull: syncStore.pull,
+    syncResolveConflict: syncStore.resolveConflict,
+    syncResetMasterPassword: syncStore.resetMasterPassword,
+    syncClear: syncStore.clearSync,
+    syncDismissConflict: syncStore.dismissConflict,
     // --- files re-export ---
     remotePath: computed(() => filesStore.remotePath),
     remoteEntries: computed(() => filesStore.remoteEntries),
