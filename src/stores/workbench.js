@@ -12,6 +12,7 @@ import { useFilesStore } from './files.js';
 import { useTunnelsStore } from './tunnels.js';
 import { useAssetsStore } from './assets.js';
 import { useUiStore } from './ui.js';
+import { useMcpStore } from './mcp.js';
 
 export const useWorkbenchStore = defineStore('workbench', () => {
   // ============================================================
@@ -26,6 +27,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   const tunnelsStore = useTunnelsStore();
   const assetsStore = useAssetsStore();
   const uiStore = useUiStore();
+  const mcpStore = useMcpStore();
 
   // ============================================================
   // 公共 announce — 委托到 uiStore（statusMessage 的 owner）
@@ -101,8 +103,12 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   // - sessions store 处理 host key / keyboard 监听
   // - files store 处理 sftp-transfer-progress 监听
   // - ui store 处理 system theme 监听（在 initializeTheme 中初始化）
+  // - mcp store 处理 mcp-client-attach/detach 监听（v1.2）
   async function setupEventListeners() {
     if (!isTauriRuntime()) return;
+    // v1.2：MCP 探测是无状态按需调用（无事件监听），启动时主动探测一次，
+    // 让状态灯打开程序即可见结果。
+    mcpStore.refresh();
     await Promise.all([
       sessionsStore.setupEventListeners(),
       filesStore.setupEventListeners()
@@ -303,6 +309,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     activeSessions: computed(() => sessionsStore.activeSessions),
     hostKeyPrompt: computed(() => sessionsStore.hostKeyPrompt),
     keyboardPrompt: computed(() => sessionsStore.keyboardPrompt),
+    // v1.1：MCP 审批弹窗 payload + 回传 action
+    mcpApprovalPrompt: computed(() => sessionsStore.mcpApprovalPrompt),
     terminalFontSize: computed(() => sessionsStore.terminalFontSize),
     terminalAsideOpen: computed(() => sessionsStore.terminalAsideOpen),
     terminalSearch: computed(() => sessionsStore.terminalSearch),
@@ -313,6 +321,19 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     runTerminalAction: sessionsStore.runTerminalAction,
     resolveHostKeyPrompt: sessionsStore.resolveHostKeyPrompt,
     resolveKeyboardPrompt: sessionsStore.resolveKeyboardPrompt,
+    // v1.1：MCP 审批确认框回传
+    resolveMcpApproval: sessionsStore.resolveMcpApproval,
+    // --- v1.2：MCP 服务可观测性 (re-export from useMcpStore) ---
+    mcpStatus: computed(() => mcpStore.status),
+    mcpProbe: computed(() => mcpStore.probe),
+    mcpClientConnected: computed(() => mcpStore.clientConnected),
+    mcpTools: computed(() => mcpStore.tools),
+    mcpResources: computed(() => mcpStore.resources),
+    mcpPrompts: computed(() => mcpStore.prompts),
+    mcpDataDir: computed(() => mcpStore.dataDir),
+    mcpServerVersion: computed(() => mcpStore.serverVersion),
+    refreshMcpStatus: () => mcpStore.refresh(),
+    buildMcpConfig: mcpStore.buildConfig,
     openTerminalSearchInline: sessionsStore.openTerminalSearchInline,
     closeTerminalSearchInline: sessionsStore.closeTerminalSearchInline,
     setTerminalSearchQuery: sessionsStore.setTerminalSearchQuery,

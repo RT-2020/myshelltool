@@ -2211,15 +2211,17 @@ dependencies = [
 
 [[package]]
 name = "myshelltool"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "log",
  "myshelltool-core",
  "regex",
  "rmcp",
  "russh",
  "russh-sftp",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "tauri",
@@ -2230,7 +2232,7 @@ dependencies = [
 
 [[package]]
 name = "myshelltool-core"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3171,6 +3173,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "url",
 ]
 
 [[package]]

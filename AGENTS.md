@@ -98,7 +98,8 @@ myshelltool/
 │   │   ├── files.js            # SFTP 文件 + 传输队列
 │   │   ├── tunnels.js          # SSH 隧道/端口转发
 │   │   ├── ui.js               # UI 状态：主题/tab/modal/搜索
-│   │   └── resourceMonitor.js  # 资源监控轮询 + 事件订阅
+│   │   ├── resourceMonitor.js  # 资源监控轮询 + 事件订阅
+│   │   └── mcp.js              # 【v1.2】MCP 探测状态 + 配置引导（refresh 触发探测，无事件监听）
 │   ├── composables/            # useTheme / useClipboard / useTerminalConfig /
 │   │                           # useTerminalShortcuts / useAutoReconnect
 │   ├── lib/                    # terminalController / terminalThemes / dangerousCommands
@@ -109,10 +110,19 @@ myshelltool/
 ├── src-tauri/                  # Tauri/Rust 后端
 │   ├── src/
 │   │   ├── main.rs             # 二进制入口（tauri::run 壳）
-│   │   ├── lib.rs              # AppState + 资产/凭据命令 + generate_handler 注册
+│   │   ├── lib.rs              # AppState + 资产/凭据命令 + generate_handler 注册 + mcp_status
 │   │   ├── ssh.rs              # SSH/SFTP/隧道核心（SshSessionManager + russh Handler）
 │   │   ├── resource_monitor.rs # 远程 CPU/mem/net/disk 轮询（SshCommand::MonitorExec）
-│   │   └── fs_local.rs         # 本地文件系统命令
+│   │   ├── fs_local.rs         # 本地文件系统命令
+│   │   ├── bin/mcp.rs          # myshelltool-mcp 二进制入口（stdio server，console 子系统）
+│   │   └── mcp/                # MCP server 接入模块（v1.1 接入 / v1.2 无状态探测）
+│   │       ├── server.rs       # rmcp stdio server 主循环 + ServerHandler（9 工具/4 资源/3 prompts）
+│   │       ├── tools.rs        # MCP Tools 实现 + exec_on_asset 双路径（pipe 复用 / headless 降级）
+│   │       ├── approval.rs     # 三层审批：白名单放行 / elicitation / 进程内拒绝
+│   │       ├── probe.rs        # 【v1.2】无状态就绪探测：spawn exe + initialize 握手，回答「MCP 能否工作」
+│   │       ├── pipe.rs         # named pipe 桥接（GUI=server / MCP=client）：会话复用 + 审批降级
+│   │       ├── resources.rs    # 3 静态资源 + 1 template（assets/sessions/known-hosts/session-log）
+│   │       └── prompts.rs      # 3 诊断 prompt（diagnose_server/audit_security/cleanup_disk）
 │   ├── capabilities/default.json
 │   └── tauri.conf.json         # com.redtei.myshelltool，1366×800，withGlobalTauri:true
 ├── crates/
@@ -225,8 +235,12 @@ cd src-tauri && cargo check       # 更快的类型检查
 **本地文件**（`fs_local.rs`）
 - `fs_local_home_dir` / `fs_local_list_dir` / `fs_local_mkdir` / `fs_local_delete` / `fs_local_rename`
 
+**MCP 服务**（`lib.rs` 调 `mcp/probe.rs` + `mcp/pipe.rs`）
+- `mcp_status` → 【v1.2】触发一次无状态探测 + 聚合能力清单。返回 `McpStatus { serverName, serverVersion, pipeName, dataDir, probe: McpProbeResult, tools[], resources[], prompts[] }`。`probe.ok` 是状态灯唯一信号源（GUI 主动 spawn exe + initialize 握手，与 Claude 是否在跑无关）。
+- `mcp_approval_resolve({ requestId, approved })` → v1.1：MCP 高危操作审批回传（用户点确认/拒绝后，从 pipe.rs 的 pending 表取 oneshot sender 回传 bool）
+
 ### 事件（Rust → 前端，`listenBackendEvent`）
-- `sftp-transfer-progress`、`ssh-host-key-verify`、`ssh-keyboard-interactive`、`ssh-session-status`
+- `sftp-transfer-progress`、`ssh-host-key-verify`、`ssh-keyboard-interactive`、`ssh-session-status`、`mcp-approval-verify`（v1.1：MCP 客户端不支持 elicitation 时，委托 GUI 弹三段式确认框）
 
 ---
 
@@ -249,6 +263,13 @@ credential_id(Option), passphrase_credential_id(Option)
 - **known_hosts** → `known_hosts.json`
 - **活跃会话/隧道/SFTP 缓存** → 纯内存（重启丢失）
 
+### McpStatus / McpProbeResult（MCP 探测，`lib.rs` + `mcp/probe.rs`）
+- **设计取舍（v1.2）**：MCP 状态灯 = 无状态按需探测，**不是**运行时心跳/连接计数。GUI 每次 `mcp_status` 主动 spawn 一份 `myshelltool-mcp.exe` + 发 MCP `initialize` 握手，成功即「可用」。打开程序即可见结果，与 Claude 是否在跑无关。
+- `McpProbeResult { ok: bool, reason?, detail?, exePath, serverInfo?, probedAt }`
+  - `reason` 失败分类码：`exe_not_found`（exe 不在 GUI 同级目录）/ `spawn_failed` / `timeout`（5s）/ `bad_protocol`（握手响应异常）/ `io_error`
+  - `exePath`：基于 `std::env::current_exe()` 同级拼 `myshelltool-mcp.exe`（dev/release 都是 target 同目录）
+- 前端 `mcp.js` 的 `clientConnected` computed 读 `probe.ok`（命名保留是为避免连锁改名，语义已是探测结果）。
+
 ---
 
 ## 8. 安全设计红线
@@ -265,8 +286,10 @@ credential_id(Option), passphrase_credential_id(Option)
 - `sftp_download_with_progress` 仍返回整块 `Vec<u8>`（upload 已分块，download 待改造）。
 - `start_remote_forward` 是返回 Err 的桩（local/dynamic SOCKS5 已实现）。
 - `sanitize_credential_id` 过滤 `:` 和 `.`（如 `192.168.2.2:password` → `192-168-2-2password`）。
-- Windows 上 `cargo build` 偶因 build script（windres）阻断，用 `cargo check` 兜底。
+- Windows 上 `cargo build` 偶因 build script（windres）阻断，用 `cargo check` 兜底；`cargo test` 的 src-tauri 测试二进制会因 Tauri runtime DLL 缺失报 `STATUS_ENTRYPOINT_NOT_FOUND`，用 `cargo check --tests` 验证测试可编译。
 - `workbench.js` 仍是 re-export 壳（Wave 5+ 计划精简）。
+- **【v1.2】MCP 探测**：`mcp_status` 的 `probe` 每次调用都 spawn 一次 `myshelltool-mcp.exe` 子进程做握手（`kill_on_drop` 保证不泄漏），勿高频调用。MCP exe 当前**不随 NSIS 打包**，安装版探测会返回 `exe_not_found`（这是正确信息——确实没装）；dev/便携模式 exe 在 target 同目录，探测正常。
+- **【v1.2】MCP exe 路径解析**：`probe.rs::resolve_mcp_exe_path` 基于 `current_exe()` 同级，安装版需后续配 sidecar（`bundle.externalBin`）才能可靠解析。
 
 ---
 
