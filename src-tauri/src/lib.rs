@@ -1,8 +1,10 @@
 mod dangerous_commands;
+mod dpapi_codec;
 mod fs_local;
 mod mcp;
 mod resource_monitor;
 mod ssh;
+mod sync;
 
 use serde::Serialize;
 use std::fs::OpenOptions;
@@ -255,20 +257,12 @@ fn create_asset_group(state: State<'_, AppState>, path: String) -> Result<Connec
 }
 
 #[tauri::command]
-fn save_sync_settings(
-    settings: myshelltool_core::SyncSettings,
-    token: myshelltool_core::TokenConfigInput,
-) -> myshelltool_core::SyncSettingsSummary {
-    myshelltool_core::summarize_sync_settings(settings, token)
-}
-
-#[tauri::command]
 fn save_credential(
     state: State<'_, AppState>,
     id: String,
     secret: String,
 ) -> Result<myshelltool_core::CredentialStatus, String> {
-    let store = myshelltool_core::SecretStore::new(&state.secret_store_dir);
+    let store = myshelltool_core::SecretStore::new(&state.secret_store_dir, Box::new(dpapi_codec::DpapiCodec));
     store.save(&id, &secret)?;
     store.get_status(&id)
 }
@@ -278,13 +272,13 @@ fn get_credential_status(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<myshelltool_core::CredentialStatus, String> {
-    let store = myshelltool_core::SecretStore::new(&state.secret_store_dir);
+    let store = myshelltool_core::SecretStore::new(&state.secret_store_dir, Box::new(dpapi_codec::DpapiCodec));
     store.get_status(&id)
 }
 
 #[tauri::command]
 fn delete_credential(state: State<'_, AppState>, id: String) -> Result<bool, String> {
-    let store = myshelltool_core::SecretStore::new(&state.secret_store_dir);
+    let store = myshelltool_core::SecretStore::new(&state.secret_store_dir, Box::new(dpapi_codec::DpapiCodec));
     store.delete(&id)
 }
 
@@ -394,7 +388,14 @@ pub fn run() {
             rename_asset_group,
             dissolve_asset_group,
             create_asset_group,
-            save_sync_settings,
+            // v1.3：Gist 同步（替代 v1.0 死命令 save_sync_settings）
+            sync::sync_status,
+            sync::sync_setup,
+            sync::sync_push,
+            sync::sync_pull,
+            sync::sync_resolve_conflict,
+            sync::sync_reset_master_password,
+            sync::sync_clear,
             save_credential,
             get_credential_status,
             delete_credential,

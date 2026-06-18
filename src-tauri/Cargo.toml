@@ -34,8 +34,15 @@ regex = "1"
 schemars = "1"
 # 日志时间戳（FileLogger 的 [YYYY-MM-DD HH:MM:SS] 前缀）
 chrono = "0.4"
+# v1.3 Gist 同步：HTTP 客户端调 GitHub Gist API
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # MCP server 独立 bin（D1 双二进制：GUI + console 子系统 MCP）
 [[bin]]
 name = "myshelltool-mcp"
 path = "src/bin/mcp.rs"
+
+# Windows-only：凭据存储 DPAPI 加密（v1.3 SecretStore 升级）。
+# SecretCodec trait 在 core 层，DPAPI 实现在此（cfg(windows)）。
+[target.'cfg(windows)'.dependencies]
+windows-dpapi = "0.1"
