@@ -167,9 +167,25 @@ struct SshSession {
     cmd_tx: tokio::sync::mpsc::UnboundedSender<SshCommand>,
 }
 
+/// 会话连接元数据（host:port:username）。
+///
+/// v1.1 引入：用于 MCP named pipe 会话映射——MCP 工具拿到的标识是
+/// `asset_id`，而 GUI 的会话池用 `session_id`（UUID）。要复用 GUI
+/// 会话，必须把 `session_id` 反查到其连接的 `host:port:username`，
+/// 再与资产库里的 `ConnectionAsset` 匹配。`ssh_connect` 时写入，
+/// `ssh_disconnect` 时清理。
+#[derive(Debug, Clone)]
+pub struct SessionMeta {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+}
+
 pub struct SshSessionManager {
     sessions: HashMap<String, SshSession>,
     ssh_handles: HashMap<String, Arc<client::Handle<SshClient>>>,
+    /// v1.1：session_id → 连接元数据，用于 MCP pipe 会话映射（asset_id → session_id）。
+    session_meta: HashMap<String, SessionMeta>,
     sftp_cache: HashMap<String, Arc<Mutex<SftpSession>>>,
     tunnels: HashMap<String, TunnelStatus>,
     tunnel_handles: HashMap<String, tokio::task::JoinHandle<()>>,
@@ -187,6 +203,7 @@ impl SshSessionManager {
         Self {
             sessions: HashMap::new(),
             ssh_handles: HashMap::new(),
+            session_meta: HashMap::new(),
             sftp_cache: HashMap::new(),
             tunnels: HashMap::new(),
             tunnel_handles: HashMap::new(),
@@ -215,6 +232,87 @@ impl SshSessionManager {
     /// 会话是否存在（MCP 工具参数校验用）。
     pub fn has_session(&self, session_id: &str) -> bool {
         self.sessions.contains_key(session_id)
+    }
+
+    /// v1.1：在已建立的会话上执行一次性命令（开新 channel，不干扰交互 PTY）。
+    ///
+    /// 这是 MCP named pipe 复用 GUI 会话的核心方法：MCP 工具的 `disk_usage`/
+    /// `system_status`/`ssh_exec` 等经 pipe 调用本方法，免去 headless 重连开销，
+    /// 也免去二次 host key 验证。命令执行完通道即关闭，不影响终端 PTY。
+    ///
+    /// 失败场景：
+    /// - 会话不存在（已断开/从未连接）→ `session {id} not found`
+    /// - channel 打不开/exec 失败 → 底层 russh 错误
+    pub async fn exec_on_session(
+        &self,
+        session_id: &str,
+        command: &str,
+    ) -> Result<String, String> {
+        let handle = self
+            .ssh_handles
+            .get(session_id)
+            .ok_or_else(|| format!("session {} not found", session_id))?
+            .clone();
+
+        let mut channel = handle
+            .channel_open_session()
+            .await
+            .map_err(|e| format!("Channel open failed: {e}"))?;
+        channel
+            .exec(true, command.to_string())
+            .await
+            .map_err(|e| format!("Command exec failed: {e}"))?;
+
+        let mut output = Vec::new();
+        let mut errors = Vec::new();
+        while let Some(msg) = channel.wait().await {
+            match msg {
+                ChannelMsg::Data { data } => output.extend_from_slice(&data),
+                ChannelMsg::ExtendedData { data, ext: _ } => errors.extend_from_slice(&data),
+                ChannelMsg::Eof | ChannelMsg::ExitStatus { .. } => break,
+                _ => {}
+            }
+        }
+
+        let mut result = String::from_utf8_lossy(&output).to_string();
+        if !errors.is_empty() {
+            let err_str = String::from_utf8_lossy(&errors).trim().to_string();
+            if !err_str.is_empty() {
+                result.push('\n');
+                result.push_str("[stderr] ");
+                result.push_str(&err_str);
+            }
+        }
+        Ok(result)
+    }
+
+    /// v1.1：按 `host:port:username` 反查 session_id（MCP pipe 会话映射）。
+    ///
+    /// MCP 工具持有 `asset_id`，经资产库解析出 `host:port:username`，
+    /// 再调本方法找到 GUI 已建立的会话。username 不匹配时仍按 host:port
+    /// 返回（容错：同主机多账号场景以 host:port 为主键）。
+    pub fn find_session_by_host(&self, host: &str, port: u16, username: &str) -> Option<String> {
+        // 优先全匹配
+        for (sid, meta) in &self.session_meta {
+            if meta.host == host && meta.port == port && meta.username == username {
+                return Some(sid.clone());
+            }
+        }
+        // 退化：仅 host:port 匹配（同主机账号容错）
+        for (sid, meta) in &self.session_meta {
+            if meta.host == host && meta.port == port {
+                return Some(sid.clone());
+            }
+        }
+        None
+    }
+
+    /// v1.1：列出所有会话及其连接元数据（MCP `list_sessions` 工具用，供 AI 判断可复用哪个会话）。
+    pub fn list_sessions_with_meta(&self) -> Vec<(String, SessionMeta)> {
+        self.session_meta
+            .iter()
+            .map(|(sid, meta)| (sid.clone(), meta.clone()))
+            .collect()
     }
 }
 
@@ -526,6 +624,14 @@ pub async fn ssh_connect(
     {
         let mut mgr = state.ssh_sessions.lock().await;
         mgr.ssh_handles.insert(session_id.clone(), ssh_handle.clone());
+        mgr.session_meta.insert(
+            session_id.clone(),
+            SessionMeta {
+                host: host.clone(),
+                port,
+                username: username.clone(),
+            },
+        );
         mgr.sessions
             .insert(session_id.clone(), SshSession { cmd_tx });
     }
@@ -845,6 +951,7 @@ pub async fn ssh_disconnect(
         info!("SSH session {session_id} disconnected");
     }
     mgr.ssh_handles.remove(&session_id);
+    mgr.session_meta.remove(&session_id);
     mgr.sftp_cache.remove(&session_id);
     // Stop and remove tunnels associated with this session
     let tunnel_ids_to_remove: Vec<String> = mgr

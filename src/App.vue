@@ -32,7 +32,7 @@ const store = useWorkbenchStore();
 const {
   backendStatus, activeSessions, themeLabel, assetsCollapsed, rightCollapsed,
   statusMessage, assets, groupedAssets, selectedAssetId, searchState,
-  runningTunnels, tunnels, warningCount, syncText
+  runningTunnels, tunnels, warningCount, syncText, mcpClientConnected
 } = storeToRefs(store);
 
 // 面板拖拽布局（三列宽 + 中间两行高），reset/syncCollapse 供标题栏按钮与折叠态调用。
@@ -66,6 +66,11 @@ function onSelectAsset(id) { store.selectAsset(id); }
 function onConnectAsset(id) { store.selectAsset(id); store.connectSelected(); }
 function onQuickConnect(parsed) { store.activateSuggestion({ kind: 'quick-connect', ...parsed }); }
 function onCreateAsset() { store.modal = { type: 'assetEditor', asset: null }; }
+// v1.2：状态栏 MCP 指示灯点击 → 打开 MCP 管理面板（配置引导 + 能力清单）。
+function onOpenMcpPanel() {
+  store.refreshMcpStatus();
+  store.modal = { type: 'mcpPanel' };
+}
 // 侧栏折叠：store 切换后同步拖拽内联变量（折叠列清除内联让 44px 生效）。
 function onToggleAssets() {
   store.toggleAssets();
@@ -182,8 +187,10 @@ function onToggleTransferDrawer() { store.toggleTransferDrawer(); }
           :total-tunnels="tunnels.length"
           :warning-count="warningCount"
           :sync-text="syncText"
+          :mcp-connected="mcpClientConnected"
           @click-status="onClickStatus"
           @toggle-transfer-drawer="onToggleTransferDrawer"
+          @open-mcp-panel="onOpenMcpPanel"
         />
       </template>
     </AppShellLayout>

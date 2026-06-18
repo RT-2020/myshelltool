@@ -155,7 +155,7 @@ pub async fn call_tool(
 
     match name {
         "list_assets" => tool_list_assets(ctx).await,
-        "list_sessions" => Ok(text_result("v1.0 独立会话模式：无持久会话池，使用 list_assets 查看可用资产后直接用 disk_usage/system_status 等工具查询。")),
+        "list_sessions" => tool_list_sessions().await,
         "disk_usage" => exec_on_asset(ctx, &arguments, "df -h").await,
         "system_status" => exec_on_asset(ctx, &arguments, "uptime; echo '---'; free -h; echo '---'; top -bn1 | head -20").await,
         "service_status" => {
@@ -174,19 +174,71 @@ pub async fn call_tool(
         }
         "sftp_list" => Ok(error_result("sftp_list 在 M3 阶段为桩，将在 M4 完善")),
         "resource_monitor_snapshot" => Ok(error_result("resource_monitor_snapshot 在 M3 阶段为桩，将在 M4 完善")),
-        // ─── 高危工具（M4，Layer 6 审批）───
+        // ─── 高危工具（审批在 server.rs call_tool 拦截层做）───
         "ssh_exec" => tool_ssh_exec(ctx, &arguments).await,
         "sftp_remove" => {
-            // v1.0：删除操作默认拒绝（跨进程弹窗需 v1.1 named pipe）
-            let intent = arguments.get("intent").and_then(|v| v.as_str()).unwrap_or("");
+            // v1.1：审批已移至 server.rs（elicitation 确认）。
+            // 能走到这里说明用户已确认删除。实际删除执行待后续完善。
             let path = arguments.get("path").and_then(|v| v.as_str()).unwrap_or("");
             Ok(error_result(&format!(
-                "【操作已被 MCP 审批拦截】\n\n【AI 声明意图】{}\n\n【真实命令】sftp_remove path={}\n\n【后果预测】将删除远程文件/目录，可能不可恢复。\n\nv1.0 模式下删除操作默认拒绝，请在 myshelltool GUI 中手动操作。",
-                if intent.is_empty() { "(AI 未声明意图)" } else { intent },
+                "用户已确认删除 {}，但 sftp_remove 的执行逻辑尚未实现（v1.1 专注 elicitation 审批 + 会话复用，删除执行留后续版本）",
                 path
             )))
         }
         _ => Ok(error_result(&format!("未知工具: {}", name))),
+    }
+}
+
+/// list_sessions：经 pipe 查询 GUI 已建立的 SSH 会话（v1.1 升级）。
+///
+/// v1.0 返回空桩（独立会话无持久池）。v1.1 经 named pipe 向 GUI 查询真实会话，
+/// 让 AI 能看到「哪个资产当前已连、可直接复用」，从而优先走会话复用而非 headless 重连。
+/// GUI 未运行时降级返回空列表 + 说明（不阻断，AI 仍可用 headless 工具）。
+async fn tool_list_sessions() -> Result<CallToolResult, String> {
+    let mut client = match crate::mcp::pipe::PipeClient::connect() {
+        Ok(c) => c,
+        Err(_) => {
+            return Ok(text_result(
+                "GUI 未运行，无活跃会话。可先用 list_assets 查看可用资产，\
+                 disk_usage/system_status 等工具会自动 headless 建连。",
+            ));
+        }
+    };
+
+    let req = crate::mcp::pipe::PipeRequest {
+        id: "ls".into(),
+        method: "list_sessions".into(),
+        session_id: None,
+        command: None,
+        host: None,
+        port: None,
+        username: None,
+        intent: None,
+        consequence: None,
+    };
+
+    match client.request(&req).await {
+        Ok(crate::mcp::pipe::PipeResponse {
+            ok: true,
+            sessions: Some(sessions),
+            ..
+        }) => {
+            let lines: Vec<String> = sessions
+                .iter()
+                .map(|s| format!("  - {}@{}:{}  (session_id: {})", s.username, s.host, s.port, s.session_id))
+                .collect();
+            if lines.is_empty() {
+                Ok(text_result("当前无活跃 SSH 会话。"))
+            } else {
+                Ok(text_result(&format!(
+                    "活跃会话 {} 个（可被 disk_usage/system_status/ssh_exec 复用）：\n{}",
+                    sessions.len(),
+                    lines.join("\n")
+                )))
+            }
+        }
+        Ok(other) => Ok(error_result(&format!("pipe 返回异常: {:?}", other))),
+        Err(e) => Ok(error_result(&format!("pipe 查询失败（GUI 可能刚退出）: {e}"))),
     }
 }
 
@@ -252,24 +304,19 @@ async fn tool_ssh_exec(
         command
     );
 
-    // Layer 6 审批
-    let decision =
-        super::approval::evaluate(command, intent, super::approval::READONLY_WHITELIST, &[]);
-    match decision {
-        super::approval::ApprovalDecision::AutoExecute => {
-            // 白名单放行，执行命令
-            log::info!("ssh_exec: approved, executing");
-            exec_on_asset(ctx, args, command).await
-        }
-        super::approval::ApprovalDecision::Reject(reason) => {
-            // v1.0：进程内拒绝，返回 isError + 三段式
-            log::warn!("ssh_exec: rejected by approval");
-            Ok(error_result(&reason))
-        }
-    }
+    // v1.1：审批已移至 server.rs call_tool 的 elicitation 拦截层。
+    // 能走到这里说明命令已被审批通过（白名单自动放行 / 用户 elicitation 确认）。
+    exec_on_asset(ctx, args, command).await
 }
 
-/// 在指定资产上执行一次性命令（headless 建连 + exec + 断开）。
+/// 在指定资产上执行一次性命令。
+///
+/// v1.1 双路径（B4）：
+/// 1. **优先 pipe 复用**：调 `pipe::resolve_and_exec`，命中 GUI 已建立的会话则直接 exec
+///    —— 避免重连 + 二次 host key 验证 + 凭据读取开销。
+/// 2. **降级 headless**：GUI 未运行 / 无匹配会话 → v1.0 路径（connect_headless + exec_command_once）。
+///
+/// 两条路径对调用方等价（都返回命令输出）。日志标注走了哪条，便于排查。
 async fn exec_on_asset(
     ctx: &McpToolContext,
     args: &Map<String, serde_json::Value>,
@@ -280,7 +327,7 @@ async fn exec_on_asset(
         .and_then(|v| v.as_str())
         .ok_or("缺少 asset_id 参数")?;
 
-    // 从资产库找到对应资产
+    // 从资产库找到对应资产（B5：asset_id → host:port:username，用于 pipe 会话映射）
     let store = myshelltool_core::load_connection_asset_store(&ctx.asset_store_path)
         .map_err(|e| format!("加载资产库失败: {e}"))?;
     let asset = store
@@ -297,7 +344,28 @@ async fn exec_on_asset(
         command
     );
 
-    // headless 建连（密码为空，从凭据存储读；host key 未信任会被拒绝）
+    // 路径 1：尝试 pipe 复用 GUI 会话。
+    match crate::mcp::pipe::resolve_and_exec(
+        &asset.host,
+        asset.port,
+        &asset.username,
+        command,
+    )
+    .await
+    {
+        Ok(Some(output)) => {
+            log::info!("exec_on_asset: pipe reuse hit (session reused from GUI)");
+            return Ok(text_result(&output));
+        }
+        Ok(None) => {
+            log::info!("exec_on_asset: pipe miss (no matching GUI session), degrade to headless");
+        }
+        Err(e) => {
+            log::warn!("exec_on_asset: pipe error ({e}), degrade to headless");
+        }
+    }
+
+    // 路径 2：headless 建连（密码为空，从凭据存储读；host key 未信任会被拒绝）
     let params = HeadlessConnectParams {
         host: asset.host.clone(),
         port: asset.port,
