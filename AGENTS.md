@@ -32,7 +32,7 @@
 | Pinia store `.js` | 300 行 | **500 行** |
 | Rust 模块 `.rs` | 400 行 | **800 行** |
 
-> ⚠️ 当前已超标的文件（重构候选）：`ssh.rs`(1548)、`sessions.js`(810)、`FileColumn.vue`(768)、`files.js`(612)、`GlobalModals.vue`(512)。新增功能时优先考虑拆分这些文件，而非继续往里堆。
+> ⚠️ 当前已超标的文件（重构候选）+ Soft-warn 监视清单，见 [`docs/architecture-log.md`](./docs/architecture-log.md) 的 Baseline snapshot（用 `wc -l` 实测维护）。新增功能时优先考虑拆分这些文件，而非继续往里堆。手动清单易漂移，以 architecture-log 为唯一信息源。
 
 **禁止事项**：
 - ❌ 重复造轮子：写新逻辑/样式/正则前必须先搜（grep/Grep/Explore），已有则复用。
@@ -91,7 +91,7 @@ myshelltool/
 │   │   └── ui/                 # 基础组件库：App{Input,Button,Select,Modal,Drawer,
 │   │                           #            ContextMenu,Tooltip,Table,Tab,Progress,...}
 │   │                           #   index.js barrel 导出全部
-│   ├── stores/                 # Pinia stores（6 领域 + 1 编排壳）
+│   ├── stores/                 # Pinia stores（7 领域 + 1 编排壳）
 │   │   ├── workbench.js        # 编排壳：re-export 子 store，initialize() 启动加载
 │   │   ├── sessions.js         # 活跃 SSH 会话 + 终端生命周期
 │   │   ├── assets.js           # 连接资产 CRUD + 分组树
@@ -99,7 +99,8 @@ myshelltool/
 │   │   ├── tunnels.js          # SSH 隧道/端口转发
 │   │   ├── ui.js               # UI 状态：主题/tab/modal/搜索
 │   │   ├── resourceMonitor.js  # 资源监控轮询 + 事件订阅
-│   │   └── mcp.js              # 【v1.2】MCP 探测状态 + 配置引导（refresh 触发探测，无事件监听）
+│   │   ├── mcp.js              # 【v1.2】MCP 探测状态 + 配置引导（refresh 触发探测，无事件监听）
+│   │   └── sync.js             # 【v1.3】Gist 资产同步（push/pull/冲突解决/状态展示）
 │   ├── composables/            # useTheme / useClipboard / useTerminalConfig /
 │   │                           # useTerminalShortcuts / useAutoReconnect
 │   ├── lib/                    # terminalController / terminalThemes / dangerousCommands
@@ -114,6 +115,8 @@ myshelltool/
 │   │   ├── ssh.rs              # SSH/SFTP/隧道核心（SshSessionManager + russh Handler）
 │   │   ├── resource_monitor.rs # 远程 CPU/mem/net/disk 轮询（SshCommand::MonitorExec）
 │   │   ├── fs_local.rs         # 本地文件系统命令
+│   │   ├── sync.rs             # 【v1.3】Gist 同步命令层（push/pull/conflict，粘合 core sync + reqwest）
+│   │   ├── dpapi_codec.rs      # 【v1.3】DPAPI 凭据编解码（Windows CryptProtectData，cfg(windows)）
 │   │   ├── bin/mcp.rs          # 【v1.4 已删】原 myshelltool-mcp 独立 console bin，内嵌后取消双二进制
 │   │   └── mcp/                # MCP server 接入模块（v1.4 内嵌 GUI / Streamable HTTP transport）
 │   │       ├── http_server.rs  # 【v1.4】Streamable HTTP server：axum + rmcp，绑定 127.0.0.1:41235/mcp
@@ -216,6 +219,13 @@ cd src-tauri && cargo check       # 更快的类型检查
 **凭据**（`lib.rs`，存 `<app_data_dir>/credentials/<id>.cred`）
 - `save_credential({ id, secret })` / `get_credential_status({ id })` / `delete_credential({ id })`
 - 凭据 id 约定：`<assetId>:<kind>`（kind = `password` | `passphrase`）
+
+**Gist 资产同步**（`sync.rs`，v1.3）
+- `sync_status` → 同步配置状态（是否已配置 / 上次同步时间 / gist_id 掩码）
+- `sync_setup({ masterPassword, gistId? })` → 首次设置（主密码派生密钥 + 可选拉取已有 Gist）
+- `sync_push({ masterPassword })` / `sync_pull({ masterPassword })` → 加密推送 / 拉取解密（pull 返回 Conflict 时前端弹框）
+- `sync_resolve_conflict({ masterPassword, choice })` → 冲突解决（local_overwrite / remote_overwrite）
+- `sync_reset_master_password({ old, new })` / `sync_clear`
 
 **SSH 会话/终端**（`ssh.rs`）
 - `ssh_connect({...})` → 返回 `session_id`；参数含 host/port/username/authMethod/credentialId/privateKeyPath 等

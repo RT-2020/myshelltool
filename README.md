@@ -2,7 +2,7 @@
 
 > Windows 桌面 SSH 运维客户端 + **MCP Server**（AI 可调用）
 >
-> Rust + Tauri 2 构建。既是人用的图形客户端，也能被 Claude Desktop / Cursor / Cline 等 AI 工具通过 MCP 协议调用，让 AI 帮你执行 SSH 运维操作。
+> Rust + Tauri 2 构建。既是人用的图形客户端，也能被 Claude Code / Cursor / Cline 等 AI 工具通过 MCP 协议调用，让 AI 帮你执行 SSH 运维操作。
 
 ---
 
@@ -14,7 +14,7 @@
 - [GUI 使用](#gui-使用)
 - [Gist 资产同步（跨机器）](#gist-资产同步跨机器)
 - [MCP Server 配置（让 AI 调用）](#mcp-server-配置让-ai-调用)
-  - [Claude Desktop](#claude-desktop)
+  - [Claude Code](#claude-code)
   - [Cursor](#cursor)
   - [Cline](#cline)
   - [可用能力一览](#可用能力一览)
@@ -40,17 +40,20 @@ myshelltool 有**两种身份**：
 第二种身份是 v0.2.0 新增的**核心差异化能力**——市面上支持 MCP 的 SSH 运维工具极少。
 
 ```
-┌─────────────────┐      stdio (JSON-RPC)      ┌──────────────────────┐
-│ Claude Desktop  │ ────────────────────────── │  myshelltool-mcp.exe │
-│ Cursor / Cline  │                            │  (MCP Server 进程)   │
-└─────────────────┘                            └──────────┬───────────┘
-                                                          │ russh SSH
-                                                          ▼
-                                               ┌──────────────────────┐
-                                               │  你的服务器们         │
-                                               │  (192.168.x.x ...)   │
-                                               └──────────────────────┘
+┌─────────────────┐   Streamable HTTP       ┌──────────────────────────┐
+│ Claude Code     │   (JSON-RPC over HTTP)  │  myshelltool.exe (GUI)   │
+│ Cursor / Cline  │ ──────────────────────→ │  内嵌 MCP server         │
+└─────────────────┘                         │  http://127.0.0.1/mcp    │
+                                            └────────────┬─────────────┘
+                                                         │ russh SSH（同进程）
+                                                         ▼
+                                            ┌──────────────────────────┐
+                                            │  你的服务器们             │
+                                            │  (192.168.x.x ...)       │
+                                            └──────────────────────────┘
 ```
+
+> v0.4.0 起 MCP server **内嵌 GUI 进程**（Streamable HTTP transport），不再有独立 `myshelltool-mcp.exe`。详见 [架构决策](#架构决策)。
 
 ---
 
@@ -69,20 +72,20 @@ myshelltool 有**两种身份**：
 - **SSH 隧道** — Local forwarding、Dynamic SOCKS5 代理
 - **资源监控** — 远程 CPU/内存/网络/磁盘实时图表
 
-### Gist 资产同步（v0.3.0+）
+### Gist 资产同步（v0.4.0+）
 
 - **跨机器同步连接资产** — 把 `connection-assets.json`（连接元数据，**不含密码**）加密后推送到 GitHub Gist，换机器/重装时一键拉回
 - **端到端加密** — 用户主密码经 Argon2id 派生密钥 + AES-256-GCM 加密，GitHub 服务端只见密文
 - **冲突检测** — 双向同步时检测本地/远端都改动，弹框让用户选本地覆盖 / 远端覆盖
 - **凭据不外泄** — GitHub PAT 走 SecretStore（v1.3 起基于 Windows DPAPI），密码/passphrase **绝不**进入同步载荷
 
-### MCP Server（v0.3.0+）
+### MCP Server（v0.4.0+）
 
+- **内嵌 GUI 进程** — MCP server 是 GUI 进程内的 axum HTTP service（Streamable HTTP transport），随 GUI 启停，**不再有独立 exe**。默认监听 `127.0.0.1:41235/mcp`
 - **9 个 Tools** — AI 能查磁盘/系统/服务状态，高危命令走客户端内审批
 - **4 个 Resources** — 资产/会话/known-hosts 可被 AI 随机读取
 - **3 个 Prompts** — 诊断/安全审计/磁盘清理的结构化引导
-- **Elicitation 审批**（v1.1）— 高危命令在 Claude/Cursor 界面内弹确认框（三段式），不再切到 myshelltool GUI
-- **会话复用**（v1.1）— MCP 经 named pipe 复用 GUI 已建立的 SSH 会话，避免重连 + 二次 host key 验证；GUI 离线时自动降级独立建连
+- **Elicitation 审批** — 高危命令在 Claude Code/Cursor 界面内弹确认框（三段式），用户 accept 才执行；不支持 elicitation 的客户端 fail-secure 拒绝
 - **Host key 安全门** — MCP 仅服务已在 GUI 信任过的资产
 
 ---
@@ -116,7 +119,7 @@ npm run tauri:dev
 
 ```bash
 npm run tauri:build
-# 产物：src-tauri/target/release/bundle/nsis/myshelltool_0.3.0_x64-setup.exe
+# 产物：src-tauri/target/release/bundle/nsis/myshelltool_0.4.0_x64-setup.exe
 ```
 
 ---
@@ -189,38 +192,31 @@ npm run tauri:build
 
 > 详细指南见 [`docs/mcp-setup.md`](./docs/mcp-setup.md)
 
-### 前置：构建 MCP 二进制 + 配置资产
+### 前置：启动 GUI + 配置资产
 
-```bash
-# 构建 MCP exe（debug，开发测试用）
-npm run mcp:build
+v0.4.0 起 **MCP server 内嵌 GUI 进程**（Streamable HTTP transport），**无需单独构建 MCP exe**。
 
-# 或构建 release 版（更小更快，推荐给 Claude 用）
-npm run mcp:build:release
-```
+1. **启动 myshelltool GUI**——MCP server 随 GUI 启停，GUI 没开就没有 MCP。
+2. **配置资产**：MCP 读取与 GUI 相同的数据目录（`%APPDATA%\com.redtei.myshelltool\`）。**先用 GUI 配置好资产并完成首次连接（信任 host key）**，MCP 才能操作它们。
+3. **查看 endpoint URL**：GUI 的「MCP」面板会显示实际监听地址（默认 `http://127.0.0.1:41235/mcp`，端口被占用会 +1）。配置客户端时用面板显示的 URL。
 
-MCP exe 位置：
-- debug：`src-tauri/target/debug/myshelltool-mcp.exe`
-- release：`src-tauri/target/release/myshelltool-mcp.exe`
+### Claude Code
 
-**资产配置**：MCP 读取与 GUI 相同的数据目录（`%APPDATA%\com.redtei.myshelltool\`）。**先用 GUI 配置好资产并完成首次连接（信任 host key）**，MCP 才能操作它们。
-
-### Claude Desktop
-
-编辑 `%APPDATA%\Claude\claude_desktop_config.json`：
+Claude Code 原生支持 `streamable-http` transport。编辑项目级或全局 MCP 配置：
 
 ```json
 {
   "mcpServers": {
     "myshelltool": {
-      "command": "D:\\path\\to\\myshelltool\\src-tauri\\target\\release\\myshelltool-mcp.exe",
-      "args": []
+      "url": "http://127.0.0.1:41235/mcp"
     }
   }
 }
 ```
 
-**完全退出并重启 Claude Desktop**（托盘右键 Quit，不是关窗口）。然后问它：
+> **url 必须用 GUI MCP 面板显示的实际 endpoint**（端口可能不是 41235）。确保 GUI 正在运行。
+
+重启 Claude Code 后，问它：
 
 > 「列出我的 myshelltool 资产」
 
@@ -234,9 +230,7 @@ Claude 会调用 `list_assets` 返回你配置的服务器列表。
 {
   "mcpServers": {
     "myshelltool": {
-      "command": "D:\\path\\to\\myshelltool-mcp.exe",
-      "args": [],
-      "type": "stdio"
+      "url": "http://127.0.0.1:41235/mcp"
     }
   }
 }
@@ -244,9 +238,13 @@ Claude 会调用 `list_assets` 返回你配置的服务器列表。
 
 ### Cline
 
-编辑 `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json`，格式同 Claude Desktop。
+编辑 `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json`，格式同 Claude Code（`mcpServers` → `url`）。
 
-> ⚠️ Cline 有 auto-approve 开关，但 **myshelltool 自带三层审批门仍生效**——高危命令不会因 auto-approve 绕过。
+> ⚠️ Cline 有 auto-approve 开关，但 **myshelltool 自带 elicitation 审批门仍生效**——高危命令不会因 auto-approve 绕过。
+
+### Claude Desktop（⚠️ 不直接支持）
+
+> ⚠️ Claude Desktop 截至目前不直接支持 `streamable-http` transport（仅支持 stdio + sse）。v0.4.0 取消 stdio 后无法直连。社区方案经 [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) 做 stdio→HTTP 代理（依赖 npx/node）。详见 [`docs/mcp-setup.md`](./docs/mcp-setup.md) 第六节。
 
 ### 可用能力一览
 
@@ -255,7 +253,7 @@ Claude 会调用 `list_assets` 返回你配置的服务器列表。
 | 工具 | 说明 | 审批 |
 |------|------|------|
 | `list_assets` | 列出连接资产（脱敏）| 自动 |
-| `list_sessions` | 活跃会话列表（v1.1 经 pipe 查 GUI 真实会话）| 自动 |
+| `list_sessions` | 活跃会话列表（当前返回说明，会话复用为 follow-up）| 自动 |
 | `disk_usage` | 磁盘使用（df -h）| 自动 |
 | `system_status` | uptime/内存/负载/top | 自动 |
 | `service_status` | systemctl status | 自动 |
@@ -264,7 +262,7 @@ Claude 会调用 `list_assets` 返回你配置的服务器列表。
 | `ssh_exec` | **任意命令** | 白名单自动 / 其余 elicitation 确认 |
 | `sftp_remove` | **删除文件** | 始终 elicitation 确认 |
 
-> v1.1 起，`ssh_exec`/`sftp_remove` 经 MCP elicitation 在客户端界面内弹确认框（三段式：AI 意图 + 真实命令 + 后果），用户 accept 才执行。客户端不支持 elicitation 时降级为拒绝。
+> `ssh_exec`/`sftp_remove` 经 MCP elicitation 在客户端界面内弹确认框（三段式：AI 意图 + 真实命令 + 后果），用户 accept 才执行。客户端不支持 elicitation 时 fail-secure 拒绝（v0.4.0 删了 v1.1 的 pipe GUI 弹窗降级）。
 
 **Resources（4 个）**：`myshelltool://assets` / `://sessions` / `://known-hosts` / `://sessions/{id}/log`
 
@@ -274,8 +272,8 @@ Claude 会调用 `list_assets` 返回你配置的服务器列表。
 
 **审批分层**：
 - **白名单**（df/uptime/systemctl status 等 20 条只读命令）→ 自动执行
-- **其余命令**（黑名单 + 未知）→ 经 elicitation 在客户端界面内弹确认框，用户 accept 才执行
-- 客户端不支持 elicitation 时降级为拒绝（fail-secure，宁可误拦不可漏放）
+- **高危命令**（黑名单 + 未知）→ 经 elicitation 在客户端界面内弹确认框，用户 accept 才执行
+- 客户端不支持 elicitation 时 fail-secure 拒绝（宁可误拦不可漏放）
 
 **三段式确认信息**——高危命令触发确认框时显示：
 ```
@@ -289,9 +287,7 @@ Claude 会调用 `list_assets` 返回你配置的服务器列表。
 ```
 通过三段对照可识破 AI 伪装（如 intent 说「查看日志」但 command 是 `rm -rf /var/log`）。降级拒绝时返回同结构文本。
 
-**会话复用安全**（v1.1）：MCP 经 named pipe `\\.\pipe\myshelltool-mcp` 复用 GUI 会话，仅限同用户会话内的 GUI 进程；pipe 不可用时自动降级独立建连（仍受 host key 门约束）。
-
-**Host key 安全门（D4）**：MCP 仅服务已在 GUI 信任过的资产，未知主机直接拒绝。
+**Host key 安全门**：MCP 仅服务已在 GUI 信任过的资产，未知主机直接拒绝。
 
 ---
 
@@ -300,13 +296,14 @@ Claude 会调用 `list_assets` 返回你配置的服务器列表。
 | 层 | 技术 | 版本 |
 |---|---|---|
 | 桌面框架 | **Tauri 2** | `@tauri-apps/cli ^2.9.5` |
-| 后端 | **Rust** | `russh 0.49`、`russh-sftp 2.x`、`tokio`、`rmcp 1.7`（MCP） |
+| 后端 | **Rust** | `russh 0.49`、`russh-sftp 2.x`、`tokio`、`axum 0.8`（MCP HTTP）、`reqwest 0.12`（Gist 同步） |
 | 前端框架 | **Vue 3**（`<script setup>` + Composition API）| `vue ^3.5.38` |
 | 状态管理 | **Pinia 3**（setup store）| `pinia ^3.0.4` |
 | 图标 | lucide-vue-next | `^0.460.0` |
 | 终端 | xterm.js 6 + addon-fit/search/web-links/webgl | `@xterm/xterm ^6` |
 | 远程编辑 | Monaco Editor 0.52（CDN）| — |
-| MCP SDK | rmcp（官方 Rust SDK）| `~1.7` |
+| MCP SDK | rmcp（官方 Rust SDK，Streamable HTTP transport + elicitation）| `~1.7` |
+| HTTP 框架 | axum（MCP Streamable HTTP server）+ tokio-util（CancellationToken）| `axum 0.8` / `tokio-util 0.7` |
 | 样式 | SCSS + 设计 token 系统（无 Tailwind）| `sass ^1.101` |
 | 构建 | Vite 7（root=`src/`）| `vite ^7.2.7` |
 | 测试 | Playwright（UI smoke）+ cargo test（core）| `playwright ^1.60` |
@@ -327,31 +324,34 @@ myshelltool/
 │   │   ├── files/                # 文件管理 surface / columns
 │   │   ├── resource-monitor/     # CPU/内存/网络/磁盘图表
 │   │   └── ui/                   # 基础组件库（App* 命名）
-│   ├── stores/                   # Pinia：6 领域 store + workbench 编排壳
+│   ├── stores/                   # Pinia：7 领域 store + workbench 编排壳
 │   ├── composables/              # useTheme/useClipboard/...
 │   ├── lib/                      # terminalController/dangerousCommands
 │   ├── services/backend.js       # Tauri IPC 桥
 │   └── styles/                   # SCSS：_tokens/_base/_utilities
 ├── src-tauri/                    # Tauri/Rust 后端
-│   ├── Cargo.toml                # 含双 [[bin]]（GUI + MCP）
+│   ├── Cargo.toml                # 单 binary（v0.4.0 取消双 exe）
 │   └── src/
-│       ├── main.rs               # GUI 入口
-│       ├── lib.rs                # AppState + 命令注册 + MCP 入口
-│       ├── bin/mcp.rs            # MCP console 子系统入口
+│       ├── main.rs               # GUI 入口（tauri::run 壳）
+│       ├── lib.rs                # AppState + 命令注册 + mcp_status + MCP HTTP server 拉起
 │       ├── ssh.rs                # SSH/SFTP/隧道 + headless 会话
 │       ├── dangerous_commands.rs # 危险命令检测（GUI+MCP 共享）
-│       ├── mcp/                  # MCP server 模块
-│       │   ├── server.rs         # rmcp stdio server + ServerHandler
-│       │   ├── tools.rs          # 9 个 Tools
-│       │   ├── resources.rs      # 4 个 Resources
-│       │   ├── prompts.rs        # 3 个 Prompts
-│       │   └── approval.rs       # 三层审批 + 三段式拒绝
 │       ├── resource_monitor.rs   # 远程资源轮询
-│       └── fs_local.rs           # 本地文件系统命令
-├── crates/myshelltool-core/      # 共享核心库（资产/凭据/校验）
-├── scripts/mcp-dev-watch.mjs     # MCP 开发热重建监听
+│       ├── fs_local.rs           # 本地文件系统命令
+│       ├── sync.rs               # Gist 同步命令层（v1.3，push/pull/conflict）
+│       ├── dpapi_codec.rs        # DPAPI 凭据编解码（v1.3，Windows CryptProtectData）
+│       └── mcp/                  # MCP server 模块（v0.4.0 内嵌 GUI / Streamable HTTP）
+│           ├── http_server.rs    # axum + rmcp Streamable HTTP server（绑 127.0.0.1:41235/mcp）
+│           ├── probe.rs          # HTTP 健康检查（向自己的 endpoint 发 initialize 握手）
+│           ├── server.rs         # rmcp ServerHandler 实现（9 工具/4 资源/3 prompts）
+│           ├── tools.rs          # MCP Tools 实现 + exec_on_asset
+│           ├── resources.rs      # 4 个 Resources
+│           ├── prompts.rs        # 3 个 Prompts
+│           └── approval.rs       # 审批判定：白名单放行 / elicitation / fail-secure 拒绝
+├── crates/myshelltool-core/      # 共享核心库（资产/凭据/校验/加密/同步纯逻辑）
 ├── docs/                         # 文档
 │   ├── mcp-setup.md              # MCP 配置详细指南
+│   ├── architecture-log.md       # 架构漂移日志（行数/重构候选，单一信息源）
 │   ├── specs/                    # 需求规格（deep-interview 产出）
 │   ├── plans/                    # 实施计划
 │   └── interviews/               # 访谈记录
@@ -368,12 +368,7 @@ myshelltool/
 
 ```bash
 npm install              # 安装前端依赖
-npm run tauri:dev        # GUI 开发模式（完整功能，热重载）
-npm run dev:all          # GUI + MCP 同时开发（MCP 源码变化自动重建）
-
-npm run mcp:build        # 单独构建 MCP exe（debug）
-npm run mcp:build:release # 构建 release MCP exe（给 Claude 用）
-npm run mcp:watch        # 仅 MCP 热重建（GUI 单独跑）
+npm run tauri:dev        # GUI 开发模式（完整功能，热重载）。MCP server 随 GUI 启停
 
 npm run build            # 前端 Vite 构建（验证编译）
 npm run tauri:build      # 完整桌面安装包（NSIS）
@@ -381,11 +376,11 @@ npm run tauri:build      # 完整桌面安装包（NSIS）
 
 ### 开发工作流
 
-**日常开发（GUI + MCP）**：
+**日常开发**：
 ```bash
-npm run dev:all
-# 一条命令：启动 GUI + 监听 MCP 源码自动重建
-# 改 MCP 代码后自动重建，若 GUI 锁住文件会提示重启 GUI
+npm run tauri:dev
+# 一条命令：启动 GUI + 内嵌 MCP server（HTTP 随 GUI 拉起）
+# 改 MCP 源码（src-tauri/src/mcp/*）后，GUI 热重载会自动重建
 ```
 
 **只改前端**：
@@ -393,15 +388,7 @@ npm run dev:all
 npm run tauri:dev    # GUI 热重载
 ```
 
-**只改 MCP**：
-```bash
-# 终端 1
-npm run tauri:dev
-# 终端 2
-npm run mcp:watch
-```
-
-> ⚠️ Windows 下 GUI 和 MCP 共享 `myshelltool_lib`（cdylib），GUI 运行时会锁住该文件，导致 MCP 无法重建。解决：先停 GUI 再重建 MCP，或用 `dev:all`（自动检测并提示）。
+> v0.4.0 起 MCP 内嵌 GUI，不再有独立 exe / named pipe / dev watch 脚本。改 MCP 代码就是改 Rust 代码，与改其他后端代码无差别。
 
 ### 编码约定
 
@@ -451,31 +438,38 @@ cd src-tauri && cargo check   # Rust 类型检查（Windows build 兜底）
 
 **决策**：继续使用 Tauri 2.x，不切换 Qt 或 Electron。加权评分 Tauri 48.5 > Electron 41 > Qt 36。
 
-### MCP 架构：双二进制 + 会话复用（v0.3.0）
+### MCP 架构：内嵌 GUI + Streamable HTTP（v0.4.0）
 
-详见 `docs/specs/MCP服务接入-需求规格.md`。
+详见 `docs/architecture-log.md` 的 v1.4 重构记录 + `docs/specs/MCP服务接入-需求规格.md`。
 
-**决策**：
-- **双二进制**：`myshelltool.exe`（GUI，windows 子系统）+ `myshelltool-mcp.exe`（console 子系统），共享 `myshelltool_lib`。因 `windows_subsystem` 是链接时属性，无法运行时切换。
-- **stdio 传输**：MCP 被 Claude Desktop 拉起为子进程，通过 stdin/stdout 收发 JSON-RPC。
-- **v0.3.0 会话复用**：MCP 优先经 named pipe `\\.\pipe\myshelltool-mcp` 复用 GUI 已建立的 SSH 会话（免重连 + 二次 host key 验证）；GUI 离线时自动降级独立 headless 建连。
-- **v0.3.0 elicitation 审批**：高危命令经 MCP elicitation 在客户端界面内弹确认框，不切到 myshelltool GUI。
+**决策**（v0.4.0 重构，取代 v0.3 的双二进制 + stdio + named pipe）：
+- **内嵌 GUI 进程**：MCP server 是 GUI 进程内的一个 axum HTTP service（`src-tauri/src/mcp/http_server.rs`），随 GUI 启停。取消独立 `myshelltool-mcp.exe` 二进制。
+- **Streamable HTTP transport**：MCP 经 `http://127.0.0.1:41235/mcp`（被占用 +1，只监听 localhost）暴露。任何支持 `streamable-http` 的合规 host（Claude Code / Cursor）经 HTTP URL 连入。
+- **同进程内存访问**：MCP 与 SSH 会话/资产/凭据同进程，消除 v0.3 的 named pipe 桥复杂度。
+- **根治僵尸进程 / os error 32 / NSIS 双 exe 打包缺口**：不再 spawn 子进程、不再需要单独打包 MCP exe。
+
+**v0.4.0 follow-up**（见 `docs/architecture-log.md`）：
+- 会话复用：注入 GUI 的 `SshSessionManager` 到 MCP context，命中已建立会话时直接复用（比 v0.3 的 pipe 更简单）。
+- GUI 弹窗审批：注入 AppHandle，对不支持 elicitation 的客户端实现同进程 GUI 弹窗（当前 fail-secure 拒绝）。
 
 ---
 
 ## 已知限制与 Follow-ups
 
-### MCP（v0.3.0）
+### MCP（v0.4.0）
 
+- **会话不复用**：`ssh_exec`/`sftp_*` 工具当前直走 headless 独立建连（v0.4.0 删了 v1.1 的 named pipe 复用桥）。Follow-up：注入 `SshSessionManager` 同进程复用。
+- **不支持 elicitation 的客户端 fail-secure**：v0.4.0 删了 v1.1 的 pipe GUI 弹窗降级，当前对不支持 elicitation 的客户端直接拒绝高危命令。Follow-up：注入 AppHandle 实现同进程 GUI 弹窗。
+- **Claude Desktop 不直连**：v0.4.0 取消 stdio，Claude Desktop 需经 `mcp-remote` 桥接（见 MCP 配置节）。
 - headless 降级模式不支持 MFA（仅密码/私钥/keyboard-interactive 密码类 prompt）
 - sftp_upload / 隧道工具未实现（后续版本）
-- elicitation 确认框的客户端兼容性：Claude Desktop 支持，部分轻量客户端可能降级为拒绝
 
 ### GUI
 
 - `sftp_download_with_progress` 仍返回整块 `Vec<u8>`（upload 已分块）
 - `start_remote_forward` 是桩函数（local/dynamic SOCKS5 已实现）
 - ProxyJump/跳板链未实现
+- **FileColumn.vue / ssh.rs 超标**（cycle-tier）：详见 `docs/architecture-log.md`，下次纯架构会话优先拆分
 
 ---
 
