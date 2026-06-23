@@ -1,49 +1,31 @@
 <script setup>
 /**
- * FileSurface — Wave 3 Step 3.4
- * Center-bottom container: dual-pane file manager (local + remote) with a
- * bottom-anchored transfer drawer. Tabby/Termius styling — low visual weight,
- * hairline chrome edges, no card stacking.
+ * FileSurface — Wave 3 Step 3.4（v3 精简版）
+ * Center-bottom container: 默认只渲染远程文件栏占满全宽，点「本地」按钮展开双栏。
+ * 极简 chrome：无标题 toolbar，功能全在右键菜单；传输触发在状态栏「传输」胶囊（全局）。
+ *
+ * v3 变化：
+ *  - 默认折叠本地列（localPaneVisible=false），远程栏独享全宽。
+ *  - 支持从 Windows 资源管理器拖拽文件到文件区上传（drop/dragover + dragover 视觉提示）。
  *
  * Store-bound: directly reads useFilesStore / useUiStore. No prop drilling.
- * The two FileColumn children are driven by their `kind` prop; selection /
- * sort / filter / context-menu / breadcrumb / upload all live in the store.
- *
- * Right-click on either column writes filesStore.contextMenu (same shape
- * App.vue reads), so batch operations and per-entry actions still work when
- * Wave 3.5 wires FileSurface into App.vue.
- *
- * Not wired into App.vue yet — Step 3.4 ships the components only.
  */
 import { computed, ref } from 'vue';
 import { storeToRefs } from 'pinia';
-import {
-  Upload,
-  FolderPlus,
-  RefreshCw,
-  HardDrive,
-  ChevronsUpDown
-} from 'lucide-vue-next';
+import { PanelLeft, FolderOpen } from 'lucide-vue-next';
 import { useFilesStore } from '@/stores/files.js';
 import { useUiStore } from '@/stores/ui.js';
-import { useAssetsStore } from '@/stores/assets.js';
 import { isTauriRuntime } from '@/services/backend.js';
 import FileColumn from './FileColumn.vue';
-import TransferDrawer from './TransferDrawer.vue';
 import AppContextMenu from '@/components/ui/AppContextMenu.vue';
 
 const filesStore = useFilesStore();
 const uiStore = useUiStore();
-const assetsStore = useAssetsStore();
-const { selectedAsset } = storeToRefs(assetsStore);
-const { remoteListMode, contextMenu, transferDrawerOpen } = storeToRefs(filesStore);
+const { remoteListMode, contextMenu, selectedRemotePaths, localPaneVisible } = storeToRefs(filesStore);
 
 const isTauriCore = computed(() => isTauriRuntime());
-const localDisabledHint = computed(() =>
-  isTauriCore.value ? '' : '桌面客户端运行时才支持本地浏览（npm run tauri:dev）'
-);
 
-// Hidden file input for upload (selected via toolbar button or drag-drop).
+// Hidden file input for upload (triggered via context-menu or drag-drop).
 const fileInput = ref(null);
 
 function triggerFileUpload() {
@@ -54,35 +36,44 @@ function onFilePick(event) {
   if (files?.length) filesStore.uploadFiles(files);
   if (event.target) event.target.value = '';
 }
+
+// 拖拽上传：Windows 资源管理器拖文件进来即触发 uploadFiles。
+// dragover 时显示半透明 accent 边框 + 「松开上传」浮层（dragging=true）。
+const dragging = ref(false);
+let dragLeaveTimer = null;
+
 function onDrop(event) {
   event.preventDefault();
+  dragging.value = false;
+  if (dragLeaveTimer) { clearTimeout(dragLeaveTimer); dragLeaveTimer = null; }
   const files = event.dataTransfer?.files;
   if (files?.length) filesStore.uploadFiles(files);
 }
 function onDragOver(event) {
+  // 必须 preventDefault 才能触发 drop；仅含文件时才显提示。
   event.preventDefault();
+  if (event.dataTransfer?.types?.includes('Files')) {
+    dragging.value = true;
+    if (dragLeaveTimer) { clearTimeout(dragLeaveTimer); dragLeaveTimer = null; }
+  }
+}
+function onDragLeave() {
+  // 用 timer 延迟隐藏，避免子元素切换触发的误判 dragleave。
+  if (dragLeaveTimer) clearTimeout(dragLeaveTimer);
+  dragLeaveTimer = setTimeout(() => { dragging.value = false; }, 80);
 }
 
-// Toolbar actions (delegated to store or central modal).
-function openMkdirRemote() {
-  uiStore.modal = { type: 'mkdir', entry: null };
-}
-function openMkdirLocal() {
-  uiStore.modal = { type: 'localMkdir', entry: null };
-}
-function refreshRemote() {
-  filesStore.refreshRemoteFiles();
-}
-function toggleListMode() {
-  filesStore.setRemoteListMode(remoteListMode.value === 'detailed' ? 'compact' : 'detailed');
-}
-function toggleDrawer() {
-  filesStore.toggleTransferDrawer();
+// 本地列折叠切换：首次展开时若本地未加载则触发加载。
+function toggleLocalPane() {
+  filesStore.toggleLocalPane();
+  if (localPaneVisible.value && isTauriCore.value && !filesStore.localPath) {
+    filesStore.refreshLocalFiles().catch(() => null);
+  }
 }
 
 // ============================================================
-// Context menu items — same content shape as App.vue contextMenuItems,
-// but built here from files store state. items: [{ label, action, danger, separator, disabled }]
+// Context menu items — 吸收原 toolbar 下沉功能（刷新 / 新建目录 / 上传 /
+// 列表模式切换 / 显示本地列）。items: [{ label, action, danger, separator, disabled }]
 // ============================================================
 const contextMenuItems = computed(() => {
   if (!contextMenu.value.visible) return [];
@@ -93,79 +84,69 @@ const contextMenuItems = computed(() => {
 
   if (side === 'remote') {
     const items = [];
+    // 多选批量操作优先。
     if (selectedRemotePaths.value.size > 1) {
       items.push(make(`批量下载 (${selectedRemotePaths.value.size})`, () => filesStore.batchRemoteDownload()));
       items.push(make(`批量删除 (${selectedRemotePaths.value.size})`, () => filesStore.batchRemoteDelete(), { danger: true }));
       items.push({ separator: true });
     }
-    items.push(make(isDir ? '进入目录' : '下载', () => {
-      if (isDir) filesStore.navigateRemotePath(entry.path);
-      else filesStore.downloadEntry(entry);
-    }));
+    // 单项操作。
+    if (entry) {
+      items.push(make(isDir ? '进入目录' : '下载', () => {
+        if (isDir) filesStore.navigateRemotePath(entry.path);
+        else filesStore.downloadEntry(entry);
+      }));
+      items.push({ separator: true });
+      items.push(make('重命名', () => { uiStore.modal = { type: 'rename', entry }; }));
+      items.push(make('删除', () => filesStore.removeRemote(entry), { danger: true }));
+      items.push({ separator: true });
+      items.push(make('复制路径', () => filesStore.copyRemotePath(entry)));
+      items.push({ separator: true });
+    }
+    // 目录级操作（下沉自原 toolbar）。
     items.push(make('上传文件到当前目录', () => triggerFileUpload()));
+    items.push(make('新建远程目录', () => { uiStore.modal = { type: 'mkdir', entry: null }; }));
+    items.push(make('刷新当前目录', () => filesStore.refreshRemoteFiles()));
+    items.push(make(remoteListMode.value === 'detailed' ? '切换为紧凑列表' : '切换为详细列表', () =>
+      filesStore.setRemoteListMode(remoteListMode.value === 'detailed' ? 'compact' : 'detailed')
+    ));
     items.push({ separator: true });
-    items.push(make('重命名', () => { uiStore.modal = { type: 'rename', entry }; }));
-    items.push(make('删除', () => filesStore.removeRemote(entry), { danger: true }));
-    items.push({ separator: true });
-    items.push(make('复制路径', () => filesStore.copyRemotePath(entry)));
+    items.push(make(localPaneVisible.value ? '隐藏本地面板' : '显示本地面板', () => toggleLocalPane()));
     return items;
   }
   // Local menu
-  return [
-    make(isDir ? '进入目录' : '上传到远程', () => {
+  const items = [];
+  if (entry) {
+    items.push(make(isDir ? '进入目录' : '上传到远程', () => {
       if (isDir) filesStore.navigateLocalPath(entry.path);
       else filesStore.announce('单文件上传待接线：' + entry.name);
-    }),
-    { separator: true },
-    make('重命名', () => { uiStore.modal = { type: 'localRename', entry }; }),
-    make('删除', () => filesStore.localDelete([entry.path]), { danger: true }),
-    { separator: true },
-    make('复制路径', () => {
+    }));
+    items.push({ separator: true });
+    items.push(make('重命名', () => { uiStore.modal = { type: 'localRename', entry }; }));
+    items.push(make('删除', () => filesStore.localDelete([entry.path]), { danger: true }));
+    items.push({ separator: true });
+    items.push(make('复制路径', () => {
       navigator.clipboard?.writeText(entry.path).catch(() => null);
-    })
-  ];
+    }));
+    items.push({ separator: true });
+  }
+  // 目录级操作（下沉自原 toolbar）。本地浏览需桌面运行时。
+  items.push(make('新建本地目录', () => { uiStore.modal = { type: 'localMkdir', entry: null }; }, { disabled: !isTauriCore.value }));
+  items.push(make('刷新当前目录', () => filesStore.refreshLocalFiles(), { disabled: !isTauriCore.value }));
+  items.push({ separator: true });
+  items.push(make('隐藏本地面板', () => toggleLocalPane()));
+  return items;
 });
-
-// Re-expose selectedRemotePaths for template parity.
-const { selectedRemotePaths } = storeToRefs(filesStore);
 </script>
 
 <template>
-  <div class="file-surface" @drop="onDrop" @dragover="onDragOver">
-    <!-- Row 1: surface toolbar — upload / mkdir / refresh / list-mode -->
-    <header class="file-surface-toolbar">
-      <div class="file-surface-toolbar-left">
-        <strong class="file-surface-title">
-          {{ selectedAsset?.name || '未选择连接' }} · 文件管理
-        </strong>
-      </div>
-      <div class="file-surface-toolbar-right">
-        <button class="btn primary" type="button" data-upload-trigger @click="triggerFileUpload">
-          <Upload :size="14" />
-          <span>上传</span>
-        </button>
-        <button class="btn" type="button" data-mkdir @click="openMkdirRemote">
-          <FolderPlus :size="14" />
-          <span>新建远程目录</span>
-        </button>
-        <button class="btn" type="button" :disabled="!isTauriCore" @click="openMkdirLocal">
-          <FolderPlus :size="14" />
-          <span>新建本地目录</span>
-        </button>
-        <button class="btn" type="button" data-refresh-remote-files @click="refreshRemote">
-          <RefreshCw :size="14" />
-          <span>刷新远程</span>
-        </button>
-        <button
-          class="btn icon-only"
-          type="button"
-          :title="remoteListMode === 'detailed' ? '切换紧凑列表' : '切换详细列表'"
-          @click="toggleListMode"
-        >
-          <ChevronsUpDown :size="14" />
-        </button>
-      </div>
-    </header>
+  <div
+    class="file-surface"
+    :class="{ 'is-dragging': dragging, 'local-open': localPaneVisible }"
+    @drop="onDrop"
+    @dragover="onDragOver"
+    @dragleave="onDragLeave"
+  >
     <input
       ref="fileInput"
       type="file"
@@ -174,23 +155,43 @@ const { selectedRemotePaths } = storeToRefs(filesStore);
       @change="onFilePick"
     />
 
-    <!-- Row 2: dual-pane (local | remote). 1px border-inline-end separates them. -->
+    <!-- Dual-pane：默认折叠本地列（grid 1fr），展开时 1fr 1fr。
+         远程列右上角浮一个「本地」切换按钮（折叠态常显，展开态可收起）。 -->
     <div class="file-surface-dual">
       <FileColumn
+        v-if="localPaneVisible"
         kind="local"
-        :disabled-hint="localDisabledHint"
+        :disabled-hint="isTauriCore ? '' : '桌面客户端运行时才支持本地浏览（npm run tauri:dev）'"
         class="file-surface-col file-surface-col--local"
       />
       <FileColumn
         kind="remote"
         class="file-surface-col file-surface-col--remote"
-      />
+      >
+        <!-- 本地列切换按钮：塞进远程 header actions 最前（非悬浮，不遮挡过滤图标）。 -->
+        <template #actions-leading>
+          <button
+            type="button"
+            class="local-toggle"
+            :class="{ active: localPaneVisible }"
+            :title="localPaneVisible ? '隐藏本地面板' : '显示本地面板（双栏）'"
+            @click="toggleLocalPane"
+          >
+            <component :is="localPaneVisible ? FolderOpen : PanelLeft" :size="14" />
+            <span>本地</span>
+          </button>
+        </template>
+      </FileColumn>
     </div>
 
-    <!-- Row 3: transfer drawer (always-visible trigger + slide-up sheet). -->
-    <footer class="file-surface-drawer">
-      <TransferDrawer :open="transferDrawerOpen" @toggle="toggleDrawer" />
-    </footer>
+    <!-- 拖拽上传视觉提示浮层：松开上传到当前远程目录。pointer-events:none 不拦截 drop。 -->
+    <div v-if="dragging" class="drag-overlay">
+      <div class="drag-overlay-inner">
+        <FolderOpen :size="28" />
+        <strong>松开以上传到当前远程目录</strong>
+        <span class="drag-overlay-sub">{{ filesStore.remotePath || '/' }}</span>
+      </div>
+    </div>
 
     <!-- Right-click context menu (teleported by AppContextMenu). -->
     <AppContextMenu
@@ -206,9 +207,9 @@ const { selectedRemotePaths } = storeToRefs(filesStore);
 <style scoped lang="scss">
 @use '@/styles/_tokens' as *;
 
-// Surface container — 无圆角无外框：与 grid region 贴合平齐，靠 region 间 1px
-// 分隔线划分边界，保持整体性。Local/remote 列由 .col--local 的 border-inline-end 分隔。
+// Surface container — 无圆角无框：与 grid region 贴合，靠 region 间 1px 分隔。
 .file-surface {
+  position: relative; // 浮动按钮 / 拖拽浮层的定位参照系
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -220,95 +221,89 @@ const { selectedRemotePaths } = storeToRefs(filesStore);
   overflow: hidden;
 }
 
-// Row 1: surface toolbar.
-.file-surface-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  border-block-end: 1px solid var(--app-border);
-  background: var(--app-panel-2);
-  flex: 0 0 auto;
-}
-.file-surface-toolbar-left {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-}
-.file-surface-title {
-  font-size: var(--text-sm);
-  font-weight: 600;
-  color: var(--app-strong); // 统一 center 区标题色：与 .terminal-host 一致
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.file-surface-toolbar-right {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  flex-wrap: wrap;
-}
-
-// Buttons match App.vue .btn conventions.
-.btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  background: var(--app-control);
-  color: var(--app-text);
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-sm);
-  font-size: var(--text-xs);
-  font-family: var(--font-body);
-  cursor: pointer;
-  user-select: none;
-  transition: background var(--motion-fast) var(--ease-standard),
-    border-color var(--motion-fast) var(--ease-standard);
-}
-.btn:hover:not(:disabled) {
-  background: var(--app-hover);
-  border-color: var(--app-border-strong);
-}
-.btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-.btn.primary {
-  background: var(--accent);
-  color: var(--accent-on);
-  border-color: var(--accent);
-}
-.btn.primary:hover:not(:disabled) {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
-}
-.btn.icon-only {
-  padding: 5px;
-}
-
-// Row 2: dual-pane. Single-pixel separator between columns.
+// Dual-pane：默认单栏（1fr），localPaneVisible 时 1fr 1fr。
 .file-surface-dual {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr;
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
+  transition: grid-template-columns var(--motion-base) var(--ease-standard);
+}
+.file-surface.local-open .file-surface-dual {
+  grid-template-columns: 1fr 1fr;
 }
 .file-surface-col {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
-.file-surface-col--local {
+// 双栏时本地列右侧 1px 分隔。
+.file-surface.local-open .file-surface-col--local {
   border-inline-end: 1px solid var(--app-border);
 }
 
-// Row 3: bottom drawer trigger + sheet.
-.file-surface-drawer {
+// 本地切换按钮：内联在远程 header actions 里（非悬浮，不遮挡过滤图标）。
+// 折叠态低调灰边，展开态 accent 高亮表示当前双栏。
+.local-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding-inline: 7px;
+  background: transparent;
+  color: var(--app-muted);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-xs);
+  font-family: var(--font-body);
+  cursor: pointer;
+  user-select: none;
   flex: 0 0 auto;
+  transition: background var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard);
+}
+.local-toggle:hover {
+  background: var(--app-hover);
+  color: var(--app-strong);
+  border-color: var(--app-border-strong);
+}
+.local-toggle.active {
+  color: var(--accent);
+  border-color: color-mix(in oklab, var(--accent), transparent 30%);
+  background: color-mix(in oklab, var(--accent), transparent 90%);
+}
+
+// 拖拽视觉提示：整面半透明 accent 边框 + 居中浮层。pointer-events:none 不拦截 drop。
+.drag-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-drawer);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in oklab, var(--accent), transparent 90%);
+  border: 2px dashed var(--accent);
+  pointer-events: none;
+}
+.drag-overlay-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: var(--space-4) var(--space-6);
+  color: var(--accent);
+  background: var(--app-panel);
+  border-radius: var(--radius-md);
+  box-shadow: var(--app-shadow);
+}
+.drag-overlay-inner strong {
+  font-size: var(--text-sm);
+}
+.drag-overlay-sub {
+  font-size: var(--text-xs);
+  color: var(--app-muted);
+  font-family: var(--font-mono);
 }
 </style>

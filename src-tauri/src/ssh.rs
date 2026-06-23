@@ -330,6 +330,16 @@ pub struct RemoteFileEntry {
     pub kind: String,
     pub size: u64,
     pub modified: String,
+    /// 权限八进制串（如 "755"）。来自 SFTP FileAttributes.permissions 或 find %m。
+    /// None 表示后端未提供（老 SFTP server / find 不支持 %m）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<String>,
+    /// 属主用户名（如 "root"）。None 表示未提供。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// 属主组名（如 "root"）。None 表示未提供。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -869,8 +879,10 @@ pub async fn ssh_list_directory(
         .channel_open_session()
         .await
         .map_err(|e| format!("Channel open failed: {e}"))?;
+    // %f 名 / %p 全路径 / %y 类型(d/l/f) / %s 大小 / %TY-%Tm-%Td %TH:%TM 修改时间 /
+    // %m 权限八进制 / %u 属主用户 / %g 属主组。字段以 \\t 分隔。
     let command = format!(
-        "LC_ALL=C find {} -maxdepth 1 -mindepth 1 -printf '%f\\t%p\\t%y\\t%s\\t%TY-%Tm-%Td %TH:%TM\\n'",
+        "LC_ALL=C find {} -maxdepth 1 -mindepth 1 -printf '%f\\t%p\\t%y\\t%s\\t%TY-%Tm-%Td %TH:%TM\\t%m\\t%u\\t%g\\n'",
         shell_quote(&requested_path)
     );
     channel
@@ -1096,12 +1108,21 @@ pub async fn sftp_list_dir(
                 "file"
             }
             .to_string();
+            // 权限 u32 → 八进制串（去掉类型位前缀，取末 4 位如 "0755"）。
+            // user/group 来自 SFTP 长名解析，部分 server 不提供（None）。
+            let permissions = meta.permissions.map(|p| {
+                let mode = p & 0o7777; // 过滤文件类型位，只留权限位
+                format!("{:04o}", mode)
+            });
             RemoteFileEntry {
                 name: entry.file_name(),
                 path: entry.path(),
                 kind,
                 size: meta.len(),
                 modified: format!("{:?}", meta.modified()),
+                permissions,
+                user: meta.user.clone(),
+                group: meta.group.clone(),
             }
         })
         .collect();
@@ -1363,6 +1384,9 @@ pub async fn sftp_stat(
         .to_string(),
         size: meta.len(),
         modified: format!("{:?}", meta.modified()),
+        permissions: meta.permissions.map(|p| format!("{:04o}", p & 0o7777)),
+        user: meta.user.clone(),
+        group: meta.group.clone(),
     })
 }
 
@@ -1779,9 +1803,24 @@ fn parse_remote_file_entries(output: &str) -> Vec<RemoteFileEntry> {
     let mut entries = Vec::new();
     for line in output.lines() {
         let parts: Vec<&str> = line.split('\t').collect();
+        // 至少 5 个核心字段（name/path/kind/size/modified）；
+        // 权限/用户/组（parts[5..7]）可选，老 find 或 BusyBox 无 %m/%u/%g 时回落 None。
         if parts.len() < 5 {
             continue;
         }
+        // 权限八进制补齐 4 位（find %m 输出如 "755"），缺失或解析失败 → None。
+        let permissions = parts.get(5).and_then(|s| {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            match u32::from_str_radix(trimmed, 8) {
+                Ok(mode) => Some(format!("{:04o}", mode & 0o7777)),
+                Err(_) => Some(trimmed.to_string()),
+            }
+        });
+        let user = parts.get(6).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let group = parts.get(7).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
         entries.push(RemoteFileEntry {
             name: parts[0].to_string(),
             path: parts[1].to_string(),
@@ -1793,6 +1832,9 @@ fn parse_remote_file_entries(output: &str) -> Vec<RemoteFileEntry> {
             .to_string(),
             size: parts[3].parse().unwrap_or(0),
             modified: parts[4].to_string(),
+            permissions,
+            user,
+            group,
         });
     }
     entries.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));

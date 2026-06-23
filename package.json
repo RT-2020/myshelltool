@@ -10,11 +10,7 @@
     "test:core": "cargo test --manifest-path crates/myshelltool-core/Cargo.toml",
     "test:ui": "node tests/ui-smoke.mjs && node tests/ui-host-key.mjs",
     "tauri:build": "tauri build",
-    "tauri:dev": "tauri dev",
-    "mcp:build": "cargo build --manifest-path src-tauri/Cargo.toml --bin myshelltool-mcp",
-    "mcp:build:release": "cargo build --manifest-path src-tauri/Cargo.toml --release --bin myshelltool-mcp",
-    "dev:all": "node scripts/mcp-dev-watch.mjs --with-gui",
-    "mcp:watch": "node scripts/mcp-dev-watch.mjs"
+    "tauri:dev": "tauri dev"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.9.5",
@@ -23,6 +19,7 @@
     "vite": "^7.2.7"
   },
   "dependencies": {
+    "@tauri-apps/plugin-clipboard-manager": "^2.0.0",
     "@vitejs/plugin-vue": "^6.0.7",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-search": "^0.16.0",

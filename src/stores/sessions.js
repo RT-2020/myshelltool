@@ -14,8 +14,6 @@ import { pickTerminalTheme } from '../lib/terminalThemes.js';
 const TRANSFER_PROGRESS_EVENT = 'sftp-transfer-progress';
 const HOST_KEY_VERIFY_EVENT = 'ssh-host-key-verify';
 const KEYBOARD_INTERACTIVE_EVENT = 'ssh-keyboard-interactive';
-// v1.1：MCP 客户端不支持 elicitation 时，Rust 经此事件委托 GUI 弹审批确认框。
-const MCP_APPROVAL_EVENT = 'mcp-approval-verify';
 // 统一会话状态事件：Rust 在 连接成功 / 远端关闭 / 用户断开 三处 emit。
 // 前端在这里维护 session.status（唯一权威源），所有状态 UI 从它派生。
 const SESSION_STATUS_EVENT = 'ssh-session-status';
@@ -73,10 +71,6 @@ export const useSessionsStore = defineStore('sessions', () => {
   let hostKeyUnlisten = null;
   let keyboardUnlisten = null;
   let statusUnlisten = null;
-  // v1.1：MCP 审批弹窗事件监听 handle。
-  let mcpApprovalUnlisten = null;
-  // v1.1：当前 MCP 审批请求 payload（三段式：intent/command/consequence）。
-  const mcpApprovalPrompt = ref(null);
   let resizeObserver = null;
   let hostKeyTimeout = null;
 
@@ -229,14 +223,6 @@ export const useSessionsStore = defineStore('sessions', () => {
         if (session) session.status = status;
       });
     }
-    // v1.1：MCP 客户端不支持 elicitation 时，Rust 经 pipe 委托 GUI 弹审批框。
-    // 收到事件后把三段式 payload 存入 ref，并触发 mcpApproval modal。
-    if (!mcpApprovalUnlisten) {
-      mcpApprovalUnlisten = await listenBackendEvent(MCP_APPROVAL_EVENT, event => {
-        mcpApprovalPrompt.value = event.payload;
-        wb().modal = { type: 'mcpApproval', approval: event.payload };
-      });
-    }
   }
 
   async function disposeEventListeners() {
@@ -245,7 +231,6 @@ export const useSessionsStore = defineStore('sessions', () => {
     if (typeof hostKeyUnlisten === 'function') { await hostKeyUnlisten(); hostKeyUnlisten = null; }
     if (typeof keyboardUnlisten === 'function') { await keyboardUnlisten(); keyboardUnlisten = null; }
     if (typeof statusUnlisten === 'function') { await statusUnlisten(); statusUnlisten = null; }
-    if (typeof mcpApprovalUnlisten === 'function') { await mcpApprovalUnlisten(); mcpApprovalUnlisten = null; }
   }
 
   // ============================================================
@@ -591,18 +576,6 @@ export const useSessionsStore = defineStore('sessions', () => {
     keyboardPrompt.value = null;
   }
 
-  // v1.1：MCP 审批确认框回传（用户点击确认/拒绝后调用）。
-  // 照 resolveHostKeyPrompt 范式：调 invokeBackend 把 bool 回传给 Rust（解除 pipe dispatch 阻塞）。
-  async function resolveMcpApproval(requestId, approved) {
-    try {
-      await invokeBackend('mcp_approval_resolve', { requestId, approved });
-    } catch (error) {
-      announce('MCP 审批响应失败：' + error.message);
-    }
-    mcpApprovalPrompt.value = null;
-    if (!approved) wb().modal = { type: null, asset: null };
-  }
-
   // ============================================================
   // Disconnect / reconnect
   // ============================================================
@@ -872,9 +845,6 @@ export const useSessionsStore = defineStore('sessions', () => {
     // host key / keyboard
     resolveHostKeyPrompt,
     resolveKeyboardPrompt,
-    // v1.1：MCP 审批弹窗回传 + payload ref
-    resolveMcpApproval,
-    mcpApprovalPrompt,
     // exposed helpers（部分 internal 供 workbench 复用）
     createOscParser,
     applyTerminalFontSizeAll,

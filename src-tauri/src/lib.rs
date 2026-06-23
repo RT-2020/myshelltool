@@ -19,9 +19,8 @@ pub struct AppState {
     pub secret_store_dir: PathBuf,
     pub ssh_sessions: Arc<AsyncMutex<ssh::SshSessionManager>>,
     pub resource_monitors: Arc<Mutex<resource_monitor::ResourceMonitorState>>,
-    /// v1.1：MCP 审批弹窗 pending 表（request_id → oneshot sender）。
-    /// GUI pipe server dispatch emit 弹窗后在此存 sender，前端回传命令从此取。
-    pub mcp_approval_pending: mcp::pipe::ApprovalPending,
+    /// v1.4：MCP HTTP server 的 graceful shutdown token。GUI 退出时取消。
+    pub mcp_shutdown: tokio_util::sync::CancellationToken,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -85,12 +84,14 @@ struct McpStatus {
     server_name: &'static str,
     /// GUI 自身版本（Cargo 包版本，与 tauri.conf.json 对齐）。
     server_version: &'static str,
-    /// Windows named pipe 路径。
-    pipe_name: &'static str,
+    /// v1.4：MCP HTTP endpoint URL（供用户配置 MCP host）。
+    /// v1.3 是 pipe_name（named pipe 路径），内嵌后改为 HTTP URL。
+    endpoint: String,
     /// MCP 进程读写的数据目录（GUI 与 MCP 共享同一份资产/凭据）。
     data_dir: String,
-    /// v1.2：MCP 就绪探测结果（无状态、按需）。这是状态灯的唯一信号源——
-    /// GUI 主动 spawn myshelltool-mcp.exe + initialize 握手，回答「能否正常工作」。
+    /// v1.4：MCP 就绪探测结果（HTTP 健康检查）。这是状态灯的唯一信号源——
+    /// 向自己的 HTTP endpoint 发 initialize 握手，回答「能否正常工作」。
+    /// 不再 spawn 子进程（v1.2 的一次性 spawn 已废弃）。
     probe: mcp::probe::McpProbeResult,
     /// MCP 暴露的 9 个工具（7 只读 + 2 高危）。
     tools: Vec<McpToolInfo>,
@@ -113,9 +114,18 @@ fn tool_tag(name: &str) -> &'static str {
 
 #[tauri::command]
 async fn mcp_status(_state: State<'_, AppState>) -> Result<McpStatus, String> {
-    // v1.2：无状态探测——现场 spawn myshelltool-mcp.exe + initialize 握手。
-    // 不依赖 State（探测是纯函数），_state 保留以维持 Tauri 命令签名一致性。
-    let probe = mcp::probe::probe_mcp(None).await;
+    let data_dir = mcp_data_dir();
+
+    // v1.4：HTTP 健康检查。读 mcp-endpoint.json 拿实际监听地址，向它发 initialize。
+    // 不再 spawn 子进程（v1.2 的 probe_mcp 已废弃）。
+    let endpoint = mcp::http_server::read_endpoint(&data_dir)
+        .map(|e| e.url)
+        .unwrap_or_default();
+    let probe = if endpoint.is_empty() {
+        mcp::probe::fail_no_endpoint(&chrono::Utc::now().to_rfc3339())
+    } else {
+        mcp::probe::probe_endpoint(&endpoint).await
+    };
 
     // 静态能力声明：直接复用 mcp 模块的 schema 构造函数，保证与协议实际暴露一致。
     let tools: Vec<McpToolInfo> = mcp::tools::list_all_tools()
@@ -164,8 +174,8 @@ async fn mcp_status(_state: State<'_, AppState>) -> Result<McpStatus, String> {
     Ok(McpStatus {
         server_name: "myshelltool",
         server_version: env!("CARGO_PKG_VERSION"),
-        pipe_name: mcp::pipe::PIPE_NAME,
-        data_dir: mcp_data_dir().to_string_lossy().to_string(),
+        endpoint,
+        data_dir: data_dir.to_string_lossy().to_string(),
         probe,
         tools,
         resources,
@@ -347,37 +357,36 @@ pub fn run() {
 
             // Option A：ssh.rs 全部命令统一通过 State<'_, AppState> 解析。
             // 不再需要双 manage hack——参见 .omc/plans/followup-ssh-state-unify.md（已完成）。
-            let mcp_approval_pending: mcp::pipe::ApprovalPending =
-                Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+            let mcp_shutdown = tokio_util::sync::CancellationToken::new();
             app.manage(AppState {
                 asset_store_path: app_data_dir.join("connection-assets.json"),
                 secret_store_dir: app_data_dir.join("credentials"),
                 ssh_sessions: ssh_mgr,
                 resource_monitors: Arc::new(Mutex::new(resource_monitor::ResourceMonitorState::default())),
-                mcp_approval_pending: mcp_approval_pending.clone(),
+                mcp_shutdown: mcp_shutdown.clone(),
             });
 
-            // v1.1 M8：启动 MCP named pipe server，让 myshelltool-mcp.exe
-            // 能复用 GUI 已建立的 SSH 会话（避免 headless 重连 + 二次 host key 验证）。
-            // v1.1 审批降级：MCP 客户端不支持 elicitation 时，经此 pipe 委托 GUI 弹窗。
-            // pipe 的职责回归纯粹（v1.2 删掉了连接状态追踪），「MCP 能否工作」改由
-            // probe.rs 无状态探测回答，与 pipe 无关。
-            //
-            // 从已 manage 的 AppState 抽取 ssh_sessions + approval_pending 的 Arc
-            //（照 resource_monitor 的抽取范式），连同 AppHandle clone 给独立 spawn 的
-            // pipe server 任务。pipe 挂了不影响 GUI。
+            // v1.4：启动 MCP Streamable HTTP server（内嵌 GUI 进程）。
+            // 取代 v1.1 的 named pipe server —— MCP server 不再是独立 exe，
+            // 直接跑在 GUI 进程内，用 HTTP transport 对外暴露。任何合规 MCP host
+            // 经 http://127.0.0.1:<port>/mcp 连入。SSH 会话/资产/审批同进程直接访问。
             //
             // 注意：setup hook 是同步上下文，此时 Tokio runtime 尚未在当前线程
             // 就绪——裸 `tokio::spawn` 会 panic「no reactor running」。
             // 必须用 `tauri::async_runtime::spawn`，它会绑定到 Tauri 管理的 runtime。
-            let state = app.state::<AppState>();
-            tauri::async_runtime::spawn(mcp::pipe::run_pipe_server(
-                state.ssh_sessions.clone(),
-                app.handle().clone(),
-                state.mcp_approval_pending.clone(),
+            let mcp_ctx = mcp::tools::McpToolContext::new(
+                app_data_dir.join("connection-assets.json"),
+                app_data_dir.join("credentials"),
+                app_data_dir.join("known_hosts.json"),
+            );
+            tauri::async_runtime::spawn(mcp::http_server::run_http_server(
+                mcp_ctx,
+                app_data_dir.clone(),
+                mcp_shutdown,
             ));
             Ok(())
         })
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             backend_status,
             // v1.2：MCP 服务可观测性聚合查询（前端状态栏/管理面板）
@@ -406,8 +415,6 @@ pub fn run() {
             ssh::ssh_disconnect,
             ssh::ssh_confirm_host_key,
             ssh::ssh_keyboard_response,
-            // v1.1：MCP 审批弹窗回传（前端用户点击确认/拒绝后调用）
-            mcp::pipe::mcp_approval_resolve,
             ssh::sftp_list_dir,
             ssh::sftp_read_file,
             ssh::sftp_write_file,
@@ -438,91 +445,25 @@ pub fn run() {
         .expect("failed to run myshelltool");
 }
 
-// ─── MCP server 入口（D1 双二进制：myshelltool-mcp.exe console 子系统调用）───
+// ─── MCP 数据目录解析（v1.4：MCP 内嵌 GUI，此函数供 mcp_status 命令用）───
 
-/// 解析 MCP 进程的数据目录。
+/// 解析 MCP 数据目录。
 ///
 /// 优先级：
-/// 1. 环境变量 `MYSHELLTOOL_DATA_DIR`（Claude Desktop 配置里可显式指定）
+/// 1. 环境变量 `MYSHELLTOOL_DATA_DIR`（测试/自定义数据目录时可显式指定）
 /// 2. `%APPDATA%/com.redtei.myshelltool`（与 GUI 的 Tauri app_data_dir 一致，
-///    目录名取自 tauri.conf.json 的 identifier，保证 GUI 与 MCP 读同一份
-///    资产/凭据/known_hosts）
+///    目录名取自 tauri.conf.json 的 identifier）
 ///
 /// 注意：Tauri 2 的 app_data_dir 用 **identifier**（com.redtei.myshelltool）
 /// 作目录名，不是 productName（myshelltool）——两者不能混。
+///
+/// v1.4 变化：v1.0-v1.3 此函数主要给独立 myshelltool-mcp.exe 用（解析自己的
+/// 数据目录）；v1.4 MCP 内嵌 GUI 后，MCP server 直接用 GUI 的 app_data_dir，
+/// 此函数仅保留给 mcp_status 命令读取 mcp-endpoint.json 用。
 fn mcp_data_dir() -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("MYSHELLTOOL_DATA_DIR") {
         return std::path::PathBuf::from(dir);
     }
     let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
     std::path::PathBuf::from(appdata).join("com.redtei.myshelltool")
-}
-
-/// 初始化 MCP 专用 logger。
-///
-/// 复用 GUI 的 `FileLogger`（stderr + 文件双写，仅 Info 及以上）——
-/// 它本来就**绝不写 stdout**（会破坏 JSON-RPC 协议帧解析），符合 MCP 要求。
-///
-/// 日志路径：`<data_dir>/logs/myshelltool-mcp.log`（与 GUI 日志分开，便于排查）。
-pub fn init_mcp_logger() {
-    let log_path = mcp_data_dir().join("logs").join("myshelltool-mcp.log");
-    match FileLogger::new(&log_path) {
-        Ok(logger) => {
-            if let Err(e) = log::set_boxed_logger(Box::new(logger))
-                .map(|()| log::set_max_level(log::LevelFilter::Info))
-            {
-                eprintln!("[myshelltool-mcp] failed to set logger: {e}");
-            }
-            log::info!("myshelltool-mcp logger initialized, log: {}", log_path.display());
-        }
-        Err(e) => {
-            // 日志初始化失败不致命：退化为仅 stderr
-            eprintln!("[myshelltool-mcp] failed to open log file {}: {e}", log_path.display());
-        }
-    }
-}
-
-/// MCP stdio server 主入口。被 `src/bin/mcp.rs` 调用。
-///
-/// Layer 2-5：加载资产/凭据路径 → rmcp stdio serve（三原语）。
-///
-/// Layer 7（v1.0 降级语义）：v1.0 是「MCP 进程独立建连」，**不依赖 GUI 进程**。
-/// 这里的「降级」不是「GUI 未运行」（那是 v1.1 named pipe 场景），而是
-/// 「数据目录未初始化 / 资产库为空」时的优雅处理：
-/// - 数据目录不存在 → 自动创建（日志目录等），记录警告
-/// - 资产库为空 → MCP server 仍正常启动，list_assets 返回空，
-///   disk_usage 等工具调用时给出「请先在 GUI 配置资产」的引导错误
-///
-/// 这样保证 Claude Desktop 始终能连上 MCP server（initialize/tools/list 永远响应），
-/// 即使是全新安装未配置任何资产的状态。
-pub async fn run_mcp_stdio() -> Result<(), String> {
-    log::info!("myshelltool-mcp stdio server starting");
-    let data_dir = mcp_data_dir();
-    let asset_store_path = data_dir.join("connection-assets.json");
-    let secret_store_dir = data_dir.join("credentials");
-    let known_hosts_path = data_dir.join("known_hosts.json");
-
-    // Layer 7：数据目录降级——确保目录存在，缺失资产库给出警告但不阻断启动。
-    if !data_dir.exists() {
-        log::warn!(
-            "MCP data dir does not exist, creating: {}",
-            data_dir.display()
-        );
-        if let Err(e) = std::fs::create_dir_all(&data_dir) {
-            log::warn!("Failed to create data dir {}: {}", data_dir.display(), e);
-            // 不阻断——工具调用时会自然报错
-        }
-    }
-    if !asset_store_path.exists() {
-        log::warn!(
-            "Asset store not found at {}. list_assets will return empty. \
-             Please configure assets in myshelltool GUI first, or place connection-assets.json in the data dir.",
-            asset_store_path.display()
-        );
-    }
-
-    mcp::server::serve_stdio(asset_store_path, secret_store_dir, known_hosts_path)
-        .await
-        .map_err(|e| format!("MCP server error: {e}"))?;
-    Ok(())
 }

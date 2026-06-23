@@ -23,6 +23,7 @@ import TerminalPane from './TerminalPane.vue';
 import ShortcutCheatsheet from './ShortcutCheatsheet.vue';
 import CommandPalette from './CommandPalette.vue';
 import DangerousPasteConfirm from './DangerousPasteConfirm.vue';
+import { AppContextMenu } from '@/components/ui/index.js';
 
 // ============================================================
 // Stores (store-bound wiring — no prop drilling)
@@ -140,6 +141,26 @@ function cancelDangerousPaste() {
 }
 
 // ============================================================
+// Terminal pane context menu (右键复制/粘贴) — emit 来自 TerminalPane
+// 复用 copyTerminalSelection / pasteToTerminal（经 runTerminalAction）+ 危险粘贴守卫。
+// ============================================================
+const terminalMenu = reactive({ open: false, x: 0, y: 0, hasSelection: false });
+
+function handleTerminalContextMenu({ x, y, hasSelection }) {
+  terminalMenu.x = x;
+  terminalMenu.y = y;
+  terminalMenu.hasSelection = hasSelection;
+  terminalMenu.open = true;
+}
+
+const terminalMenuItems = computed(() => [
+  { label: '复制选中', action: () => sessionsStore.runTerminalAction('copy'), disabled: !terminalMenu.hasSelection },
+  { label: '粘贴', action: () => handlePasteWithGuard() },
+  { separator: true },
+  { label: '复制主机地址', action: () => { if (activeSession.value) handleCopyHost(activeSession.value.sessionId); } }
+]);
+
+// ============================================================
 // Tab context-menu actions — migrated from App.vue
 // ============================================================
 function handleTabSelect(id) {
@@ -233,6 +254,14 @@ function openAssetEditor() { uiStore.modal = { type: 'assetEditor', asset: null 
       :selected-asset="selectedAsset"
       @connect-selected="handleTerminalPaneConnect"
       @open-asset-editor="openAssetEditor"
+      @context-menu="handleTerminalContextMenu"
+    />
+    <AppContextMenu
+      :open="terminalMenu.open"
+      :items="terminalMenuItems"
+      :x="terminalMenu.x"
+      :y="terminalMenu.y"
+      @close="terminalMenu.open = false"
     />
 
     <!-- Overlays (teleported to body by children) -->

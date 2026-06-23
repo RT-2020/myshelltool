@@ -1,18 +1,19 @@
 <script setup>
 /**
- * TransferDrawer — Wave 3 Step 3.4
- * Bottom drawer showing transfer queue with per-item progress (Tabby-style).
- * Store-bound: subscribes to useFilesStore.transferQueue + transferDrawerOpen.
+ * TransferDrawer — Wave 3 Step 3.4（v2 精简版）
+ * 传输队列 sheet：仅保留 Teleport 到 body 的上滑面板。
  *
- * Uses AppDrawer (side="bottom") for the slide-up sheet, plus AppProgress for
- * the aggregate progress bar. Each row shows direction / name / size ratio /
- * status pill with a thin linear progress fill. Compact, low visual weight.
+ * v2 变化：原常驻在 FileSurface 底部的 trigger bar 已删除（占用文件区高度），
+ * 触发入口下沉到全局状态栏的「传输」胶囊按钮（AppStatusBar），由它控制
+ * transferDrawerOpen。本组件只在全局（App.vue）挂载一次，sheet 仍 Teleport
+ * 到 body，与终端/文件区 tab 无关。
+ *
+ * Store-bound: 订阅 useFilesStore.transferQueue。每行显示方向 / 名称 / 大小比 /
+ * 状态药丸 + 细线性进度。
  */
-import { computed } from 'vue';
 import { storeToRefs } from 'pinia';
-import { Upload, Download, ChevronUp, ChevronDown, AlertCircle, CheckCircle2, Loader2 } from 'lucide-vue-next';
+import { Upload, Download, ChevronDown, AlertCircle, CheckCircle2, Loader2 } from 'lucide-vue-next';
 import { useFilesStore } from '@/stores/files.js';
-import AppDrawer from '@/components/ui/AppDrawer.vue';
 
 const props = defineProps({
   open: { type: Boolean, default: false }
@@ -21,21 +22,6 @@ const emit = defineEmits(['toggle']);
 
 const filesStore = useFilesStore();
 const { transferQueue, activeTransfers, completedTransfers } = storeToRefs(filesStore);
-
-const hasItems = computed(() => transferQueue.value.length > 0);
-
-// Aggregate percent across running items only; done items count as 100.
-const overallPercent = computed(() => {
-  const list = transferQueue.value;
-  if (!list.length) return 0;
-  let sum = 0;
-  for (const item of list) {
-    if (item.status === 'done') sum += 100;
-    else if (item.status === 'error') sum += 100;
-    else sum += item.percent || 0;
-  }
-  return Math.round(sum / list.length);
-});
 
 function formatBytes(bytes) {
   const size = Number(bytes) || 0;
@@ -53,30 +39,6 @@ function statusMeta(item) {
 </script>
 
 <template>
-  <!-- Trigger bar: always visible; click toggles the slide-up sheet -->
-  <header class="transfer-trigger" @click="emit('toggle')">
-    <div class="transfer-trigger-title">
-      <strong>传输队列</strong>
-      <span class="transfer-trigger-sub">
-        {{ activeTransfers.length }} 进行中 · {{ completedTransfers.length }} 完成
-      </span>
-    </div>
-    <div class="transfer-trigger-actions">
-      <div class="transfer-trigger-bar" v-if="hasItems">
-        <div class="transfer-trigger-bar-fill" :style="{ width: overallPercent + '%' }"></div>
-      </div>
-      <button
-        class="transfer-trigger-toggle"
-        type="button"
-        :title="open ? '收起' : '展开'"
-        :aria-expanded="String(open)"
-        @click.stop="emit('toggle')"
-      >
-        <component :is="open ? ChevronDown : ChevronUp" :size="14" />
-      </button>
-    </div>
-  </header>
-
   <Teleport to="body">
     <Transition name="transfer-sheet">
       <div v-if="open" class="transfer-sheet" role="dialog" aria-label="传输队列">
@@ -99,7 +61,7 @@ function statusMeta(item) {
         </div>
 
         <div class="transfer-sheet-body">
-          <p v-if="!hasItems" class="transfer-empty">暂无传输任务</p>
+          <p v-if="!transferQueue.length" class="transfer-empty">暂无传输任务</p>
           <ul v-else class="transfer-list">
             <li
               v-for="item in transferQueue"
@@ -146,80 +108,8 @@ function statusMeta(item) {
 <style scoped lang="scss">
 @use '@/styles/_tokens' as *;
 
-// Trigger bar: thin sticky footer; click anywhere toggles the sheet.
-.transfer-trigger {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  background: var(--app-panel-2);
-  border-block-start: 1px solid var(--app-border);
-  cursor: pointer;
-  user-select: none;
-  font-size: var(--text-xs);
-  color: var(--app-text);
-  transition: background var(--motion-fast) var(--ease-standard);
-}
-.transfer-trigger:hover {
-  background: var(--app-hover);
-}
-
-.transfer-trigger-title {
-  display: inline-flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  min-width: 0;
-}
-.transfer-trigger-title strong {
-  font-size: var(--text-xs);
-  font-weight: 600;
-}
-.transfer-trigger-sub {
-  color: var(--app-muted);
-}
-
-.transfer-trigger-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-// Inline mini progress bar inside the trigger.
-.transfer-trigger-bar {
-  width: 120px;
-  height: 3px;
-  background: var(--app-panel);
-  border-radius: var(--radius-pill);
-  overflow: hidden;
-}
-.transfer-trigger-bar-fill {
-  height: 100%;
-  background: var(--accent);
-  border-radius: var(--radius-pill);
-  transition: width 0.2s ease;
-}
-
-.transfer-trigger-toggle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  background: transparent;
-  border: none;
-  color: var(--app-muted);
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-  transition: background var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard);
-}
-.transfer-trigger-toggle:hover {
-  background: var(--app-hover);
-  color: var(--app-strong);
-}
-
-// Slide-up sheet (teleported). Fixed bottom dock; no nested card chrome.
+// Slide-up sheet (teleported to body). Fixed bottom dock; no nested card chrome.
+// trigger bar 已删除（触发入口在状态栏「传输」胶囊按钮）。
 .transfer-sheet {
   position: fixed;
   left: 0;

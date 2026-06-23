@@ -27,20 +27,23 @@ log = { version = "0.4", features = ["std"] }
 
 # MCP server 接入（D3 锁定 rmcp ~1.7，MCP 协议 2025-06-18 基线）
 # v1.1：加 elicitation feature（高危命令客户端内确认）+ schemars（elicit<T> 泛型版需要）
-rmcp = { version = "~1.7", features = ["server", "transport-io", "elicitation", "schemars"] }
+# v1.4：加 transport-streamable-http-server（MCP 内嵌 GUI，Streamable HTTP transport）
+rmcp = { version = "~1.7", features = ["server", "transport-io", "transport-streamable-http-server", "elicitation", "schemars"] }
 # 危险命令检测（D5：翻译 dangerousCommands.js，GUI 与 MCP 共享）
 regex = "1"
 # MCP v1.1 elicitation：elicit::<T>() 需要 schemars 直接依赖（生成 JSON Schema）
 schemars = "1"
 # 日志时间戳（FileLogger 的 [YYYY-MM-DD HH:MM:SS] 前缀）
 chrono = "0.4"
+# v1.4 MCP 内嵌 GUI：Streamable HTTP transport 的 web 框架（rmcp 官方示例同款）
+axum = "0.8"
+# v1.4 MCP HTTP server 的 CancellationToken（优雅关停）
+tokio-util = "0.7"
 # v1.3 Gist 同步：HTTP 客户端调 GitHub Gist API
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-
-# MCP server 独立 bin（D1 双二进制：GUI + console 子系统 MCP）
-[[bin]]
-name = "myshelltool-mcp"
-path = "src/bin/mcp.rs"
+# 剪贴板插件（v2 原生 clipboard，替代 v1 的 window.__TAURI__.clipboard 注入——
+# navigator.clipboard 在 Tauri v2 webview 非聚焦时不稳，走原生插件最可靠）
+tauri-plugin-clipboard-manager = "2"
 
 # Windows-only：凭据存储 DPAPI 加密（v1.3 SecretStore 升级）。
 # SecretCodec trait 在 core 层，DPAPI 实现在此（cfg(windows)）。

@@ -53,10 +53,13 @@ export const useFilesStore = defineStore('files', () => {
   const remoteFilter = ref('');
   const remoteListMode = ref('detailed');
   const manualRemotePathInput = ref('');
+  const manualLocalPathInput = ref('');
   const lastSelectedRemoteIndex = ref(-1);
   const contextMenu = ref({ visible: false, x: 0, y: 0, side: 'remote', entry: null });
   // 传输队列抽屉默认收起：用户有传输时状态栏「传输」或文件区 trigger 可展开。
   const transferDrawerOpen = ref(false);
+  // 本地文件列默认折叠：center-bottom 默认只渲染远程列占满全宽，点「本地」按钮展开双栏。
+  const localPaneVisible = ref(false);
 
   // 进度事件 unlisten handle（必须 init 后保存，不能跨 store 共享）
   let progressUnlisten = null;
@@ -98,6 +101,16 @@ export const useFilesStore = defineStore('files', () => {
   const sortedRemoteEntries = computed(() => {
     const key = remoteSortKey.value;
     const dir = remoteSortDir.value === 'asc' ? 1 : -1;
+    // 类型推断：目录→DIR / 符号链接→LNK / 普通文件→扩展名大写（无扩展名→FILE）。
+    const typeOf = (e) => {
+      if (e.kind === 'directory') return 'DIR';
+      if (e.kind === 'symlink') return 'LNK';
+      const dot = e.name.lastIndexOf('.');
+      if (dot <= 0 || dot === e.name.length - 1) return 'FILE';
+      return e.name.slice(dot + 1).toUpperCase();
+    };
+    // 用户:组 组合串用于排序。
+    const ownerOf = (e) => [e.user || '', e.group || ''].join(':');
     const cmp = (a, b) => {
       const aDir = a.kind === 'directory' ? 0 : 1;
       const bDir = b.kind === 'directory' ? 0 : 1;
@@ -105,6 +118,13 @@ export const useFilesStore = defineStore('files', () => {
       let av, bv;
       if (key === 'size') { av = a.size || 0; bv = b.size || 0; }
       else if (key === 'modified') { av = Number(a.modified) || 0; bv = Number(b.modified) || 0; }
+      else if (key === 'type') { av = typeOf(a); bv = typeOf(b); }
+      else if (key === 'permissions') {
+        // 权限按八进制数值排（缺权限当作 0）。
+        av = a.permissions ? parseInt(a.permissions, 8) || 0 : 0;
+        bv = b.permissions ? parseInt(b.permissions, 8) || 0 : 0;
+      }
+      else if (key === 'owner') { av = ownerOf(a); bv = ownerOf(b); }
       else { av = a.name.toLowerCase(); bv = b.name.toLowerCase(); }
       if (av < bv) return -1 * dir;
       if (av > bv) return 1 * dir;
@@ -115,16 +135,6 @@ export const useFilesStore = defineStore('files', () => {
   const selectedRemoteEntries = computed(() =>
     remoteEntries.value.filter(e => selectedRemotePaths.value.has(e.path))
   );
-  const remoteBreadcrumb = computed(() => {
-    const segments = remotePath.value.split('/').filter(Boolean);
-    const crumbs = [{ name: '/', path: '/' }];
-    let acc = '';
-    for (const seg of segments) {
-      acc += '/' + seg;
-      crumbs.push({ name: seg, path: acc });
-    }
-    return crumbs;
-  });
 
   // ============================================================
   // 传输进度事件监听（原 workbench.js:177-187）
@@ -521,6 +531,16 @@ export const useFilesStore = defineStore('files', () => {
     await navigateRemotePath(target);
   }
 
+  function setManualLocalPath(value) {
+    manualLocalPathInput.value = value;
+  }
+
+  async function goToManualLocalPath() {
+    const target = manualLocalPathInput.value.trim();
+    if (!target) return;
+    await navigateLocalPath(target);
+  }
+
   // ============================================================
   // 右键菜单 / 批量操作
   // ============================================================
@@ -572,6 +592,8 @@ export const useFilesStore = defineStore('files', () => {
   }
 
   function toggleTransferDrawer() { transferDrawerOpen.value = !transferDrawerOpen.value; }
+  function toggleLocalPane() { localPaneVisible.value = !localPaneVisible.value; }
+  function setLocalPaneVisible(value) { localPaneVisible.value = !!value; }
 
   // ============================================================
   // clearSelectionOnAssetSwitch — assets store selectAsset 时调用
@@ -598,16 +620,17 @@ export const useFilesStore = defineStore('files', () => {
     remoteFilter,
     remoteListMode,
     manualRemotePathInput,
+    manualLocalPathInput,
     lastSelectedRemoteIndex,
     contextMenu,
     transferDrawerOpen,
+    localPaneVisible,
     // computed
     activeTransfers,
     completedTransfers,
     filteredRemoteEntries,
     sortedRemoteEntries,
     selectedRemoteEntries,
-    remoteBreadcrumb,
     // bridge
     attachWorkbench,
     // lifecycle
@@ -649,12 +672,16 @@ export const useFilesStore = defineStore('files', () => {
     setRemoteListMode,
     setManualRemotePath,
     goToManualRemotePath,
+    setManualLocalPath,
+    goToManualLocalPath,
     openContextMenu,
     closeContextMenu,
     batchRemoteDelete,
     batchRemoteDownload,
     copyRemotePath,
     toggleTransferDrawer,
+    toggleLocalPane,
+    setLocalPaneVisible,
     // helpers exposed to assets store
     clearSelection
   };

@@ -18,17 +18,18 @@ import { storeToRefs } from 'pinia';
 import {
   ChevronUp,
   ChevronDown,
+  ChevronRight,
   Folder,
   File as FileIcon,
   Link2,
   ArrowUp,
   RefreshCw,
   Filter as FilterIcon,
+  Pencil,
   X
 } from 'lucide-vue-next';
 import { useFilesStore } from '@/stores/files.js';
 import { useUiStore } from '@/stores/ui.js';
-import AppBreadcrumb from '@/components/ui/AppBreadcrumb.vue';
 
 const props = defineProps({
   kind: { type: String, required: true, validator: (v) => v === 'local' || v === 'remote' },
@@ -57,7 +58,7 @@ const {
   remoteFilter,
   remoteListMode,
   manualRemotePathInput,
-  remoteBreadcrumb,
+  manualLocalPathInput,
   selectedRemotePaths,
   // local-side refs
   localPath,
@@ -85,26 +86,6 @@ const entries = computed(() => {
 
 const currentPath = computed(() => (isLocal.value ? localPath.value : remotePath.value));
 
-const breadcrumbItems = computed(() => {
-  if (isLocal.value) {
-    // Build breadcrumb from localPath segments (platform-aware: \\ or /).
-    if (!localPath.value) return [];
-    const parts = localPath.value.split(/[\\/]/).filter(Boolean);
-    const crumbs = [];
-    let acc = '';
-    for (let i = 0; i < parts.length; i++) {
-      acc = acc ? acc + '/' + parts[i] : parts[i];
-      // Keep Windows drive prefix on first segment.
-      if (i === 0 && /^[a-zA-Z]:$/.test(parts[0])) {
-        acc = parts[0] + '\\';
-      }
-      crumbs.push({ name: parts[i], path: acc });
-    }
-    return crumbs;
-  }
-  return remoteBreadcrumb.value;
-});
-
 const selectionSet = computed(() => (isLocal.value ? selectedLocalPaths.value : selectedRemotePaths.value));
 const selectionCount = computed(() => selectionSet.value.size);
 const sortKey = computed(() => (isLocal.value ? localSortKey.value : remoteSortKey.value));
@@ -125,6 +106,15 @@ function setLocalSort(key) {
   }
 }
 
+// 类型推断（排序用，与模板内 inferType 同义；定义在 computed 之前避免前向引用）。
+function typeOfEntry(e) {
+  if (e.kind === 'directory') return 'DIR';
+  if (e.kind === 'symlink') return 'LNK';
+  const dot = e.name.lastIndexOf('.');
+  if (dot <= 0 || dot === e.name.length - 1) return 'FILE';
+  return e.name.slice(dot + 1).toUpperCase();
+}
+
 // Apply local sort (files store doesn't expose local sort, so re-sort here).
 const sortedLocalEntries = computed(() => {
   // entries() already filtered; but localEntries sort needs to happen before filter for stability.
@@ -134,6 +124,7 @@ const sortedLocalEntries = computed(() => {
     : localEntries.value.slice();
   const key = localSortKey.value;
   const dir = localSortDir.value === 'asc' ? 1 : -1;
+  const ownerOf = (e) => [e.user || '', e.group || ''].join(':');
   return list.sort((a, b) => {
     const aDir = a.kind === 'directory' ? 0 : 1;
     const bDir = b.kind === 'directory' ? 0 : 1;
@@ -141,6 +132,12 @@ const sortedLocalEntries = computed(() => {
     let av, bv;
     if (key === 'size') { av = a.size || 0; bv = b.size || 0; }
     else if (key === 'modified') { av = Number(a.modified) || 0; bv = Number(b.modified) || 0; }
+    else if (key === 'type') { av = typeOfEntry(a); bv = typeOfEntry(b); }
+    else if (key === 'permissions') {
+      av = a.permissions ? parseInt(a.permissions, 8) || 0 : 0;
+      bv = b.permissions ? parseInt(b.permissions, 8) || 0 : 0;
+    }
+    else if (key === 'owner') { av = ownerOf(a); bv = ownerOf(b); }
     else { av = a.name.toLowerCase(); bv = b.name.toLowerCase(); }
     if (av < bv) return -1 * dir;
     if (av > bv) return 1 * dir;
@@ -206,10 +203,6 @@ function onListClickSelf() {
 // ============================================================
 // Toolbar actions
 // ============================================================
-function navigateTo(path) {
-  if (isLocal.value) filesStore.navigateLocalPath(path);
-  else filesStore.navigateRemotePath(path);
-}
 function goUp() {
   if (isLocal.value) filesStore.navigateLocalUp();
   else filesStore.navigateRemoteUp();
@@ -227,11 +220,12 @@ function onFilterInput(event) {
   else filesStore.setRemoteFilter(event.target.value);
 }
 function onManualPathInput(event) {
-  // Only remote has a manual path input
-  filesStore.setManualRemotePath(event.target.value);
+  if (isLocal.value) filesStore.setManualLocalPath(event.target.value);
+  else filesStore.setManualRemotePath(event.target.value);
 }
 function onManualPathEnter() {
-  filesStore.goToManualRemotePath();
+  if (isLocal.value) filesStore.goToManualLocalPath();
+  else filesStore.goToManualRemotePath();
 }
 function setSort(field) {
   emit('sort-change', field);
@@ -360,6 +354,116 @@ function formatEntryTime(entry) {
 
 const filterValue = computed(() => (isLocal.value ? localFilterQuery.value : remoteFilter.value));
 const showFilterClear = computed(() => filterValue.value !== '');
+
+// ============================================================
+// 路径面包屑 + 可编辑切换
+// 默认渲染面包屑（每段可点跳转上级），点末端「✎」或双击切换为原始路径 input（回车跳转）。
+// ============================================================
+const pathEditing = ref(false);
+
+// 把路径切成累积段：/srv/app/release → [{/, /}, {srv, /srv}, {app, /srv/app}, ...]。
+// 同时支持 Unix '/' 与 Windows '\'。
+const crumbs = computed(() => {
+  const raw = currentPath.value || '';
+  if (!raw) return [];
+  // 规范分隔为 '/' 便于切分；Windows 盘符 D:\ → D:/。
+  const norm = raw.replace(/\\/g, '/');
+  const isAbs = norm.startsWith('/');
+  const segs = norm.split('/').filter(Boolean);
+  const result = [];
+  if (isAbs) {
+    // Unix 根
+    result.push({ label: '/', path: '/' });
+    let acc = '';
+    for (const seg of segs) {
+      acc += '/' + seg;
+      result.push({ label: seg, path: acc });
+    }
+  } else {
+    // 相对 / Windows 路径（首段可能是盘符 D:）
+    let acc = '';
+    segs.forEach((seg, idx) => {
+      acc = idx === 0 ? seg : acc + '/' + seg;
+      // Windows 盘符根：D: → D:\ （navigateLocalPath 能识别）
+      const displayPath = /^[a-zA-Z]:$/.test(seg) ? seg + '\\' : acc;
+      result.push({ label: seg, path: displayPath });
+    });
+  }
+  return result;
+});
+
+function enterPathEditing() {
+  // 切到编辑态时把当前路径填进输入框（避免空白）。
+  if (isLocal.value) filesStore.setManualLocalPath(currentPath.value || '');
+  else filesStore.setManualRemotePath(currentPath.value || '');
+  pathEditing.value = true;
+}
+function exitPathEditing() {
+  pathEditing.value = false;
+}
+function onPathInputKeydown(event) {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    exitPathEditing();
+  } else if (event.key === 'Enter') {
+    event.preventDefault();
+    onManualPathEnter();
+    exitPathEditing();
+  }
+}
+function crumbClick(seg) {
+  if (isLocal.value) filesStore.navigateLocalPath(seg.path);
+  else filesStore.navigateRemotePath(seg.path);
+}
+
+// ============================================================
+// 过滤浮动窗（挂在列表右上角）
+// click-outside 关闭；filterValue 非空时图标高亮。
+// ============================================================
+const filterOpen = ref(false);
+const filterPopoverRef = ref(null);
+const filterBtnRef = ref(null);
+const filterInputRef = ref(null);
+
+function toggleFilter(event) {
+  event.stopPropagation();
+  filterOpen.value = !filterOpen.value;
+  if (filterOpen.value) {
+    // 打开后聚焦输入框（nextTick 确保 DOM 已渲染）。
+    requestAnimationFrame(() => filterInputRef.value?.focus());
+  }
+}
+function onWindowClick(event) {
+  if (!filterOpen.value) return;
+  const pop = filterPopoverRef.value;
+  const btn = filterBtnRef.value;
+  if (pop && !pop.contains(event.target) && btn && !btn.contains(event.target)) {
+    filterOpen.value = false;
+  }
+}
+onMounted(() => window.addEventListener('click', onWindowClick));
+onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
+
+// ============================================================
+// 新列展示 helper：类型 / 权限 / 用户:组
+// ============================================================
+function inferType(entry) {
+  if (entry.kind === 'directory') return 'DIR';
+  if (entry.kind === 'symlink') return 'LNK';
+  const dot = entry.name.lastIndexOf('.');
+  if (dot <= 0 || dot === entry.name.length - 1) return 'FILE';
+  // 扩展名大写，超长截断（如 .tar.gz 取最后段 GZ）。
+  const ext = entry.name.slice(dot + 1).toUpperCase();
+  return ext.length > 5 ? ext.slice(0, 5) : ext;
+}
+
+function formatOwner(entry) {
+  const u = entry.user;
+  const g = entry.group;
+  if (!u && !g) return '—';
+  if (u && g) return u + ':' + g;
+  return u || g || '—';
+}
 </script>
 
 <template>
@@ -370,14 +474,90 @@ const showFilterClear = computed(() => filterValue.value !== '');
     @mouseenter="onColumnMouseEnter"
     @mouseleave="onColumnMouseLeave"
   >
-    <!-- Header: title + count + actions (sticky) -->
+    <!-- Header: 单行 title+count / 路径(面包屑或编辑input) / 过滤按钮 / 上级目录+刷新。
+         过滤框已移到列表右上角浮动小窗，路径框内部显示可点击面包屑（点✎切原始 input）。 -->
     <header class="file-column-head">
-      <div class="file-column-head-left">
+      <div class="file-column-head-meta">
         <strong class="file-column-title">{{ columnTitle }}</strong>
         <span class="file-column-count" v-if="selectionCount">{{ selectionCount }} 项已选</span>
         <span class="file-column-count" v-else>{{ effectiveEntries().length }} 项</span>
       </div>
-      <div class="file-column-head-right">
+      <div class="file-column-path">
+        <!-- 面包屑态：每段可点跳转，末端 ✎ 切编辑 -->
+        <nav v-if="!pathEditing" class="file-column-breadcrumb" @dblclick="enterPathEditing">
+          <template v-if="crumbs.length">
+            <button
+              v-for="(seg, idx) in crumbs"
+              :key="seg.path + idx"
+              type="button"
+              class="crumb"
+              :class="{ active: idx === crumbs.length - 1 }"
+              :title="seg.path"
+              @click="crumbClick(seg)"
+            >
+              <span class="crumb-label">{{ seg.label }}</span>
+              <ChevronRight v-if="idx < crumbs.length - 1" :size="11" class="crumb-sep" />
+            </button>
+            <button
+              type="button"
+              class="crumb-edit"
+              title="编辑路径"
+              @click.stop="enterPathEditing"
+            >
+              <Pencil :size="11" />
+            </button>
+          </template>
+          <span v-else class="crumb-empty" @click="enterPathEditing">点此输入路径…</span>
+        </nav>
+        <!-- 编辑态：原始路径 input，回车跳转、Esc 退出 -->
+        <input
+          v-else
+          class="file-column-manual-path"
+          :value="isLocal ? manualLocalPathInput : manualRemotePathInput"
+          :placeholder="isLocal ? '路径（回车跳转，Esc 取消）' : '路径（回车跳转，Esc 取消）'"
+          spellcheck="false"
+          autofocus
+          @input="onManualPathInput"
+          @keydown="onPathInputKeydown"
+        />
+      </div>
+      <div class="file-column-head-actions">
+        <!-- 可选前置按钮插槽（如「本地」列切换），插在过滤按钮之前，避免与悬浮按钮冲突。 -->
+        <slot name="actions-leading" />
+        <!-- 过滤浮动窗触发按钮（filterValue 非空时高亮） -->
+        <div class="filter-host">
+          <button
+            ref="filterBtnRef"
+            class="icon-btn"
+            :class="{ active: filterValue !== '' || filterOpen }"
+            type="button"
+            :title="'过滤当前目录'"
+            @click="toggleFilter"
+          >
+            <FilterIcon :size="14" />
+          </button>
+          <!-- 浮动过滤面板：绝对定位挂在右上角 -->
+          <div v-if="filterOpen" ref="filterPopoverRef" class="filter-popover" @click.stop>
+            <span class="filter-popover-icon"><FilterIcon :size="12" /></span>
+            <input
+              ref="filterInputRef"
+              class="filter-popover-input"
+              :value="filterValue"
+              placeholder="过滤当前目录..."
+              spellcheck="false"
+              @input="onFilterInput"
+            />
+            <button
+              v-if="showFilterClear"
+              class="filter-popover-clear"
+              type="button"
+              title="清空"
+              @click="clearFilter"
+            >
+              <X :size="12" />
+            </button>
+          </div>
+        </div>
         <button
           class="icon-btn"
           type="button"
@@ -399,51 +579,8 @@ const showFilterClear = computed(() => filterValue.value !== '');
       </div>
     </header>
 
-    <!-- Breadcrumb + path input (remote only) -->
-    <div class="file-column-pathrow">
-      <AppBreadcrumb
-        v-if="breadcrumbItems.length"
-        :items="breadcrumbItems"
-        @navigate="navigateTo"
-      />
-      <span v-else class="file-column-path-empty">
-        {{ isLocal ? (disabledHint || '点击刷新加载本地目录') : '尚未加载远程目录' }}
-      </span>
-
-      <!-- Manual path input: remote only -->
-      <input
-        v-if="!isLocal"
-        class="file-column-manual-path"
-        :value="manualRemotePathInput"
-        placeholder="输入路径后回车跳转"
-        spellcheck="false"
-        @input="onManualPathInput"
-        @keydown.enter="onManualPathEnter"
-      />
-    </div>
-
-    <!-- Filter row -->
-    <div class="file-column-filterrow">
-      <span class="file-column-filter-icon"><FilterIcon :size="12" /></span>
-      <input
-        class="file-column-filter-input"
-        :value="filterValue"
-        placeholder="过滤当前目录..."
-        spellcheck="false"
-        @input="onFilterInput"
-      />
-      <button
-        v-if="showFilterClear"
-        class="file-column-filter-clear"
-        type="button"
-        title="清空"
-        @click="clearFilter"
-      >
-        <X :size="12" />
-      </button>
-    </div>
-
-    <!-- Column headers (sortable) — only in detailed list mode -->
+    <!-- Column headers (sortable) — only in detailed list mode.
+         列：名称 / 大小 / 类型 / 修改时间 / 权限 / 用户组。-->
     <div v-if="remoteListMode === 'detailed'" class="file-column-cols">
       <button
         class="col-sort"
@@ -459,7 +596,7 @@ const showFilterClear = computed(() => filterValue.value !== '');
         />
       </button>
       <button
-        class="col-sort"
+        class="col-sort col-sort--num"
         :class="{ active: sortKey === 'size' }"
         type="button"
         @click="setSort('size')"
@@ -473,6 +610,19 @@ const showFilterClear = computed(() => filterValue.value !== '');
       </button>
       <button
         class="col-sort"
+        :class="{ active: sortKey === 'type' }"
+        type="button"
+        @click="setSort('type')"
+      >
+        <span>类型</span>
+        <component
+          v-if="sortKey === 'type'"
+          :is="sortDir === 'asc' ? ChevronUp : ChevronDown"
+          :size="12"
+        />
+      </button>
+      <button
+        class="col-sort"
         :class="{ active: sortKey === 'modified' }"
         type="button"
         @click="setSort('modified')"
@@ -480,6 +630,32 @@ const showFilterClear = computed(() => filterValue.value !== '');
         <span>修改时间</span>
         <component
           v-if="sortKey === 'modified'"
+          :is="sortDir === 'asc' ? ChevronUp : ChevronDown"
+          :size="12"
+        />
+      </button>
+      <button
+        class="col-sort col-sort--num"
+        :class="{ active: sortKey === 'permissions' }"
+        type="button"
+        @click="setSort('permissions')"
+      >
+        <span>权限</span>
+        <component
+          v-if="sortKey === 'permissions'"
+          :is="sortDir === 'asc' ? ChevronUp : ChevronDown"
+          :size="12"
+        />
+      </button>
+      <button
+        class="col-sort"
+        :class="{ active: sortKey === 'owner' }"
+        type="button"
+        @click="setSort('owner')"
+      >
+        <span>用户组</span>
+        <component
+          v-if="sortKey === 'owner'"
           :is="sortDir === 'asc' ? ChevronUp : ChevronDown"
           :size="12"
         />
@@ -514,8 +690,13 @@ const showFilterClear = computed(() => filterValue.value !== '');
           <FileIcon v-else :size="14" />
         </span>
         <span class="file-row-name" :title="entry.name">{{ entry.name }}</span>
-        <span v-if="remoteListMode === 'detailed'" class="file-row-size">{{ formatBytes(entry.size) }}</span>
-        <span v-if="remoteListMode === 'detailed'" class="file-row-time">{{ formatEntryTime(entry) }}</span>
+        <template v-if="remoteListMode === 'detailed'">
+          <span class="file-row-size">{{ formatBytes(entry.size) }}</span>
+          <span class="file-row-type" :title="inferType(entry)">{{ inferType(entry) }}</span>
+          <span class="file-row-time">{{ formatEntryTime(entry) }}</span>
+          <span class="file-row-perm">{{ entry.permissions || '—' }}</span>
+          <span class="file-row-owner" :title="formatOwner(entry)">{{ formatOwner(entry) }}</span>
+        </template>
       </div>
 
       <div v-if="!effectiveEntries().length" class="file-column-empty">
@@ -555,46 +736,125 @@ const showFilterClear = computed(() => filterValue.value !== '');
   opacity: 0.6;
 }
 
-// Header row: title + count + actions.
+// Header row: 单行承载 title+count / 路径框+过滤框 / 上级目录/刷新。
+// 原独立 pathrow / filterrow 已合并，省两行高度（每列净省 ~46px 让给终端区）。
 .file-column-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-1) var(--space-2);
   position: sticky;
   top: 0;
   z-index: var(--z-sticky);
-  background: transparent;
+  background: var(--app-panel-2);
   border-block-end: 1px solid var(--app-border);
+  min-height: 34px;
 }
-.file-column-head-left {
+.file-column-head-meta {
   display: inline-flex;
   align-items: baseline;
   gap: var(--space-2);
+  flex: 0 0 auto;
   min-width: 0;
 }
 .file-column-title {
   font-size: var(--text-sm);
   font-weight: 600;
   color: var(--app-text);
+  white-space: nowrap;
 }
 .file-column-count {
   font-size: var(--text-xs);
   color: var(--app-muted);
+  white-space: nowrap;
 }
-.file-column-head-right {
+// 路径区：吃剩余宽度，承载面包屑或编辑态 input。
+.file-column-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+.file-column-head-actions {
   display: inline-flex;
   align-items: center;
   gap: 2px;
+  flex: 0 0 auto;
+}
+
+// 面包屑：每段可点跳转，分隔符 ChevronRight。
+.file-column-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+  overflow-x: auto;
+  scrollbar-width: none;
+  &::-webkit-scrollbar { display: none; }
+}
+.crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  background: transparent;
+  border: none;
+  padding: 2px 4px;
+  color: var(--app-muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  flex: 0 0 auto;
+  transition: background var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard);
+}
+.crumb:hover {
+  background: var(--app-hover);
+  color: var(--app-strong);
+}
+.crumb.active {
+  color: var(--app-strong);
+  font-weight: 600;
+}
+.crumb-sep {
+  color: var(--app-subtle);
+  flex-shrink: 0;
+}
+.crumb-edit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  background: transparent;
+  border: none;
+  color: var(--app-subtle);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  flex: 0 0 auto;
+  margin-inline-start: 2px;
+  transition: background var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard);
+}
+.crumb-edit:hover {
+  background: var(--app-hover);
+  color: var(--app-strong);
+}
+.crumb-empty {
+  color: var(--app-subtle);
+  font-size: var(--text-xs);
+  cursor: text;
+  padding: 2px 4px;
 }
 
 .icon-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   background: transparent;
   border: none;
   color: var(--app-muted);
@@ -611,26 +871,18 @@ const showFilterClear = computed(() => filterValue.value !== '');
   opacity: 0.4;
   cursor: not-allowed;
 }
+// 过滤按钮激活态（有过滤值或面板打开时）。
+.icon-btn.active {
+  color: var(--accent);
+  background: color-mix(in oklab, var(--accent), transparent 88%);
+}
 
-// Path row: breadcrumb + manual path input (remote only).
-.file-column-pathrow {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-  border-block-end: 1px solid var(--app-border);
-  background: var(--app-panel-2);
-  min-height: 26px;
-}
-.file-column-path-empty {
-  font-size: var(--text-xs);
-  color: var(--app-muted);
-}
+// 路径编辑态 input（吃满路径区宽度）。
 .file-column-manual-path {
-  margin-left: auto;
-  width: 220px;
-  max-width: 40%;
+  flex: 1 1 auto;
+  min-width: 60px;
   padding: 2px 6px;
+  height: 22px;
   background: var(--app-control);
   color: var(--app-text);
   border: 1px solid var(--app-border);
@@ -638,44 +890,64 @@ const showFilterClear = computed(() => filterValue.value !== '');
   font-size: var(--text-xs);
   font-family: var(--font-mono);
   outline: none;
+  transition: border-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard);
 }
 .file-column-manual-path:focus {
   border-color: var(--accent);
   box-shadow: var(--focus-ring);
 }
 
-// Filter row.
-.file-column-filterrow {
-  display: flex;
+// 过滤浮动窗宿主：相对定位，popover 绝对定位挂其下。
+.filter-host {
+  position: relative;
+  display: inline-flex;
+}
+// 浮动过滤面板：绝对定位贴在 header 下方右侧。
+.filter-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: var(--z-dropdown);
+  display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: var(--space-1) var(--space-3);
-  border-block-end: 1px solid var(--app-border);
+  padding: 6px 8px;
+  min-width: 200px;
   background: var(--app-panel);
-  position: relative;
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--app-shadow);
 }
-.file-column-filter-icon {
+.filter-popover-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: var(--app-subtle);
   pointer-events: none;
+  flex-shrink: 0;
 }
-.file-column-filter-input {
+.filter-popover-input {
   flex: 1;
   min-width: 0;
-  padding: 2px 6px;
-  background: transparent;
+  padding: 3px 6px;
+  height: 22px;
+  background: var(--app-control);
   color: var(--app-text);
-  border: none;
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-sm);
   outline: none;
   font-size: var(--text-xs);
   font-family: var(--font-body);
+  transition: border-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard);
 }
-.file-column-filter-input::placeholder {
-  color: var(--app-subtle);
+.filter-popover-input::placeholder { color: var(--app-subtle); }
+.filter-popover-input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
 }
-.file-column-filter-clear {
+.filter-popover-clear {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -686,16 +958,17 @@ const showFilterClear = computed(() => filterValue.value !== '');
   color: var(--app-muted);
   cursor: pointer;
   border-radius: var(--radius-sm);
+  flex-shrink: 0;
 }
-.file-column-filter-clear:hover {
+.filter-popover-clear:hover {
   background: var(--app-hover);
   color: var(--app-strong);
 }
 
-// Sortable column headers.
+// Sortable column headers. 列：名称(flex) / 大小 / 类型 / 修改时间 / 权限 / 用户组。
 .file-column-cols {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 80px 160px;
+  grid-template-columns: minmax(0, 1fr) 64px 56px 130px 56px 92px;
   gap: var(--space-2);
   padding: var(--space-1) var(--space-3);
   background: var(--app-panel-2);
@@ -718,7 +991,10 @@ const showFilterClear = computed(() => filterValue.value !== '');
   text-align: start;
   user-select: none;
   transition: color var(--motion-fast) var(--ease-standard);
+  min-width: 0;
 }
+// 数值列标题右对齐（与数值单元格一致）。
+.col-sort--num { justify-content: flex-end; text-align: end; }
 .col-sort:hover { color: var(--app-strong); }
 .col-sort.active { color: var(--accent); }
 
@@ -736,9 +1012,10 @@ const showFilterClear = computed(() => filterValue.value !== '');
 }
 
 // Single file row. Hairline separators via border-block-end on rows.
+// 列对齐 .file-column-cols：图标/名(flex) / 大小 / 类型 / 修改时间 / 权限 / 用户组。
 .file-row {
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) 80px 160px;
+  grid-template-columns: 16px minmax(0, 1fr) 64px 56px 130px 56px 92px;
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-1) var(--space-3);
@@ -796,9 +1073,35 @@ const showFilterClear = computed(() => filterValue.value !== '');
   font-family: var(--font-mono);
   text-align: end;
 }
+// 类型列：扩展名大写，mono 等宽，弱色。
+.file-row-type {
+  font-size: var(--text-xs);
+  color: var(--app-muted);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .file-row-time {
   font-size: var(--text-xs);
   color: var(--app-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+// 权限列：八进制串，mono 等宽，右对齐。
+.file-row-perm {
+  font-size: var(--text-xs);
+  color: var(--app-muted);
+  font-family: var(--font-mono);
+  text-align: end;
+  white-space: nowrap;
+}
+// 用户:组列：弱色，省略号兜底。
+.file-row-owner {
+  font-size: var(--text-xs);
+  color: var(--app-muted);
+  font-family: var(--font-mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

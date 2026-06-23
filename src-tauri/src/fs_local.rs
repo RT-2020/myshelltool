@@ -137,12 +137,24 @@ pub fn fs_local_list_dir(path: String) -> Result<LocalDirectoryList, String> {
             }
             .to_string();
             let modified = format_modified(meta.modified());
+            // 本地权限：Unix 上取 mode 位，Windows 上 None（无 Unix 权限模型）。
+            // user/group 本地暂不解析（非运维主场景），保持 None。
+            #[cfg(unix)]
+            let permissions = {
+                use std::os::unix::fs::PermissionsExt;
+                Some(format!("{:04o}", meta.permissions().mode() & 0o7777))
+            };
+            #[cfg(not(unix))]
+            let permissions = None;
             Some(RemoteFileEntry {
                 name,
                 path,
                 kind,
                 size: meta.len(),
                 modified,
+                permissions,
+                user: None,
+                group: None,
             })
         })
         .collect();

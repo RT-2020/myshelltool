@@ -21,9 +21,7 @@ import { storeToRefs } from 'pinia';
 import { Plug, Copy, RefreshCw, FileCode2, Database } from 'lucide-vue-next';
 import { useWorkbenchStore } from '@/stores/workbench.js';
 import { useClipboard } from '@/composables/useClipboard.js';
-import { MCP_EXE_PLACEHOLDER } from '@/stores/mcp.js';
 import AppButton from '@/components/ui/AppButton.vue';
-import AppInput from '@/components/ui/AppInput.vue';
 import McpCapabilityList from '@/components/shell/McpCapabilityList.vue';
 
 const store = useWorkbenchStore();
@@ -34,8 +32,6 @@ const {
 
 const { copy } = useClipboard();
 
-const exePathInput = ref('');
-const includeDataDir = ref(false);
 const copiedHint = ref('');
 
 const status = computed(() => mcpStatus.value || {});
@@ -53,10 +49,7 @@ function fmtTime(iso) {
   }
 }
 
-const configJson = computed(() => store.buildMcpConfig({
-  exePath: exePathInput.value.trim() || MCP_EXE_PLACEHOLDER,
-  dataDir: includeDataDir.value ? (mcpDataDir.value || '') : ''
-}));
+const configJson = computed(() => store.buildMcpConfig());
 
 async function onCopyConfig() {
   const ok = await copy(configJson.value);
@@ -84,7 +77,7 @@ function onRefresh() { store.refreshMcpStatus(); }
           <span class="hero-status">{{ mcpClientConnected ? 'MCP 可用' : 'MCP 不可用' }}</span>
           <span class="hero-sub">
             {{ mcpClientConnected
-              ? '探测握手成功，MCP exe 能正常启动并响应协议'
+              ? 'HTTP 健康检查通过，MCP server 正常响应协议'
               : (mcpProbe?.detail || '探测失败，MCP 无法正常工作') }}
           </span>
         </div>
@@ -98,7 +91,7 @@ function onRefresh() { store.refreshMcpStatus(); }
 
     <!-- 不可用时的引导文案（可用时隐藏，减少噪音） -->
     <p v-if="!mcpClientConnected" class="hero-hint muted">
-      已对 myshelltool-mcp.exe 做就绪探测（spawn + initialize 握手）但未通过。常见原因：exe 未构建/未拷贝到 GUI 同级目录、启动崩溃、协议异常。下方配置可用于接入外部 LLM 宿主。
+      已对 MCP HTTP endpoint 做健康检查（initialize 握手）但未通过。常见原因：HTTP server 尚未启动、端口被占用、协议异常。MCP server 随 GUI 启停，请确认 GUI 正在运行后点刷新。
     </p>
 
     <div v-if="!hasStatus" class="loading muted">正在探测 MCP…</div>
@@ -108,15 +101,15 @@ function onRefresh() { store.refreshMcpStatus(); }
       <section class="block">
         <header class="block-head"><Database :size="12" />连接详情</header>
         <dl class="detail-grid">
-          <dt>探测路径</dt>
+          <dt>探测 Endpoint</dt>
           <dd><code class="mono-path">{{ mcpProbe?.exePath || '—' }}</code></dd>
           <dt>数据目录</dt>
           <dd>
             <code class="mono-path">{{ mcpDataDir || '—' }}</code>
             <button v-if="mcpDataDir" class="link-btn" @click="onCopyDataDir"><Copy :size="11" /></button>
           </dd>
-          <dt>Named Pipe</dt>
-          <dd><code class="mono-path">{{ status.pipeName || '—' }}</code></dd>
+          <dt>MCP Endpoint</dt>
+          <dd><code class="mono-path">{{ status.endpoint || '—' }}</code></dd>
         </dl>
       </section>
 
@@ -127,27 +120,16 @@ function onRefresh() { store.refreshMcpStatus(); }
           <span v-if="copiedHint" class="copy-hint">{{ copiedHint }}</span>
         </header>
         <p class="block-note muted">
-          三家宿主共用 <code>mcpServers.myshelltool</code>，仅贴入文件不同：
-          <strong>Claude Desktop</strong> → <code>%APPDATA%\Claude\claude_desktop_config.json</code> ·
+          v1.4：MCP 内嵌 GUI 进程，Streamable HTTP transport。三家宿主共用
+          <code>mcpServers.myshelltool</code>，仅贴入文件不同：
+          <strong>Claude Code</strong> → 配置文件 ·
           <strong>Cursor</strong> → <code>.cursor/mcp.json</code> ·
-          <strong>Cline</strong> → 扩展设置
+          其他合规 MCP host 同理
         </p>
-        <label class="field">
-          <span class="field-label">myshelltool-mcp.exe 绝对路径 <em class="req">必填</em></span>
-          <AppInput
-            :model-value="exePathInput"
-            :placeholder="MCP_EXE_PLACEHOLDER"
-            @update:model-value="v => exePathInput = v"
-          />
-        </label>
-        <label class="check-row">
-          <input type="checkbox" v-model="includeDataDir" />
-          <span>加入 <code>MYSHELLTOOL_DATA_DIR</code> env（指向数据目录）</span>
-        </label>
         <pre class="code-block"><code>{{ configJson }}</code></pre>
         <div class="config-foot">
           <AppButton variant="primary" size="sm" @click="onCopyConfig"><Copy :size="12" />复制配置 JSON</AppButton>
-          <span class="warn-inline">⚠ MCP exe 不随安装包分发，需从 <code>target/(debug|release)/</code> 手动拷贝</span>
+          <span class="warn-inline">⚠ 确保 GUI 在运行（MCP server 随 GUI 启停）</span>
         </div>
       </section>
 
