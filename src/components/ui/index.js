@@ -9,5 +9,4 @@ export { default as AppContextMenu } from './AppContextMenu.vue';
 export { default as AppTab } from './AppTab.vue';
 export { default as AppTabGroup } from './AppTabGroup.vue';
 export { default as AppStatusBar } from './AppStatusBar.vue';
-export { default as AppBreadcrumb } from './AppBreadcrumb.vue';
 export { default as AppProgress } from './AppProgress.vue';

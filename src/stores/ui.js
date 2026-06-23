@@ -195,6 +195,7 @@ export const useUiStore = defineStore('ui', () => {
         if (filesStore && typeof filesStore.refreshRemoteFiles === 'function') {
           filesStore.refreshRemoteFiles().catch(error => announce('远程文件刷新失败：' + error.message));
           filesStore.manualRemotePathInput = filesStore.remotePath;
+          filesStore.manualLocalPathInput = filesStore.localPath;
           if (!filesStore.localPath) filesStore.refreshLocalFiles().catch(() => null);
         }
       }

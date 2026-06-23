@@ -8,7 +8,7 @@ const props = defineProps({
   isTauriCore: { type: Boolean, default: false },
   selectedAsset: { type: Object, default: null }
 });
-const emit = defineEmits(['connect-selected', 'open-asset-editor']);
+const emit = defineEmits(['connect-selected', 'open-asset-editor', 'context-menu']);
 
 const mountRef = ref(null);
 
@@ -32,10 +32,19 @@ function onWheel(e) {
     props.store?.runTerminalAction?.('font-dec');
   }
 }
+
+// 右键弹复制粘贴菜单。仅在有活跃会话时触发（无会话时空状态卡片接管交互）。
+// 菜单的 action 逻辑（复制/粘贴/危险守卫）在父 TerminalSurface 持有，靠 emit 桥接，
+// 保持 TerminalPane 纯展示职责（DOM 宿主与逻辑宿主分离）。
+function onContextMenu(event) {
+  if (!props.hasActiveSession) return;
+  const hasSelection = Boolean(props.store?.activeSession?.term?.getSelection());
+  emit('context-menu', { x: event.clientX, y: event.clientY, hasSelection });
+}
 </script>
 
 <template>
-  <div class="terminal-pane-host" @wheel="onWheel" :class="{ 'has-session': hasActiveSession }">
+  <div class="terminal-pane-host" @wheel="onWheel" @contextmenu.prevent="onContextMenu" :class="{ 'has-session': hasActiveSession }">
     <!--
       #terminalContainer 是 xterm 的挂载容器，也是 FitAddon 的测量目标。
       它必须保持尺寸稳定：不要在里面放会消失的兄弟元素（否则连接时空状态卡片

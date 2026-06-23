@@ -189,57 +189,19 @@ pub async fn call_tool(
     }
 }
 
-/// list_sessions：经 pipe 查询 GUI 已建立的 SSH 会话（v1.1 升级）。
+/// list_sessions：列出 GUI 已建立的 SSH 会话。
 ///
-/// v1.0 返回空桩（独立会话无持久池）。v1.1 经 named pipe 向 GUI 查询真实会话，
-/// 让 AI 能看到「哪个资产当前已连、可直接复用」，从而优先走会话复用而非 headless 重连。
-/// GUI 未运行时降级返回空列表 + 说明（不阻断，AI 仍可用 headless 工具）。
+/// v1.4：删掉 v1.1 的 pipe 查询（内嵌后无独立 MCP 进程）。当前返回空桩 +
+/// 说明（与 v1.0 一致）—— AI 仍可用 headless 工具（disk_usage/system_status/ssh_exec）。
+///
+/// TODO(follow-up v1.4+)：注入 GUI 的 `Arc<AsyncMutex<SshSessionManager>>` 到
+/// McpToolContext，直接读会话池返回真实列表（同进程访问，无需 IPC）。
 async fn tool_list_sessions() -> Result<CallToolResult, String> {
-    let mut client = match crate::mcp::pipe::PipeClient::connect() {
-        Ok(c) => c,
-        Err(_) => {
-            return Ok(text_result(
-                "GUI 未运行，无活跃会话。可先用 list_assets 查看可用资产，\
-                 disk_usage/system_status 等工具会自动 headless 建连。",
-            ));
-        }
-    };
-
-    let req = crate::mcp::pipe::PipeRequest {
-        id: "ls".into(),
-        method: "list_sessions".into(),
-        session_id: None,
-        command: None,
-        host: None,
-        port: None,
-        username: None,
-        intent: None,
-        consequence: None,
-    };
-
-    match client.request(&req).await {
-        Ok(crate::mcp::pipe::PipeResponse {
-            ok: true,
-            sessions: Some(sessions),
-            ..
-        }) => {
-            let lines: Vec<String> = sessions
-                .iter()
-                .map(|s| format!("  - {}@{}:{}  (session_id: {})", s.username, s.host, s.port, s.session_id))
-                .collect();
-            if lines.is_empty() {
-                Ok(text_result("当前无活跃 SSH 会话。"))
-            } else {
-                Ok(text_result(&format!(
-                    "活跃会话 {} 个（可被 disk_usage/system_status/ssh_exec 复用）：\n{}",
-                    sessions.len(),
-                    lines.join("\n")
-                )))
-            }
-        }
-        Ok(other) => Ok(error_result(&format!("pipe 返回异常: {:?}", other))),
-        Err(e) => Ok(error_result(&format!("pipe 查询失败（GUI 可能刚退出）: {e}"))),
-    }
+    Ok(text_result(
+        "当前会话查询暂未接入 GUI 会话池（v1.4 重构中）。\
+         可先用 list_assets 查看可用资产，disk_usage/system_status/ssh_exec \
+         等工具会自动 headless 建连。",
+    ))
 }
 
 /// list_assets：读资产库，返回脱敏元数据（去除 credential_id）。
@@ -311,12 +273,12 @@ async fn tool_ssh_exec(
 
 /// 在指定资产上执行一次性命令。
 ///
-/// v1.1 双路径（B4）：
-/// 1. **优先 pipe 复用**：调 `pipe::resolve_and_exec`，命中 GUI 已建立的会话则直接 exec
-///    —— 避免重连 + 二次 host key 验证 + 凭据读取开销。
-/// 2. **降级 headless**：GUI 未运行 / 无匹配会话 → v1.0 路径（connect_headless + exec_command_once）。
+/// v1.4：删掉 v1.1 的 pipe 复用分支（内嵌后无独立 MCP 进程，不再需要 pipe 桥）。
+/// 当前直接走 headless 建连（connect_headless + exec_command_once）。
 ///
-/// 两条路径对调用方等价（都返回命令输出）。日志标注走了哪条，便于排查。
+/// TODO(follow-up v1.4+)：注入 GUI 的 `Arc<AsyncMutex<SshSessionManager>>` 到
+/// McpToolContext，命中 GUI 已建立会话时直接复用（避免重连 + 二次 host key 验证）。
+/// 这是 v1.1 pipe 复用的等价能力，内嵌后实现更简单（同进程直接访问，无 IPC）。
 async fn exec_on_asset(
     ctx: &McpToolContext,
     args: &Map<String, serde_json::Value>,
@@ -327,7 +289,7 @@ async fn exec_on_asset(
         .and_then(|v| v.as_str())
         .ok_or("缺少 asset_id 参数")?;
 
-    // 从资产库找到对应资产（B5：asset_id → host:port:username，用于 pipe 会话映射）
+    // 从资产库找到对应资产（B5：asset_id → host:port:username）
     let store = myshelltool_core::load_connection_asset_store(&ctx.asset_store_path)
         .map_err(|e| format!("加载资产库失败: {e}"))?;
     let asset = store
@@ -344,28 +306,7 @@ async fn exec_on_asset(
         command
     );
 
-    // 路径 1：尝试 pipe 复用 GUI 会话。
-    match crate::mcp::pipe::resolve_and_exec(
-        &asset.host,
-        asset.port,
-        &asset.username,
-        command,
-    )
-    .await
-    {
-        Ok(Some(output)) => {
-            log::info!("exec_on_asset: pipe reuse hit (session reused from GUI)");
-            return Ok(text_result(&output));
-        }
-        Ok(None) => {
-            log::info!("exec_on_asset: pipe miss (no matching GUI session), degrade to headless");
-        }
-        Err(e) => {
-            log::warn!("exec_on_asset: pipe error ({e}), degrade to headless");
-        }
-    }
-
-    // 路径 2：headless 建连（密码为空，从凭据存储读；host key 未信任会被拒绝）
+    // headless 建连（密码为空，从凭据存储读；host key 未信任会被拒绝）
     let params = HeadlessConnectParams {
         host: asset.host.clone(),
         port: asset.port,

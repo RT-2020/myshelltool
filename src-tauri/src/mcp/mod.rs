@@ -1,15 +1,21 @@
 //! MCP server 接入模块。
 //!
-//! 按 Layer 拆解（见 docs/plans/MCP服务接入-实施计划.md）：
-//! - Layer 2：`server` — rmcp stdio server 主循环 + ServerHandler（M2 完成）
-//! - Layer 3：`tools` — MCP Tools（M3+M4 完成 9 个工具）
-//! - Layer 4：`resources` — 3 静态资源 + 1 template（M5 完成）
-//! - Layer 5：`prompts` — 3 个诊断 prompt（M5 完成）
-//! - Layer 6：`approval` — 三层审批 + 三段式拒绝（M4 v1.0 完成）
-//! - Layer 8：`pipe` — named pipe 桥接，MCP 进程复用 GUI 的 SSH 会话（v1.1 M8）
+//! v1.4：MCP 内嵌 GUI（Streamable HTTP transport）取代双进程架构。
+//! - `http_server` — Streamable HTTP server 主循环（GUI 进程内，取代 v1.0 stdio）
+//! - `server` — rmcp ServerHandler 实现（协议层，transport 无关）
+//! - `tools` — MCP Tools（9 个工具）
+//! - `resources` — 3 静态资源 + 1 template
+//! - `prompts` — 3 个诊断 prompt
+//! - `approval` — 审批判定（v1.4 改为同进程弹窗，删 v1.1 pipe 委托）
+//!
+//! 已删除（v1.4）：
+//! - `pipe` — named pipe 桥接（双进程时 MCP exe 复用 GUI 会话用，内嵌后无需）
+//!
+//! 重写（v1.4）：
+//! - `probe` — 从「一次性 spawn 子进程探测」改为「HTTP 健康检查」（不再 spawn）
 
 pub mod approval;
-pub mod pipe;
+pub mod http_server;
 pub mod probe;
 pub mod prompts;
 pub mod resources;

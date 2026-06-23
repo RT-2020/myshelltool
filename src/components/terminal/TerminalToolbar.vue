@@ -64,7 +64,7 @@ const oscTitle = computed(() => props.session?.oscTitle || '');
   gap: var(--space-3);
   padding: var(--space-2) var(--space-3);
   border-block-end: 1px solid var(--app-border);
-  background: var(--app-panel-2); // 统一 center 区 toolbar 底色：与 file-surface-toolbar 一致
+  background: var(--app-panel-2); // 统一 center 区 toolbar 底色：与 file-column-head 一致
 }
 
 .terminal-toolbar-left {
@@ -77,7 +77,7 @@ const oscTitle = computed(() => props.session?.oscTitle || '');
 
 .terminal-host {
   font-size: var(--text-sm);
-  font-weight: 600; // 统一 header 标题字重：与 sidebar-header / file-surface-title 一致
+  font-weight: 600; // 统一 header 标题字重：与 sidebar-header / file-column-title 一致
   color: var(--app-strong);
 }
 

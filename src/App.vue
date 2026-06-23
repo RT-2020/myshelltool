@@ -25,6 +25,7 @@ import OpsSummaryPanel from './components/shell/OpsSummaryPanel.vue';
 import GlobalModals from './components/shell/GlobalModals.vue';
 import TerminalSurface from './components/terminal/TerminalSurface.vue';
 import FileSurface from './components/files/FileSurface.vue';
+import TransferDrawer from './components/files/TransferDrawer.vue';
 import ResourceMonitorPanel from './components/resource-monitor/ResourceMonitorPanel.vue';
 
 const desktopRuntimeAvailable = computed(() => isTauriRuntime());
@@ -32,7 +33,9 @@ const store = useWorkbenchStore();
 const {
   backendStatus, activeSessions, themeLabel, assetsCollapsed, rightCollapsed,
   statusMessage, assets, groupedAssets, selectedAssetId, searchState,
-  runningTunnels, tunnels, warningCount, syncText, mcpClientConnected
+  runningTunnels, tunnels, warningCount, syncText, mcpClientConnected,
+  // v2：传输胶囊数据 + sheet 开关（TransferDrawer 全局挂载，原 FileSurface 底部 trigger 已删）。
+  activeTransfers, completedTransfers, transferDrawerOpen
 } = storeToRefs(store);
 
 // 面板拖拽布局（三列宽 + 中间两行高），reset/syncCollapse 供标题栏按钮与折叠态调用。
@@ -193,12 +196,19 @@ function onToggleTransferDrawer() { store.toggleTransferDrawer(); }
           :warning-count="warningCount"
           :sync-text="syncText"
           :mcp-connected="mcpClientConnected"
+          :active-transfers="activeTransfers.length"
+          :completed-transfers="completedTransfers.length"
+          :transfer-drawer-open="transferDrawerOpen"
           @click-status="onClickStatus"
           @toggle-transfer-drawer="onToggleTransferDrawer"
           @open-mcp-panel="onOpenMcpPanel"
         />
       </template>
     </AppShellLayout>
+
+    <!-- 全局传输 sheet：Teleport 到 body，由状态栏「传输」胶囊按钮控制开关。
+         v2 从 FileSurface 底部迁出（原 trigger bar 已删），与终端/文件区 tab 解耦。 -->
+    <TransferDrawer :open="transferDrawerOpen" @toggle="onToggleTransferDrawer" />
 
     <GlobalModals />
   </div>

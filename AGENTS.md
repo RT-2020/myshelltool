@@ -114,13 +114,14 @@ myshelltool/
 │   │   ├── ssh.rs              # SSH/SFTP/隧道核心（SshSessionManager + russh Handler）
 │   │   ├── resource_monitor.rs # 远程 CPU/mem/net/disk 轮询（SshCommand::MonitorExec）
 │   │   ├── fs_local.rs         # 本地文件系统命令
-│   │   ├── bin/mcp.rs          # myshelltool-mcp 二进制入口（stdio server，console 子系统）
-│   │   └── mcp/                # MCP server 接入模块（v1.1 接入 / v1.2 无状态探测）
-│   │       ├── server.rs       # rmcp stdio server 主循环 + ServerHandler（9 工具/4 资源/3 prompts）
-│   │       ├── tools.rs        # MCP Tools 实现 + exec_on_asset 双路径（pipe 复用 / headless 降级）
-│   │       ├── approval.rs     # 三层审批：白名单放行 / elicitation / 进程内拒绝
-│   │       ├── probe.rs        # 【v1.2】无状态就绪探测：spawn exe + initialize 握手，回答「MCP 能否工作」
-│   │       ├── pipe.rs         # named pipe 桥接（GUI=server / MCP=client）：会话复用 + 审批降级
+│   │   ├── bin/mcp.rs          # 【v1.4 已删】原 myshelltool-mcp 独立 console bin，内嵌后取消双二进制
+│   │   └── mcp/                # MCP server 接入模块（v1.4 内嵌 GUI / Streamable HTTP transport）
+│   │       ├── http_server.rs  # 【v1.4】Streamable HTTP server：axum + rmcp，绑定 127.0.0.1:41235/mcp
+│   │       ├── server.rs       # rmcp ServerHandler 实现（transport 无关，9 工具/4 资源/3 prompts）
+│   │       ├── tools.rs        # MCP Tools 实现 + exec_on_asset（v1.4 直走 headless，会话复用记 follow-up）
+│   │       ├── approval.rs     # 审批判定：白名单放行 / elicitation / 进程内拒绝（v1.4 删 pipe 降级）
+│   │       ├── probe.rs        # 【v1.4】HTTP 健康检查：向自己的 endpoint 发 initialize 握手（不再 spawn 子进程）
+│   │       ├── pipe.rs         # 【v1.4 已删】原 named pipe 桥接（双进程时复用 GUI 会话），内嵌后无需
 │   │       ├── resources.rs    # 3 静态资源 + 1 template（assets/sessions/known-hosts/session-log）
 │   │       └── prompts.rs      # 3 诊断 prompt（diagnose_server/audit_security/cleanup_disk）
 │   ├── capabilities/default.json
@@ -235,12 +236,13 @@ cd src-tauri && cargo check       # 更快的类型检查
 **本地文件**（`fs_local.rs`）
 - `fs_local_home_dir` / `fs_local_list_dir` / `fs_local_mkdir` / `fs_local_delete` / `fs_local_rename`
 
-**MCP 服务**（`lib.rs` 调 `mcp/probe.rs` + `mcp/pipe.rs`）
-- `mcp_status` → 【v1.2】触发一次无状态探测 + 聚合能力清单。返回 `McpStatus { serverName, serverVersion, pipeName, dataDir, probe: McpProbeResult, tools[], resources[], prompts[] }`。`probe.ok` 是状态灯唯一信号源（GUI 主动 spawn exe + initialize 握手，与 Claude 是否在跑无关）。
-- `mcp_approval_resolve({ requestId, approved })` → v1.1：MCP 高危操作审批回传（用户点确认/拒绝后，从 pipe.rs 的 pending 表取 oneshot sender 回传 bool）
+**MCP 服务**（`lib.rs` 调 `mcp/http_server.rs` + `mcp/probe.rs`）
+- `mcp_status` → 【v1.4】HTTP 健康检查 + 聚合能力清单。返回 `McpStatus { serverName, serverVersion, endpoint, dataDir, probe: McpProbeResult, tools[], resources[], prompts[] }`。`probe.ok` 是状态灯唯一信号源（向自己的 HTTP endpoint 发 initialize 握手，不再 spawn 子进程）。`endpoint` 是 MCP HTTP URL（如 `http://127.0.0.1:41235/mcp`），供用户配置 MCP host。
+- 【v1.4 已删】`mcp_approval_resolve`（原 v1.1 pipe 审批回传，内嵌后无 pipe）
 
 ### 事件（Rust → 前端，`listenBackendEvent`）
-- `sftp-transfer-progress`、`ssh-host-key-verify`、`ssh-keyboard-interactive`、`ssh-session-status`、`mcp-approval-verify`（v1.1：MCP 客户端不支持 elicitation 时，委托 GUI 弹三段式确认框）
+- `sftp-transfer-progress`、`ssh-host-key-verify`、`ssh-keyboard-interactive`、`ssh-session-status`
+- 【v1.4 已删】`mcp-approval-verify`（原 v1.1 pipe 审批委托事件，内嵌后无 pipe）
 
 ---
 
@@ -263,12 +265,13 @@ credential_id(Option), passphrase_credential_id(Option)
 - **known_hosts** → `known_hosts.json`
 - **活跃会话/隧道/SFTP 缓存** → 纯内存（重启丢失）
 
-### McpStatus / McpProbeResult（MCP 探测，`lib.rs` + `mcp/probe.rs`）
-- **设计取舍（v1.2）**：MCP 状态灯 = 无状态按需探测，**不是**运行时心跳/连接计数。GUI 每次 `mcp_status` 主动 spawn 一份 `myshelltool-mcp.exe` + 发 MCP `initialize` 握手，成功即「可用」。打开程序即可见结果，与 Claude 是否在跑无关。
+### McpStatus / McpProbeResult（MCP 健康检查，`lib.rs` + `mcp/probe.rs` + `mcp/http_server.rs`）
+- **设计取舍（v1.4）**：MCP server 内嵌 GUI 进程，用 Streamable HTTP transport 对外暴露（`http://127.0.0.1:41235/mcp`）。状态灯 = HTTP 健康检查：GUI 每次 `mcp_status` 向自己的 endpoint 发 MCP `initialize` 握手，成功即「可用」。**不再 spawn 子进程**（v1.2 的一次性 spawn 已废弃，根治僵尸进程 + os error 32）。
+- **v1.4 架构变化**：取消双二进制（删 `bin/mcp.rs` + `pipe.rs`），MCP server 直接跑在 GUI 进程内，SSH 会话/资产/审批同进程访问。任何合规 MCP host（Claude Code / Cursor）经 HTTP URL 连入。
 - `McpProbeResult { ok: bool, reason?, detail?, exePath, serverInfo?, probedAt }`
-  - `reason` 失败分类码：`exe_not_found`（exe 不在 GUI 同级目录）/ `spawn_failed` / `timeout`（5s）/ `bad_protocol`（握手响应异常）/ `io_error`
-  - `exePath`：基于 `std::env::current_exe()` 同级拼 `myshelltool-mcp.exe`（dev/release 都是 target 同目录）
-- 前端 `mcp.js` 的 `clientConnected` computed 读 `probe.ok`（命名保留是为避免连锁改名，语义已是探测结果）。
+  - `reason` 失败分类码：`endpoint_not_found`（server 未启动/未写 endpoint 配置）/ `http_error`（连不上）/ `timeout`（2s）/ `bad_protocol`（握手响应异常）
+  - `exePath`：v1.4 语义改为 HTTP endpoint URL（字段名保留兼容前端 mcp.js）
+- 前端 `mcp.js` 的 `clientConnected` computed 读 `probe.ok`（命名保留是为避免连锁改名，语义已是健康检查结果）。
 
 ---
 
@@ -288,8 +291,10 @@ credential_id(Option), passphrase_credential_id(Option)
 - `sanitize_credential_id` 过滤 `:` 和 `.`（如 `192.168.2.2:password` → `192-168-2-2password`）。
 - Windows 上 `cargo build` 偶因 build script（windres）阻断，用 `cargo check` 兜底；`cargo test` 的 src-tauri 测试二进制会因 Tauri runtime DLL 缺失报 `STATUS_ENTRYPOINT_NOT_FOUND`，用 `cargo check --tests` 验证测试可编译。
 - `workbench.js` 仍是 re-export 壳（Wave 5+ 计划精简）。
-- **【v1.2】MCP 探测**：`mcp_status` 的 `probe` 每次调用都 spawn 一次 `myshelltool-mcp.exe` 子进程做握手（`kill_on_drop` 保证不泄漏），勿高频调用。MCP exe 当前**不随 NSIS 打包**，安装版探测会返回 `exe_not_found`（这是正确信息——确实没装）；dev/便携模式 exe 在 target 同目录，探测正常。
-- **【v1.2】MCP exe 路径解析**：`probe.rs::resolve_mcp_exe_path` 基于 `current_exe()` 同级，安装版需后续配 sidecar（`bundle.externalBin`）才能可靠解析。
+- **【v1.4】MCP 内嵌 GUI（Streamable HTTP）**：MCP server 跑在 GUI 进程内，绑定 `127.0.0.1:41235/mcp`（占用则 +1，写 `<data_dir>/mcp-endpoint.json`）。取消双二进制（删 `bin/mcp.rs` + `pipe.rs`），根治 v1.2 的僵尸进程 + os error 32 + NSIS 打包缺口。MCP server 随 GUI 启停（`CancellationToken` 控制 graceful shutdown）。
+- **【v1.4】MCP 端口策略**：默认 41235，被占用则 +1 重试最多 10 次，**只监听 localhost**（§8 安全红线）。实际端口写 mcp-endpoint.json，前端 `mcp_status.endpoint` 返回。
+- **【v1.4 follow-up】会话复用**：`tools.rs::exec_on_asset` 当前直走 headless 建连（删了 v1.1 pipe 复用分支）。后续可注入 GUI 的 `Arc<AsyncMutex<SshSessionManager>>` 到 McpToolContext，命中已建立会话时直接复用（同进程访问，比 pipe 更简单）。
+- **【v1.4 follow-up】GUI 弹窗审批**：`server.rs::degrade_to_pipe_or_reject` 当前对不支持 elicitation 的客户端直接 fail-secure 拒绝（删了 v1.1 pipe 降级）。后续可注入 AppHandle，实现同进程 GUI 弹窗审批（像 ssh.rs host-key 验证那样 emit 前端）。
 
 ---
 

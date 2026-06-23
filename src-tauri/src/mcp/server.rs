@@ -1,15 +1,17 @@
-//! MCP stdio server 主循环 + ServerHandler 实现（Layer 2 + Layer 3）。
+//! MCP ServerHandler 实现（协议层，transport 无关）。
 //!
-//! M2：rmcp stdio server 骨架（get_info）
-//! M3/M4：接入 list_tools（9 个工具）+ call_tool（headless exec + 审批）
-//! M5：接入 list_resources/read_resource/list_prompts/get_prompt
+//! v1.4：transport 从 stdio 改为 Streamable HTTP（见 http_server.rs），
+//! 但本文件的 ServerHandler impl（get_info/list_tools/call_tool/...）
+//! 完全 transport 无关 —— http_server.rs 把 MyshellToolMcpServer 喂给
+//! StreamableHttpService::new 即可，协议层零改动。
 //!
-//! 见 docs/plans/MCP服务接入-实施计划.md §4-§7。
+//! v1.4 审批简化：删掉 v1.1 的 pipe 降级，不支持 elicitation 的客户端
+//! 执行高危命令直接 fail-secure 拒绝（GUI 弹窗审批作为 follow-up）。
 
 use std::sync::Arc;
 
 use rmcp::{
-    ServerHandler, ServiceExt,
+    ServerHandler,
     model::{
         CallToolRequestParams, CallToolResult, GetPromptRequestParams, GetPromptResult,
         Implementation, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
@@ -73,37 +75,23 @@ fn check_approval_needed(
 
 /// 客户端不支持 elicitation 时的降级路径。
 ///
-/// v1.1 三级降级：elicitation 不支持 → 尝试 GUI pipe 弹窗审批 → pipe 也不行才 fail-secure 拒绝。
+/// v1.4：内嵌后 MCP server 在 GUI 进程内，理论上可以直接 emit GUI 弹窗审批
+///（像 ssh.rs host-key 验证那样经 AppHandle → 前端 GlobalModals）。
+/// 但这需要把 AppHandle 注入 McpToolContext + 重建异步审批状态机（pending 表 +
+/// oneshot channel），是独立的增强工作。**当前 v1.4 先做 fail-secure 拒绝**：
+/// 不支持 elicitation 的客户端执行高危命令直接拒绝（Claude Code / Cursor 等
+/// 主流 host 都支持 elicitation，此路径极少触发）。
 ///
-/// - pipe 连通且用户操作 → `Accepted` / `Declined`
-/// - pipe 连不上（GUI 离线）或通信故障 → `NotSupported`（fail-secure 拒绝，调用方返回 error）
+/// v1.1 原是三级降级（elicitation → pipe → 拒绝），v1.4 删掉 pipe 后简化为
+/// 两级（elicitation → 拒绝）。GUI 弹窗审批作为后续 follow-up 补回。
+///
+/// TODO(follow-up)：注入 AppHandle，实现同进程 GUI 弹窗审批。
 async fn degrade_to_pipe_or_reject(info: &ElicitationInfo) -> ElicitOutcome {
-    log::info!(
-        "elicitation not supported by client, trying GUI pipe approval as fallback"
+    log::warn!(
+        "elicitation not supported by client, fail-secure reject (v1.4: GUI 弹窗审批待补): {}",
+        info.command
     );
-    match super::pipe::request_approval_via_pipe(
-        &info.intent,
-        &info.command,
-        &info.consequence,
-    )
-    .await
-    {
-        Ok(Some(true)) => ElicitOutcome::Accepted,
-        Ok(Some(false)) => {
-            ElicitOutcome::Declined("用户在 myshelltool GUI 确认框中拒绝了".to_string())
-        }
-        Ok(None) => {
-            // GUI 未运行 → fail-secure 拒绝
-            log::warn!(
-                "GUI pipe not available (GUI 离线), fail-secure reject for high-risk command"
-            );
-            ElicitOutcome::NotSupported(info.to_rejection())
-        }
-        Err(e) => {
-            log::warn!("GUI pipe approval failed ({e}), fail-secure reject");
-            ElicitOutcome::NotSupported(info.to_rejection())
-        }
-    }
+    ElicitOutcome::NotSupported(info.to_rejection())
 }
 
 /// 尝试经 MCP elicitation 向用户确认。
@@ -348,32 +336,4 @@ impl ServerHandler for MyshellToolMcpServer {
             }
         })
     }
-}
-
-/// MCP stdio server 主入口（被 `lib::run_mcp_stdio` 调用）。
-///
-/// Layer 2/3：加载资产/凭据路径 → 构造 McpToolContext → rmcp stdio serve。
-pub async fn serve_stdio(
-    asset_store_path: std::path::PathBuf,
-    secret_store_dir: std::path::PathBuf,
-    known_hosts_path: std::path::PathBuf,
-) -> Result<(), Box<dyn std::error::Error>> {
-    log::info!("myshelltool-mcp stdio server starting");
-    log::info!(
-        "assets: {} | secrets: {} | known_hosts: {}",
-        asset_store_path.display(),
-        secret_store_dir.display(),
-        known_hosts_path.display()
-    );
-
-    let ctx = McpToolContext::new(asset_store_path, secret_store_dir, known_hosts_path);
-    let handler = MyshellToolMcpServer::new(ctx);
-    let transport = rmcp::transport::stdio();
-    let service = handler.serve(transport).await?;
-
-    log::info!("myshelltool-mcp stdio server serving");
-    service.waiting().await?;
-
-    log::info!("myshelltool-mcp stdio server stopped");
-    Ok(())
 }

@@ -3,12 +3,13 @@
  * AppStatusBar (shell) — specialized wrapper around the generic
  * `ui/AppStatusBar.vue` for myshelltool's status content.
  *
- * Replaces the existing App.vue statusbar block (lines 1379-1382):
  *   - Left: SSH status dot + backend mode + status message
- *   - Center: (empty placeholder — Wave 3.4 will inject transfer progress)
- *   - Right: sync status + tunnel health + warning count
+ *   - Center: 传输胶囊（Upload 图标 + 计数）。传输中高亮 + 图标动效，点击展开
+ *     全局 TransferDrawer sheet（v2：原 FileSurface 底部 trigger bar 已删除）。
+ *   - Right: sync status + tunnel health + warning count + MCP 指示灯
  */
 import { computed } from 'vue';
+import { Upload } from 'lucide-vue-next';
 import AppStatusBar from '../ui/AppStatusBar.vue';
 
 const props = defineProps({
@@ -20,12 +21,32 @@ const props = defineProps({
   warningCount: { type: Number, default: 0 },
   syncText: { type: String, default: '' },
   // v1.2：MCP client 是否连着 GUI pipe（外部 LLM 宿主是否启动了 MCP exe）。
-  mcpConnected: { type: Boolean, default: false }
+  mcpConnected: { type: Boolean, default: false },
+  // v2：传输胶囊数据。activeTransfers 含 running + pending；completedTransfers 含 done + error。
+  activeTransfers: { type: Number, default: 0 },
+  completedTransfers: { type: Number, default: 0 },
+  transferDrawerOpen: { type: Boolean, default: false }
 });
 
 const emit = defineEmits(['click-status', 'toggle-transfer-drawer', 'open-mcp-panel']);
 
 const sshLabel = computed(() => (props.activeSessions > 0 ? 'connected' : 'idle'));
+
+// 有进行中传输 → 胶囊高亮 + 图标呼吸动效。
+const hasActiveTransfers = computed(() => props.activeTransfers > 0);
+// 总数显示：有活跃任务时显示活跃数，否则若历史有完成也显示「✓完成数」，都没有就空胶囊。
+const transferCountLabel = computed(() => {
+  if (props.activeTransfers > 0) return String(props.activeTransfers);
+  if (props.completedTransfers > 0) return '✓' + props.completedTransfers;
+  return '';
+});
+const transferTitle = computed(() => {
+  const parts = [];
+  parts.push(props.activeTransfers + ' 进行中');
+  parts.push(props.completedTransfers + ' 完成');
+  parts.push(props.transferDrawerOpen ? '点击收起' : '点击展开');
+  return parts.join(' · ');
+});
 </script>
 
 <template>
@@ -48,14 +69,18 @@ const sshLabel = computed(() => (props.activeSessions > 0 ? 'connected' : 'idle'
     </template>
 
     <template #center>
-      <!-- Wave 3.4 will inject transfer progress summary here -->
+      <!-- 传输胶囊：Upload 图标 + 计数。传输中（activeTransfers>0）高亮 + 图标呼吸动效，
+           点击切换全局 TransferDrawer sheet。原 FileSurface 底部 trigger bar 已删除。 -->
       <button
         type="button"
-        class="transfer-summary-btn"
-        title="展开传输队列抽屉"
+        class="transfer-pill"
+        :class="{ active: hasActiveTransfers, open: transferDrawerOpen }"
+        :title="transferTitle"
         @click="emit('toggle-transfer-drawer')"
       >
-        传输
+        <Upload :size="12" class="transfer-pill-icon" :class="{ breathing: hasActiveTransfers }" />
+        <span class="transfer-pill-label">传输</span>
+        <span v-if="transferCountLabel" class="transfer-pill-count">{{ transferCountLabel }}</span>
       </button>
     </template>
 
@@ -135,19 +160,68 @@ const sshLabel = computed(() => (props.activeSessions > 0 ? 'connected' : 'idle'
   text-decoration: underline;
 }
 
-.transfer-summary-btn {
+// 传输胶囊：Upload 图标 + 「传输」+ 计数。低视觉重量，传输中高亮 + 图标呼吸动效。
+.transfer-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   background: transparent;
   border: 1px solid var(--app-border);
   color: var(--app-muted);
-  padding: 2px 8px;
+  padding: 2px 8px 2px 7px;
   font-size: var(--text-xs);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-pill);
   cursor: pointer;
+  transition: background var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard);
 }
 
-.transfer-summary-btn:hover {
+.transfer-pill:hover {
   background: var(--app-hover);
   color: var(--app-strong);
+  border-color: var(--app-border-strong);
+}
+
+// 传输中：accent 高亮（边框 + 文字），图标开始呼吸。
+.transfer-pill.active {
+  border-color: color-mix(in oklab, var(--accent), transparent 30%);
+  color: var(--accent);
+  background: color-mix(in oklab, var(--accent), transparent 90%);
+}
+.transfer-pill.active:hover {
+  background: color-mix(in oklab, var(--accent), transparent 82%);
+}
+
+// sheet 打开时：边框转实色，指示当前聚焦面板。
+.transfer-pill.open {
+  border-color: var(--accent);
+}
+
+.transfer-pill-label {
+  line-height: 1;
+}
+
+.transfer-pill-count {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  padding-inline-start: 2px;
+  border-inline-start: 1px solid color-mix(in oklab, currentColor, transparent 60%);
+  padding-inline: 5px 0;
+  margin-inline-start: 1px;
+  line-height: 1;
+}
+
+// 图标呼吸动效（仅传输中触发）。
+.transfer-pill-icon {
+  flex-shrink: 0;
+}
+.transfer-pill-icon.breathing {
+  animation: transfer-breath 1.4s ease-in-out infinite;
+}
+@keyframes transfer-breath {
+  0%, 100% { transform: translateY(0); opacity: 1; }
+  50% { transform: translateY(-1.5px); opacity: 0.65; }
 }
 
 .sync-text {

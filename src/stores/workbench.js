@@ -99,6 +99,19 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     setupEventListeners().catch(error => {
       announce('后端事件监听初始化失败：' + error.message);
     });
+
+    // 5. 连接成功 → 后台预刷新远程 + 本地文件。不切 tab（保留「连接后看终端」的常规体验），
+    //    仅让用户切到 files tab 时即可看到内容。切 tab 时 ui.js 的 setTab('files')
+    //    会再补一次刷新（幂等，无副作用）。守卫 prev !== 'connected' 防重连/抖动重复刷新。
+    watch(
+      () => sessionsStore.activeSession?.status,
+      (status, prev) => {
+        if (status === 'connected' && prev !== 'connected') {
+          filesStore.refreshRemoteFiles().catch(() => null);
+          filesStore.refreshLocalFiles().catch(() => null);
+        }
+      }
+    );
   }
 
   // workbench.setupEventListeners 仅做转发：
@@ -247,14 +260,15 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     remoteFilter: computed(() => filesStore.remoteFilter),
     remoteListMode: computed(() => filesStore.remoteListMode),
     manualRemotePathInput: computed(() => filesStore.manualRemotePathInput),
+    manualLocalPathInput: computed(() => filesStore.manualLocalPathInput),
     contextMenu: computed(() => filesStore.contextMenu),
     transferDrawerOpen: computed(() => filesStore.transferDrawerOpen),
+    localPaneVisible: computed(() => filesStore.localPaneVisible),
     activeTransfers: computed(() => filesStore.activeTransfers),
     completedTransfers: computed(() => filesStore.completedTransfers),
     filteredRemoteEntries: computed(() => filesStore.filteredRemoteEntries),
     sortedRemoteEntries: computed(() => filesStore.sortedRemoteEntries),
     selectedRemoteEntries: computed(() => filesStore.selectedRemoteEntries),
-    remoteBreadcrumb: computed(() => filesStore.remoteBreadcrumb),
     // --- tunnels re-export ---
     tunnels: computed(() => tunnelsStore.tunnels),
     runningTunnels: computed(() => tunnelsStore.runningTunnels),
@@ -307,6 +321,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     setRemoteListMode: filesStore.setRemoteListMode,
     setManualRemotePath: filesStore.setManualRemotePath,
     goToManualRemotePath: filesStore.goToManualRemotePath,
+    setManualLocalPath: filesStore.setManualLocalPath,
+    goToManualLocalPath: filesStore.goToManualLocalPath,
     openContextMenu: filesStore.openContextMenu,
     closeContextMenu: filesStore.closeContextMenu,
     batchRemoteDelete: filesStore.batchRemoteDelete,
@@ -316,6 +332,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     selectAllLocal: filesStore.selectAllLocal,
     clearLocalSelection: filesStore.clearLocalSelection,
     toggleTransferDrawer: filesStore.toggleTransferDrawer,
+    toggleLocalPane: filesStore.toggleLocalPane,
+    setLocalPaneVisible: filesStore.setLocalPaneVisible,
     // --- tunnels re-export actions ---
     refreshTunnels: tunnelsStore.refreshTunnels,
     createTunnel: tunnelsStore.createTunnel,
@@ -329,8 +347,6 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     activeSessions: computed(() => sessionsStore.activeSessions),
     hostKeyPrompt: computed(() => sessionsStore.hostKeyPrompt),
     keyboardPrompt: computed(() => sessionsStore.keyboardPrompt),
-    // v1.1：MCP 审批弹窗 payload + 回传 action
-    mcpApprovalPrompt: computed(() => sessionsStore.mcpApprovalPrompt),
     terminalFontSize: computed(() => sessionsStore.terminalFontSize),
     terminalAsideOpen: computed(() => sessionsStore.terminalAsideOpen),
     terminalSearch: computed(() => sessionsStore.terminalSearch),
@@ -341,8 +357,6 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     runTerminalAction: sessionsStore.runTerminalAction,
     resolveHostKeyPrompt: sessionsStore.resolveHostKeyPrompt,
     resolveKeyboardPrompt: sessionsStore.resolveKeyboardPrompt,
-    // v1.1：MCP 审批确认框回传
-    resolveMcpApproval: sessionsStore.resolveMcpApproval,
     // --- v1.2：MCP 服务可观测性 (re-export from useMcpStore) ---
     mcpStatus: computed(() => mcpStore.status),
     mcpProbe: computed(() => mcpStore.probe),
@@ -352,6 +366,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     mcpPrompts: computed(() => mcpStore.prompts),
     mcpDataDir: computed(() => mcpStore.dataDir),
     mcpServerVersion: computed(() => mcpStore.serverVersion),
+    mcpEndpoint: computed(() => mcpStore.endpoint),
     refreshMcpStatus: () => mcpStore.refresh(),
     buildMcpConfig: mcpStore.buildConfig,
     openTerminalSearchInline: sessionsStore.openTerminalSearchInline,
