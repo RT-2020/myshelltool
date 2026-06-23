@@ -1,9 +1,9 @@
 [package]
 name = "myshelltool"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
-# 双二进制（D1）：cargo run / tauri dev 默认跑 GUI，
-# myshelltool-mcp 由 src/bin/mcp.rs 独立构建（console 子系统）。
+# v1.4：MCP server 内嵌 GUI 进程（Streamable HTTP transport），不再有独立 mcp binary。
+# cargo run / tauri dev 跑 GUI，MCP server 随 GUI setup 经 tauri::async_runtime::spawn 拉起。
 default-run = "myshelltool"
 
 [lib]
