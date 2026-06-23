@@ -23,3 +23,19 @@ target/
 release/
 .DS_Store
 *.log
+
+# Windows 保留设备名文件（git-bash 误产生：bash 不认 NUL/CON/PRN 是设备名，
+# `>NUL` 重定向会创建物理文件而非丢弃输出；这些文件无法用常规方式删除，
+# 且永远不该进仓库）
+NUL
+CON
+PRN
+AUX
+COM1
+COM2
+COM3
+COM4
+LPT1
+LPT2
+LPT3
+LPT4
