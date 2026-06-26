@@ -40,7 +40,9 @@ axum = "0.8"
 # v1.4 MCP HTTP server 的 CancellationToken（优雅关停）
 tokio-util = "0.7"
 # v1.3 Gist 同步：HTTP 客户端调 GitHub Gist API
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# 用 native-tls（Windows SChannel）而非 rustls-tls：rustls 拉 ring，ring 需 gcc 编译 C，
+# 而 mingw gcc 在被 cargo spawn 时 cc1 解析失败。native-tls 零 C 编译，绕开整个工具链问题。
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 # 剪贴板插件（v2 原生 clipboard，替代 v1 的 window.__TAURI__.clipboard 注入——
 # navigator.clipboard 在 Tauri v2 webview 非聚焦时不稳，走原生插件最可靠）
 tauri-plugin-clipboard-manager = "2"
