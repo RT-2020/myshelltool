@@ -11,30 +11,55 @@
 //!
 //! 高危工具（ssh_exec/sftp_upload/sftp_remove/tunnel_*）在 M4 落地 + Layer 6 审批。
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use rmcp::model::{CallToolRequestParams, CallToolResult, Content, Tool};
 use serde_json::{json, Map};
-use tokio::sync::Mutex;
+use tauri::AppHandle;
+use tokio::sync::{oneshot, Mutex};
 
 use crate::ssh::{self, HeadlessConnectParams};
+
+/// GUI 弹窗审批的 pending 表类型：request_id → oneshot::Sender<bool>。
+///
+/// server.rs 等待审批结果时注册 sender，mcp_confirm_tool 命令回传时 send。
+/// 用 Arc 包裹让 McpToolContext 保持 Clone——lib.rs setup 时把它 clone 进
+/// AppState，使 McpToolContext（server.rs 等待）与 AppState（命令 resolve）
+/// 共享同一份表。模式照 ssh.rs:40/196 的 PendingDecisions。
+pub type ApprovalPending = Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>;
 
 /// MCP 工具上下文：持有资产库路径 + 凭据/known_hosts 路径。
 ///
 /// v1.0（独立会话）：每次命令调用时按资产参数临时建连，exec 完即断。
 /// v1.1（named pipe 桥接）：会改为持有 GUI 的 SshSessionManager Arc。
+///
+/// v1.5：加 GUI 弹窗审批降级（方案 A）。elicitation 仍是主路径，但客户端
+/// 不支持 elicitation 时（如 ZCode），若 `app_handle` 存在则 emit 事件给
+/// GUI 弹窗让用户确认，替代 v1.4 的 fail-secure 拒绝。
 #[derive(Clone)]
 pub struct McpToolContext {
     pub asset_store_path: PathBuf,
     pub secret_store_dir: PathBuf,
     pub known_hosts_path: PathBuf,
+    /// GUI 弹窗审批的 pending 表（与 AppState 共享同一 Arc clone）。
+    pub approval_pending: ApprovalPending,
+    /// GUI 句柄，用于 emit 审批事件给前端弹窗。
+    /// None = headless/测试/probe 模式（无 GUI → 退回 fail-secure 拒绝）。
+    pub app_handle: Option<AppHandle>,
     /// 缓存最近一次 headless 连接的资产 id → handle，避免只读查询每次重连。
     /// v1.0 简化：M3 阶段先不缓存，每次按需建连。
     _session_cache: Arc<Mutex<()>>,
 }
 
 impl McpToolContext {
+    /// 测试/headless 构造：无 GUI 句柄，高危命令无法弹窗（退回 fail-secure 拒绝）。
+    /// approval_pending 仍是有效空表，保持 struct 完整性。
+    ///
+    /// 当前生产路径走 `new_with_gui`，本构造器为 headless/测试保留（未被调用），
+    /// 故 allow(dead_code)——删除会导致测试或未来 headless bin 无可用构造路径。
+    #[allow(dead_code)]
     pub fn new(
         asset_store_path: PathBuf,
         secret_store_dir: PathBuf,
@@ -44,6 +69,27 @@ impl McpToolContext {
             asset_store_path,
             secret_store_dir,
             known_hosts_path,
+            approval_pending: Arc::new(Mutex::new(HashMap::new())),
+            app_handle: None,
+            _session_cache: Arc::new(Mutex::new(())),
+        }
+    }
+
+    /// GUI 构造：持有 AppHandle + 共享 pending 表。lib.rs setup 用此路径。
+    /// approval_pending 由调用方传入，确保与 AppState 持有同一份 Arc。
+    pub fn new_with_gui(
+        app_handle: AppHandle,
+        approval_pending: ApprovalPending,
+        asset_store_path: PathBuf,
+        secret_store_dir: PathBuf,
+        known_hosts_path: PathBuf,
+    ) -> Self {
+        Self {
+            asset_store_path,
+            secret_store_dir,
+            known_hosts_path,
+            approval_pending,
+            app_handle: Some(app_handle),
             _session_cache: Arc::new(Mutex::new(())),
         }
     }

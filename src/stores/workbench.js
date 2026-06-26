@@ -118,17 +118,18 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   // - sessions store 处理 host key / keyboard 监听
   // - files store 处理 sftp-transfer-progress 监听
   // - ui store 处理 system theme 监听（在 initializeTheme 中初始化）
-  // - mcp store 处理 mcp-client-attach/detach 监听（v1.2）
+  // - mcp store 处理 mcp-tool-approval 监听（v1.5 GUI 弹窗审批）
   async function setupEventListeners() {
     if (!isTauriRuntime()) return;
-    // v1.2：MCP 探测是无状态按需调用（无事件监听），启动时主动探测一次，
+    // v1.2：MCP 探测是无状态按需调用，启动时主动探测一次，
     // 让状态灯打开程序即可见结果。
     mcpStore.refresh();
     // v1.3：启动时刷新同步状态（供状态栏展示真实同步配置状态）
     syncStore.refreshStatus();
     await Promise.all([
       sessionsStore.setupEventListeners(),
-      filesStore.setupEventListeners()
+      filesStore.setupEventListeners(),
+      mcpStore.setupEventListeners()
     ]);
   }
 
@@ -136,7 +137,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     uiStore.disposeSystemThemeListener();
     await Promise.all([
       sessionsStore.disposeEventListeners(),
-      filesStore.disposeEventListeners()
+      filesStore.disposeEventListeners(),
+      mcpStore.disposeEventListeners()
     ]);
   }
 
@@ -183,6 +185,13 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     get modal() { return uiStore.modal; },
     set modal(v) { uiStore.modal = v; },
     clearFileSelection: filesStore.clearSelection
+  });
+
+  // v1.5：mcp store 需 modal setter（弹/关审批窗）+ announce（超时提示）。
+  mcpStore.attachWorkbench({
+    announce,
+    get modal() { return uiStore.modal; },
+    set modal(v) { uiStore.modal = v; }
   });
 
   uiStore.attachWorkbench({
@@ -369,6 +378,9 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     mcpEndpoint: computed(() => mcpStore.endpoint),
     refreshMcpStatus: () => mcpStore.refresh(),
     buildMcpConfig: mcpStore.buildConfig,
+    // v1.5：GUI 弹窗审批（GlobalModals 经此读 prompt + 调 resolve）
+    mcpApprovalPrompt: computed(() => mcpStore.approvalPrompt),
+    resolveMcpApproval: mcpStore.resolveMcpApproval,
     openTerminalSearchInline: sessionsStore.openTerminalSearchInline,
     closeTerminalSearchInline: sessionsStore.closeTerminalSearchInline,
     setTerminalSearchQuery: sessionsStore.setTerminalSearchQuery,

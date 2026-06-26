@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
-import { computed, ref } from 'vue';
-import { invokeBackend, isTauriRuntime } from '../services/backend.js';
+import { computed, ref, watch } from 'vue';
+import { invokeBackend, isTauriRuntime, listenBackendEvent } from '../services/backend.js';
 
 // ─── 配置引导：给外部 LLM 宿主的注册 JSON 模板 ───
 //
@@ -17,16 +17,24 @@ function buildConfigSnippet(url) {
   return JSON.stringify({ mcpServers: { myshelltool: server } }, null, 2);
 }
 
+// v1.5：GUI 弹窗审批事件 channel。server.rs 在客户端不支持 elicitation 时
+//（如 ZCode）emit 此事件，前端 GlobalModals 弹窗让用户确认。
+const MCP_APPROVAL_EVENT = 'mcp-tool-approval';
+
 /**
- * useMcpStore — v1.4 MCP 服务可观测与配置引导。
+ * useMcpStore — MCP 服务可观测、配置引导、高危工具 GUI 审批。
  *
- * 信号源：Rust 端 HTTP 健康检查（probe.rs::probe_endpoint）。每次 refresh()
- * 向 GUI 自己的 MCP HTTP endpoint 发 initialize 握手，回答「MCP 能否正常工作」。
+ * 信号源（两部分）：
+ * - 探测（probe）：Rust 端 HTTP 健康检查（probe.rs::probe_endpoint）。refresh()
+ *   向 GUI 自己的 MCP HTTP endpoint 发 initialize 握手，回答「MCP 能否正常工作」。
+ * - 审批（approval）：v1.5 新增。当 MCP host 客户端不支持 elicitation 时，
+ *   server.rs emit mcp-tool-approval 事件，本 store 监听后弹 GlobalModals。
  *
- * v1.4 变化：不再 spawn 子进程（v1.2 的一次性 spawn 探测已废弃），从源头
- * 消除僵尸进程 + os error 32。MCP server 内嵌 GUI 进程，Streamable HTTP transport。
+ * v1.4：不再 spawn 子进程（v1.2 的一次性 spawn 探测已废弃），从源头消除僵尸
+ * 进程 + os error 32。MCP server 内嵌 GUI 进程，Streamable HTTP transport。
  *
- * 无事件监听：探测是按需调用，不需要 Rust → 前端的实时推送。
+ * v1.5：本 store 从纯按需查询升级为带事件监听/dispose 的 store（approvalPrompt
+ * 事件链路）。监听/超时/dispose 模式照 sessions.js 的 hostKeyPrompt（L130-234）。
  */
 export const useMcpStore = defineStore('mcp', () => {
   // ============================================================
@@ -36,6 +44,21 @@ export const useMcpStore = defineStore('mcp', () => {
   const status = ref(null);
   // 是否正在拉取（防重复 + 按钮态）。
   const loading = ref(false);
+
+  // v1.5：GUI 审批 prompt（由 mcp-tool-approval 事件填充）。
+  // null = 无待审批。非 null 时结构 = { request_id, intent, command, consequence }。
+  const approvalPrompt = ref(null);
+  // 监听句柄（dispose 时调用）。模块作用域而非 store state——它不是响应式数据。
+  let approvalUnlisten = null;
+  // 65s 超时句柄（与后端 60s 对齐 + 5s 缓冲）。
+  let approvalTimeout = null;
+
+  // workbench bridge（attachWorkbench 注入）。延迟绑定，避免循环 import。
+  let workbenchBridge = null;
+  function wb() {
+    if (!workbenchBridge) throw new Error('mcp store: workbench bridge not attached');
+    return workbenchBridge;
+  }
 
   // ============================================================
   // Computed
@@ -57,7 +80,7 @@ export const useMcpStore = defineStore('mcp', () => {
   const endpoint = computed(() => status.value?.endpoint ?? '');
 
   // ============================================================
-  // Actions
+  // Actions：探测 + 配置引导
   // ============================================================
 
   /**
@@ -94,10 +117,102 @@ export const useMcpStore = defineStore('mcp', () => {
     return buildConfigSnippet(url);
   }
 
+  // ============================================================
+  // Actions：v1.5 GUI 弹窗审批
+  // ============================================================
+  //
+  // 链路：server.rs emit mcp-tool-approval → 本 store 监听 → set approvalPrompt
+  // + open modal → GlobalModals 渲染 → 用户点确认/拒绝 → resolveMcpApproval
+  // → invokeBackend('mcp_confirm_tool') → 后端 resolve_approval 取 sender。
+  // 模式照 sessions.js 的 hostKeyPrompt（L130-234）。
+
+  /**
+   * 注册 mcp-tool-approval 事件监听（幂等：已注册则跳过）。
+   * 由 setupEventListeners 调用。浏览器预览模式静默跳过。
+   */
+  async function ensureApprovalListener() {
+    if (!isTauriRuntime() || approvalUnlisten) return;
+    try {
+      approvalUnlisten = await listenBackendEvent(MCP_APPROVAL_EVENT, event => {
+        approvalPrompt.value = event.payload;
+        wb().modal = { type: 'mcpApproval' };
+      });
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn('[mcp] approval listener registration deferred:', error?.message);
+    }
+  }
+
+  /**
+   * 用户在 GUI 弹窗中确认/拒绝后回传后端。
+   * 调 mcp_confirm_tool 命令 → 后端 resolve_approval 取 oneshot::Sender。
+   * @param {string} requestId  审批请求 id（来自 approvalPrompt.request_id）
+   * @param {boolean} accepted  用户是否确认执行
+   */
+  async function resolveMcpApproval(requestId, accepted) {
+    try {
+      await invokeBackend('mcp_confirm_tool', { requestId, accepted });
+    } catch (error) {
+      wb().announce?.('MCP 审批响应失败：' + (error?.message || error));
+    }
+    approvalPrompt.value = null;
+    if (!accepted) wb().modal = { type: null };
+  }
+
+  // approvalPrompt 65s 自动清理（与后端 60s 超时对齐 + 5s 缓冲）。
+  // 后端超时后会自己清 pending 表，前端这层是为避免 modal 卡死。
+  watch(approvalPrompt, prompt => {
+    if (approvalTimeout) {
+      clearTimeout(approvalTimeout);
+      approvalTimeout = null;
+    }
+    if (prompt) {
+      approvalTimeout = setTimeout(() => {
+        if (approvalPrompt.value) {
+          approvalPrompt.value = null;
+          wb().modal = { type: null };
+          wb().announce?.('MCP 高危操作审批超时（65秒未响应），已自动关闭');
+        }
+      }, 65000);
+    }
+  });
+
+  // ============================================================
+  // 生命周期：workbench 编排（照 sessions.js 三件套模式）
+  // ============================================================
+
+  /** workbench 注入跨 store 桥（modal setter / announce）。 */
+  function attachWorkbench(bridge) {
+    workbenchBridge = bridge;
+  }
+
+  /** 由 workbench.initialize() 调用，注册所有事件监听。 */
+  async function setupEventListeners() {
+    if (!isTauriRuntime()) return;
+    await ensureApprovalListener();
+  }
+
+  /** 由 workbench 销毁时调用，解绑监听防内存泄漏。 */
+  async function disposeEventListeners() {
+    if (approvalTimeout) {
+      clearTimeout(approvalTimeout);
+      approvalTimeout = null;
+    }
+    if (approvalUnlisten) {
+      try {
+        await approvalUnlisten();
+      } catch {
+        // 忽略：销毁阶段，Tauri runtime 可能已不可用
+      }
+      approvalUnlisten = null;
+    }
+  }
+
   return {
     // state
     status,
     loading,
+    approvalPrompt,
     // computed
     probe,
     clientConnected,
@@ -107,8 +222,14 @@ export const useMcpStore = defineStore('mcp', () => {
     dataDir,
     serverVersion,
     endpoint,
-    // actions
+    // actions：探测 + 配置
     refresh,
-    buildConfig
+    buildConfig,
+    // actions：v1.5 GUI 弹窗审批
+    resolveMcpApproval,
+    // 生命周期
+    attachWorkbench,
+    setupEventListeners,
+    disposeEventListeners
   };
 });

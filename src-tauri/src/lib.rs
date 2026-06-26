@@ -21,6 +21,10 @@ pub struct AppState {
     pub resource_monitors: Arc<Mutex<resource_monitor::ResourceMonitorState>>,
     /// v1.4：MCP HTTP server 的 graceful shutdown token。GUI 退出时取消。
     pub mcp_shutdown: tokio_util::sync::CancellationToken,
+    /// v1.5：MCP 高危工具的 GUI 弹窗审批 pending 表。
+    /// 与 McpToolContext 持有同一 Arc clone（lib.rs setup 时共享），让
+    /// server.rs（等待审批）与 mcp_confirm_tool 命令（回传决定）互通。
+    pub mcp_approval_pending: mcp::tools::ApprovalPending,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -181,6 +185,23 @@ async fn mcp_status(_state: State<'_, AppState>) -> Result<McpStatus, String> {
         resources,
         prompts,
     })
+}
+
+/// v1.5：前端 GUI 弹窗审批的用户回传命令。
+///
+/// server.rs 在客户端不支持 elicitation 时，经 AppHandle emit `mcp-tool-approval`
+/// 事件给前端 GlobalModals 弹窗；用户点确认/拒绝后，前端调本命令回传决定。
+/// 复用 AppState 持有的 mcp_approval_pending Arc（与 McpToolContext 共享），
+/// 取出 server.rs 注册的 oneshot::Sender 并 send。
+///
+/// 模式照 ssh.rs:998 ssh_confirm_host_key。
+#[tauri::command]
+async fn mcp_confirm_tool(
+    state: State<'_, AppState>,
+    request_id: String,
+    accepted: bool,
+) -> Result<(), String> {
+    mcp::approval::resolve_approval(&state.mcp_approval_pending, &request_id, accepted).await
 }
 
 #[tauri::command]
@@ -358,12 +379,16 @@ pub fn run() {
             // Option A：ssh.rs 全部命令统一通过 State<'_, AppState> 解析。
             // 不再需要双 manage hack——参见 .omc/plans/followup-ssh-state-unify.md（已完成）。
             let mcp_shutdown = tokio_util::sync::CancellationToken::new();
+            // v1.5：GUI 弹窗审批的 pending 表。一份 Arc，McpToolContext 与 AppState 共享。
+            let mcp_approval_pending: mcp::tools::ApprovalPending =
+                Arc::new(AsyncMutex::new(std::collections::HashMap::new()));
             app.manage(AppState {
                 asset_store_path: app_data_dir.join("connection-assets.json"),
                 secret_store_dir: app_data_dir.join("credentials"),
                 ssh_sessions: ssh_mgr,
                 resource_monitors: Arc::new(Mutex::new(resource_monitor::ResourceMonitorState::default())),
                 mcp_shutdown: mcp_shutdown.clone(),
+                mcp_approval_pending: mcp_approval_pending.clone(),
             });
 
             // v1.4：启动 MCP Streamable HTTP server（内嵌 GUI 进程）。
@@ -371,10 +396,15 @@ pub fn run() {
             // 直接跑在 GUI 进程内，用 HTTP transport 对外暴露。任何合规 MCP host
             // 经 http://127.0.0.1:<port>/mcp 连入。SSH 会话/资产/审批同进程直接访问。
             //
+            // v1.5：McpToolContext 用 new_with_gui 注入 AppHandle + 共享 pending 表，
+            // 让 server.rs 的降级路径能 emit GUI 弹窗审批事件。
+            //
             // 注意：setup hook 是同步上下文，此时 Tokio runtime 尚未在当前线程
             // 就绪——裸 `tokio::spawn` 会 panic「no reactor running」。
             // 必须用 `tauri::async_runtime::spawn`，它会绑定到 Tauri 管理的 runtime。
-            let mcp_ctx = mcp::tools::McpToolContext::new(
+            let mcp_ctx = mcp::tools::McpToolContext::new_with_gui(
+                app.handle().clone(),
+                mcp_approval_pending,
                 app_data_dir.join("connection-assets.json"),
                 app_data_dir.join("credentials"),
                 app_data_dir.join("known_hosts.json"),
@@ -391,6 +421,8 @@ pub fn run() {
             backend_status,
             // v1.2：MCP 服务可观测性聚合查询（前端状态栏/管理面板）
             mcp_status,
+            // v1.5：MCP 高危工具 GUI 弹窗审批的用户回传命令
+            mcp_confirm_tool,
             list_connection_assets,
             save_connection_asset,
             delete_connection_asset,

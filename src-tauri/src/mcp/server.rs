@@ -5,10 +5,14 @@
 //! 完全 transport 无关 —— http_server.rs 把 MyshellToolMcpServer 喂给
 //! StreamableHttpService::new 即可，协议层零改动。
 //!
-//! v1.4 审批简化：删掉 v1.1 的 pipe 降级，不支持 elicitation 的客户端
-//! 执行高危命令直接 fail-secure 拒绝（GUI 弹窗审批作为 follow-up）。
+//! v1.5：审批降级补全。elicitation 仍是主路径；客户端不支持 elicitation 时
+//!（如 ZCode）不再直接 fail-secure 拒绝，而是经 AppHandle emit 事件给前端
+//! GlobalModals 弹窗（同进程 GUI 审批，比 Arcade 的 URL 重定向更轻）。
+//! 无 GUI 句柄（headless/测试）才退回 fail-secure 拒绝。这是补齐 v1.4 标注的
+//! follow-up（server.rs:88 旧注释 TODO）。
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use rmcp::{
     ServerHandler,
@@ -21,8 +25,9 @@ use rmcp::{
     service::{Peer, RequestContext},
     ErrorData as McpError,
 };
+use tauri::Emitter;
 
-use super::approval::{self, ApprovalDecision, ElicitationInfo};
+use super::approval::{self, ApprovalDecision, ElicitationInfo, McpApprovalEvent};
 use super::tools::{self, McpToolContext};
 
 // ── v1.1 审批辅助 ──
@@ -73,36 +78,95 @@ fn check_approval_needed(
     }
 }
 
-/// 客户端不支持 elicitation 时的降级路径。
+/// 客户端不支持 elicitation（或 elicitation 失败/被自动拒绝）时的降级路径。
 ///
-/// v1.4：内嵌后 MCP server 在 GUI 进程内，理论上可以直接 emit GUI 弹窗审批
-///（像 ssh.rs host-key 验证那样经 AppHandle → 前端 GlobalModals）。
-/// 但这需要把 AppHandle 注入 McpToolContext + 重建异步审批状态机（pending 表 +
-/// oneshot channel），是独立的增强工作。**当前 v1.4 先做 fail-secure 拒绝**：
-/// 不支持 elicitation 的客户端执行高危命令直接拒绝（Claude Code / Cursor 等
-/// 主流 host 都支持 elicitation，此路径极少触发）。
+/// v1.5：三级降级（elicitation → GUI 弹窗 → fail-secure 拒绝）。
+/// - McpToolContext 有 AppHandle（GUI 在线）→ emit `mcp-tool-approval` 事件，
+///   前端 GlobalModals 弹窗让用户确认。模式照 ssh.rs:55-153 host-key 验证：
+///   注册 oneshot::Sender 到 pending 表 + emit + 60s timeout 等待。
+/// - 无 AppHandle（headless/测试/probe）→ 退回 fail-secure 拒绝（v1.4 行为）。
 ///
-/// v1.1 原是三级降级（elicitation → pipe → 拒绝），v1.4 删掉 pipe 后简化为
-/// 两级（elicitation → 拒绝）。GUI 弹窗审批作为后续 follow-up 补回。
-///
-/// TODO(follow-up)：注入 AppHandle，实现同进程 GUI 弹窗审批。
-async fn degrade_to_pipe_or_reject(info: &ElicitationInfo) -> ElicitOutcome {
-    log::warn!(
-        "elicitation not supported by client, fail-secure reject (v1.4: GUI 弹窗审批待补): {}",
-        info.command
+/// 这是补齐 v1.4 标注的 follow-up（旧 server.rs:88 TODO）。MCP 官方博客把
+/// 安全保证定位为 deterministic runtime control——本函数就是那条 runtime 路径：
+/// elicitation 只是 UX hint，真正「用户确认」必须落到本函数的确定性等待。
+async fn degrade_to_pipe_or_reject(
+    ctx: &McpToolContext,
+    info: &ElicitationInfo,
+) -> ElicitOutcome {
+    // 无 GUI 句柄（headless/测试）→ 退回 fail-secure 拒绝（保持 v1.4 行为）
+    let Some(app) = ctx.app_handle.as_ref() else {
+        log::warn!(
+            "elicitation not supported and no GUI handle, fail-secure reject: {}",
+            info.command
+        );
+        return ElicitOutcome::NotSupported(info.to_rejection());
+    };
+
+    // 有 GUI：照 ssh.rs:91-136 模板——注册 oneshot + emit + timeout 等待
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    {
+        let mut map = ctx.approval_pending.lock().await;
+        map.insert(request_id.clone(), tx);
+    }
+    log::info!(
+        "mcp approval: emitting GUI prompt request_id={}, command={}",
+        request_id, info.command
     );
-    ElicitOutcome::NotSupported(info.to_rejection())
+
+    let event = McpApprovalEvent {
+        request_id: request_id.clone(),
+        intent: info.intent.clone(),
+        command: info.command.clone(),
+        consequence: info.consequence.clone(),
+    };
+    if app.emit("mcp-tool-approval", event).is_err() {
+        // emit 失败（GUI 未正常响应）→ 清理 pending + 退回拒绝
+        log::warn!("mcp approval: emit failed, cleaning up {}", request_id);
+        let mut map = ctx.approval_pending.lock().await;
+        map.remove(&request_id);
+        return ElicitOutcome::NotSupported(info.to_rejection());
+    }
+
+    // 60s 超时，与 ssh.rs:118 host-key 验证对齐。前端 watcher 65s 兜底清理。
+    match tokio::time::timeout(Duration::from_secs(60), rx).await {
+        Ok(Ok(accepted)) => {
+            if accepted {
+                log::info!("mcp approval: user accepted {}", request_id);
+                ElicitOutcome::Accepted
+            } else {
+                log::info!("mcp approval: user declined {}", request_id);
+                ElicitOutcome::Declined("用户在 GUI 弹窗中拒绝".to_string())
+            }
+        }
+        Ok(Err(_)) => {
+            // sender 已被取走但没 send（不应发生，oneshot 对端 drop）
+            log::warn!("mcp approval: oneshot closed for {}", request_id);
+            ElicitOutcome::NotSupported("GUI 审批通道异常关闭".to_string())
+        }
+        Err(_) => {
+            // 超时：清理 pending 表（前端若后到也会因 request_id 不存在报错）
+            log::warn!("mcp approval: timeout (60s) for {}", request_id);
+            let mut map = ctx.approval_pending.lock().await;
+            map.remove(&request_id);
+            ElicitOutcome::NotSupported("GUI 审批超时（60s 未响应）".to_string())
+        }
+    }
 }
 
 /// 尝试经 MCP elicitation 向用户确认。
 ///
-/// v1.1 三级审批：elicitation（客户端原生框）→ GUI pipe 弹窗 → fail-secure 拒绝。
-async fn try_elicit(peer: &Peer<rmcp::RoleServer>, info: &ElicitationInfo) -> ElicitOutcome {
+/// v1.5 三级降级：elicitation（客户端原生框）→ GUI 弹窗（同进程）→ fail-secure 拒绝。
+async fn try_elicit(
+    peer: &Peer<rmcp::RoleServer>,
+    ctx: &McpToolContext,
+    info: &ElicitationInfo,
+) -> ElicitOutcome {
     // 先检查客户端是否声明了 elicitation 能力
     let modes = peer.supported_elicitation_modes();
     if modes.is_empty() {
-        // 客户端不支持 elicitation → 走 GUI pipe 降级
-        return degrade_to_pipe_or_reject(info).await;
+        // 客户端不支持 elicitation → 走 GUI 弹窗降级（v1.5：替代 v1.4 的直接拒绝）
+        return degrade_to_pipe_or_reject(ctx, info).await;
     }
 
     // 发起 elicitation（message = 三段式确认文本）
@@ -111,7 +175,7 @@ async fn try_elicit(peer: &Peer<rmcp::RoleServer>, info: &ElicitationInfo) -> El
     //   Ok(None) = 用户没提供内容
     //   Err(UserDeclined) = 用户拒绝
     //   Err(UserCancelled) = 用户取消
-    //   Err(CapabilityNotSupported) = 客户端不支持 → 走 GUI pipe 降级
+    //   Err(CapabilityNotSupported) = 客户端不支持 → 走 GUI 弹窗降级
     match peer.elicit::<ApprovalForm>(info.to_message()).await {
         Ok(Some(form)) => {
             if form.confirmed {
@@ -124,30 +188,30 @@ async fn try_elicit(peer: &Peer<rmcp::RoleServer>, info: &ElicitationInfo) -> El
         Err(rmcp::service::ElicitationError::UserDeclined) => {
             // 无法区分「用户真拒绝」和「客户端自动拒绝」（如 Codex 伪支持
             // elicitation：握手时声明能力，运行时自动 Decline 所有请求）。
-            // 降级走 GUI pipe：GUI 在线则弹窗让用户真确认（Codex 场景），
+            // 降级走 GUI 弹窗：GUI 在线则弹窗让用户真确认（Codex 场景），
             // GUI 离线则 fail-secure 拒绝（真拒绝场景，Claude Code 无 GUI 时）。
             // 副作用：Claude Code + GUI 在线时用户拒了会再弹一次 GUI 窗，
             // 但这只是冗余无害（用户可再拒一次）。
             log::info!(
-                "elicitation UserDeclined (可能客户端自动拒绝如 Codex), trying GUI pipe fallback"
+                "elicitation UserDeclined (可能客户端自动拒绝如 Codex), trying GUI fallback"
             );
-            degrade_to_pipe_or_reject(info).await
+            degrade_to_pipe_or_reject(ctx, info).await
         }
         Err(rmcp::service::ElicitationError::UserCancelled) => {
             // 同 UserDeclined：客户端可能自动 Cancel（未实现确认 UI），
-            // 降级 GUI pipe 给用户第二次确认机会。
+            // 降级 GUI 弹窗给用户第二次确认机会。
             log::info!(
-                "elicitation UserCancelled (可能客户端未实现确认 UI), trying GUI pipe fallback"
+                "elicitation UserCancelled (可能客户端未实现确认 UI), trying GUI fallback"
             );
-            degrade_to_pipe_or_reject(info).await
+            degrade_to_pipe_or_reject(ctx, info).await
         }
         Err(rmcp::service::ElicitationError::CapabilityNotSupported) => {
-            // 客户端运行时不支持 → 走 GUI pipe 降级
-            degrade_to_pipe_or_reject(info).await
+            // 客户端运行时不支持 → 走 GUI 弹窗降级
+            degrade_to_pipe_or_reject(ctx, info).await
         }
         Err(e) => {
-            log::warn!("elicitation error: {:?}, trying GUI pipe fallback", e);
-            degrade_to_pipe_or_reject(info).await
+            log::warn!("elicitation error: {:?}, trying GUI fallback", e);
+            degrade_to_pipe_or_reject(ctx, info).await
         }
     }
 }
@@ -230,8 +294,8 @@ impl ServerHandler for MyshellToolMcpServer {
                         // 白名单命令，直接放行
                     }
                     super::approval::ApprovalDecision::RequestElicitation(info) => {
-                        // v1.1 核心：经 elicitation 在客户端界面内确认
-                        match try_elicit(&context.peer, &info).await {
+                        // v1.5：elicitation 优先，不支持时降级 GUI 弹窗（ctx 透传）
+                        match try_elicit(&context.peer, &ctx, &info).await {
                             ElicitOutcome::Accepted => {
                                 log::info!("elicitation: user accepted, proceeding");
                                 // 放行执行
