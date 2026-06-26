@@ -38,6 +38,7 @@ const {
   modal,
   hostKeyPrompt,
   keyboardPrompt,
+  mcpApprovalPrompt,
   remotePath,
   localPath,
   githubPatConfigured
@@ -91,6 +92,7 @@ const modalTitle = computed(() => {
     case 'tokenConfig': return '配置 / 更新 GitHub token';
     case 'hostKeyVerify': return '主机密钥验证';
     case 'keyboardInteractive': return '键盘交互认证';
+    case 'mcpApproval': return 'MCP 高危操作审批';
     case 'mcpPanel': return 'MCP 服务管理';
     case 'syncPanel': return '资产同步（Gist）';
     case 'mkdir': return '新建远程目录';
@@ -285,6 +287,10 @@ function submitModal() {
       store.resolveHostKeyPrompt(hostKeyPrompt.value.request_id, true);
       closeModal();
       return;
+    case 'mcpApproval':
+      store.resolveMcpApproval(mcpApprovalPrompt.value.request_id, true);
+      closeModal();
+      return;
     case 'keyboardInteractive':
       store.resolveKeyboardPrompt(keyboardPrompt.value.request_id, Object.values(keyboardResponses));
       closeModal();
@@ -301,6 +307,11 @@ function submitModal() {
 
 function denyHostKey() {
   store.resolveHostKeyPrompt(hostKeyPrompt.value.request_id, false);
+  closeModal();
+}
+
+function denyMcpApproval() {
+  store.resolveMcpApproval(mcpApprovalPrompt.value.request_id, false);
   closeModal();
 }
 </script>
@@ -419,6 +430,17 @@ function denyHostKey() {
           <p class="muted">确认后将会保存到本地 known_hosts，下次连接不再提示。</p>
         </div>
 
+        <!-- mcpApproval（v1.5）：MCP 高危工具审批，客户端不支持 elicitation 时弹此窗 -->
+        <div v-else-if="modal.type === 'mcpApproval'" class="stack">
+          <p class="muted">外部 AI 客户端（如 ZCode）请求执行高危命令，请确认三段信息是否一致：</p>
+          <dl class="context-grid">
+            <dt>AI 声明意图</dt><dd>{{ mcpApprovalPrompt?.intent || '(未声明)' }}</dd>
+            <dt>真实命令</dt><dd class="num" style="word-break:break-all">{{ mcpApprovalPrompt?.command }}</dd>
+            <dt>后果预测</dt><dd>{{ mcpApprovalPrompt?.consequence }}</dd>
+          </dl>
+          <p class="muted">核对意图与命令是否相符后再确认。拒绝或关闭都会阻止执行。</p>
+        </div>
+
         <!-- keyboardInteractive -->
         <div v-else-if="modal.type === 'keyboardInteractive'" class="stack">
           <p class="muted">服务器需要键盘交互认证，请根据提示输入：</p>
@@ -530,6 +552,7 @@ function denyHostKey() {
       </div>
       <div class="modal-actions">
         <button v-if="modal.type === 'hostKeyVerify'" class="btn danger" @click="denyHostKey">拒绝</button>
+        <button v-if="modal.type === 'mcpApproval'" class="btn danger" @click="denyMcpApproval">拒绝执行</button>
         <!-- mcpPanel / syncPanel 等自包含面板隐藏「取消」（操作在面板内部完成） -->
         <button v-if="modal.type !== 'mcpPanel' && modal.type !== 'syncPanel'" class="btn" id="modalSecondary" @click="closeModal">取消</button>
         <button
@@ -538,7 +561,6 @@ function denyHostKey() {
           data-modal-primary-danger
           @click="submitModal"
         >删除</button>
-        <!-- v1.1 mcpApproval 的「确认执行/拒绝执行」按钮已随 v1.4 pipe 删除一并移除 -->
         <!-- v1.2 mcpPanel / v1.3 syncPanel：自包含面板，主按钮「关闭」 -->
         <button v-else-if="modal.type === 'mcpPanel' || modal.type === 'syncPanel'" class="btn primary" id="modalPrimary" @click="submitModal">关闭</button>
         <button v-else class="btn primary" id="modalPrimary" @click="submitModal">确认</button>

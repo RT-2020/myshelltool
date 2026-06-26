@@ -4,14 +4,24 @@
 //! v1.1：高危命令走 MCP elicitation（RequestElicitation），在客户端界面内
 //!   弹确认框（三段式），用户 accept 才执行。客户端不支持 elicitation 时，
 //!   降级逻辑由 server.rs 的 NotSupported 分支处理（返回错误结果）。
+//! v1.5：elicitation 仍是主路径，但客户端不支持时（如 ZCode）改为 GUI 弹窗
+//!   降级（方案 A）——若 McpToolContext 持有 AppHandle，则 emit 审批事件给
+//!   前端 GlobalModals 弹窗，用户在 GUI 内确认。无 GUI（headless/测试）才
+//!   退回 fail-secure 拒绝。这是 MCP 官方博客定位的 deterministic runtime
+//!   control：安全保证落在 runtime 层，不依赖 elicitation（UX hint）。
 //!
 //! 三层审批（D9）：
 //! - 白名单 → AutoExecute
 //! - 黄名单 → AutoExecute（+ 日志）
-//! - 黑名单 → RequestElicitation（v1.1：客户端确认）
-//! - 未知命令 → RequestElicitation（v1.1：让用户决定）
+//! - 黑名单 → RequestElicitation（v1.1：客户端确认；v1.5：不支持则 GUI 弹窗）
+//! - 未知命令 → RequestElicitation（v1.1：让用户决定；v1.5：同上降级）
+
+use serde::Serialize;
 
 use crate::dangerous_commands::{self, CommandRisk, DangerousMatch};
+
+// ApprovalPending 在 tools.rs 定义（Arc<Mutex<HashMap<id, oneshot::Sender<bool>>>> 别名）。
+use super::tools::ApprovalPending;
 
 /// 审批决策结果。
 pub enum ApprovalDecision {
@@ -161,6 +171,48 @@ fn predict_consequence(m: &DangerousMatch) -> String {
         "将从网络下载脚本并直接用 shell 执行，存在执行恶意代码的高风险。".to_string()
     } else {
         "此命令被判定为危险操作。".to_string()
+    }
+}
+
+/// GUI 审批事件 payload（emit 给前端 GlobalModals 弹窗）。
+///
+/// v1.5：当客户端不支持 elicitation 但 GUI 在线时，server.rs 用此结构 emit
+/// `mcp-tool-approval` 事件，前端 mcp.js store 监听后弹 modal。字段对应
+/// ElicitationInfo 三段式，前端直接渲染。
+#[derive(Debug, Clone, Serialize)]
+pub struct McpApprovalEvent {
+    /// 审批请求 id（前端回传 mcp_confirm_tool 时用，对应 pending 表 key）。
+    pub request_id: String,
+    /// AI 声明意图（来自工具调用 intent 参数）。
+    pub intent: String,
+    /// 真实要执行的命令。
+    pub command: String,
+    /// 后果预测（基于命中的危险模式）。
+    pub consequence: String,
+}
+
+/// 命令层 resolve：由 mcp_confirm_tool 命令调用，从 pending 表取出 sender
+/// 回传用户决定。
+///
+/// server.rs 在 emit 事件后注册 oneshot::Sender 到 pending 表并等待；
+/// 前端用户点确认/拒绝后调 mcp_confirm_tool → 本函数取 sender send。
+/// request_id 不存在（已被超时清理或前端重复点击）→ 返回 Err。
+///
+/// 模式照 ssh.rs:1003-1014 ssh_confirm_host_key。
+pub async fn resolve_approval(
+    pending: &ApprovalPending,
+    request_id: &str,
+    accepted: bool,
+) -> Result<(), String> {
+    let mut map = pending.lock().await;
+    match map.remove(request_id) {
+        Some(tx) => {
+            let _ = tx.send(accepted);
+            Ok(())
+        }
+        None => Err(format!(
+            "mcp_confirm_tool: request_id {request_id} 不存在（可能已超时或不存在）"
+        )),
     }
 }
 
