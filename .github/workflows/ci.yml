@@ -1,0 +1,46 @@
+# 构建守护（v1.7）：push master / PR 时验证「构建没坏」，不产出安装包。
+#
+# 比 release.yml 轻量很多——只跑前端编译检查 + Rust 类型检查 + core 单测，
+# 把破坏挡在发版之前。完整 Tauri 打包只在 tag 触发的 release.yml 跑。
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install JS deps
+        run: npm ci
+
+      - name: Frontend build (Vite)
+        run: npm run build
+
+      - name: Rust type check (cargo check)
+        working-directory: src-tauri
+        run: cargo check
+
+      - name: Core unit tests
+        run: npm run test:core

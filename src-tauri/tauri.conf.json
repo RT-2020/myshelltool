@@ -4,8 +4,8 @@
   "version": "0.4.0",
   "identifier": "com.redtei.myshelltool",
   "build": {
-    "beforeDevCommand": "pnpm run dev -- --port 41234 --strictPort",
-    "beforeBuildCommand": "pnpm run build",
+    "beforeDevCommand": "npm run dev -- --port 41234 --strictPort",
+    "beforeBuildCommand": "npm run build",
     "devUrl": "http://127.0.0.1:41234",
     "frontendDist": "../dist"
   },
@@ -38,6 +38,18 @@
       "nsis": {
         "displayLanguageSelector": false,
         "languages": ["SimpChinese"]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://github.com/RT-2020/myshelltool/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE0OUFBODRDNjEzRjYwOTUKUldTVllEOWhUS2lhRkJ6d2l4ZkpVWERYdkZHOWRyNTFsM2VjUStuSnBPVzNka2dsMENPVmxSQW8K",
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

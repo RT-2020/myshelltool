@@ -1,0 +1,119 @@
+# 发版自动发布（v1.7）：推送 v* tag → 构建 NSIS + 便携 zip → 发布 GitHub Release。
+#
+# 触发：git tag v0.5.0 && git push --tags
+# 产物：
+#   - myshelltool_<ver>_x64-setup.exe      NSIS 安装包（已用 TAURI_SIGNING_PRIVATE_KEY 签名）
+#   - myshelltool_<ver>_x64-setup.exe.sig  签名文件（Tauri updater 校验用）
+#   - myshelltool-<ver>-portable.zip       便携版（exe + 4 个 MinGW runtime DLL）
+#   - latest.json                          Tauri updater 元数据（endpoints 指向此文件）
+#
+# 前置（仅需配置一次）：仓库 Settings → Secrets → Actions 添加：
+#   - TAURI_SIGNING_PRIVATE_KEY          = 本地 `tauri signer generate` 生成的私钥
+#   - TAURI_SIGNING_PRIVATE_KEY_PASSWORD = 生成私钥时设置的密码
+# 公钥需填入 src-tauri/tauri.conf.json 的 plugins.updater.pubkey。
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# 同 tag 重推时覆盖旧 Release（避免卡在已存在的 tag）。
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install JS deps
+        run: npm ci
+
+      - name: Extract version from tag
+        id: ver
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build (Tauri NSIS + updater signature)
+        env:
+          # Tauri 检测到这两个环境变量会自动对 NSIS 安装包签名并产出 .sig。
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri:build
+
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          # 便携包 = 编译产物 exe + bundle.resources 声明的 4 个 MinGW runtime DLL。
+          # DLL 已提交在 src-tauri/ 根目录，与 exe 同级运行所需。
+          $staging = "portable-staging"
+          New-Item -ItemType Directory -Path $staging | Out-Null
+          Copy-Item "src-tauri/target/release/myshelltool.exe" $staging
+          Copy-Item "src-tauri/WebView2Loader.dll" $staging
+          Copy-Item "src-tauri/libgcc_s_seh-1.dll" $staging
+          Copy-Item "src-tauri/libstdc++-6.dll" $staging
+          Copy-Item "src-tauri/libwinpthread-1.dll" $staging
+          Compress-Archive -Path "$staging/*" -DestinationPath "myshelltool-${{ steps.ver.outputs.version }}-portable.zip" -Force
+
+      - name: Locate bundle artifacts
+        id: artifacts
+        shell: pwsh
+        run: |
+          # NSIS 产物在 src-tauri/target/release/bundle/nsis/，文件名含版本号。
+          $nsisDir = "src-tauri/target/release/bundle/nsis"
+          $setup = Get-ChildItem "$nsisDir/*-setup.exe" | Select-Object -First 1
+          if (-not $setup) { throw "未找到 NSIS setup.exe，构建可能失败" }
+          $sig = Get-ChildItem "$nsisDir/*-setup.exe.sig" -ErrorAction SilentlyContinue | Select-Object -First 1
+          # latest.json：优先用 Tauri build 自动生成的；缺失则从 setup + sig 现场生成。
+          # （Tauri 2 在配了 updater + 签名密钥时会自动产 latest.json；这里兜底防御。）
+          $latest = "src-tauri/target/release/bundle/nsis/latest.json"
+          if (-not (Test-Path $latest)) {
+            if (-not $sig) { throw "未找到 .sig 签名文件——请确认已配置 TAURI_SIGNING_PRIVATE_KEY secret" }
+            $v = "${{ steps.ver.outputs.version }}"
+            $sigContent = (Get-Content $sig.FullName -Raw).Trim()
+            $url = "https://github.com/RT-2020/myshelltool/releases/latest/download/$($setup.Name)"
+            $manifest = @{
+              version = $v
+              notes = "myshelltool $v"
+              pub_date = (Get-Date).ToUniversalTime().ToString("o")
+              platforms = @{
+                "windows-x86_64" = @{
+                  signature = $sigContent
+                  url = $url
+                }
+              }
+            }
+            $manifest | ConvertTo-Json -Depth 10 | Set-Content $latest -Encoding UTF8
+          }
+          echo "setup=$($setup.FullName)" >> $env:GITHUB_OUTPUT
+          echo "sig=$($sig.FullName)" >> $env:GITHUB_OUTPUT
+          echo "latest=$latest" >> $env:GITHUB_OUTPUT
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            ${{ steps.artifacts.outputs.setup }}
+            ${{ steps.artifacts.outputs.sig }}
+            myshelltool-${{ steps.ver.outputs.version }}-portable.zip
+            ${{ steps.artifacts.outputs.latest }}

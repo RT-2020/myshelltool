@@ -288,6 +288,22 @@ fn create_asset_group(state: State<'_, AppState>, path: String) -> Result<Connec
 }
 
 #[tauri::command]
+fn reorder_asset_groups(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+) -> Result<ConnectionAssetList, String> {
+    let mut store = myshelltool_core::load_connection_asset_store(&state.asset_store_path)?;
+    myshelltool_core::reorder_asset_groups(&mut store, &paths)?;
+    myshelltool_core::save_connection_asset_store(&state.asset_store_path, &store)?;
+    Ok(ConnectionAssetList {
+        source: "local asset store",
+        count: store.assets.len(),
+        assets: store.assets,
+        groups: store.groups,
+    })
+}
+
+#[tauri::command]
 fn save_credential(
     state: State<'_, AppState>,
     id: String,
@@ -417,6 +433,8 @@ pub fn run() {
             Ok(())
         })
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             backend_status,
             // v1.2：MCP 服务可观测性聚合查询（前端状态栏/管理面板）
@@ -429,6 +447,7 @@ pub fn run() {
             rename_asset_group,
             dissolve_asset_group,
             create_asset_group,
+            reorder_asset_groups,
             // v1.3：Gist 同步（替代 v1.0 死命令 save_sync_settings）
             sync::sync_status,
             sync::sync_setup,
@@ -437,6 +456,10 @@ pub fn run() {
             sync::sync_resolve_conflict,
             sync::sync_reset_master_password,
             sync::sync_clear,
+            // v1.6：自动同步（会话密钥 + DPAPI 保护）
+            sync::sync_enable_auto_sync,
+            sync::sync_disable_auto_sync,
+            sync::sync_check_remote_updates,
             save_credential,
             get_credential_status,
             delete_credential,
