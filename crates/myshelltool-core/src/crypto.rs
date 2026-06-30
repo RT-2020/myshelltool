@@ -53,6 +53,60 @@ fn derive_key(master_password: &str, salt: &[u8]) -> Result<[u8; KEY_LEN], Strin
     Ok(key)
 }
 
+/// 从主密码 + 固定 salt **确定性**派生会话密钥（v1.6 自动同步）。
+///
+/// 与 `derive_key` 的区别：本函数 `pub`，供自动同步路径持久化会话密钥。
+/// **确定性**是关键——同一主密码 + 同一 salt 永远派生出同一 key，
+/// 所以首次启用自动同步时派生的 key 可以加密存盘（DPAPI 保护），后续复用。
+///
+/// 返回 32 字节 AES 密钥（拷贝给调用方，避免持有引用）。
+pub fn derive_session_key(master_password: &str, salt: &[u8]) -> Result<[u8; KEY_LEN], String> {
+    derive_key(master_password, salt)
+}
+
+/// 用现成 key 加密明文（v1.6 自动同步路径）。
+///
+/// 与 `encrypt` 的区别：跳过 Argon2id 派生（key 已由调用方提供），
+/// 直接用 key 做 AES-256-GCM 加密。每次生成新随机 nonce（防 nonce 复用灾难）。
+/// blob.salt 字段留空——key-based 路径下 salt 已随 key 持久化在 SecretStore，
+/// 解密时不需要再从 salt 派生。
+pub fn encrypt_with_key(plaintext: &[u8], key: &[u8; KEY_LEN]) -> Result<EncryptedBlob, String> {
+    let mut nonce_bytes = [0u8; NONCE_LEN];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|e| format!("AES key init failed: {e}"))?;
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext)
+        .map_err(|e| format!("AES-GCM encrypt failed: {e}"))?;
+
+    Ok(EncryptedBlob {
+        salt: String::new(), // key-based 路径无 salt（key 已持久化）
+        nonce: base64_encode(&nonce_bytes),
+        ciphertext: base64_encode(&ciphertext),
+    })
+}
+
+/// 用现成 key 解密（v1.6 自动同步路径）。
+///
+/// 配合 `encrypt_with_key`。salt 字段被忽略（key-based 路径不用）。
+pub fn decrypt_with_key(blob: &EncryptedBlob, key: &[u8; KEY_LEN]) -> Result<Vec<u8>, String> {
+    let nonce_bytes = base64_decode(&blob.nonce)?;
+    let ciphertext = base64_decode(&blob.ciphertext)?;
+
+    if nonce_bytes.len() != NONCE_LEN {
+        return Err(format!("invalid nonce length: {}", nonce_bytes.len()));
+    }
+
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|e| format!("AES key init failed: {e}"))?;
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    cipher
+        .decrypt(nonce, ciphertext.as_ref())
+        .map_err(|e| format!("AES-GCM decrypt failed (会话密钥失效或密文被篡改): {e}"))
+}
+
 /// 加密明文。
 ///
 /// 生成随机 salt + nonce，从主密码派生 key，AES-256-GCM 加密。
@@ -251,5 +305,94 @@ mod tests {
         assert!(json.contains("\"ciphertext\""));
         let back: EncryptedBlob = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, blob);
+    }
+
+    // ─── v1.6 会话密钥（key-based）路径测试 ───
+
+    #[test]
+    fn derive_session_key_is_deterministic() {
+        // 确定性派生：同一密码 + 同一 salt → 同一 key（这是会话密钥可持久化的前提）
+        let salt = [0xABu8; SALT_LEN];
+        let key1 = derive_session_key("master-pw", &salt).expect("derive 1");
+        let key2 = derive_session_key("master-pw", &salt).expect("derive 2");
+        assert_eq!(key1, key2, "同密码+同salt应派生出相同key");
+
+        // 不同密码 → 不同 key
+        let key3 = derive_session_key("other-pw", &salt).expect("derive 3");
+        assert_ne!(key1, key3, "不同密码应派生出不同key");
+
+        // 不同 salt → 不同 key
+        let salt2 = [0xCDu8; SALT_LEN];
+        let key4 = derive_session_key("master-pw", &salt2).expect("derive 4");
+        assert_ne!(key1, key4, "不同salt应派生出不同key");
+    }
+
+    #[test]
+    fn encrypt_decrypt_with_key_roundtrip() {
+        let key = derive_session_key("pw", &[0u8; SALT_LEN]).expect("derive");
+        let plaintext = br#"{"assets":[{"id":"x","host":"10.0.0.1"}]}"#;
+        let blob = encrypt_with_key(plaintext, &key).expect("encrypt_with_key");
+        let decrypted = decrypt_with_key(&blob, &key).expect("decrypt_with_key");
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn decrypt_with_wrong_key_fails() {
+        let key1 = derive_session_key("pw1", &[0u8; SALT_LEN]).expect("derive 1");
+        let key2 = derive_session_key("pw2", &[0u8; SALT_LEN]).expect("derive 2");
+        let blob = encrypt_with_key(b"secret", &key1).expect("encrypt");
+        // 用错误的 key 解密应失败（AES-GCM 认证校验）
+        let result = decrypt_with_key(&blob, &key2);
+        assert!(result.is_err(), "错误 key 应解密失败");
+    }
+
+    #[test]
+    fn key_based_tampered_ciphertext_fails() {
+        let key = derive_session_key("pw", &[0u8; SALT_LEN]).expect("derive");
+        let blob = encrypt_with_key(b"secret", &key).expect("encrypt");
+        let mut tampered = blob.clone();
+        // 篡改密文首字符
+        let mut chars: Vec<char> = tampered.ciphertext.chars().collect();
+        chars[0] = if chars[0] == 'A' { 'B' } else { 'A' };
+        tampered.ciphertext = chars.into_iter().collect();
+        let result = decrypt_with_key(&tampered, &key);
+        assert!(result.is_err(), "篡改后应解密失败（AEAD 完整性校验）");
+    }
+
+    #[test]
+    fn key_based_blob_has_empty_salt() {
+        // key-based 路径的 blob.salt 应为空（salt 已随 key 持久化，不重复存）
+        let key = derive_session_key("pw", &[0u8; SALT_LEN]).expect("derive");
+        let blob = encrypt_with_key(b"data", &key).expect("encrypt");
+        assert!(blob.salt.is_empty(), "key-based blob 的 salt 应为空");
+        assert!(!blob.nonce.is_empty(), "nonce 应非空");
+        assert!(!blob.ciphertext.is_empty(), "密文应非空");
+    }
+
+    #[test]
+    fn key_based_and_password_based_are_incompatible() {
+        // key-based 加密的 blob 无法用 password-based 解密（反之亦然），
+        // 因为 password-based 解密会尝试用 blob.salt（空）派生 key，必然失败。
+        // 这验证了两条路径的隔离性——自动同步的密文只有会话密钥能解。
+        let key = derive_session_key("master-pw", &[0u8; SALT_LEN]).expect("derive");
+        let blob = encrypt_with_key(b"secret", &key).expect("encrypt_with_key");
+        // 用 password-based decrypt 解 key-based blob（salt 空 → 派生出另一个 key → 失败）
+        let result = decrypt(&blob, "master-pw");
+        assert!(result.is_err(), "password-based 不应能解 key-based 密文");
+    }
+
+    #[test]
+    fn each_encrypt_with_key_uses_random_nonce() {
+        // 同一 key 加密同一明文两次，nonce/ciphertext 应不同
+        let key = derive_session_key("pw", &[0u8; SALT_LEN]).expect("derive");
+        let blob1 = encrypt_with_key(b"same", &key).expect("encrypt 1");
+        let blob2 = encrypt_with_key(b"same", &key).expect("encrypt 2");
+        assert_ne!(blob1.nonce, blob2.nonce, "nonce 应随机");
+        assert_ne!(blob1.ciphertext, blob2.ciphertext, "密文应不同");
+        // 但都能用同一 key 解出
+        assert_eq!(
+            decrypt_with_key(&blob1, &key).unwrap(),
+            decrypt_with_key(&blob2, &key).unwrap()
+        );
     }
 }

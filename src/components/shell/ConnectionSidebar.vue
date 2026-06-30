@@ -51,9 +51,12 @@ const emit = defineEmits([
   'edit-asset',
   'delete-asset',
   'duplicate-asset',
-  'move-asset',
+  'move-asset',           // 右键菜单「移动到分组…」→ 打开弹窗
   'rename-group',
-  'dissolve-group'
+  'dissolve-group',
+  // 拖拽：直接落盘，不走弹窗
+  'move-asset-direct',    // payload { id, group }：资产拖到分组 → 直接移动
+  'reorder-groups'        // payload string[]：分组拖拽排序后的全量新顺序
 ]);
 
 // ============================================================
@@ -163,8 +166,144 @@ function isActiveAsset(asset) {
   return Boolean(props.selectedAssetId) && props.selectedAssetId === asset.id;
 }
 
-function assetBadge(asset) {
-  return (asset.tags && asset.tags[0]) || asset.auth_method || '';
+// ============================================================
+// 拖拽：资产拖到分组（移动）+ 分组间拖拽（同级排序）。
+// dataTransfer 用自定义 MIME 携带 { kind, id|path, parent }，区分两类拖拽。
+// 「未分组」不可拖动排序，但可作为资产拖入目标。
+// ============================================================
+const DRAG_MIME = 'application/x-myshelltool-drag';
+
+// 拖拽态：当前被拖对象 / 当前悬停目标分组 / 上半还是下半区
+const dragSource = ref(null);   // { kind:'asset', id } | { kind:'group', path, parent } | null
+const dropTarget = ref(null);   // { path, position:'in'|'before'|'after' } | null
+
+function readDragData(event) {
+  const raw = event.dataTransfer?.getData(DRAG_MIME);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+function writeDragData(event, payload) {
+  // 兜底 text/plain：某些环境（部分 webview）对自定义 MIME 支持不稳
+  event.dataTransfer?.setData(DRAG_MIME, JSON.stringify(payload));
+  event.dataTransfer?.setData('text/plain', payload.kind === 'asset' ? payload.id : payload.path);
+  event.dataTransfer.effectAllowed = 'move';
+}
+
+// —— 资产拖拽 source ——
+function onAssetDragStart(event, asset) {
+  dragSource.value = { kind: 'asset', id: asset.id };
+  writeDragData(event, { kind: 'asset', id: asset.id });
+}
+function onAssetDragEnd() {
+  dragSource.value = null;
+  dropTarget.value = null;
+}
+function isDraggingAsset(id) {
+  return dragSource.value?.kind === 'asset' && dragSource.value.id === id;
+}
+
+// —— 分组拖拽 source（排序）——
+function onGroupDragStart(event, path, parent) {
+  if (path === '未分组') { event.preventDefault(); return; } // 保留节点不可拖
+  dragSource.value = { kind: 'group', path, parent };
+  writeDragData(event, { kind: 'group', path, parent });
+}
+function onGroupDragEnd() {
+  dragSource.value = null;
+  dropTarget.value = null;
+}
+
+// —— 分组头作为 drop target（同时收资产拖入与分组排序）——
+function onGroupDragOver(event, path, parent) {
+  const src = readDragData(event) || dragSource.value;
+  if (!src) return;
+  // 资产拖入：任意分组都可接收（含「未分组」），effectAllowed=move 需配 dropEffect
+  if (src.kind === 'asset') {
+    event.dataTransfer.dropEffect = 'move';
+    event.preventDefault();
+    return;
+  }
+  // 分组排序：仅同级可排（同 parent），且不能排到自己上、不能排到「未分组」
+  if (src.kind === 'group') {
+    if (path === '未分组' || src.path === path || src.parent !== parent) return;
+    event.dataTransfer.dropEffect = 'move';
+    event.preventDefault();
+  }
+}
+function onGroupDragEnter(event, path) {
+  const src = readDragData(event) || dragSource.value;
+  if (!src) return;
+  if (src.kind === 'asset') {
+    dropTarget.value = { path, position: 'in' };
+  } else if (src.kind === 'group' && path !== '未分组' && src.path !== path) {
+    // 上半/下半区决定 before/after
+    const rect = event.currentTarget.getBoundingClientRect();
+    const position = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+    dropTarget.value = { path, position };
+  }
+}
+function onGroupDragLeave(event, path) {
+  // dragleave 会因子元素冒泡频繁触发；仅在真正离开该分组头时清目标
+  if (dropTarget.value?.path === path) {
+    const related = event.relatedTarget;
+    if (!event.currentTarget.contains(related)) {
+      dropTarget.value = null;
+    }
+  }
+}
+function onGroupDrop(event, targetPath, targetParent) {
+  const src = readDragData(event) || dragSource.value;
+  dropTarget.value = null;
+  dragSource.value = null;
+  if (!src) return;
+  if (src.kind === 'asset') {
+    // 资产拖入分组 → 直接移动
+    emit('move-asset-direct', { id: src.id, group: targetPath });
+    return;
+  }
+  if (src.kind === 'group') {
+    // 同级排序：把 src.path 插到 targetPath 的 before/after
+    if (targetPath === '未分组' || src.path === targetPath || src.parent !== targetParent) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const placeAfter = event.clientY >= rect.top + rect.height / 2;
+    emit('reorder-groups', buildReorderedPaths(src.path, targetPath, placeAfter));
+  }
+}
+
+// 把分组拖拽结果转成全量新顺序（扁平路径，父在子前 DFS 先序）。
+// 思路：从当前分组树按 DFS 先序收集所有非「未分组」路径，移除 src，
+// 插到 target 的 before/after 位置。
+function buildReorderedPaths(srcPath, targetPath, placeAfter) {
+  const ordered = collectGroupPathsDfs(props.groupedAssets);
+  const filtered = ordered.filter(p => p !== srcPath);
+  const idx = filtered.indexOf(targetPath);
+  if (idx === -1) return ordered; // 兜底：target 不在列表，原样返回
+  filtered.splice(placeAfter ? idx + 1 : idx, 0, srcPath);
+  return filtered;
+}
+// DFS 先序收集分组路径（root.children 起步），跳过「未分组」。
+function collectGroupPathsDfs(root) {
+  const out = [];
+  const walk = (node) => {
+    for (const child of (node.children || [])) {
+      if (child.path !== '未分组') out.push(child.path);
+      walk(child);
+    }
+  };
+  walk(root);
+  return out;
+}
+
+// 分组头拖放态 class（AssetGroupNode 调用）
+function groupHeaderClass(path) {
+  if (!dropTarget.value || dropTarget.value.path !== path) {
+    return dragSource.value?.kind === 'group' && dragSource.value.path === path ? 'is-dragging' : '';
+  }
+  const pos = dropTarget.value.position;
+  if (pos === 'in') return 'is-drop-in';
+  if (pos === 'before') return 'is-drop-before';
+  if (pos === 'after') return 'is-drop-after';
+  return '';
 }
 
 // ============================================================
@@ -284,7 +423,18 @@ provide('connectionSidebar', {
   toggleGroup,
   statusClass,
   isActiveAsset,
-  assetBadge,
+  isUngrouped: path => path === '未分组',
+  // 拖拽态
+  isDraggingAsset,
+  groupHeaderClass,
+  onAssetDragStart,
+  onAssetDragEnd,
+  onGroupDragStart,
+  onGroupDragEnd,
+  onGroupDragOver,
+  onGroupDragEnter,
+  onGroupDragLeave,
+  onGroupDrop,
   onSelectAsset: id => emit('select-asset', id),
   onConnectAsset: id => emit('connect-asset', id),
   onAssetKeydown,
@@ -601,25 +751,6 @@ provide('connectionSidebar', {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
-}
-.asset-badge {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  height: 16px;
-  padding: 0 var(--space-1);
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-pill);
-  background: var(--app-control);
-  color: var(--app-muted);
-  font-size: 10px;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  max-width: 64px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .dot {

@@ -291,6 +291,7 @@ credential_id(Option), passphrase_credential_id(Option)
 - 危险文件操作（删除、覆盖）**必须弹窗确认**。
 - Host key 变更默认**阻止连接并警告**。
 - 远程命令执行/隧道监听 `0.0.0.0` 需安全审视。
+- **【v1.6】同步主密码绝不落盘**：资产同步的主密码（master password）在派生 AES 密钥后即丢弃，绝不存盘。自动同步功能用「会话密钥 + DPAPI 保护」绕过每次输密码：首次启用时用主密码派生固定 AES key（Argon2id，确定性），该 key 经 DPAPI（User scope，绑定 Windows 用户登录态）加密后存 SecretStore（credential id = `sync-session-key`）。离机即失效，非 Windows 或 DPAPI 失败时降级为手动主密码模式（不静默失败）。
 
 ---
 

@@ -126,6 +126,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     mcpStore.refresh();
     // v1.3：启动时刷新同步状态（供状态栏展示真实同步配置状态）
     syncStore.refreshStatus();
+    // v1.6：启动时后台探测远端是否有更新（轻量，失败静默不阻塞启动）
+    syncStore.checkRemoteUpdates().catch(() => null);
     await Promise.all([
       sessionsStore.setupEventListeners(),
       filesStore.setupEventListeners(),
@@ -246,6 +248,9 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     syncGistIdMasked: computed(() => syncStore.gistIdMasked),
     syncConflict: computed(() => syncStore.conflict),
     syncLoading: computed(() => syncStore.loading),
+    // v1.6 自动同步 re-export
+    syncAutoSyncEnabled: computed(() => syncStore.autoSyncEnabled),
+    syncRemoteHasUpdates: computed(() => syncStore.remoteHasUpdates),
     syncRefreshStatus: () => syncStore.refreshStatus(),
     syncSetup: syncStore.setup,
     syncPush: syncStore.push,
@@ -254,6 +259,10 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     syncResetMasterPassword: syncStore.resetMasterPassword,
     syncClear: syncStore.clearSync,
     syncDismissConflict: syncStore.dismissConflict,
+    // v1.6 自动同步三件套
+    syncEnableAutoSync: syncStore.enableAutoSync,
+    syncDisableAutoSync: syncStore.disableAutoSync,
+    syncCheckRemoteUpdates: syncStore.checkRemoteUpdates,
     // --- files re-export ---
     remotePath: computed(() => filesStore.remotePath),
     remoteEntries: computed(() => filesStore.remoteEntries),
@@ -303,6 +312,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     renameGroup: assetsStore.renameGroup,
     dissolveGroup: assetsStore.dissolveGroup,
     createGroup: assetsStore.createGroup,
+    reorderGroups: assetsStore.reorderGroups,
     saveToken: assetsStore.saveToken,
     deleteToken: assetsStore.deleteToken,
     // --- files re-export actions ---
