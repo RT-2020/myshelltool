@@ -17,6 +17,8 @@
     "core:window:allow-set-position",
     "core:path:default",
     "clipboard-manager:allow-write-text",
-    "clipboard-manager:allow-read-text"
+    "clipboard-manager:allow-read-text",
+    "opener:default",
+    "updater:default"
   ]
 }

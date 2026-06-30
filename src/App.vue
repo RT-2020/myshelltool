@@ -17,6 +17,7 @@ import { isTauriRuntime } from './services/backend.js';
 // entry point. See .omc/plans/ui-full-refactor-consensus.md Step 3.5.
 import { useWorkbenchStore } from './stores/workbench.js';
 import { usePanelResize } from './composables/usePanelResize.js';
+import { useAutoUpdate } from './composables/useAutoUpdate.js';
 import AppShellLayout from './components/shell/AppShellLayout.vue';
 import AppTitleBar from './components/shell/AppTitleBar.vue';
 import AppStatusBar from './components/shell/AppStatusBar.vue';
@@ -41,11 +42,16 @@ const {
 // 面板拖拽布局（三列宽 + 中间两行高），reset/syncCollapse 供标题栏按钮与折叠态调用。
 const panelResize = usePanelResize();
 
+// 应用内自动更新（v1.7）：发现新版本时把提示写入 statusMessage，点击状态栏触发下载安装。
+// 浏览器预览模式（无 Tauri runtime）下 init 静默 no-op。
+const autoUpdate = useAutoUpdate({ announce: msg => store.announce(msg) });
+
 const sidebarSearch = ref('');
 const sidebarQuickConnect = ref('');
 
 onMounted(() => {
   store.initialize();
+  autoUpdate.init(); // 异步检查更新，失败静默
   window.addEventListener('keydown', handleGlobalKeydown);
 });
 onBeforeUnmount(() => {
@@ -91,6 +97,9 @@ function onCreateGroup() { store.modal = { type: 'createGroup' }; }
 function onRenameGroup(path) { store.modal = { type: 'renameGroup', path }; }
 function onDissolveGroup(path) { store.dissolveGroup(path); }
 function onMoveAsset(asset) { store.modal = { type: 'moveAsset', asset }; }
+// 拖拽：直接落盘，不走弹窗
+function onMoveAssetDirect({ id, group }) { store.moveAsset(id, group); }
+function onReorderGroups(orderedPaths) { store.reorderGroups(orderedPaths); }
 
 // Titlebar emits
 function onToggleTheme() { store.toggleTheme(); }
@@ -116,7 +125,16 @@ function onOpenSettings() { store.announce('设置功能开发中'); }
 function onActivateSuggestion(item) { store.activateSuggestion(item); }
 
 // Statusbar emits
-function onClickStatus() { store.announce(statusMessage.value || '就绪'); }
+// 点击状态栏消息：若当前是更新提示（由 useAutoUpdate 写入），触发更新流程；
+// 否则回显消息（旧行为）。
+function onClickStatus() {
+  const msg = statusMessage.value || '就绪';
+  if (msg.includes('更新')) {
+    autoUpdate.onClick();
+    return;
+  }
+  store.announce(msg);
+}
 function onToggleTransferDrawer() { store.toggleTransferDrawer(); }
 </script>
 
@@ -173,6 +191,8 @@ function onToggleTransferDrawer() { store.toggleTransferDrawer(); }
           @duplicate-asset="onDuplicateAsset"
           @delete-asset="onDeleteAsset"
           @move-asset="onMoveAsset"
+          @move-asset-direct="onMoveAssetDirect"
+          @reorder-groups="onReorderGroups"
           @rename-group="onRenameGroup"
           @dissolve-group="onDissolveGroup"
         />
