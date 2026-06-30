@@ -114,8 +114,8 @@ const assetCredentialHint = computed(() => {
   return '尚未存储密码';
 });
 
-// 移动/新建分组时可选的分组建议列表：显式声明 ∪ 资产现有 group，去重，含「未分组」。
-const moveGroupOptions = computed(() => {
+// 可选分组建议列表（资产编辑器与移动分组共用）：显式声明 ∪ 资产现有 group，去重，含「未分组」。
+const groupOptions = computed(() => {
   const set = new Set(['未分组']);
   for (const g of (store.declaredGroups || [])) set.add(g);
   for (const a of (store.assets || [])) if (a.group) set.add(a.group);
@@ -348,7 +348,19 @@ function denyMcpApproval() {
               <AppInput :model-value="editingAsset.username" @update:model-value="v => editingAsset.username = v" data-asset-field="username" />
             </label>
             <label class="stack"><span class="muted">分组</span>
-              <AppInput :model-value="editingAsset.group" @update:model-value="v => editingAsset.group = v" data-asset-field="group" />
+              <!-- 用原生 input 而非 AppInput：AppInput 不透传 list 属性，
+                   分组需 datalist 自动补全（选已有）+ 允许输入新路径（新建），故用裸 input。 -->
+              <input
+                class="native-input"
+                :value="editingAsset.group"
+                @input="e => editingAsset.group = e.target.value"
+                list="group-list-editor"
+                placeholder="未分组 或 生产/数据库"
+                data-asset-field="group"
+              />
+              <datalist id="group-list-editor">
+                <option v-for="g in groupOptions" :key="g" :value="g"></option>
+              </datalist>
             </label>
             <label class="stack"><span class="muted">标签</span>
               <AppInput :model-value="editingAsset.tags" placeholder="prod, app" @update:model-value="v => editingAsset.tags = v" data-asset-field="tags" />
@@ -534,7 +546,7 @@ function denyMcpApproval() {
               placeholder="未分组 或 生产/数据库"
             />
             <datalist id="group-list-move">
-              <option v-for="g in moveGroupOptions" :key="g" :value="g"></option>
+              <option v-for="g in groupOptions" :key="g" :value="g"></option>
             </datalist>
           </label>
         </div>

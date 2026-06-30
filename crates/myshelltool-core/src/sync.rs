@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 use crate::crypto::{self, EncryptedBlob};
 
 /// 同步载荷格式版本（未来加密算法/结构变更时升版，便于向后兼容）。
-const PAYLOAD_VERSION: u32 = 1;
+/// pub：src-tauri/sync.rs 在打包载荷时复用此常量，跨 crate 引用必须公开。
+pub const PAYLOAD_VERSION: u32 = 1;
 
 /// 存入 Gist 的完整同步载荷。
 ///
@@ -50,6 +51,10 @@ pub struct SyncState {
     /// Gist ID（首次 create_gist 后记录，后续 update 用）。
     #[serde(default)]
     pub gist_id: Option<String>,
+    /// v1.6：是否启用自动同步（会话密钥已派生并 DPAPI 保护存盘）。
+    /// 会话密钥本身不在本结构（存 SecretStore，credential id = "sync-session-key"）。
+    #[serde(default)]
+    pub auto_sync_enabled: bool,
 }
 
 /// 冲突检测结果（pull 时判定）。

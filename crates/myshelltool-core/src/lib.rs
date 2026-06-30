@@ -293,6 +293,34 @@ pub fn ensure_asset_group(store: &mut ConnectionAssetStore, path: &str) -> Resul
     Ok(())
 }
 
+/// 重排分组声明顺序（支撑拖拽排序）。`ordered_paths` 必须是当前 store.groups 的一个排列：
+/// 集合相等才接受新顺序，否则报错（防止前端漏传导致丢分组）。
+/// 顺序即 `store.groups` 数组顺序——buildGroupTree 在前端按此顺序渲染。
+/// 保留节点「未分组」不在 declaredGroups 内，传入也不应出现（出现会被忽略）。
+pub fn reorder_asset_groups(store: &mut ConnectionAssetStore, ordered_paths: &[String]) -> Result<(), String> {
+    let new_list: Vec<String> = ordered_paths
+        .iter()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty() && p != "未分组")
+        .collect();
+
+    // 集合校验：新列表必须是当前 groups 的一个排列（允许两者都为空）。
+    let mut cur_sorted: Vec<String> = store.groups.iter().cloned().collect();
+    cur_sorted.sort();
+    let mut new_sorted: Vec<String> = new_list.clone();
+    new_sorted.sort();
+    if cur_sorted != new_sorted {
+        return Err(format!(
+            "reorder_asset_groups: ordered_paths is not a permutation of current groups (got {}, expected {})",
+            new_sorted.len(),
+            cur_sorted.len()
+        ));
+    }
+
+    store.groups = new_list;
+    Ok(())
+}
+
 pub fn load_connection_asset_store(path: impl AsRef<Path>) -> Result<ConnectionAssetStore, String> {
     let path = path.as_ref();
     if !path.exists() {
@@ -758,6 +786,44 @@ mod tests {
         assert!(validate_group_path("").is_err());
         assert!(validate_group_path("生产//数据库").is_err()); // 连续 '/'
         assert!(validate_group_path("生产/").is_err()); // 末尾空段
+    }
+
+    #[test]
+    fn reorder_groups_accepts_permutation_and_filters_reserved() {
+        let mut store = ConnectionAssetStore {
+            assets: vec![],
+            groups: vec!["生产".into(), "测试".into(), "生产/数据库".into()],
+        };
+        // 翻转顺序（排列），应被接受
+        reorder_asset_groups(&mut store, &["生产/数据库".into(), "测试".into(), "生产".into()])
+            .expect("reorder ok");
+        assert_eq!(
+            store.groups,
+            vec!["生产/数据库".to_string(), "测试".to_string(), "生产".to_string()]
+        );
+    }
+
+    #[test]
+    fn reorder_groups_rejects_non_permutation() {
+        let mut store = ConnectionAssetStore {
+            assets: vec![],
+            groups: vec!["生产".into(), "测试".into()],
+        };
+        // 漏传一个 → 集合不等 → 报错，不落盘
+        assert!(reorder_asset_groups(&mut store, &["生产".into()]).is_err());
+        assert_eq!(store.groups, vec!["生产".to_string(), "测试".to_string()]);
+    }
+
+    #[test]
+    fn reorder_groups_ignores_ungrouped_in_input() {
+        let mut store = ConnectionAssetStore {
+            assets: vec![],
+            groups: vec!["生产".into(), "测试".into()],
+        };
+        // 「未分组」混入输入被忽略，剩余仍是当前 groups 的排列 → 接受
+        reorder_asset_groups(&mut store, &["测试".into(), "未分组".into(), "生产".into()])
+            .expect("reorder ok (ungrouped filtered)");
+        assert_eq!(store.groups, vec!["测试".to_string(), "生产".to_string()]);
     }
 
     fn temp_store_path(label: &str) -> std::path::PathBuf {

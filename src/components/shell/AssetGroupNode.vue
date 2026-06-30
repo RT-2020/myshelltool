@@ -9,14 +9,15 @@
  * 通过 provide/inject 从父级 ConnectionSidebar 获取：
  *   - statusClassFor(asset): 状态圆点 class
  *   - isActiveAsset(asset): 是否选中
- *   - assetBadge(asset): 徽标文本
- *   - isCollapsed(path): 分组是否折叠
- *   - onSelectAsset(id) / onConnectAsset(id)
- *   - onAssetKeydown(event, asset)
+ *   - isDraggingAsset(id): 该资产是否正被拖拽（视觉半透明）
+ *   - isCollapsed(path) / toggleGroup(path): 折叠态
+ *   - isUngrouped(path): 是否为保留的「未分组」节点（不可拖动排序、无右键菜单）
+ *   - groupHeaderClass(path): 分组头拖放态 class（is-dragging/is-drop-in/is-drop-before/after）
+ *   - onSelectAsset(id) / onConnectAsset(id) / onAssetKeydown(event, asset)
  *   - registerAssetEl(id, el): DOM ref 注册（键盘导航）
  *   - onAssetContextMenu(event, asset) / onGroupContextMenu(event, path)
  *   - onEditAsset(asset) / onDeleteAsset(asset) / onDuplicateAsset(asset): 悬停快捷按钮
- *   - isUngrouped(path): 是否为保留的「未分组」节点（无右键菜单）
+ *   - 拖拽：onAssetDragStart/End、onGroupDragStart/End、onGroupDragOver/Enter/Leave/Drop
  *
  * 这样避免了递归 emit 层层透传，组件树更简洁。
  */
@@ -39,10 +40,18 @@ const sidebar = inject('connectionSidebar');
     <button
       type="button"
       class="group-header"
+      :class="sidebar.groupHeaderClass(node.path)"
       :style="{ 'padding-inline-start': 8 + depth * 12 + 'px' }"
       :aria-expanded="String(!sidebar.isCollapsed(node.path))"
+      :draggable="String(!sidebar.isUngrouped(node.path))"
       @click="sidebar.toggleGroup(node.path)"
       @contextmenu.prevent="sidebar.onGroupContextMenu($event, node.path)"
+      @dragstart="sidebar.onGroupDragStart($event, node.path, node.parent)"
+      @dragend="sidebar.onGroupDragEnd($event)"
+      @dragover="sidebar.onGroupDragOver($event, node.path, node.parent)"
+      @dragenter.prevent="sidebar.onGroupDragEnter($event, node.path)"
+      @dragleave="sidebar.onGroupDragLeave($event, node.path)"
+      @drop.prevent="sidebar.onGroupDrop($event, node.path, node.parent, node.name)"
     >
       <component
         :is="sidebar.isCollapsed(node.path) ? ChevronRight : ChevronDown"
@@ -68,9 +77,10 @@ const sidebar = inject('connectionSidebar');
           :key="asset.id"
           :ref="el => sidebar.registerAssetEl(asset.id, el)"
           class="asset-node"
-          :class="{ 'is-active': sidebar.isActiveAsset(asset) }"
+          :class="{ 'is-active': sidebar.isActiveAsset(asset), 'is-dragging': sidebar.isDraggingAsset(asset.id) }"
           role="treeitem"
           tabindex="0"
+          draggable="true"
           :aria-selected="String(sidebar.isActiveAsset(asset))"
           :title="`${asset.name} · ${asset.host} · ${asset.username}`"
           :style="{ 'padding-inline-start': 8 + depth * 12 + 'px' }"
@@ -78,13 +88,14 @@ const sidebar = inject('connectionSidebar');
           @dblclick="sidebar.onConnectAsset(asset.id)"
           @keydown="sidebar.onAssetKeydown($event, asset)"
           @contextmenu.prevent="sidebar.onAssetContextMenu($event, asset)"
+          @dragstart="sidebar.onAssetDragStart($event, asset)"
+          @dragend="sidebar.onAssetDragEnd($event)"
         >
           <span class="dot" :class="sidebar.statusClass(asset)" aria-hidden="true"></span>
           <div class="asset-body">
             <div class="asset-name">{{ asset.name }}</div>
             <div class="asset-meta">{{ asset.host }} · {{ asset.username }}</div>
           </div>
-          <span v-if="sidebar.assetBadge(asset)" class="asset-badge">{{ sidebar.assetBadge(asset) }}</span>
           <!-- 悬停快捷按钮：编辑 / 删除 -->
           <div class="asset-quick-actions">
             <button
@@ -242,24 +253,27 @@ const sidebar = inject('connectionSidebar');
   font-family: var(--font-mono);
 }
 
-.asset-badge {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  height: 16px;
-  padding: 0 var(--space-1);
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-pill);
-  background: var(--app-control);
-  color: var(--app-muted);
-  font-size: 10px;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  max-width: 64px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+// ============================================================
+// 拖拽视觉反馈
+// ============================================================
+// 拖拽中的资产/分组半透明
+.asset-node.is-dragging,
+.group-header.is-dragging {
+  opacity: 0.4;
+}
+
+// 分组头作为拖入目标时高亮（资产拖入 → 移动到该组）
+.group-header.is-drop-in {
+  background: color-mix(in oklab, var(--accent), transparent 84%);
+  border-radius: var(--radius-sm);
+}
+
+// 分组排序插入指示线：before = 上半区（插到前面），after = 下半区（插到后面）
+.group-header.is-drop-before {
+  box-shadow: inset 0 2px 0 0 var(--accent);
+}
+.group-header.is-drop-after {
+  box-shadow: inset 0 -2px 0 0 var(--accent);
 }
 
 // .dot 全局工具类；modifier 配对 _utilities.scss

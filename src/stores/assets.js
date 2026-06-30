@@ -186,6 +186,7 @@ export const useAssetsStore = defineStore('assets', () => {
     selectAsset(item.id, false);
     wb().modal = { type: null, asset: null };
     announce('连接资产已保存：' + item.name);
+    maybeAutoPush(); // v1.6 自动同步（moveAsset/duplicateAsset 复用本函数，自动覆盖）
   }
 
   // ------------------------------------------------------------
@@ -212,6 +213,7 @@ export const useAssetsStore = defineStore('assets', () => {
     }
     wb().modal = { type: null, asset: null };
     announce('已删除连接资产：' + (target?.name || id));
+    maybeAutoPush();
   }
 
   // ------------------------------------------------------------
@@ -255,6 +257,7 @@ export const useAssetsStore = defineStore('assets', () => {
     assetSource.value = { ...result, count: result.count ?? result.assets?.length ?? assets.value.length };
     wb().modal = { type: null };
     announce('分组已重命名：' + oldPath + ' → ' + newPath);
+    maybeAutoPush();
   }
 
   async function dissolveGroup(path) {
@@ -263,6 +266,7 @@ export const useAssetsStore = defineStore('assets', () => {
     declaredGroups.value = result.groups || [];
     assetSource.value = { ...result, count: result.count ?? result.assets?.length ?? assets.value.length };
     announce('分组已解散：' + path);
+    maybeAutoPush();
   }
 
   async function createGroup(path) {
@@ -272,6 +276,31 @@ export const useAssetsStore = defineStore('assets', () => {
     assetSource.value = { ...result, count: result.count ?? result.assets?.length ?? assets.value.length };
     wb().modal = { type: null };
     announce('已新建分组：' + path);
+    maybeAutoPush();
+  }
+
+  // ------------------------------------------------------------
+  // 重排分组顺序（支撑拖拽排序）。orderedPaths 是全部 group 路径的新顺序
+  // （扁平，父在子前，DFS 先序）。后端要求它是当前 declaredGroups 的一个排列，
+  // 否则报错且不落盘（保护：前端漏传不丢分组）。
+  // ------------------------------------------------------------
+  async function reorderGroups(orderedPaths) {
+    const next = (orderedPaths || []).filter(p => p && p !== '未分组');
+    // 乐观本地更新：若集合匹配则立即重排 declaredGroups，避免拖拽后视觉回弹。
+    const curSet = new Set(declaredGroups.value);
+    const nextSet = new Set(next);
+    const setsEqual = curSet.size === nextSet.size && [...nextSet].every(p => curSet.has(p));
+    if (!setsEqual) {
+      announce('分组排序失败：传入分组与现有不一致');
+      return;
+    }
+    try {
+      const result = await invokeBackend('reorder_asset_groups', { paths: next });
+      declaredGroups.value = result.groups || [];
+      maybeAutoPush();
+    } catch (error) {
+      announce('分组排序失败：' + (error?.message || error));
+    }
   }
 
   async function saveToken(secret) {
@@ -317,6 +346,7 @@ export const useAssetsStore = defineStore('assets', () => {
     renameGroup,
     dissolveGroup,
     createGroup,
+    reorderGroups,
     saveToken,
     deleteToken
   };
