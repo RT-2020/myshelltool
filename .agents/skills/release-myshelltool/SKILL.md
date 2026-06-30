@@ -20,35 +20,58 @@ description: 发布 myshelltool（Tauri 2 桌面 SSH 客户端）的新版本。
 
 ---
 
-## 发版主流程（5 步）
+## 发版主流程（6 步）
 
-发版就是改版本号 → 提交 → 打 tag → 推送 → 等产物。每一步都要做对。
+发版就是改版本号 → 生成发布说明 → 提交 → 打 tag → 推送 → 等产物。每一步都要做对。
 
-### 步骤 1：bump 版本号（4 个文件，必须全改且一致）
+### 步骤 1：bump 版本号（用脚本，一次改 4 个文件 + 刷新 Cargo.lock）
 
-把 4 个文件里的版本号改成**同一个**新版本（如 `0.5.0 → 0.6.0`）。漏改任何一个会导致版本漂移，CI 可能因 lockfile 与 manifest 不符而报错或产物版本号错乱。
+**不要手工逐个改 4 个文件**——用 `scripts/bump-version.mjs`，它保证 4 个文件版本号原子一致 + 自动刷新 Cargo.lock + 校验格式，避免版本漂移。
 
-| 文件 | 字段 |
-|---|---|
-| `package.json` | `"version"` |
-| `src-tauri/tauri.conf.json` | `"version"` |
-| `src-tauri/Cargo.toml` | `version =`（`[package]` 下的 `myshelltool`） |
-| `crates/myshelltool-core/Cargo.toml` | `version =`（`[package]` 下的 `myshelltool-core`） |
+```bash
+node scripts/bump-version.mjs X.Y.Z --commit
+# 例如: node scripts/bump-version.mjs 0.6.0 --commit
+```
 
-改完用这条命令核对四个值完全一致（替换 X.Y.Z 为目标版本）：
+`--commit` 会自动执行 `git add` + `git commit -m "chore: bump vX.Y.Z"`，只 add 版本相关文件（4 个 manifest + 2 个 lockfile），不误带工作区其他未完成改动。
+
+**手动核对（脚本已内置校验，但发版是关键操作，复查一遍）**：
 ```bash
 grep '"version"' package.json src-tauri/tauri.conf.json
 grep '^version' src-tauri/Cargo.toml crates/myshelltool-core/Cargo.toml
 ```
+四个值必须完全相同。脚本原理与失败处理见文末「附录：脚本说明」。
 
-### 步骤 2：提交
+### 步骤 2：（可选）生成发布说明
+
+`release.yml` 已开 `generate_release_notes: true`，GitHub 会自动生成基础发布说明。若想要**按 feat/fix 分组的中文结构化说明**，用 `scripts/gen-changelog.mjs` 生成后手动粘贴到 Release：
 
 ```bash
-git add -A
-git commit -m "chore: bump vX.Y.Z"
+node scripts/gen-changelog.mjs --for vX.Y.Z
+# 生成 vX.Y.Z 相对上个 tag 的结构化 changelog，输出到 stdout
+# 加 -o notes.md 可写入文件
 ```
 
-### 步骤 3：打 tag 并推送
+输出形如：
+```
+## v0.6.0
+### ✨ 新功能
+- **sync**: 自动同步定时任务
+### 🐛 修复
+- **terminal**: 重连后光标位置错乱
+```
+
+可粘贴到发布后的 GitHub Release body，或追加到 `CHANGELOG.md`。**此步可选**——跳过也能正常发版，GitHub 默认说明够用。
+
+### 步骤 3：本地验证 config schema（必做，防坑）
+
+```bash
+cd src-tauri && cargo check
+```
+
+这步在 build.rs 阶段校验 `tauri.conf.json` 的 schema，能在本地 1-2 分钟内暴露配置错误（如字段名拼错），比等 CI 跑 8 分钟才发现快得多。**发版前必做。**
+
+### 步骤 4：打 tag 并推送
 
 tag 必须指向刚提交的 commit，所以先 push master 再 push tag（或一起）：
 ```bash
@@ -60,7 +83,7 @@ git push origin master --tags
 - `release.yml`（完整构建发版，约 8-12 分钟）← 这个是发版主体
 - `ci.yml`（master commit 触发的构建守护）← 顺带跑，必然绿
 
-### 步骤 4：监控 release.yml
+### 步骤 5：监控 release.yml
 
 用 GitHub REST API 查进度（**不需要认证**就能查公开仓库的 run 状态，比浏览器抓 DOM 稳定得多）：
 
@@ -76,7 +99,7 @@ curl -s "https://api.github.com/repos/RT-2020/myshelltool/actions/runs/RUN_ID/jo
 
 Build 步骤是关键且最耗时（8-12 分钟，完整 release 编译 + NSIS 打包 + 签名）。轮询间隔用 `sleep 180` 或 `sleep 240`，不要频繁查。
 
-### 步骤 5：验证产物
+### 步骤 6：验证产物
 
 Release 成功后，查 release 的附件（4 个文件必须都在）：
 ```bash
@@ -163,14 +186,48 @@ echo "5. 当前版本:"; grep '"version"' package.json src-tauri/tauri.conf.json
 
 假设要发 0.6.0：
 ```bash
-# 1. 改 4 个文件版本号 0.5.0 → 0.6.0（用 Edit 工具改）
-# 2. 提交
-git add -A && git commit -m "chore: bump v0.6.0"
+# 1. bump 版本号 + 自动提交（脚本改 4 文件 + 刷 Cargo.lock + git commit）
+node scripts/bump-version.mjs 0.6.0 --commit
+# 2. （可选）生成结构化发布说明，待会儿粘贴到 Release
+node scripts/gen-changelog.mjs --for v0.6.0 -o notes-v0.6.0.md
 # 3. 本地验证 config schema（必做，防坑 2）
 cd src-tauri && cargo check && cd ..
-# 4. 打 tag 推送
+# 4. 打 tag 推送（触发 release.yml + ci.yml）
 git tag v0.6.0
 git push origin master --tags
 # 5. 轮询 release.yml 直到 conclusion: success（约 8-12 分钟）
 # 6. 验证 4 个产物文件齐全
+# 7. （可选）把 notes-v0.6.0.md 内容粘贴到 GitHub Release 的 body
 ```
+
+---
+
+## 附录：脚本说明
+
+### `scripts/bump-version.mjs` — 版本号 bump
+
+一次性把 4 个文件版本号改成同一个值 + 刷新 Cargo.lock。
+
+```bash
+node scripts/bump-version.mjs <版本号> [--commit]
+```
+
+- **为什么需要它**：4 个文件（package.json / tauri.conf.json / 两个 Cargo.toml）手动改容易漏，版本漂移会让 CI 报错或产物版本号错乱。脚本保证原子一致。
+- **内置校验**：semver 格式校验（`0.6` 会被拒，必须 `0.6.0`）；每个文件替换后对比原文，未匹配到立即报错而非静默跳过。
+- **`--commit`**：自动 `git add`（只 add 4 个 manifest + 2 个 lockfile）+ `git commit -m "chore: bump vX.Y.Z"`。
+- **Cargo.lock 同步**：跑 `cargo update -p myshelltool --precise X.Y.Z` 刷新 lockfile，避免 manifest/lockfile 不符。失败不致命（下次 build 自动修正）。
+- **原理**：每个文件用针对性正则替换（按文件结构调整），不是粗暴全文替换，避免误伤其他数字。
+
+### `scripts/gen-changelog.mjs` — 发布说明生成
+
+从两个 tag 之间的 conventional commits 生成按类型分组（feat/fix/...）的中文发布说明。
+
+```bash
+node scripts/gen-changelog.mjs [--from <tag>] [--to <ref>] [--for <版本>] [-o <文件>]
+```
+
+- **`--for vX.Y.Z`**（最常用）：生成 vX.Y.Z 的发布说明，自动找上一个 tag 作为起点。
+- **`--from A --to B`**：自定义区间（`B` 默认 HEAD）。
+- **解析规则**：识别 `type(scope)?: description` 格式。本项目历史 commit 是这个风格（`feat(sync):`、`fix(release):` 等）。兼容非标准写法（如 `feat(sync) PR-4:` 没冒号也认）。
+- **输出**：默认 stdout；`-o file.md` 写文件。markdown 格式，带 emoji 分组标题（✨ 新功能 / 🐛 修复 / 🔧 杂项 ...）。
+- **与 release.yml 的关系**：release.yml 已开 `generate_release_notes: true`（GitHub 自动生成）。本脚本是**增强版**——对中文 conventional commit 分组更清晰，可手动粘贴到 Release body 替换默认说明，或追加到 CHANGELOG.md。**两套机制并存，本脚本可选。**
