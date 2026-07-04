@@ -506,6 +506,10 @@ export const useSessionsStore = defineStore('sessions', () => {
   // Run terminal action dispatcher
   // ============================================================
   function runTerminalAction(action) {
+    if (action === 'connect') {
+      connectSelected();
+      return;
+    }
     const session = activeSession.value;
     if (!session) {
       announce('请先连接主机');

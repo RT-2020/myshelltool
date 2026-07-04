@@ -58,8 +58,10 @@ export const useFilesStore = defineStore('files', () => {
   const contextMenu = ref({ visible: false, x: 0, y: 0, side: 'remote', entry: null });
   // 传输队列抽屉默认收起：用户有传输时状态栏「传输」或文件区 trigger 可展开。
   const transferDrawerOpen = ref(false);
-  // 本地文件列默认折叠：center-bottom 默认只渲染远程列占满全宽，点「本地」按钮展开双栏。
-  const localPaneVisible = ref(false);
+  // 本地/远程双栏：app.html 设计稿默认双栏（localPaneVisible=true）。
+  // 用户可点 view-pills 的「仅远程」收起本地面板。
+  const localPaneVisible = ref(true);
+  const fileOperationStack = ref({ remote: [], local: [] });
 
   // 进度事件 unlisten handle（必须 init 后保存，不能跨 store 共享）
   let progressUnlisten = null;
@@ -92,6 +94,16 @@ export const useFilesStore = defineStore('files', () => {
   // ============================================================
   const activeTransfers = computed(() => transferQueue.value.filter(item => item.status === 'running' || item.status === 'pending'));
   const completedTransfers = computed(() => transferQueue.value.filter(item => item.status === 'done' || item.status === 'error'));
+  const remoteBusy = computed(() => fileOperationStack.value.remote.length > 0);
+  const localBusy = computed(() => fileOperationStack.value.local.length > 0);
+  const remoteBusyMessage = computed(() => {
+    const stack = fileOperationStack.value.remote;
+    return stack[stack.length - 1]?.message || '正在处理远程文件...';
+  });
+  const localBusyMessage = computed(() => {
+    const stack = fileOperationStack.value.local;
+    return stack[stack.length - 1]?.message || '正在处理本地文件...';
+  });
 
   const filteredRemoteEntries = computed(() => {
     const q = remoteFilter.value.trim().toLowerCase();
@@ -200,6 +212,26 @@ export const useFilesStore = defineStore('files', () => {
     URL.revokeObjectURL(url);
   }
 
+  function beginFileOperation(side, message) {
+    const token = Symbol(side);
+    fileOperationStack.value[side] = [
+      ...fileOperationStack.value[side],
+      { token, message }
+    ];
+    return () => {
+      fileOperationStack.value[side] = fileOperationStack.value[side].filter(item => item.token !== token);
+    };
+  }
+
+  async function withFileOperation(side, message, task) {
+    const end = beginFileOperation(side, message);
+    try {
+      return await task();
+    } finally {
+      end();
+    }
+  }
+
   // ============================================================
   // Sessions lazy 解析（避免循环 import）
   // ============================================================
@@ -216,6 +248,7 @@ export const useFilesStore = defineStore('files', () => {
   // Remote SFTP 浏览 / 操作
   // ============================================================
   async function refreshRemoteFiles(path = null) {
+    return withFileOperation('remote', '正在读取远程目录...', async () => {
     const asset = wb().selectedAsset;
     if (!asset) return;
     const targetPath = path || remotePathForAsset(asset);
@@ -240,6 +273,7 @@ export const useFilesStore = defineStore('files', () => {
     });
     applyRemoteListing(result.path || targetPath, Array.isArray(result.entries) ? result.entries : []);
     announce('远程文件已刷新：' + asset.name);
+    });
   }
 
   function applyRemoteListing(path, entries) {
@@ -270,6 +304,7 @@ export const useFilesStore = defineStore('files', () => {
     }
     const files = Array.from(fileList || []);
     if (!files.length) return;
+    await withFileOperation('remote', '正在上传到远程目录...', async () => {
     await Promise.allSettled(files.map(async file => {
       const transferId = 'up-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
       const remoteTarget = joinPath(remotePath.value, file.name);
@@ -318,6 +353,84 @@ export const useFilesStore = defineStore('files', () => {
       }
     }));
     await refreshRemoteFiles(remotePath.value).catch(() => null);
+    });
+  }
+
+  async function uploadLocalEntry(entry) {
+    const session = getActiveSession();
+    if (!session) {
+      announce('上传需要先建立 SSH 会话');
+      wb().setTab('terminal');
+      return;
+    }
+    if (!entry || entry.kind !== 'file') {
+      announce('只能上传本地文件');
+      return;
+    }
+
+    const transferId = 'up-local-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    const remoteTarget = joinPath(remotePath.value, entry.name);
+    const total = Number(entry.size) || 0;
+    transferQueue.value.push({
+      id: transferId,
+      direction: 'upload',
+      name: entry.name,
+      remotePath: remoteTarget,
+      transferred: 0,
+      total,
+      percent: 0,
+      status: 'running',
+      startedAt: Date.now()
+    });
+
+    await withFileOperation('remote', '正在上传本地文件...', async () => {
+    try {
+      await invokeBackend('sftp_upload_start', {
+        sessionId: session.sessionId,
+        remotePath: remoteTarget,
+        transferId
+      });
+      const chunkSize = 8 * 1024 * 1024;
+      let offset = 0;
+      while (offset < total || (total === 0 && offset === 0)) {
+        const chunk = await invokeBackend('fs_local_read_chunk', {
+          path: entry.path,
+          offset,
+          length: chunkSize
+        });
+        const bytes = Array.isArray(chunk) ? chunk : Array.from(chunk || []);
+        if (!bytes.length && total > 0) break;
+        offset += bytes.length;
+        await invokeBackend('sftp_upload_chunk', {
+          sessionId: session.sessionId,
+          chunk: bytes,
+          transferId,
+          bytesTransferred: offset,
+          totalBytes: total
+        });
+        if (total === 0 || bytes.length < chunkSize) break;
+      }
+      await invokeBackend('sftp_upload_finalize', { transferId });
+      const item = transferQueue.value.find(entry => entry.id === transferId);
+      if (item) {
+        item.status = 'done';
+        item.percent = 100;
+        item.transferred = total;
+        item.finishedAt = Date.now();
+      }
+      pruneFinishedTransfers();
+      announce('已上传本地文件：' + entry.name);
+      await refreshRemoteFiles(remotePath.value).catch(() => null);
+    } catch (error) {
+      markTransferError(transferId, error.message);
+      announce('上传本地文件失败：' + entry.name + '，' + error.message);
+      try {
+        await invokeBackend('sftp_upload_finalize', { transferId });
+      } catch {
+        // best-effort cleanup
+      }
+    }
+    });
   }
 
   async function downloadEntry(entry) {
@@ -342,6 +455,7 @@ export const useFilesStore = defineStore('files', () => {
       status: 'running',
       startedAt: Date.now()
     });
+    await withFileOperation('remote', '正在下载远程文件...', async () => {
     try {
       const bytes = await invokeBackend('sftp_download_with_progress', {
         sessionId: session.sessionId,
@@ -354,34 +468,41 @@ export const useFilesStore = defineStore('files', () => {
       markTransferError(transferId, error.message);
       announce('下载失败：' + error.message);
     }
+    });
   }
 
   async function mkdirRemote(name) {
     const session = getActiveSession();
     if (!session) return announce('需要先建立 SSH 会话');
     if (!name?.trim()) return announce('目录名不能为空');
+    await withFileOperation('remote', '正在创建远程目录...', async () => {
     const target = joinPath(remotePath.value, name.trim());
     await invokeBackend('sftp_mkdir', { sessionId: session.sessionId, path: target });
     announce('已创建目录：' + name);
     await refreshRemoteFiles(remotePath.value);
+    });
   }
 
   async function renameRemote(entry, newName) {
     const session = getActiveSession();
     if (!session) return announce('需要先建立 SSH 会话');
     if (!newName?.trim()) return announce('新名称不能为空');
+    await withFileOperation('remote', '正在重命名远程文件...', async () => {
     const target = joinPath(parentPath(entry.path), newName.trim());
     await invokeBackend('sftp_rename', { sessionId: session.sessionId, oldPath: entry.path, newPath: target });
     announce('已重命名：' + entry.name + ' → ' + newName);
     await refreshRemoteFiles(remotePath.value);
+    });
   }
 
   async function removeRemote(entry) {
     const session = getActiveSession();
     if (!session) return announce('需要先建立 SSH 会话');
+    await withFileOperation('remote', '正在删除远程文件...', async () => {
     await invokeBackend('sftp_remove', { sessionId: session.sessionId, path: entry.path, kind: entry.kind });
     announce('已删除：' + entry.name);
     await refreshRemoteFiles(remotePath.value);
+    });
   }
 
   async function statRemote(entry) {
@@ -398,6 +519,7 @@ export const useFilesStore = defineStore('files', () => {
       announce('本地浏览需要桌面客户端（npm run tauri:dev）');
       return;
     }
+    return withFileOperation('local', '正在读取本地目录...', async () => {
     try {
       const target = path !== null ? path : (localPath.value || await invokeBackend('fs_local_home_dir'));
       const result = await invokeBackend('fs_local_list_dir', { path: target });
@@ -406,6 +528,7 @@ export const useFilesStore = defineStore('files', () => {
     } catch (error) {
       announce('本地目录读取失败：' + error.message);
     }
+    });
   }
 
   async function navigateLocalPath(target) {
@@ -416,7 +539,9 @@ export const useFilesStore = defineStore('files', () => {
   async function navigateLocalUp() {
     if (!localPath.value) return;
     try {
-      const result = await invokeBackend('fs_local_list_dir', { path: localPath.value });
+      const result = await withFileOperation('local', '正在读取本地目录...', () =>
+        invokeBackend('fs_local_list_dir', { path: localPath.value })
+      );
       if (!result.parent || result.parent === localPath.value) {
         announce('已是根目录');
         return;
@@ -429,29 +554,35 @@ export const useFilesStore = defineStore('files', () => {
 
   async function localMkdir(name) {
     if (!name?.trim()) return announce('目录名不能为空');
+    await withFileOperation('local', '正在创建本地目录...', async () => {
     const target = joinLocalPath(localPath.value, name.trim());
     await invokeBackend('fs_local_mkdir', { path: target });
     announce('已创建本地目录：' + name);
     await refreshLocalFiles(localPath.value);
+    });
   }
 
   async function localDelete(paths) {
     if (!paths?.length) return;
-    for (const path of paths) {
-      const entry = localEntries.value.find(e => e.path === path);
-      if (!entry) continue;
-      await invokeBackend('fs_local_delete', { path, kind: entry.kind });
-    }
-    announce('已删除本地 ' + paths.length + ' 项');
-    await refreshLocalFiles(localPath.value);
+    await withFileOperation('local', '正在删除本地文件...', async () => {
+      for (const path of paths) {
+        const entry = localEntries.value.find(e => e.path === path);
+        if (!entry) continue;
+        await invokeBackend('fs_local_delete', { path, kind: entry.kind });
+      }
+      announce('已删除本地 ' + paths.length + ' 项');
+      await refreshLocalFiles(localPath.value);
+    });
   }
 
   async function localRename(oldPath, newName) {
     if (!newName?.trim()) return announce('新名称不能为空');
+    await withFileOperation('local', '正在重命名本地文件...', async () => {
     const newPath = joinLocalPath(parentLocalPath(oldPath), newName.trim());
     await invokeBackend('fs_local_rename', { oldPath, newPath });
     announce('已重命名：' + newName);
     await refreshLocalFiles(localPath.value);
+    });
   }
 
   function setLocalViewMode(mode) {
@@ -557,28 +688,32 @@ export const useFilesStore = defineStore('files', () => {
     const session = getActiveSession();
     if (!session) return announce('需要先建立 SSH 会话');
     if (!window.confirm(`确认删除 ${paths.length} 项？`)) return;
-    for (const path of paths) {
-      const entry = remoteEntries.value.find(e => e.path === path);
-      if (!entry) continue;
-      try {
-        await invokeBackend('sftp_remove', { sessionId: session.sessionId, path, kind: entry.kind });
-      } catch (error) {
-        announce('删除失败：' + entry.name + '：' + error.message);
+    await withFileOperation('remote', '正在批量删除远程文件...', async () => {
+      for (const path of paths) {
+        const entry = remoteEntries.value.find(e => e.path === path);
+        if (!entry) continue;
+        try {
+          await invokeBackend('sftp_remove', { sessionId: session.sessionId, path, kind: entry.kind });
+        } catch (error) {
+          announce('删除失败：' + entry.name + '：' + error.message);
+        }
       }
-    }
-    selectedRemotePaths.value = new Set();
-    announce('批量删除完成');
-    await refreshRemoteFiles(remotePath.value);
+      selectedRemotePaths.value = new Set();
+      announce('批量删除完成');
+      await refreshRemoteFiles(remotePath.value);
+    });
   }
 
   async function batchRemoteDownload() {
     const paths = Array.from(selectedRemotePaths.value);
     if (!paths.length) return;
+    await withFileOperation('remote', '正在批量下载远程文件...', async () => {
     for (const path of paths) {
       const entry = remoteEntries.value.find(e => e.path === path);
       if (!entry || entry.kind !== 'file') continue;
       await downloadEntry(entry).catch(error => announce('下载失败：' + entry.name + '：' + error.message));
     }
+    });
   }
 
   async function copyRemotePath(entry) {
@@ -628,6 +763,10 @@ export const useFilesStore = defineStore('files', () => {
     // computed
     activeTransfers,
     completedTransfers,
+    remoteBusy,
+    localBusy,
+    remoteBusyMessage,
+    localBusyMessage,
     filteredRemoteEntries,
     sortedRemoteEntries,
     selectedRemoteEntries,
@@ -647,6 +786,7 @@ export const useFilesStore = defineStore('files', () => {
     navigateRemotePath,
     navigateRemoteUp,
     uploadFiles,
+    uploadLocalEntry,
     downloadEntry,
     mkdirRemote,
     renameRemote,

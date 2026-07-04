@@ -21,7 +21,7 @@ import AppContextMenu from '@/components/ui/AppContextMenu.vue';
 
 const filesStore = useFilesStore();
 const uiStore = useUiStore();
-const { remoteListMode, contextMenu, selectedRemotePaths, localPaneVisible } = storeToRefs(filesStore);
+const { remoteListMode, contextMenu, selectedRemotePaths, localPaneVisible, remoteBusy } = storeToRefs(filesStore);
 
 const isTauriCore = computed(() => isTauriRuntime());
 
@@ -29,11 +29,12 @@ const isTauriCore = computed(() => isTauriRuntime());
 const fileInput = ref(null);
 
 function triggerFileUpload() {
+  if (remoteBusy.value) return;
   fileInput.value?.click();
 }
 function onFilePick(event) {
   const files = event.target.files;
-  if (files?.length) filesStore.uploadFiles(files);
+  if (files?.length && !remoteBusy.value) filesStore.uploadFiles(files);
   if (event.target) event.target.value = '';
 }
 
@@ -47,12 +48,12 @@ function onDrop(event) {
   dragging.value = false;
   if (dragLeaveTimer) { clearTimeout(dragLeaveTimer); dragLeaveTimer = null; }
   const files = event.dataTransfer?.files;
-  if (files?.length) filesStore.uploadFiles(files);
+  if (files?.length && !remoteBusy.value) filesStore.uploadFiles(files);
 }
 function onDragOver(event) {
   // 必须 preventDefault 才能触发 drop；仅含文件时才显提示。
   event.preventDefault();
-  if (event.dataTransfer?.types?.includes('Files')) {
+  if (!remoteBusy.value && event.dataTransfer?.types?.includes('Files')) {
     dragging.value = true;
     if (dragLeaveTimer) { clearTimeout(dragLeaveTimer); dragLeaveTimer = null; }
   }
@@ -119,7 +120,7 @@ const contextMenuItems = computed(() => {
   if (entry) {
     items.push(make(isDir ? '进入目录' : '上传到远程', () => {
       if (isDir) filesStore.navigateLocalPath(entry.path);
-      else filesStore.announce('单文件上传待接线：' + entry.name);
+      else filesStore.uploadLocalEntry(entry);
     }));
     items.push({ separator: true });
     items.push(make('重命名', () => { uiStore.modal = { type: 'localRename', entry }; }));
@@ -141,7 +142,7 @@ const contextMenuItems = computed(() => {
 
 <template>
   <div
-    class="file-surface"
+    class="region-files"
     :class="{ 'is-dragging': dragging, 'local-open': localPaneVisible }"
     @drop="onDrop"
     @dragover="onDragOver"
@@ -155,42 +156,73 @@ const contextMenuItems = computed(() => {
       @change="onFilePick"
     />
 
-    <!-- Dual-pane：默认折叠本地列（grid 1fr），展开时 1fr 1fr。
-         远程列右上角浮一个「本地」切换按钮（折叠态常显，展开态可收起）。 -->
-    <div class="file-surface-dual">
+    <!-- ============ file-header（app.css L694-701：chrome-label + view-pills + file-actions）============ -->
+    <header class="file-header">
+      <div class="file-title">
+        <span class="chrome-label">文件传输</span>
+      </div>
+      <!-- 视图胶囊：双栏 / 仅远程（app.css view-pills L703-727）-->
+      <div class="view-pills" role="tablist" aria-label="文件视图模式">
+        <button
+          type="button"
+          class="view-pill"
+          :class="{ active: localPaneVisible }"
+          role="tab"
+          :aria-selected="String(localPaneVisible)"
+          title="本地 / 远程 双栏"
+          @click="!localPaneVisible && toggleLocalPane()"
+        >本地 / 远程</button>
+        <button
+          type="button"
+          class="view-pill"
+          :class="{ active: !localPaneVisible }"
+          role="tab"
+          :aria-selected="String(!localPaneVisible)"
+          title="仅远程"
+          @click="localPaneVisible && toggleLocalPane()"
+        >仅远程</button>
+      </div>
+      <div class="file-actions">
+        <button class="icon-btn" type="button" title="新建目录" aria-label="新建目录" :disabled="remoteBusy" @click="uiStore.modal = { type: 'mkdir', entry: null }">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M3 7a2 2 0 012-2h3l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/><path d="M12 11v5M9.5 13.5h5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button class="icon-btn" type="button" title="上传文件" aria-label="上传文件到当前远程目录" :disabled="remoteBusy" @click="triggerFileUpload">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 9l5-5 5 5M12 4v12" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button class="icon-btn" type="button" title="刷新" aria-label="刷新远程目录" :disabled="remoteBusy" @click="filesStore.refreshRemoteFiles()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M21 12a9 9 0 11-3-6.7M21 4v5h-5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- ============ file-dual（app.css L729-733：grid 1fr 1px 1fr）============ -->
+    <div class="file-dual">
       <FileColumn
         v-if="localPaneVisible"
         kind="local"
         :disabled-hint="isTauriCore ? '' : '桌面客户端运行时才支持本地浏览（npm run tauri:dev）'"
-        class="file-surface-col file-surface-col--local"
+        class="file-pane file-pane-local"
       />
+      <div v-if="localPaneVisible" class="file-divider" aria-hidden="true"></div>
       <FileColumn
         kind="remote"
-        class="file-surface-col file-surface-col--remote"
-      >
-        <!-- 本地列切换按钮：塞进远程 header actions 最前（非悬浮，不遮挡过滤图标）。 -->
-        <template #actions-leading>
-          <button
-            type="button"
-            class="local-toggle"
-            :class="{ active: localPaneVisible }"
-            :title="localPaneVisible ? '隐藏本地面板' : '显示本地面板（双栏）'"
-            @click="toggleLocalPane"
-          >
-            <component :is="localPaneVisible ? FolderOpen : PanelLeft" :size="14" />
-            <span>本地</span>
-          </button>
-        </template>
-      </FileColumn>
+        class="file-pane file-pane-remote"
+      />
     </div>
 
-    <!-- 拖拽上传视觉提示浮层：松开上传到当前远程目录。pointer-events:none 不拦截 drop。 -->
+    <!-- ============ drop-hint（app.css L770-785：底部胶囊提示）============ -->
+    <!-- 拖拽上传视觉提示：dragging 时整面 accent 虚线 + 底部胶囊提示目标路径 -->
     <div v-if="dragging" class="drag-overlay">
       <div class="drag-overlay-inner">
         <FolderOpen :size="28" />
         <strong>松开以上传到当前远程目录</strong>
         <span class="drag-overlay-sub">{{ filesStore.remotePath || '/' }}</span>
       </div>
+    </div>
+    <!-- 常显底部胶囊（无拖拽时也提示，app.html drop-hint）-->
+    <div v-else class="drop-hint" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 9l5-5 5 5M12 4v12" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>拖拽文件到任意一栏上传</span>
     </div>
 
     <!-- Right-click context menu (teleported by AppContextMenu). -->
@@ -207,75 +239,166 @@ const contextMenuItems = computed(() => {
 <style scoped lang="scss">
 @use '@/styles/_tokens' as *;
 
-// Surface container — 无圆角无框：与 grid region 贴合，靠 region 间 1px 分隔。
-.file-surface {
-  position: relative; // 浮动按钮 / 拖拽浮层的定位参照系
-  display: flex;
-  flex-direction: column;
+// ============================================================
+// region-files（app.css L688-693：grid 38px 1fr）
+// ============================================================
+.region-files {
+  position: relative;
+  display: grid;
+  grid-template-rows: 38px 1fr;
   width: 100%;
   height: 100%;
   min-height: 0;
-  background: var(--app-panel);
+  background: var(--app-window);
   color: var(--app-text);
   font-family: var(--font-body);
   overflow: hidden;
 }
 
-// Dual-pane：默认单栏（1fr），localPaneVisible 时 1fr 1fr。
-.file-surface-dual {
+// ============================================================
+// file-header（app.css L694-701：chrome-label + view-pills + file-actions）
+// ============================================================
+.file-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  background: var(--app-chrome);
+  border-bottom: 1px solid var(--app-border);
+}
+.file-title {
+  display: flex;
+  align-items: center;
+}
+.chrome-label {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--app-muted);
+}
+.file-actions {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+
+// 通用 icon-btn（与全局同规格）
+.icon-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--app-muted);
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.icon-btn svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.6;
+}
+.icon-btn:hover {
+  background: var(--app-hover);
+  color: var(--app-text);
+}
+.icon-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.icon-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+// ============================================================
+// view-pills（app.css L703-727：视图胶囊 双栏/仅远程）
+// ============================================================
+.view-pills {
+  display: inline-flex;
+  background: var(--app-panel-2);
+  border: 1px solid var(--app-border);
+  border-radius: 7px;
+  padding: 2px;
+  gap: 0;
+}
+.view-pill {
+  padding: 4px 12px;
+  font-size: 11.5px;
+  color: var(--app-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  font-family: var(--font-body);
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.view-pill:hover { color: var(--app-text); }
+.view-pill.active {
+  background: var(--app-panel);
+  color: var(--app-text);
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+// ============================================================
+// file-dual（app.css L729-734：grid 1fr 1px 1fr）
+// 仅远程模式时隐藏 local 列与 divider，grid 自动塌缩为 1fr
+// ============================================================
+.file-dual {
   display: grid;
   grid-template-columns: 1fr;
-  flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
-  transition: grid-template-columns var(--motion-base) var(--ease-standard);
 }
-.file-surface.local-open .file-surface-dual {
-  grid-template-columns: 1fr 1fr;
+.region-files.local-open .file-dual {
+  grid-template-columns: 1fr 1px 1fr;
 }
-.file-surface-col {
+.file-pane {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
-// 双栏时本地列右侧 1px 分隔。
-.file-surface.local-open .file-surface-col--local {
-  border-inline-end: 1px solid var(--app-border);
+.file-divider {
+  background: var(--app-border);
 }
 
-// 本地切换按钮：内联在远程 header actions 里（非悬浮，不遮挡过滤图标）。
-// 折叠态低调灰边，展开态 accent 高亮表示当前双栏。
-.local-toggle {
+// ============================================================
+// drop-hint（app.css L770-785：底部胶囊提示，常显）
+// ============================================================
+.drop-hint {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  height: 22px;
-  padding-inline: 7px;
-  background: transparent;
-  color: var(--app-muted);
+  gap: 6px;
+  padding: 5px 12px;
+  background: var(--app-panel);
   border: 1px solid var(--app-border);
   border-radius: var(--radius-pill);
-  font-size: var(--text-xs);
-  font-family: var(--font-body);
-  cursor: pointer;
-  user-select: none;
-  flex: 0 0 auto;
-  transition: background var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard),
-    border-color var(--motion-fast) var(--ease-standard);
+  box-shadow: var(--shadow-pop);
+  font-size: 11px;
+  color: var(--app-muted);
+  pointer-events: none;
+  z-index: var(--z-base);
 }
-.local-toggle:hover {
-  background: var(--app-hover);
-  color: var(--app-strong);
-  border-color: var(--app-border-strong);
-}
-.local-toggle.active {
-  color: var(--accent);
-  border-color: color-mix(in oklab, var(--accent), transparent 30%);
-  background: color-mix(in oklab, var(--accent), transparent 90%);
+.drop-hint svg {
+  width: 12px;
+  height: 12px;
+  stroke-width: 1.7;
+  color: var(--app-subtle);
 }
 
-// 拖拽视觉提示：整面半透明 accent 边框 + 居中浮层。pointer-events:none 不拦截 drop。
+// ============================================================
+// drag-overlay（拖拽时整面 accent 虚线 + 居中浮层）
+// ============================================================
 .drag-overlay {
   position: absolute;
   inset: 0;
@@ -283,7 +406,7 @@ const contextMenuItems = computed(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: color-mix(in oklab, var(--accent), transparent 90%);
+  background: var(--accent-soft);
   border: 2px dashed var(--accent);
   pointer-events: none;
 }
@@ -296,7 +419,7 @@ const contextMenuItems = computed(() => {
   color: var(--accent);
   background: var(--app-panel);
   border-radius: var(--radius-md);
-  box-shadow: var(--app-shadow);
+  box-shadow: var(--shadow-pop);
 }
 .drag-overlay-inner strong {
   font-size: var(--text-sm);

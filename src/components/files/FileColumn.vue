@@ -26,6 +26,7 @@ import {
   RefreshCw,
   Filter as FilterIcon,
   Pencil,
+  Loader2,
   X
 } from 'lucide-vue-next';
 import { useFilesStore } from '@/stores/files.js';
@@ -64,7 +65,11 @@ const {
   localPath,
   localEntries,
   localViewMode,
-  selectedLocalPaths
+  selectedLocalPaths,
+  remoteBusy,
+  localBusy,
+  remoteBusyMessage,
+  localBusyMessage
 } = storeToRefs(filesStore);
 
 const columnTitle = computed(() => props.title || (props.kind === 'local' ? '本地' : '远程'));
@@ -90,6 +95,8 @@ const selectionSet = computed(() => (isLocal.value ? selectedLocalPaths.value : 
 const selectionCount = computed(() => selectionSet.value.size);
 const sortKey = computed(() => (isLocal.value ? localSortKey.value : remoteSortKey.value));
 const sortDir = computed(() => (isLocal.value ? localSortDir.value : remoteSortDir.value));
+const isBusy = computed(() => (isLocal.value ? localBusy.value : remoteBusy.value));
+const busyMessage = computed(() => (isLocal.value ? localBusyMessage.value : remoteBusyMessage.value));
 
 // Local filter/sort kept locally per-column (files store only tracks remote).
 // These preserve parity without polluting the store with local equivalents.
@@ -154,6 +161,7 @@ function effectiveEntries() {
 // Click handlers (migrated from App.vue onRemoteRowClick etc.)
 // ============================================================
 function onRowClick(event, entry) {
+  if (isBusy.value) return;
   if (isLocal.value) {
     filesStore.toggleLocalSelection(entry.path, { additive: event.ctrlKey || event.metaKey });
   } else if (event.ctrlKey || event.metaKey) {
@@ -167,12 +175,12 @@ function onRowClick(event, entry) {
 }
 
 function onRowDblClick(entry) {
+  if (isBusy.value) return;
   if (isLocal.value) {
     if (entry.kind === 'directory') {
       filesStore.navigateLocalPath(entry.path);
     } else {
-      // Queue upload of single local file
-      uiStore.statusMessage = '本地文件双击：' + entry.name + '（上传功能待接线）';
+      filesStore.uploadLocalEntry(entry);
     }
   } else if (entry.kind === 'directory' || entry.kind === 'symlink') {
     filesStore.navigateRemotePath(entry.path);
@@ -184,6 +192,7 @@ function onRowDblClick(entry) {
 
 function onContextMenu(event, entry) {
   event.preventDefault();
+  if (isBusy.value) return;
   if (isLocal.value) {
     if (!selectedLocalPaths.value.has(entry.path)) {
       filesStore.toggleLocalSelection(entry.path, { additive: false });
@@ -196,6 +205,7 @@ function onContextMenu(event, entry) {
 }
 
 function onListClickSelf() {
+  if (isBusy.value) return;
   if (isLocal.value) filesStore.clearLocalSelection();
   else filesStore.clearRemoteSelection();
 }
@@ -224,6 +234,7 @@ function onManualPathInput(event) {
   else filesStore.setManualRemotePath(event.target.value);
 }
 function onManualPathEnter() {
+  if (isBusy.value) return;
   if (isLocal.value) filesStore.goToManualLocalPath();
   else filesStore.goToManualRemotePath();
 }
@@ -412,6 +423,7 @@ function onPathInputKeydown(event) {
   }
 }
 function crumbClick(seg) {
+  if (isBusy.value) return;
   if (isLocal.value) filesStore.navigateLocalPath(seg.path);
   else filesStore.navigateRemotePath(seg.path);
 }
@@ -476,7 +488,8 @@ function formatOwner(entry) {
   >
     <!-- Header: 单行 title+count / 路径(面包屑或编辑input) / 过滤按钮 / 上级目录+刷新。
          过滤框已移到列表右上角浮动小窗，路径框内部显示可点击面包屑（点✎切原始 input）。 -->
-    <header class="file-column-head">
+    <header class="pane-header file-column-head">
+      <span class="pane-tag" :class="kind">{{ columnTitle }}</span>
       <div class="file-column-head-meta">
         <strong class="file-column-title">{{ columnTitle }}</strong>
         <span class="file-column-count" v-if="selectionCount">{{ selectionCount }} 项已选</span>
@@ -484,7 +497,7 @@ function formatOwner(entry) {
       </div>
       <div class="file-column-path">
         <!-- 面包屑态：每段可点跳转，末端 ✎ 切编辑 -->
-        <nav v-if="!pathEditing" class="file-column-breadcrumb" @dblclick="enterPathEditing">
+        <nav v-if="!pathEditing" class="breadcrumb file-column-breadcrumb" @dblclick="enterPathEditing">
           <template v-if="crumbs.length">
             <button
               v-for="(seg, idx) in crumbs"
@@ -521,7 +534,7 @@ function formatOwner(entry) {
           @keydown="onPathInputKeydown"
         />
       </div>
-      <div class="file-column-head-actions">
+      <div class="pane-tools file-column-head-actions">
         <!-- 可选前置按钮插槽（如「本地」列切换），插在过滤按钮之前，避免与悬浮按钮冲突。 -->
         <slot name="actions-leading" />
         <!-- 过滤浮动窗触发按钮（filterValue 非空时高亮） -->
@@ -562,7 +575,7 @@ function formatOwner(entry) {
           class="icon-btn"
           type="button"
           title="上级目录"
-          :disabled="isLocal && !localPath"
+          :disabled="isBusy || (isLocal && !localPath)"
           @click="goUp"
         >
           <ArrowUp :size="14" />
@@ -571,19 +584,20 @@ function formatOwner(entry) {
           class="icon-btn"
           type="button"
           title="刷新"
-          :disabled="isLocal && !!disabledHint"
+          :disabled="isBusy || (isLocal && !!disabledHint)"
           @click="refresh"
         >
-          <RefreshCw :size="14" />
+          <Loader2 v-if="isBusy" class="spin" :size="14" />
+          <RefreshCw v-else :size="14" />
         </button>
       </div>
     </header>
 
     <!-- Column headers (sortable) — only in detailed list mode.
          列：名称 / 大小 / 类型 / 修改时间 / 权限 / 用户组。-->
-    <div v-if="remoteListMode === 'detailed'" class="file-column-cols">
+    <div v-if="remoteListMode === 'detailed'" class="col-header file-column-cols">
       <button
-        class="col-sort"
+        class="col-name col-sort"
         :class="{ active: sortKey === 'name' }"
         type="button"
         @click="setSort('name')"
@@ -596,7 +610,7 @@ function formatOwner(entry) {
         />
       </button>
       <button
-        class="col-sort col-sort--num"
+        class="col-size col-sort col-sort--num"
         :class="{ active: sortKey === 'size' }"
         type="button"
         @click="setSort('size')"
@@ -609,7 +623,7 @@ function formatOwner(entry) {
         />
       </button>
       <button
-        class="col-sort"
+        class="col-type col-sort"
         :class="{ active: sortKey === 'type' }"
         type="button"
         @click="setSort('type')"
@@ -622,7 +636,7 @@ function formatOwner(entry) {
         />
       </button>
       <button
-        class="col-sort"
+        class="col-mtime col-sort"
         :class="{ active: sortKey === 'modified' }"
         type="button"
         @click="setSort('modified')"
@@ -635,7 +649,7 @@ function formatOwner(entry) {
         />
       </button>
       <button
-        class="col-sort col-sort--num"
+        class="col-perm col-sort col-sort--num"
         :class="{ active: sortKey === 'permissions' }"
         type="button"
         @click="setSort('permissions')"
@@ -648,7 +662,7 @@ function formatOwner(entry) {
         />
       </button>
       <button
-        class="col-sort"
+        class="col-owner col-sort"
         :class="{ active: sortKey === 'owner' }"
         type="button"
         @click="setSort('owner')"
@@ -664,7 +678,7 @@ function formatOwner(entry) {
 
     <!-- File list -->
     <div
-      class="file-column-list"
+      class="file-list file-column-list"
       :class="{ compact: remoteListMode === 'compact' }"
       @click.self="onListClickSelf"
     >
@@ -689,18 +703,23 @@ function formatOwner(entry) {
           <Link2 v-else-if="entry.kind === 'symlink'" :size="14" />
           <FileIcon v-else :size="14" />
         </span>
-        <span class="file-row-name" :title="entry.name">{{ entry.name }}</span>
+        <span class="col-name file-row-name" :title="entry.name">{{ entry.name }}</span>
         <template v-if="remoteListMode === 'detailed'">
-          <span class="file-row-size">{{ formatBytes(entry.size) }}</span>
-          <span class="file-row-type" :title="inferType(entry)">{{ inferType(entry) }}</span>
-          <span class="file-row-time">{{ formatEntryTime(entry) }}</span>
-          <span class="file-row-perm">{{ entry.permissions || '—' }}</span>
-          <span class="file-row-owner" :title="formatOwner(entry)">{{ formatOwner(entry) }}</span>
+          <span class="col-size file-row-size">{{ formatBytes(entry.size) }}</span>
+          <span class="col-type file-row-type" :title="inferType(entry)">{{ inferType(entry) }}</span>
+          <span class="col-mtime file-row-time">{{ formatEntryTime(entry) }}</span>
+          <span class="col-perm file-row-perm">{{ entry.permissions || '—' }}</span>
+          <span class="col-owner file-row-owner" :title="formatOwner(entry)">{{ formatOwner(entry) }}</span>
         </template>
       </div>
 
-      <div v-if="!effectiveEntries().length" class="file-column-empty">
-        <p class="muted">
+      <div v-if="!effectiveEntries().length" class="col-empty file-column-empty">
+        <div class="col-empty-icon" aria-hidden="true">
+          <Folder v-if="isLocal" :size="22" />
+          <FileIcon v-else :size="22" />
+        </div>
+        <div class="col-empty-title">{{ isLocal ? '尚未选择本地目录' : '未连接到远程主机' }}</div>
+        <p class="col-empty-desc muted">
           <template v-if="isLocal">
             {{ disabledHint || (currentPath ? '该目录为空' : '点击刷新加载本地目录') }}
           </template>
@@ -708,6 +727,11 @@ function formatOwner(entry) {
             {{ remoteEntries.length ? '无匹配「' + remoteFilter + '」的条目' : '尚未加载远程目录' }}
           </template>
         </p>
+      </div>
+
+      <div v-if="isBusy" class="file-loading-overlay" role="status" aria-live="polite">
+        <Loader2 class="spin" :size="16" />
+        <span>{{ busyMessage }}</span>
       </div>
     </div>
   </section>
@@ -719,13 +743,14 @@ function formatOwner(entry) {
 // Single-pane column. Low visual weight: 1px chrome edge, sticky headers,
 // hairline row separators, no card stacking. Two columns separated by a
 // 1px border-inline-end on the first column (applied by FileSurface).
-.file-column {
+.file-column,
+.file-pane {
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
   height: 100%;
-  background: var(--app-panel);
+  background: var(--app-window);
   color: var(--app-text);
   font-family: var(--font-body);
   font-size: var(--text-sm);
@@ -738,11 +763,12 @@ function formatOwner(entry) {
 
 // Header row: 单行承载 title+count / 路径框+过滤框 / 上级目录/刷新。
 // 原独立 pathrow / filterrow 已合并，省两行高度（每列净省 ~46px 让给终端区）。
+.pane-header,
 .file-column-head {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-1) var(--space-2);
+  padding: 0 8px;
   position: sticky;
   top: 0;
   z-index: var(--z-sticky);
@@ -750,8 +776,26 @@ function formatOwner(entry) {
   border-block-end: 1px solid var(--app-border);
   min-height: 34px;
 }
-.file-column-head-meta {
+.pane-tag {
   display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: var(--radius-pill);
+  font: 500 10px var(--font-display);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.pane-tag.local {
+  color: var(--info);
+  background: var(--info-soft);
+}
+.pane-tag.remote {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.file-column-head-meta {
+  display: none;
   align-items: baseline;
   gap: var(--space-2);
   flex: 0 0 auto;
@@ -775,6 +819,7 @@ function formatOwner(entry) {
   display: flex;
   align-items: center;
 }
+.pane-tools,
 .file-column-head-actions {
   display: inline-flex;
   align-items: center;
@@ -853,8 +898,8 @@ function formatOwner(entry) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
   background: transparent;
   border: none;
   color: var(--app-muted);
@@ -966,17 +1011,21 @@ function formatOwner(entry) {
 }
 
 // Sortable column headers. 列：名称(flex) / 大小 / 类型 / 修改时间 / 权限 / 用户组。
+.col-header,
 .file-column-cols {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 64px 56px 130px 56px 92px;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-  background: var(--app-panel-2);
+  gap: 8px;
+  padding: 0 12px;
+  min-height: 30px;
+  align-items: center;
+  background: var(--app-panel);
   border-block-end: 1px solid var(--app-border);
-  font-size: var(--text-xs);
+  font: 500 10.5px var(--font-display);
   color: var(--app-muted);
   position: sticky;
-  top: 0;
+  top: 34px;
+  z-index: calc(var(--z-sticky) - 1);
 }
 .col-sort {
   display: inline-flex;
@@ -999,12 +1048,47 @@ function formatOwner(entry) {
 .col-sort.active { color: var(--accent); }
 
 // File list — fills remaining column height, scrolls.
+.file-list,
 .file-column-list {
+  position: relative;
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   display: flex;
   flex-direction: column;
+  background: var(--app-window);
+}
+.file-loading-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-sticky);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: var(--space-3);
+  background: color-mix(in oklab, var(--app-window), transparent 22%);
+  color: var(--app-text);
+  font-size: var(--text-xs);
+  pointer-events: auto;
+}
+.file-loading-overlay span {
+  min-width: 0;
+  max-width: calc(100% - 42px);
+  padding: 7px 12px 7px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-loading-overlay svg {
+  padding: 7px 0 7px 12px;
+}
+.spin {
+  flex: 0 0 auto;
+  animation: file-loading-spin 0.9s linear infinite;
+}
+@keyframes file-loading-spin {
+  to { transform: rotate(360deg); }
 }
 .file-column-list.compact .file-row {
   grid-template-columns: 16px minmax(0, 1fr);
@@ -1018,12 +1102,13 @@ function formatOwner(entry) {
   grid-template-columns: 16px minmax(0, 1fr) 64px 56px 130px 56px 92px;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-  font-size: var(--text-sm);
+  min-height: 30px;
+  padding: 0 12px;
+  font-size: 12.5px;
   color: var(--app-text);
   cursor: pointer;
   user-select: none;
-  border-block-end: 1px solid color-mix(in oklab, var(--app-border), transparent 60%);
+  border-block-end: 1px solid var(--app-border-soft);
   transition: background var(--motion-fast) var(--ease-standard);
 }
 .file-row:last-child {
@@ -1032,13 +1117,8 @@ function formatOwner(entry) {
 .file-row:hover:not(.selected) {
   background: var(--app-hover);
 }
-.file-row.selected {
-  // Accent-tinted selection (color-mix half-opacity); no thick border.
-  background: color-mix(in oklab, var(--accent), transparent 84%);
-}
-.file-row.selected:hover {
-  background: color-mix(in oklab, var(--accent), transparent 78%);
-}
+.file-row.selected { background: var(--app-selected); }
+.file-row.selected:hover { background: var(--accent-soft-strong); }
 
 .file-row.compact {
   grid-template-columns: 16px minmax(0, 1fr);
@@ -1108,16 +1188,47 @@ function formatOwner(entry) {
 }
 
 // Empty state.
+.col-empty,
 .file-column-empty {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 8px;
   padding: var(--space-6);
+  margin: var(--space-3);
+  min-height: 180px;
   text-align: center;
+  border: 1px dashed var(--app-border);
+  border-radius: var(--radius-sm);
+  background: var(--app-panel);
+}
+.col-empty-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  color: var(--app-subtle);
+}
+.col-empty-icon svg {
+  width: 100%;
+  height: 100%;
+  stroke-width: 1.4;
+}
+.col-empty-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--app-text);
+}
+.col-empty-desc {
+  max-width: 260px;
+  font-size: 11px;
+  color: var(--app-muted);
+  line-height: 1.55;
 }
 .file-column-empty .muted {
   margin: 0;
   color: var(--app-muted);
-  font-size: var(--text-sm);
+  font-size: 11px;
 }
 </style>

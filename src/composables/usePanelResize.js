@@ -4,7 +4,8 @@
  * 管理三个布局 CSS 变量：
  *   --sidebar-w     左侧连接资产列宽（与 ui.js 的折叠态共用变量名）
  *   --right-w       右侧资源监控/运维摘要列宽
- *   --center-top-h  中间终端区高度（行高，文件区吃剩余）
+ *   --terminal-h    open-design 中间终端区高度
+ *   --center-top-h  旧 shell 兼容变量（与 --terminal-h 同步）
  *
  * 拖拽通过 pointer 事件实现（pointerdown 在 divider 上 → 绑定 document 的
  * pointermove/pointerup）。拖拽结束写 localStorage，刷新后保持。
@@ -20,7 +21,8 @@
  */
 import { onBeforeUnmount, ref } from 'vue';
 
-const LAYOUT_STORAGE_KEY = 'myshelltool-layout';
+const LAYOUT_STORAGE_KEY = 'myshelltool:layout:v1';
+const LEGACY_LAYOUT_STORAGE_KEY = 'myshelltool-layout';
 
 // 列/行宽高的 clamp 范围（px）。中心区行高用百分比表述，但内部统一按 px 计算。
 const SIDEBAR_MIN = 180;
@@ -32,16 +34,18 @@ const CENTER_BOTTOM_MIN = 120; // 文件区最小高度
 
 // 默认值（resetLayout / 首次加载无持久化时用）
 const DEFAULTS = {
-  sidebarW: 280,
+  sidebarW: 260,
   rightW: 280,
-  centerTopH: null // null = 不设内联变量，让 grid 的 1fr 默认平分
+  terminalRatio: 0.55,
+  centerTopH: null // 兼容旧存储：null = 按 terminalRatio 计算
 };
 
 function readStoredLayout() {
   try {
     const raw = localStorage.getItem(LAYOUT_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
+    const legacyRaw = raw || localStorage.getItem(LEGACY_LAYOUT_STORAGE_KEY);
+    if (!legacyRaw) return null;
+    const parsed = JSON.parse(legacyRaw);
     return parsed && typeof parsed === 'object' ? parsed : null;
   } catch {
     return null;
@@ -63,11 +67,17 @@ function isRegionCollapsed(which) {
   return false;
 }
 
+function getMainHeight() {
+  if (typeof window === 'undefined') return 720;
+  return Math.max(CENTER_TOP_MIN + CENTER_BOTTOM_MIN, window.innerHeight - 52 - 28);
+}
+
 export function usePanelResize() {
   // 响应式值（供模板绑定 title/aria，也供 reset）
   const sidebarW = ref(DEFAULTS.sidebarW);
   const rightW = ref(DEFAULTS.rightW);
   const centerTopH = ref(DEFAULTS.centerTopH);
+  const terminalRatio = ref(DEFAULTS.terminalRatio);
   // 拖拽中状态（驱动 divider 视觉态）
   const resizing = ref(null); // 'sidebar' | 'right' | 'center-row' | null
 
@@ -77,10 +87,24 @@ export function usePanelResize() {
     if (typeof stored.sidebarW === 'number') sidebarW.value = stored.sidebarW;
     if (typeof stored.rightW === 'number') rightW.value = stored.rightW;
     if (typeof stored.centerTopH === 'number') centerTopH.value = stored.centerTopH;
+    if (typeof stored.terminalRatio === 'number') terminalRatio.value = clamp(stored.terminalRatio, 0.18, 0.85);
+    else if (typeof stored.centerTopH === 'number') {
+      terminalRatio.value = clamp(stored.centerTopH / getMainHeight(), 0.18, 0.85);
+      centerTopH.value = null;
+    }
   }
   applyCssVars();
 
   let activeDrag = null; // { which, startX, startY, startVal, viewportH }
+
+  function getTerminalHeightFromRatio() {
+    return Math.round(getMainHeight() * terminalRatio.value);
+  }
+
+  function setTerminalHeight(height, root = document.documentElement) {
+    root.style.setProperty('--terminal-h', `${height}px`);
+    root.style.setProperty('--center-top-h', `${height}px`);
+  }
 
   /**
    * 启动拖拽。divider 的 pointerdown 调用。
@@ -97,7 +121,7 @@ export function usePanelResize() {
       startY: event.clientY,
       viewportH: window.innerHeight,
       startVal: which === 'center-row'
-        ? (centerTopH.value ?? Math.round(window.innerHeight * 0.5))
+        ? (centerTopH.value ?? getTerminalHeightFromRatio())
         : (which === 'sidebar' ? sidebarW.value : rightW.value)
     };
     resizing.value = which;
@@ -123,21 +147,63 @@ export function usePanelResize() {
       setVar('--right-w', `${w}px`);
     } else if (which === 'center-row') {
       // 向下拖 → 终端区变高。clamp 保证文件区至少 CENTER_BOTTOM_MIN。
-      const maxTop = viewportH - 52 /*titlebar*/ - 28 /*statusbar*/ - CENTER_BOTTOM_MIN;
+      const mainH = Math.max(CENTER_TOP_MIN + CENTER_BOTTOM_MIN, viewportH - 52 /*titlebar*/ - 28 /*statusbar*/);
+      const maxTop = mainH - CENTER_BOTTOM_MIN;
       const h = clamp(startVal + (event.clientY - startY), CENTER_TOP_MIN, maxTop);
       centerTopH.value = h;
-      setVar('--center-top-h', `${h}px`);
+      terminalRatio.value = clamp(h / mainH, 0.18, 0.85);
+      setTerminalHeight(h);
     }
   }
 
   function onPointerUp() {
     if (!activeDrag) return;
     persist();
+    if (activeDrag.which === 'center-row') {
+      centerTopH.value = null;
+      applyCssVars();
+    }
     activeDrag = null;
     resizing.value = null;
     document.removeEventListener('pointermove', onPointerMove);
     document.removeEventListener('pointerup', onPointerUp);
     document.body.style.userSelect = '';
+  }
+
+  function handleResizeKeydown(event, which) {
+    const step = event.shiftKey ? 32 : 8;
+    let handled = true;
+    if (which === 'sidebar') {
+      if (event.key === 'ArrowLeft') sidebarW.value = clamp(sidebarW.value - step, SIDEBAR_MIN, SIDEBAR_MAX);
+      else if (event.key === 'ArrowRight') sidebarW.value = clamp(sidebarW.value + step, SIDEBAR_MIN, SIDEBAR_MAX);
+      else handled = false;
+    } else if (which === 'right') {
+      if (event.key === 'ArrowLeft') rightW.value = clamp(rightW.value + step, RIGHT_MIN, RIGHT_MAX);
+      else if (event.key === 'ArrowRight') rightW.value = clamp(rightW.value - step, RIGHT_MIN, RIGHT_MAX);
+      else handled = false;
+    } else if (which === 'center-row') {
+      if (event.key === 'ArrowUp') terminalRatio.value = clamp(terminalRatio.value - 0.02, 0.18, 0.85);
+      else if (event.key === 'ArrowDown') terminalRatio.value = clamp(terminalRatio.value + 0.02, 0.18, 0.85);
+      else handled = false;
+      centerTopH.value = null;
+    } else {
+      handled = false;
+    }
+    if (!handled) return;
+    event.preventDefault();
+    applyCssVars();
+    persist();
+  }
+
+  function resetPane(which) {
+    if (which === 'sidebar') sidebarW.value = DEFAULTS.sidebarW;
+    else if (which === 'right') rightW.value = DEFAULTS.rightW;
+    else if (which === 'center-row') {
+      centerTopH.value = null;
+      terminalRatio.value = DEFAULTS.terminalRatio;
+    }
+    applyCssVars();
+    persist();
   }
 
   function setVar(name, value) {
@@ -163,7 +229,9 @@ export function usePanelResize() {
       root.style.setProperty('--right-w', `${rightW.value}px`);
     }
     if (centerTopH.value != null) {
-      root.style.setProperty('--center-top-h', `${centerTopH.value}px`);
+      setTerminalHeight(centerTopH.value, root);
+    } else {
+      setTerminalHeight(getTerminalHeightFromRatio(), root);
     }
   }
 
@@ -172,7 +240,7 @@ export function usePanelResize() {
       localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify({
         sidebarW: sidebarW.value,
         rightW: rightW.value,
-        centerTopH: centerTopH.value
+        terminalRatio: terminalRatio.value
       }));
     } catch {
       /* localStorage 不可用，静默 */
@@ -186,13 +254,18 @@ export function usePanelResize() {
     sidebarW.value = DEFAULTS.sidebarW;
     rightW.value = DEFAULTS.rightW;
     centerTopH.value = DEFAULTS.centerTopH;
-    // 清除内联变量（让 grid 回到 fallback 值：sidebar 280, right 280, center-top 1fr）
+    terminalRatio.value = DEFAULTS.terminalRatio;
+    // 清除内联变量（让 grid 回到 fallback 值：sidebar 260, right 280, center-top 1fr）
     if (typeof document !== 'undefined' && document.documentElement) {
       document.documentElement.style.removeProperty('--sidebar-w');
       document.documentElement.style.removeProperty('--right-w');
       document.documentElement.style.removeProperty('--center-top-h');
+      document.documentElement.style.removeProperty('--terminal-h');
     }
-    try { localStorage.removeItem(LAYOUT_STORAGE_KEY); } catch { /* ignore */ }
+    try {
+      localStorage.removeItem(LAYOUT_STORAGE_KEY);
+      localStorage.removeItem(LEGACY_LAYOUT_STORAGE_KEY);
+    } catch { /* ignore */ }
     // 折叠态不覆盖：折叠列保持折叠（reset 不展开折叠态，用户可单独点展开）。
     applyCssVars();
   }
@@ -200,14 +273,20 @@ export function usePanelResize() {
   onBeforeUnmount(() => {
     document.removeEventListener('pointermove', onPointerMove);
     document.removeEventListener('pointerup', onPointerUp);
+    if (typeof window !== 'undefined') window.removeEventListener('resize', applyCssVars);
   });
+
+  if (typeof window !== 'undefined') window.addEventListener('resize', applyCssVars);
 
   return {
     sidebarW,
     rightW,
     centerTopH,
+    terminalRatio,
     resizing,
     startResize,
+    handleResizeKeydown,
+    resetPane,
     resetLayout,
     // 折叠态变化后调用：重新同步内联变量（折叠列清除内联、展开列恢复宽度）。
     // App.vue 的 onToggleAssets/onToggleRight 切换 store 后调一次。

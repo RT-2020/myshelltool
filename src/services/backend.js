@@ -33,6 +33,50 @@ export function getTauriWindow() {
     || null;
 }
 
+export async function minimizeTauriWindow() {
+  const currentWindow = getTauriWindow();
+  if (typeof currentWindow?.minimize === 'function') {
+    await currentWindow.minimize();
+    return true;
+  }
+  return false;
+}
+
+export async function toggleTauriWindowMaximize() {
+  const currentWindow = getTauriWindow();
+  if (typeof currentWindow?.toggleMaximize === 'function') {
+    await currentWindow.toggleMaximize();
+    return true;
+  }
+  return false;
+}
+
+export async function closeTauriWindow() {
+  const currentWindow = getTauriWindow();
+  if (typeof currentWindow?.close === 'function') {
+    await currentWindow.close();
+    return true;
+  }
+  return false;
+}
+
+export async function isTauriWindowMaximized() {
+  const currentWindow = getTauriWindow();
+  if (typeof currentWindow?.isMaximized === 'function') {
+    return currentWindow.isMaximized();
+  }
+  return false;
+}
+
+export async function startTauriWindowDragging() {
+  const currentWindow = getTauriWindow();
+  if (typeof currentWindow?.startDragging === 'function') {
+    await currentWindow.startDragging();
+    return true;
+  }
+  return false;
+}
+
 function getTauriInvoke() {
   return window.__TAURI__?.core?.invoke;
 }

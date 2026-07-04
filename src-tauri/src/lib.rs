@@ -491,6 +491,7 @@ pub fn run() {
             fs_local::fs_local_mkdir,
             fs_local::fs_local_delete,
             fs_local::fs_local_rename,
+            fs_local::fs_local_read_chunk,
             resource_monitor::resource_monitor_start,
             resource_monitor::resource_monitor_stop,
             resource_monitor::resource_monitor_snapshot,

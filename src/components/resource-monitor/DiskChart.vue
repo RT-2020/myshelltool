@@ -1,136 +1,157 @@
 <script setup>
 import { computed } from 'vue';
-import { HardDrive } from 'lucide-vue-next';
-import { CHART_H, CHART_W, formatBytes, formatRate, buildLinePath } from './chart-utils.js';
+import { CHART_H, CHART_W, buildLinePath, formatBytes, formatCompactRate, formatRate } from './chart-utils.js';
 
 const props = defineProps({
   readPoints: { type: Array, default: () => [] },
   writePoints: { type: Array, default: () => [] },
   readRate: { type: Number, default: 0 },
   writeRate: { type: Number, default: 0 },
-  // 根分区容量（来自 df，字节）
   diskTotal: { type: Number, default: 0 },
-  diskUsed: { type: Number, default: 0 }
+  diskUsed: { type: Number, default: 0 },
+  hasData: { type: Boolean, default: true }
 });
 
 const allPoints = computed(() => [...props.readPoints, ...props.writePoints]);
 const yMax = computed(() => {
-  const m = allPoints.value.length ? Math.max(...allPoints.value) : 0;
-  return m > 0 ? m : 1;
+  const max = allPoints.value.length ? Math.max(...allPoints.value) : 0;
+  return max > 0 ? max : 1;
 });
 const readPath = computed(() => buildLinePath(props.readPoints, yMax.value));
 const writePath = computed(() => buildLinePath(props.writePoints, yMax.value));
-
-// 容量百分比 + 进度条宽度
 const diskPct = computed(() => {
   if (!props.diskTotal) return 0;
   return Math.min(100, Math.round((props.diskUsed / props.diskTotal) * 100));
 });
 const hasCapacity = computed(() => props.diskTotal > 0);
+const valueText = computed(() => {
+  if (!props.hasData) return '—';
+  return `读${formatCompactRate(props.readRate)}写${formatCompactRate(props.writeRate)}`;
+});
+const detailText = computed(() => (props.hasData ? `读取 ${formatRate(props.readRate)} · 写入 ${formatRate(props.writeRate)}` : '暂无数据'));
 </script>
 
 <template>
-  <section class="rm-chart rm-chart--disk">
-    <header class="rm-chart-head">
-      <span class="rm-chart-label"><HardDrive :size="12" /> 磁盘 I/O</span>
-      <span class="rm-chart-value">
-        <strong class="mono num rd">R{{ formatRate(readRate) }}</strong>
-        <strong class="mono num wr">W{{ formatRate(writeRate) }}</strong>
+  <article class="metric-card">
+    <div class="metric-head">
+      <span class="metric-name">磁盘</span>
+      <span class="metric-value compact-rate" :class="{ 'has-data': hasData }" :title="detailText" :aria-label="detailText">
+        <span class="num">{{ valueText }}</span>
       </span>
-    </header>
-    <svg :viewBox="`0 0 ${CHART_W} ${CHART_H}`" preserveAspectRatio="none" class="rm-chart-svg">
-      <path v-if="readPath" :d="readPath" fill="none" stroke="var(--info, var(--accent))" stroke-width="1.2" />
-      <path v-if="writePath" :d="writePath" fill="none" stroke="var(--warn)" stroke-width="1.2" />
+    </div>
+
+    <svg class="spark" :viewBox="`0 0 ${CHART_W} ${CHART_H}`" preserveAspectRatio="none" aria-hidden="true">
+      <line class="grid-line" x1="0" :y1="CHART_H * 0.25" :x2="CHART_W" :y2="CHART_H * 0.25" />
+      <line class="grid-line" x1="0" :y1="CHART_H * 0.5" :x2="CHART_W" :y2="CHART_H * 0.5" />
+      <line class="grid-line" x1="0" :y1="CHART_H * 0.75" :x2="CHART_W" :y2="CHART_H * 0.75" />
+      <path v-if="hasData && readPath" :d="readPath" class="line-rd-data" />
+      <path v-if="hasData && writePath" :d="writePath" class="line-wr-data" />
+      <path v-if="!hasData" class="line-empty" :d="`M0,${CHART_H - 4} L${CHART_W},${CHART_H - 4}`" />
+      <line class="baseline" x1="0" :y1="CHART_H - 1" :x2="CHART_W" :y2="CHART_H - 1" />
     </svg>
 
-    <!-- 根分区容量（来自 df）：used / total (pct%) + 进度条 -->
-    <div v-if="hasCapacity" class="disk-capacity">
-      <div class="disk-capacity-head">
-        <span class="rm-chart-label">容量</span>
-        <span class="mono num disk-capacity-text">
-          {{ formatBytes(diskUsed) }} / {{ formatBytes(diskTotal) }}
-          <span class="disk-capacity-pct" :class="{ 'is-high': diskPct >= 85, 'is-warn': diskPct >= 70 }">{{ diskPct }}%</span>
-        </span>
-      </div>
-      <div class="disk-capacity-bar" role="progressbar" :aria-valuenow="diskPct" aria-valuemin="0" aria-valuemax="100">
-        <div class="disk-capacity-fill" :class="{ 'is-high': diskPct >= 85, 'is-warn': diskPct >= 70 }" :style="{ width: diskPct + '%' }"></div>
+    <div class="disk-row">
+      <span class="label">根分区</span>
+      <span class="val">{{ hasCapacity ? `${formatBytes(diskUsed)} / ${formatBytes(diskTotal)}` : '— / —' }}</span>
+      <div class="disk-bar">
+        <div
+          v-if="hasCapacity"
+          class="disk-bar-fill"
+          :class="{ 'is-high': diskPct >= 85, 'is-warn': diskPct >= 70 }"
+          :style="{ width: diskPct + '%' }"
+        ></div>
       </div>
     </div>
-  </section>
+  </article>
 </template>
 
 <style scoped lang="scss">
 @use '@/styles/_tokens' as *;
 
-.rm-chart {
+.metric-head {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-2) var(--space-3);
-}
-.rm-chart-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: var(--text-xs);
-}
-.rm-chart-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--app-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-.rm-chart-value {
-  display: inline-flex;
   align-items: baseline;
-  gap: 8px;
-  color: var(--app-strong);
-}
-.rm-chart-value .rd { color: var(--info, var(--accent)); }
-.rm-chart-value .wr { color: var(--warn); }
-.rm-chart-svg {
-  width: 100%;
-  height: 60px;
-  display: block;
+  justify-content: space-between;
+  margin-bottom: 6px;
 }
 
-// 容量行
-.disk-capacity {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-block-start: 2px;
-}
-.disk-capacity-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: var(--text-xs);
-}
-.disk-capacity-text {
-  color: var(--app-strong);
-}
-.disk-capacity-pct {
-  margin-inline-start: 4px;
+.metric-name {
   color: var(--app-muted);
-  &.is-warn { color: var(--warn); }
-  &.is-high { color: var(--danger); }
+  font: 500 9.5px var(--font-mono);
+  letter-spacing: 0.06em;
 }
-.disk-capacity-bar {
+
+.metric-value {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  color: var(--app-subtle);
+  font: 500 13px var(--font-mono);
+}
+
+.metric-value.has-data .num { color: var(--info); }
+
+.spark {
+  display: block;
   width: 100%;
-  height: 4px;
-  border-radius: var(--radius-pill);
-  background: var(--app-control);
+  height: 48px;
+}
+
+.grid-line {
+  stroke: var(--app-border-soft);
+  stroke-dasharray: 2 3;
+  stroke-width: 1;
+}
+
+.baseline {
+  stroke: var(--app-border);
+  stroke-width: 1;
+}
+
+.line-empty,
+.line-rd-data,
+.line-wr-data {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.2;
+}
+
+.line-empty { stroke: var(--app-border-strong); }
+.line-rd-data { stroke: var(--info); }
+.line-wr-data { stroke: var(--warn); }
+
+.disk-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 6px;
+  color: var(--app-subtle);
+  font: 10px var(--font-mono);
+}
+
+.disk-row .val {
+  justify-self: end;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.disk-capacity-fill {
-  height: 100%;
+
+.disk-bar {
+  grid-column: 1 / -1;
+  height: 4px;
+  overflow: hidden;
   border-radius: var(--radius-pill);
-  background: var(--accent);
-  transition: width var(--motion-base, 0.3s) var(--ease-standard);
-  &.is-warn { background: var(--warn); }
-  &.is-high { background: var(--danger); }
+  background: var(--app-panel-2);
 }
+
+.disk-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--success);
+}
+
+.disk-bar-fill.is-warn { background: var(--warn); }
+.disk-bar-fill.is-high { background: var(--danger); }
 </style>

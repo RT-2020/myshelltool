@@ -65,22 +65,14 @@ fn read_github_pat(state: &AppState) -> Result<String, String> {
 /// 会话密钥 credential id（v1.6 自动同步）。
 const SESSION_KEY_ID: &str = "sync-session-key";
 
-/// v1.6 自动同步：会话密钥 + 固定 salt 的持久化载体。
-///
-/// DPAPI 加密后存 SecretStore（credential id = SESSION_KEY_ID）。
-/// 存储格式：`base64(key):base64(salt)`——key 是 32 字节 AES 密钥，salt 是派生时用的 16 字节。
-/// salt 不敏感（与 blob.salt 同理），与 key 一起存是为了让 reset_master_password 时
-/// 能用同一 salt 重新派生新 key 验证（实际 reset 会重新派生 + 重存）。
-struct SessionKey {
-    key: [u8; 32],
-    _salt: Vec<u8>, // 派生时的 salt（key-based 路径下不参与加解密，仅留档）
-}
-
 /// 派生会话密钥并 DPAPI 加密存盘（v1.6 启用自动同步）。
 ///
 /// 用主密码 + 随机 salt 派生 32 字节 AES key，连同 salt 一起序列化后交 SecretStore
 /// （DPAPI User scope 加密）。主密码派生后即丢弃，不落盘。
-fn save_session_key(state: &AppState, master_password: &str) -> Result<SessionKey, String> {
+///
+/// 返回 `()`：副作用（落盘）即本函数全部职责，派生出的内存 key 副本无需回传给调用方——
+/// 后续解密需要 key 时统一从 SecretStore 读（见 `read_session_key`）。
+fn save_session_key(state: &AppState, master_password: &str) -> Result<(), String> {
     use myshelltool_core::crypto;
     let mut salt = vec![0u8; crypto::SALT_LEN];
     rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut salt);
@@ -94,7 +86,7 @@ fn save_session_key(state: &AppState, master_password: &str) -> Result<SessionKe
     );
     store.save(SESSION_KEY_ID, &payload)?;
 
-    Ok(SessionKey { key, _salt: salt })
+    Ok(())
 }
 
 /// 从 SecretStore 读会话密钥（DPAPI 解密）。未配置返回 None（调用方回退手动模式）。

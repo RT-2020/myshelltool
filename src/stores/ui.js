@@ -166,6 +166,21 @@ export const useUiStore = defineStore('ui', () => {
     announce('主题已切换：' + (THEME_LABELS[theme.value] || theme.value));
   }
 
+  // 设置面板「外观」tab 用：点哪个选哪个（区别于 toggleTheme 的循环切换）。
+  // value 必须是 THEME_ORDER 之一，非法值由 normalizeStoredTheme 兜底。
+  function setTheme(value) {
+    const next = normalizeStoredTheme(value);
+    if (next === theme.value) return; // 无变化不重复 announce
+    theme.value = next;
+    applyTheme(effectiveTheme.value);
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, theme.value);
+    } catch {
+      /* localStorage 不可用，静默 */
+    }
+    announce('主题已切换：' + (THEME_LABELS[theme.value] || theme.value));
+  }
+
   // ============================================================
   // Actions — assets 收起
   // ============================================================
@@ -328,6 +343,7 @@ export const useUiStore = defineStore('ui', () => {
     attachWorkbench,
     // theme actions
     toggleTheme,
+    setTheme,
     applyThemeValue,
     initializeTheme,
     disposeSystemThemeListener,

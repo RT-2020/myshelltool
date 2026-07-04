@@ -1,6 +1,6 @@
 <script setup>
-import { computed, watch, onBeforeUnmount } from 'vue';
-import { Activity, Cpu, MonitorOff } from 'lucide-vue-next';
+import { computed, onBeforeUnmount, watch } from 'vue';
+import { MonitorOff } from 'lucide-vue-next';
 import { useResourceMonitorStore } from '@/stores/resourceMonitor.js';
 import { useSessionsStore } from '@/stores/sessions.js';
 import CpuChart from './CpuChart.vue';
@@ -26,57 +26,58 @@ watch(
   { immediate: false }
 );
 
-onBeforeUnmount(() => { rm.stop().catch(() => {}); });
+onBeforeUnmount(() => {
+  rm.stop().catch(() => {});
+});
 
-const showPlaceholder = computed(() => {
+const placeholder = computed(() => {
   if (!rm.isDesktopRuntime) return 'desktop-required';
   if (!sessions.activeSessionId) return 'no-session';
   if (!rm.snapshot) return 'waiting';
   return '';
 });
 
+const emptyText = computed(() => {
+  if (placeholder.value === 'desktop-required') return '需要桌面端 · 监控待机';
+  if (placeholder.value === 'waiting') return '等待首次采样 · 指标收集中';
+  return '未连接到会话 · 采样待机';
+});
+
 const snapshot = computed(() => rm.snapshot);
+const hasData = computed(() => Boolean(rm.snapshot));
 </script>
 
 <template>
-  <section class="rm-panel" data-region="resource-monitor">
-    <header class="rm-panel-head">
-      <span class="rm-panel-title"><Activity :size="14" /> 服务器资源监控</span>
-    </header>
-
-    <div v-if="showPlaceholder === 'desktop-required'" class="rm-empty">
-      <MonitorOff :size="32" />
-      <strong>需要桌面端</strong>
-      <p class="muted">资源监控仅在 Tauri 桌面运行时可用，请运行 <code>npm run tauri:dev</code>。</p>
+  <section class="rs-section rm-section" data-region="resource-monitor">
+    <div class="rs-section-head">
+      <span class="rs-section-title">资源监控</span>
+      <span class="rs-section-meta">{{ hasData ? '2秒 · 60点' : '— · —' }}</span>
     </div>
 
-    <div v-else-if="showPlaceholder === 'no-session'" class="rm-empty">
-      <Cpu :size="32" />
-      <strong>未连接 SSH 主机</strong>
-      <p class="muted">从左侧资产树选择主机并连接，即可查看实时 CPU / 内存 / 网络 / 磁盘。</p>
+    <div v-if="placeholder" class="rs-empty-banner">
+      <MonitorOff />
+      <span>{{ emptyText }}</span>
     </div>
 
-    <div v-else-if="showPlaceholder === 'waiting'" class="rm-empty rm-empty--sm">
-      <Activity :size="20" />
-      <span class="muted">等待采样数据…</span>
-    </div>
-
-    <div v-else class="rm-panel-body">
+    <div class="metric-grid">
       <CpuChart
         :points="rm.cpuHistoryPoints"
         :current="snapshot?.cpuUsage || 0"
         :cores="snapshot?.cpuCores || 0"
+        :has-data="hasData"
       />
       <MemoryChart
         :points="rm.memHistoryPoints"
         :mem-total="snapshot?.memTotal || 0"
         :mem-used="snapshot?.memUsed || 0"
+        :has-data="hasData"
       />
       <NetworkChart
         :rx-points="rm.netRxHistoryPoints"
         :tx-points="rm.netTxHistoryPoints"
         :rx-rate="rm.netRxRate"
         :tx-rate="rm.netTxRate"
+        :has-data="hasData"
       />
       <DiskChart
         :read-points="rm.diskReadHistoryPoints"
@@ -85,6 +86,7 @@ const snapshot = computed(() => rm.snapshot);
         :write-rate="rm.diskWriteRate"
         :disk-total="snapshot?.diskTotal || 0"
         :disk-used="snapshot?.diskUsed || 0"
+        :has-data="hasData"
       />
     </div>
   </section>
@@ -93,65 +95,110 @@ const snapshot = computed(() => rm.snapshot);
 <style scoped lang="scss">
 @use '@/styles/_tokens' as *;
 
-.rm-panel {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  flex: 1 1 60%;
-  border-block-end: 1px solid var(--app-border);
-  overflow: hidden;
+.rs-section {
+  padding: var(--space-4) var(--space-3) var(--space-3);
+  border-bottom: 1px solid var(--app-border-soft);
 }
-.rm-panel-head {
+
+.rs-section-head {
   display: flex;
   align-items: center;
-  flex: 0 0 auto; // 固定 header，body 滚动时不被压缩
-  padding: var(--space-2) var(--space-3);
-  border-block-end: 1px solid var(--app-border);
-  background: var(--app-chrome);
-}
-.rm-panel-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--text-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--app-muted);
-}
-.rm-panel-body {
-  flex: 1;
-  overflow-y: auto;
-}
-.rm-empty {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
+  justify-content: space-between;
   gap: var(--space-2);
-  padding: var(--space-4);
-  text-align: center;
-  color: var(--app-muted);
+  margin-bottom: var(--space-3);
 }
-.rm-empty--sm {
-  flex-direction: row;
-  padding: var(--space-3);
-  font-size: var(--text-xs);
+
+.rs-section-title {
+  color: var(--app-subtle);
+  font: 500 10px var(--font-mono);
+  letter-spacing: 0.08em;
 }
-.rm-empty strong {
-  color: var(--app-strong);
-  font-size: var(--text-sm);
+
+.rs-section-meta {
+  color: var(--app-subtle);
+  font: 10px var(--font-mono);
+  letter-spacing: 0.04em;
 }
-.rm-empty code {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  padding: 2px 6px;
-  background: var(--app-subtle);
+
+.rs-empty-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  padding: 8px 10px;
+  border: 1px dashed var(--app-border-strong);
   border-radius: var(--radius-sm);
+  background: var(--app-panel-2);
+  color: var(--app-subtle);
+  font: 11px var(--font-display);
 }
-.rm-empty .muted {
-  margin: 0;
-  font-size: var(--text-xs);
-  line-height: 1.5;
+
+.rs-empty-banner svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.6;
+  flex-shrink: 0;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+:deep(.metric-card) {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 7px;
+  background: var(--app-panel);
+}
+
+:deep(.metric-head) {
+  display: flex;
+  min-width: 0;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+:deep(.metric-name) {
+  flex: 0 0 auto;
+  font: 500 9.5px var(--font-display);
+  letter-spacing: 0.06em;
+}
+
+:deep(.metric-value) {
+  flex: 1 1 auto;
+  justify-content: flex-end;
+  min-width: 0;
+  overflow: visible;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  text-align: right;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+:deep(.metric-value.compact-rate) {
+  font-size: 10px;
+}
+
+:deep(.metric-value.compact-rate .num) {
+  font-size: inherit;
+}
+
+:deep(.spark) {
+  height: 36px;
+}
+
+:deep(.spark.network) {
+  height: 40px;
+}
+
+:deep(.metric-foot),
+:deep(.mem-bar),
+:deep(.disk-row) {
+  display: none;
 }
 </style>

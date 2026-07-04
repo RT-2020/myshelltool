@@ -10,7 +10,9 @@ export function buildTerminalOptions({ fontSize, themeMode }) {
     cursorBlink: true,
     cursorStyle: 'bar',
     fontSize: fontSize || 14,
-    fontFamily: 'Consolas, "JetBrains Mono", "Courier New", ui-monospace, monospace',
+    // 字体优先级与设计稿 --font-mono 同源（JetBrains Mono 优先，需在 index.html 加载）。
+    // 回退链：JetBrains Mono → Cascadia Code（Win11 自带）→ Consolas（Win10）→ 系统等宽
+    fontFamily: '"JetBrains Mono", "Cascadia Code", Consolas, "Courier New", ui-monospace, monospace',
     theme: pickTerminalTheme(themeMode),
     allowProposedApi: true,
     scrollback: 10000,

@@ -1,7 +1,6 @@
 <script setup>
 import { computed } from 'vue';
 import { Search, Copy, ClipboardPaste, Plus, Minus, Eraser, RefreshCw, PanelRight, Maximize2 } from 'lucide-vue-next';
-import ConnectionStatusPill from './ConnectionStatusPill.vue';
 
 const props = defineProps({
   session: { type: Object, default: null },
@@ -12,6 +11,7 @@ const props = defineProps({
   reconnectTotal: { type: Number, default: 0 },
   selectedAsset: { type: Object, default: null }
 });
+
 const emit = defineEmits([
   'search', 'copy', 'paste', 'font-inc', 'font-dec', 'clear',
   'reconnect', 'toggle-aside', 'fullscreen', 'connect'
@@ -21,141 +21,143 @@ const status = computed(() => {
   if (props.reconnectAttempt > 0) return 'reconnecting';
   return props.session?.status || (props.selectedAsset ? 'idle' : 'idle');
 });
+
 const hostName = computed(() => props.session?.asset?.name || props.selectedAsset?.name || '未连接');
 const oscTitle = computed(() => props.session?.oscTitle || '');
+const statusLabel = computed(() => {
+  if (props.reconnectAttempt > 0) return `reconnect ${props.reconnectAttempt}/${props.reconnectTotal}`;
+  switch (status.value) {
+    case 'connected': return 'connected';
+    case 'connecting': return 'connecting';
+    case 'disconnected': return 'disconnected';
+    case 'error': return 'error';
+    default: return 'idle';
+  }
+});
 </script>
 
 <template>
-  <div class="pane-toolbar terminal-toolbar">
-    <div class="terminal-toolbar-left">
-      <ConnectionStatusPill
-        :status="status"
-        :reconnect-attempt="reconnectAttempt"
-        :reconnect-total="reconnectTotal"
-      />
-      <strong class="terminal-host">{{ hostName }}</strong>
-      <span class="muted terminal-meta">{{ subtitle }}</span>
+  <div class="term-toolbar-row terminal-toolbar" role="toolbar" aria-label="终端操作">
+    <button class="icon-btn" aria-label="终端内搜索" title="搜索 (Ctrl+Shift+F)" @click="emit('search')"><Search :size="16" /></button>
+    <button class="icon-btn" aria-label="复制" title="复制 (Ctrl+Shift+C)" @click="emit('copy')"><Copy :size="16" /></button>
+    <button class="icon-btn" aria-label="粘贴" title="粘贴 (Ctrl+Shift+V)" @click="emit('paste')"><ClipboardPaste :size="16" /></button>
+    <span class="tb-sep" aria-hidden="true"></span>
+    <button class="icon-btn" aria-label="字号增大" title="字号增大 (Ctrl+=)" @click="emit('font-inc')"><Plus :size="16" /></button>
+    <button class="icon-btn" aria-label="字号减小" title="字号减小 (Ctrl+-)" @click="emit('font-dec')"><Minus :size="16" /></button>
+    <span class="terminal-font-badge" :title="'字体 ' + fontSize + 'px'">{{ fontSize }}px</span>
+    <span class="tb-sep" aria-hidden="true"></span>
+    <button class="icon-btn" aria-label="清屏" title="清屏 (Ctrl+L)" @click="emit('clear')"><Eraser :size="16" /></button>
+    <button v-if="session && session.status !== 'connected'" class="icon-btn warn" aria-label="重连" title="重连" @click="emit('reconnect')"><RefreshCw :size="16" /></button>
+    <button class="icon-btn" :class="{ active: asideOpen }" aria-label="会话详情" title="会话详情抽屉" @click="emit('toggle-aside')"><PanelRight :size="16" /></button>
+    <button class="icon-btn" aria-label="全屏" title="全屏 (Alt+Enter)" @click="emit('fullscreen')"><Maximize2 :size="16" /></button>
+
+    <div class="term-toolbar-spacer"></div>
+
+    <span class="term-status-pill" :title="subtitle || hostName">
+      <span :class="['conn-dot', status]" aria-hidden="true"></span>
+      <span>{{ statusLabel }}</span>
+      <span class="terminal-host">{{ hostName }}</span>
       <span v-if="oscTitle" class="terminal-osc-title">· {{ oscTitle }}</span>
-    </div>
-    <div class="terminal-toolbar-right">
-      <span class="terminal-font-badge" :title="'字体 ' + fontSize + 'px（Ctrl+= / Ctrl+- / Ctrl+0 / Ctrl+滚轮）'">{{ fontSize }}px</span>
-      <div class="icon-toolbar" role="group" aria-label="终端操作">
-        <button class="icon-tool" aria-label="搜索" title="搜索 (Ctrl+Shift+F)" @click="emit('search')"><Search :size="16" /></button>
-        <button class="icon-tool" aria-label="复制选中" title="复制 (Ctrl+Shift+C)" @click="emit('copy')"><Copy :size="16" /></button>
-        <button class="icon-tool" aria-label="粘贴" title="粘贴 (Ctrl+Shift+V)" @click="emit('paste')"><ClipboardPaste :size="16" /></button>
-        <button class="icon-tool" aria-label="字体增大" title="字体增大 (Ctrl+=)" @click="emit('font-inc')"><Plus :size="16" /></button>
-        <button class="icon-tool" aria-label="字体减小" title="字体减小 (Ctrl+-)" @click="emit('font-dec')"><Minus :size="16" /></button>
-        <button class="icon-tool" aria-label="清屏" title="清屏" @click="emit('clear')"><Eraser :size="16" /></button>
-        <button v-if="session && session.status !== 'connected'" class="icon-tool warn" aria-label="重连" title="重连" @click="emit('reconnect')"><RefreshCw :size="16" /></button>
-        <button class="icon-tool" :class="{ active: asideOpen }" aria-label="会话详情抽屉" title="会话详情抽屉" @click="emit('toggle-aside')"><PanelRight :size="16" /></button>
-        <button class="icon-tool" aria-label="全屏" title="全屏 (Alt+Enter)" @click="emit('fullscreen')"><Maximize2 :size="16" /></button>
-      </div>
-    </div>
+    </span>
   </div>
 </template>
 
 <style scoped lang="scss">
 @use '@/styles/_tokens' as *;
 
-.terminal-toolbar {
+.term-toolbar-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  border-block-end: 1px solid var(--app-border);
-  background: var(--app-panel-2); // 统一 center 区 toolbar 底色：与 file-column-head 一致
-}
-
-.terminal-toolbar-left {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
+  gap: 2px;
+  padding: 0 8px;
+  background: var(--app-panel);
+  border-bottom: 1px solid var(--app-border);
   min-width: 0;
+}
+
+.icon-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--app-muted);
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast);
+}
+.icon-btn svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.6;
+}
+.icon-btn:hover {
+  background: var(--app-hover);
+  color: var(--app-text);
+}
+.icon-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.icon-btn.warn {
+  color: var(--warn);
+}
+
+.tb-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--app-border);
+  margin: 0 4px;
+}
+
+.term-toolbar-spacer {
   flex: 1;
+  min-width: var(--space-2);
 }
 
-.terminal-host {
-  font-size: var(--text-sm);
-  font-weight: 600; // 统一 header 标题字重：与 sidebar-header / file-column-title 一致
-  color: var(--app-strong);
-}
-
-.terminal-meta {
-  font-size: var(--text-xs);
-  color: var(--app-muted);
-  font-family: var(--font-mono);
-}
-
-.terminal-osc-title {
-  font-size: var(--text-xs);
-  color: var(--app-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 200px;
-}
-
-.terminal-toolbar-right {
-  display: flex;
+.terminal-font-badge,
+.term-status-pill {
+  display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  flex: 0 0 auto;
-}
-
-.terminal-font-badge {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  color: var(--app-muted);
-  padding: 2px 8px;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px;
   border-radius: var(--radius-pill);
   background: var(--app-panel-2);
   border: 1px solid var(--app-border);
-  font-variant-numeric: tabular-nums;
-}
-
-.icon-toolbar {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.icon-tool {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: none;
-  background: transparent;
+  font: 11px var(--font-mono);
   color: var(--app-muted);
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-  transition: background var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard);
+  white-space: nowrap;
 }
 
-.icon-tool:hover {
-  background: var(--app-hover);
-  color: var(--app-strong);
+.conn-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--app-subtle);
+}
+.conn-dot.connected { background: var(--success); }
+.conn-dot.connecting,
+.conn-dot.reconnecting { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
+.conn-dot.disconnected,
+.conn-dot.error { background: var(--danger); }
+
+.terminal-host {
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--app-text);
+}
+.terminal-osc-title {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--app-subtle);
 }
 
-.icon-tool:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-
-.icon-tool.active {
-  background: color-mix(in oklab, var(--accent) 15%, transparent);
-  color: var(--accent);
-}
-
-.icon-tool.warn {
-  color: var(--warn);
-}
-
-.icon-tool.warn:hover {
-  background: color-mix(in oklab, var(--warn) 18%, transparent);
-  color: var(--warn);
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
 }
 </style>
