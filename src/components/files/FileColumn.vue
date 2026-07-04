@@ -15,12 +15,9 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { storeToRefs } from 'pinia';
-import {
-  ChevronUp,
-  ChevronDown,
-} from 'lucide-vue-next';
 import { useFilesStore } from '@/stores/files.js';
 import { useUiStore } from '@/stores/ui.js';
+import FileColumnColumns from './FileColumnColumns.vue';
 import FileColumnHeader from './FileColumnHeader.vue';
 import FileColumnList from './FileColumnList.vue';
 import {
@@ -423,88 +420,12 @@ function crumbClick(seg) {
       </template>
     </FileColumnHeader>
 
-    <!-- Column headers (sortable) — only in detailed list mode.
-         列：名称 / 大小 / 类型 / 修改时间 / 权限 / 用户组。-->
-    <div v-if="remoteListMode === 'detailed'" class="col-header file-column-cols">
-      <button
-        class="col-name col-sort"
-        :class="{ active: sortKey === 'name' }"
-        type="button"
-        @click="setSort('name')"
-      >
-        <span>名称</span>
-        <component
-          v-if="sortKey === 'name'"
-          :is="sortDir === 'asc' ? ChevronUp : ChevronDown"
-          :size="12"
-        />
-      </button>
-      <button
-        class="col-size col-sort col-sort--num"
-        :class="{ active: sortKey === 'size' }"
-        type="button"
-        @click="setSort('size')"
-      >
-        <span>大小</span>
-        <component
-          v-if="sortKey === 'size'"
-          :is="sortDir === 'asc' ? ChevronUp : ChevronDown"
-          :size="12"
-        />
-      </button>
-      <button
-        class="col-type col-sort"
-        :class="{ active: sortKey === 'type' }"
-        type="button"
-        @click="setSort('type')"
-      >
-        <span>类型</span>
-        <component
-          v-if="sortKey === 'type'"
-          :is="sortDir === 'asc' ? ChevronUp : ChevronDown"
-          :size="12"
-        />
-      </button>
-      <button
-        class="col-mtime col-sort"
-        :class="{ active: sortKey === 'modified' }"
-        type="button"
-        @click="setSort('modified')"
-      >
-        <span>修改时间</span>
-        <component
-          v-if="sortKey === 'modified'"
-          :is="sortDir === 'asc' ? ChevronUp : ChevronDown"
-          :size="12"
-        />
-      </button>
-      <button
-        class="col-perm col-sort col-sort--num"
-        :class="{ active: sortKey === 'permissions' }"
-        type="button"
-        @click="setSort('permissions')"
-      >
-        <span>权限</span>
-        <component
-          v-if="sortKey === 'permissions'"
-          :is="sortDir === 'asc' ? ChevronUp : ChevronDown"
-          :size="12"
-        />
-      </button>
-      <button
-        class="col-owner col-sort"
-        :class="{ active: sortKey === 'owner' }"
-        type="button"
-        @click="setSort('owner')"
-      >
-        <span>用户组</span>
-        <component
-          v-if="sortKey === 'owner'"
-          :is="sortDir === 'asc' ? ChevronUp : ChevronDown"
-          :size="12"
-        />
-      </button>
-    </div>
+    <FileColumnColumns
+      v-if="remoteListMode === 'detailed'"
+      :sort-key="sortKey"
+      :sort-dir="sortDir"
+      @sort="setSort"
+    />
 
     <FileColumnList
       :entries="effectiveEntries()"
@@ -548,42 +469,5 @@ function crumbClick(seg) {
 .file-column.is-local-disabled {
   opacity: 0.6;
 }
-
-// Sortable column headers. 列：名称(flex) / 大小 / 类型 / 修改时间 / 权限 / 用户组。
-.col-header,
-.file-column-cols {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 64px 56px 130px 56px 92px;
-  gap: 8px;
-  padding: 0 12px;
-  min-height: 30px;
-  align-items: center;
-  background: var(--app-panel);
-  border-block-end: 1px solid var(--app-border);
-  font: 500 10.5px var(--font-display);
-  color: var(--app-muted);
-  position: sticky;
-  top: 34px;
-  z-index: calc(var(--z-sticky) - 1);
-}
-.col-sort {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  background: transparent;
-  border: none;
-  padding: 0;
-  color: var(--app-muted);
-  cursor: pointer;
-  font-size: var(--text-xs);
-  text-align: start;
-  user-select: none;
-  transition: color var(--motion-fast) var(--ease-standard);
-  min-width: 0;
-}
-// 数值列标题右对齐（与数值单元格一致）。
-.col-sort--num { justify-content: flex-end; text-align: end; }
-.col-sort:hover { color: var(--app-strong); }
-.col-sort.active { color: var(--accent); }
 
 </style>
