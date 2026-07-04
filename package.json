@@ -9,7 +9,7 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test:core": "cargo test --manifest-path crates/myshelltool-core/Cargo.toml",
-    "test:ui": "node tests/ui-smoke.mjs && node tests/ui-host-key.mjs",
+    "test:ui": "node tests/ui-smoke.mjs && node tests/ui-host-key.mjs && node tests/ui-file-loading.mjs",
     "tauri:build": "tauri build",
     "tauri:dev": "tauri dev"
   },
