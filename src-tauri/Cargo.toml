@@ -1,6 +1,6 @@
 [package]
 name = "myshelltool"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 # v1.4：MCP server 内嵌 GUI 进程（Streamable HTTP transport），不再有独立 mcp binary。
 # cargo run / tauri dev 跑 GUI，MCP server 随 GUI setup 经 tauri::async_runtime::spawn 拉起。
