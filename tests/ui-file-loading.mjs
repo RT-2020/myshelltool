@@ -29,7 +29,9 @@ try {
 
     window.__MST_FILE_LOADING_MOCK = {
       listStarted: 0,
+      downloadStarted: 0,
       releaseList: null,
+      releaseDownload: null,
       invokeCalls: []
     };
 
@@ -65,6 +67,9 @@ try {
               ]
             });
           }
+          if (cmd === 'ssh_connect') {
+            return Promise.resolve({ session_id: 'session-slow-host' });
+          }
           if (cmd === 'ssh_list_directory' || cmd === 'sftp_list_dir') {
             window.__MST_FILE_LOADING_MOCK.listStarted += 1;
             return new Promise(resolve => {
@@ -72,6 +77,12 @@ try {
                 path: args.path || '/srv/app/releases',
                 entries: remoteEntries
               });
+            });
+          }
+          if (cmd === 'sftp_download_with_progress') {
+            window.__MST_FILE_LOADING_MOCK.downloadStarted += 1;
+            return new Promise(resolve => {
+              window.__MST_FILE_LOADING_MOCK.releaseDownload = () => resolve([65, 66, 67]);
             });
           }
           if (cmd === 'fs_local_home_dir') return Promise.resolve('C:\\Users\\tester');
@@ -118,6 +129,31 @@ try {
   if (!refreshDisabled) throw new Error('remote refresh button should be disabled while remote files load');
 
   await page.evaluate(() => window.__MST_FILE_LOADING_MOCK.releaseList?.());
+  await overlay.waitFor({ state: 'hidden', timeout: 5000 });
+
+  await page.evaluate(() => {
+    const pinia = document.querySelector('#app').__vue_app__.config.globalProperties.$pinia;
+    const workbench = pinia._s.get('workbench');
+    const sessions = pinia._s.get('sessions');
+    const files = pinia._s.get('files');
+    const asset = workbench.selectedAsset;
+    sessions.sessions.push({
+      sessionId: 'session-slow-host',
+      asset,
+      status: 'mock-ready',
+      createdAt: Date.now()
+    });
+    sessions.activeSessionId = 'session-slow-host';
+    files.downloadEntry(files.remoteEntries[0]);
+  });
+  await page.waitForFunction(() => window.__MST_FILE_LOADING_MOCK.downloadStarted > 0, { timeout: 5000 });
+  await overlay.waitFor({ state: 'visible', timeout: 5000 });
+  const downloadOverlayText = await overlay.textContent();
+  if (!downloadOverlayText?.includes('正在下载远程文件')) {
+    throw new Error(`remote file loading overlay text missing or wrong: ${downloadOverlayText}`);
+  }
+
+  await page.evaluate(() => window.__MST_FILE_LOADING_MOCK.releaseDownload?.());
   await overlay.waitFor({ state: 'hidden', timeout: 5000 });
 
   console.log('File loading UI test passed');
