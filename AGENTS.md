@@ -17,6 +17,7 @@
 - **改完即验**：每次实现后跑构建/测试（见 §5），把验证结果如实报告，不要把"应该能过"说成"已通过"。
 - **遵循本文件**：命名、目录、状态管理、IPC 约定（见 §4 / §6 / §7）是硬约束，违反会破坏一致性。
 - **不造 ai-slop**：写代码前先搜现有实现；文件不过大；遵循工程质量红线（见下方「质量红线」）。
+- **发版走技能**：用户说「发版」「打 tag 发版」「bump 到 vX.Y.Z」等时，用项目内置技能 `release-myshelltool`（`.agents/skills/release-myshelltool/SKILL.md`），它沉淀了版本 bump → 打 tag → 触发 GitHub Actions → 验证产物的完整流程与本仓库真实踩过的坑（如 `createUpdaterArtifacts` 字段名、`.sig` 未生成、tag 重打）。不要临时拼凑发版步骤。
 
 ---
 
@@ -91,14 +92,14 @@ myshelltool/
 │   │   └── ui/                 # 基础组件库：App{Input,Button,Select,Modal,Drawer,
 │   │                           #            ContextMenu,Tooltip,Table,Tab,Progress,...}
 │   │                           #   index.js barrel 导出全部
-│   ├── stores/                 # Pinia stores（7 领域 + 1 编排壳）
-│   │   ├── workbench.js        # 编排壳：re-export 子 store，initialize() 启动加载
+│   ├── stores/                 # Pinia stores（8 个：7 领域 + 1 编排壳）
+│   │   ├── workbench.js        # 编排壳：实例化 7 个子 store（不含 resourceMonitor），initialize() 启动加载
 │   │   ├── sessions.js         # 活跃 SSH 会话 + 终端生命周期
 │   │   ├── assets.js           # 连接资产 CRUD + 分组树
 │   │   ├── files.js            # SFTP 文件 + 传输队列
 │   │   ├── tunnels.js          # SSH 隧道/端口转发
 │   │   ├── ui.js               # UI 状态：主题/tab/modal/搜索
-│   │   ├── resourceMonitor.js  # 资源监控轮询 + 事件订阅
+│   │   ├── resourceMonitor.js  # 资源监控轮询 + 事件订阅（不经 workbench，由 panel 直接 use）
 │   │   ├── mcp.js              # 【v1.2】MCP 探测状态 + 配置引导（refresh 触发探测，无事件监听）
 │   │   └── sync.js             # 【v1.3】Gist 资产同步（push/pull/冲突解决/状态展示）
 │   ├── composables/            # useTheme / useClipboard / useTerminalConfig /
@@ -117,6 +118,7 @@ myshelltool/
 │   │   ├── fs_local.rs         # 本地文件系统命令
 │   │   ├── sync.rs             # 【v1.3】Gist 同步命令层（push/pull/conflict，粘合 core sync + reqwest）
 │   │   ├── dpapi_codec.rs      # 【v1.3】DPAPI 凭据编解码（Windows CryptProtectData，cfg(windows)）
+│   │   ├── dangerous_commands.rs # 危险命令检测（D5，lib.rs 注册为 mod）：白/黄/黑/Unknown 四层分类，GUI 与 MCP 共享单点真相（fail-secure 默认拒）
 │   │   ├── bin/mcp.rs          # 【v1.4 已删】原 myshelltool-mcp 独立 console bin，内嵌后取消双二进制
 │   │   └── mcp/                # MCP server 接入模块（v1.4 内嵌 GUI / Streamable HTTP transport）
 │   │       ├── http_server.rs  # 【v1.4】Streamable HTTP server：axum + rmcp，绑定 127.0.0.1:41235/mcp
@@ -160,7 +162,7 @@ myshelltool/
 - **弹窗**：业务弹窗统一走 `GlobalModals.vue`（`store.modal = { type, ...payload }`），按 `modal.type` 分支。新增 type 需同步改 `modalTitle` / `submitModal` / `watch`。保留 legacy 选择器（`#modalLayer`/`#modalBody`/`.modal-actions .btn.danger`）以兼容测试。
 
 ### 4.2 状态管理（跨 store 桥接）
-- **`workbench.js` 是编排壳**：实例化 6 个子 store，`initialize()` 编排启动加载，用 plain-object 返回 + `computed()` 包裹子 store 的响应式 state（**不要直接暴露子 store 的 ref**，会丢响应性）。
+- **`workbench.js` 是编排壳**：实例化 7 个子 store（sessions/files/tunnels/assets/ui/mcp/sync），`initialize()` 编排启动加载，用 plain-object 返回 + `computed()` 包裹子 store 的响应式 state（**不要直接暴露子 store 的 ref**，会丢响应性）。**注意 `resourceMonitor.js` 不经 workbench 编排**——它由 `ResourceMonitorPanel.vue` 直接 `useResourceMonitorStore()` 使用（独立轮询生命周期，与全局初始化解耦）。
 - **跨 store 依赖用 lazy bridge**：子 store 通过 `attachWorkbench(bridge)` 注入跨 store 访问（如 assets store 调 workbench.announce / workbench.modal）。**禁止循环 import**。
 - **新 action 加到子 store**，再在 `workbench.js` return 块 re-export（参照 `saveAsset`/`deleteAsset` 模式）。
 

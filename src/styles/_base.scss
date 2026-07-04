@@ -11,8 +11,9 @@ body {
   background: var(--app-bg);
   color: var(--app-text);
   font-family: var(--font-body);
-  font-size: var(--text-sm);
-  line-height: var(--leading-body);
+  font-size: 13.5px;
+  line-height: 1.5;
+  letter-spacing: 0;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
 }

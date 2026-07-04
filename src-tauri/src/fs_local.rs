@@ -10,6 +10,7 @@
 // - list_dir 用 resolved.join(name) 返回 logical path，不暴露 symlink 物理路径
 
 use serde::Serialize;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use tauri::command;
 
@@ -207,4 +208,26 @@ pub fn fs_local_rename(old_path: String, new_path: String) -> Result<(), String>
     let to = resolve_input_path(&new_path)?;
     std::fs::rename(&from, &to)
         .map_err(|e| format!("rename failed {} -> {}: {e}", from.display(), to.display()))
+}
+
+#[command]
+pub fn fs_local_read_chunk(path: String, offset: u64, length: u64) -> Result<Vec<u8>, String> {
+    let target = resolve_input_path(&path)?;
+    let meta = std::fs::symlink_metadata(&target)
+        .map_err(|e| format!("stat failed for {}: {e}", target.display()))?;
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        return Err(format!("not a regular file: {}", target.display()));
+    }
+
+    let mut file = std::fs::File::open(&target)
+        .map_err(|e| format!("open failed for {}: {e}", target.display()))?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|e| format!("seek failed for {}: {e}", target.display()))?;
+    let len = length.min(8 * 1024 * 1024) as usize;
+    let mut buf = vec![0; len];
+    let read = file
+        .read(&mut buf)
+        .map_err(|e| format!("read failed for {}: {e}", target.display()))?;
+    buf.truncate(read);
+    Ok(buf)
 }

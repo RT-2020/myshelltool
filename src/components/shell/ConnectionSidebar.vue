@@ -130,6 +130,7 @@ function filterNode(node, query) {
 }
 
 const hasAssets = computed(() => props.assets.length > 0);
+const assetsCount = computed(() => props.assets.length);
 const hasResults = computed(() => {
   const root = visibleTree.value;
   return (root.items?.length || 0) + (root.children?.length || 0) > 0;
@@ -448,78 +449,122 @@ provide('connectionSidebar', {
 </script>
 
 <template>
-  <div class="connection-sidebar" :class="{ 'is-collapsed': assetsCollapsed }">
+  <div class="sidebar" :class="{ 'is-collapsed': assetsCollapsed }">
     <!-- ============================================================
-         Header (sticky top): title row + filter input
+         Header (sticky top): chrome-label + count + actions（app.html sb-header）
          ============================================================ -->
-    <header class="sidebar-header">
-      <div class="title-row">
-        <h2 class="title">连接资产</h2>
-        <div class="title-actions">
-          <button
-            type="button"
-            class="icon-btn"
-            :aria-label="assetsCollapsed ? '展开连接资产' : '收起连接资产'"
-            :aria-expanded="String(!assetsCollapsed)"
-            title="收起 / 展开"
-            @click="emit('toggle-collapse')"
-          >
-            <PanelLeftClose v-if="!assetsCollapsed" :size="16" />
-            <PanelLeftOpen v-else :size="16" />
-          </button>
-          <button
-            type="button"
-            class="icon-btn"
-            aria-label="新建分组"
-            title="新建分组"
-            @click="emit('create-group')"
-          >
-            <FolderPlus :size="16" />
-          </button>
-          <button
-            type="button"
-            class="icon-btn"
-            aria-label="新增连接"
-            title="新增连接"
-            @click="emit('create-asset')"
-          >
-            <Plus :size="16" />
-          </button>
-        </div>
+    <header class="sb-header">
+      <div class="sb-title">
+        <span class="chrome-label">连接资产</span>
+        <span class="sb-count" aria-label="已配置连接数">{{ assetsCount }}</span>
       </div>
-      <AppInput
-        :model-value="searchQuery"
-        type="search"
-        placeholder="筛选分组、标签、主机、用户"
-        @update:model-value="emit('update:searchQuery', $event)"
-      />
-    </header>
-
-    <!-- ============================================================
-         Tree (scrollable middle) — 递归渲染分组树
-         ============================================================ -->
-    <div class="sidebar-tree" role="tree" aria-label="连接资产列表">
-      <!-- Empty state: no assets at all -->
-      <div v-if="!hasAssets" class="empty-state">
-        <Server :size="28" class="empty-icon" />
-        <p class="empty-text">尚未添加连接资产</p>
+      <div class="sb-actions">
         <button
           type="button"
-          class="empty-cta"
+          class="icon-btn"
+          :aria-label="assetsCollapsed ? '展开连接资产' : '收起连接资产'"
+          :aria-expanded="String(!assetsCollapsed)"
+          title="收起 / 展开"
+          @click="emit('toggle-collapse')"
+        >
+          <PanelLeftClose v-if="!assetsCollapsed" :size="16" />
+          <PanelLeftOpen v-else :size="16" />
+        </button>
+        <button
+          type="button"
+          class="icon-btn"
+          aria-label="新建分组"
+          title="新建分组"
+          @click="emit('create-group')"
+        >
+          <FolderPlus :size="16" />
+        </button>
+        <button
+          type="button"
+          class="icon-btn primary"
+          aria-label="新增连接"
+          title="新增连接"
           @click="emit('create-asset')"
         >
-          <Plus :size="14" /> 新增连接
+          <Plus :size="16" />
         </button>
+      </div>
+    </header>
+
+    <div class="sb-rail" role="toolbar" aria-orientation="vertical" aria-label="折叠侧栏快捷操作">
+      <button
+        type="button"
+        class="icon-btn"
+        aria-label="展开连接资产"
+        title="展开侧栏"
+        @click="emit('toggle-collapse')"
+      >
+        <PanelLeftOpen :size="16" />
+      </button>
+      <div class="sb-rail-divider" aria-hidden="true"></div>
+      <button
+        type="button"
+        class="icon-btn"
+        aria-label="新建分组"
+        title="新建分组"
+        @click="emit('create-group')"
+      >
+        <FolderPlus :size="16" />
+      </button>
+      <button
+        type="button"
+        class="icon-btn primary"
+        aria-label="新增连接"
+        title="新增连接"
+        @click="emit('create-asset')"
+      >
+        <Plus :size="16" />
+      </button>
+    </div>
+
+    <!-- ============================================================
+         Search（app.html sb-search-wrap + sb-search-input）
+         ============================================================ -->
+    <div class="sb-search-wrap">
+      <svg class="sb-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+        <circle cx="11" cy="11" r="7" />
+        <path d="M21 21l-4.3-4.3" stroke-linecap="round" />
+      </svg>
+      <input
+        type="search"
+        class="sb-search-input"
+        :value="searchQuery"
+        placeholder="筛选分组、标签、主机、用户"
+        aria-label="筛选资产"
+        @input="emit('update:searchQuery', $event.target.value)"
+      />
+    </div>
+
+    <!-- ============================================================
+         Tree (scrollable middle) — 递归渲染分组树（app.html sb-tree）
+         ============================================================ -->
+    <div class="sb-tree" role="tree" aria-label="连接资产列表">
+      <div v-if="hasAssets" class="sb-tree-head">
+        <span class="chrome-label">已有分组</span>
+        <span class="sb-tree-hint">拖拽资产即可重新分组</span>
+      </div>
+
+      <!-- Empty state: no assets at all（app.html sb-empty 虚线边框容器）-->
+      <div v-if="!hasAssets" class="sb-empty">
+        <div class="sb-empty-icon" aria-hidden="true">
+          <Server :size="22" />
+        </div>
+        <div class="sb-empty-title">尚未添加连接资产</div>
+        <div class="sb-empty-desc">新增连接后会按分组聚合到此处。按 <kbd>+</kbd> 快速添加。</div>
+        <button type="button" class="btn-primary" @click="emit('create-asset')">添加第一个连接</button>
       </div>
 
       <!-- No filter result state -->
-      <div v-else-if="!hasResults && hasQuery" class="empty-state">
-        <p class="empty-text">无匹配「{{ searchQuery }}」的连接</p>
+      <div v-else-if="!hasResults && hasQuery" class="sb-empty">
+        <div class="sb-empty-title">无匹配「{{ searchQuery }}」的连接</div>
       </div>
 
-      <!-- Asset tree：顶层每个子节点递归渲染。
-           注：buildGroupTree 把所有资产都归入子节点（含「未分组」节点），
-           树根 root.items 恒为空，故此处无需额外渲染顶层直属资产。 -->
+      <!-- Asset tree：顶层每个子节点递归渲染 -->
       <template v-else>
         <AssetGroupNode
           v-for="child in visibleTree.children"
@@ -531,20 +576,27 @@ provide('connectionSidebar', {
     </div>
 
     <!-- ============================================================
-         Footer (sticky bottom): quick connect + hint
+         Footer (sticky bottom): quick connect（app.html sb-footer + sb-quick）
          ============================================================ -->
-    <footer class="sidebar-footer">
-      <AppInput
-        :model-value="quickConnectInput"
-        type="text"
-        placeholder="ssh user@host[:port]"
-        mono
-        @update:model-value="emit('update:quickConnectInput', $event)"
-        @keydown.enter.prevent="onQuickConnectEnter"
-      />
-      <p class="footer-hint">
+    <footer class="sb-footer">
+      <div class="sb-quick">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+          <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <input
+          type="text"
+          class="sb-quick-input"
+          :value="quickConnectInput"
+          placeholder="ssh user@host[:port]"
+          spellcheck="false"
+          aria-label="快速连接"
+          @input="emit('update:quickConnectInput', $event.target.value)"
+          @keydown.enter.prevent="onQuickConnectEnter"
+        />
+      </div>
+      <p class="sb-quick-hint">
         <Terminal :size="12" />
-        <span>回车快速连接</span>
+        <span>输入 <kbd>ssh user@host</kbd> 回车连接</span>
       </p>
     </footer>
 
@@ -571,140 +623,165 @@ provide('connectionSidebar', {
 <style scoped lang="scss">
 @use '@/styles/_tokens' as *;
 
-.connection-sidebar {
-  display: flex;
-  flex-direction: column;
+// ============================================================
+// Sidebar 容器（app.css L397-404 严格同步）
+// ============================================================
+.sidebar {
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
   width: 100%;
   height: 100%;
   min-height: 0;
-  background: var(--app-panel);
+  background: var(--app-window);
   color: var(--app-text);
   font-family: var(--font-body);
+  overflow: hidden;
 }
 
 // ============================================================
-// Collapsed rail — 收起态：缩成 44px 竖排图标栏（展开/新建分组/新增三个按钮）
-// AppShellLayout 的 grid 列宽已响应 data-assets=collapsed 缩到 44px，
-// 这里隐藏所有文字/输入/树/页脚，header 改竖排。
+// Header（app.css L405-418 sb-header + chrome-label + sb-count）
 // ============================================================
-.connection-sidebar.is-collapsed {
-  align-items: center;
-
-  .sidebar-header {
-    padding: var(--space-2) 0;
-    gap: var(--space-3);
-    align-items: center;
-  }
-
-  .title,
-  .sidebar-tree,
-  .sidebar-footer {
-    display: none;
-  }
-  :deep(.app-input) {
-    display: none;
-  }
-
-  .title-row {
-    flex-direction: column;
-    gap: var(--space-1);
-  }
-  .title-actions {
-    flex-direction: column;
-    gap: var(--space-1);
-  }
-
-  .icon-btn {
-    width: 28px;
-    height: 28px;
-  }
-}
-
-// ============================================================
-// Header
-// ============================================================
-.sidebar-header {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  border-block-end: 1px solid var(--app-border);
-  background: var(--app-panel);
-  position: sticky;
-  inset-block-start: 0;
-  z-index: var(--z-sticky);
-}
-
-.title-row {
+.sb-header {
+  padding: 12px 12px 8px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-2);
+  border-bottom: 1px solid var(--app-border-soft);
+  flex: 0 0 auto;
 }
-
-.title {
-  margin: 0;
-  font-size: var(--text-sm);
-  font-weight: 600;
-  color: var(--app-strong);
-  letter-spacing: var(--tracking-display);
-}
-
-.title-actions {
-  display: inline-flex;
+.sb-title {
+  display: flex;
   align-items: center;
-  gap: var(--space-1);
+  gap: 8px;
+}
+// chrome-label（app.css L182-188：mono 小写大字距，但中文友好调整）
+.chrome-label {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--app-muted);
+}
+.sb-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--app-muted);
+  background: var(--app-panel-2);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+.sb-actions {
+  display: flex;
+  gap: 2px;
 }
 
+.sb-rail {
+  display: none;
+}
+
+// 通用 icon-btn（与 TitleBar/RightSidebar 同规格，app.css L298-317）
 .icon-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  width: 28px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
   background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
   color: var(--app-muted);
   cursor: pointer;
   padding: 0;
-  transition: background var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard),
-    border-color var(--motion-fast) var(--ease-standard);
+  transition: background var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast);
 }
-
+.icon-btn svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.6;
+}
 .icon-btn:hover {
   background: var(--app-hover);
-  color: var(--app-strong);
-  border-color: var(--app-border);
+  color: var(--app-text);
 }
-
+.icon-btn:active { background: var(--app-active); }
 .icon-btn:focus-visible {
   outline: none;
-  border-color: var(--accent);
   box-shadow: var(--focus-ring);
 }
+.icon-btn.primary { color: var(--accent); }
+.icon-btn.primary:hover {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
 
 // ============================================================
-// Tree
+// Search（app.css L420-446 sb-search-wrap + sb-search-input）
 // ============================================================
-.sidebar-tree {
-  flex: 1 1 auto;
-  min-height: 0;
+.sb-search-wrap {
+  position: relative;
+  padding: 8px 12px;
+  flex: 0 0 auto;
+}
+.sb-search-icon {
+  position: absolute;
+  left: 22px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 13px;
+  height: 13px;
+  color: var(--app-muted);
+  stroke-width: 1.7;
+  pointer-events: none;
+}
+.sb-search-input {
+  width: 100%;
+  height: 30px;
+  padding: 0 12px 0 32px;
+  background: var(--app-panel-2);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  font-size: 12.5px;
+  font-family: var(--font-body);
+  color: var(--app-text);
+  outline: none;
+  transition: border-color var(--motion-fast), background var(--motion-fast);
+}
+.sb-search-input::placeholder { color: var(--app-subtle); }
+.sb-search-input:focus {
+  background: var(--app-control);
+  border-color: var(--accent);
+}
+
+// ============================================================
+// Tree（app.css L448-451 sb-tree）
+// ============================================================
+.sb-tree {
   overflow-y: auto;
-  padding: var(--space-2) var(--space-1);
+  padding: 4px 8px 12px;
+  min-height: 0;
 }
-
-.group-items {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+.sb-tree-head {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 6px 8px;
 }
+.sb-tree-hint {
+  font-size: 11px;
+  color: var(--app-subtle);
+  white-space: nowrap;
+}
+// 滚动条（app.css L958-962）
+.sb-tree::-webkit-scrollbar { width: 8px; }
+.sb-tree::-webkit-scrollbar-thumb {
+  background: var(--app-border);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.sb-tree::-webkit-scrollbar-thumb:hover { background: var(--app-border-strong); }
 
-// 顶层直属资产（树根 items，非分组内）—— 与 AssetGroupNode 内 .asset-node 同款
+// 顶层直属资产（树根 items）—— 与 AssetGroupNode 内 .asset-node 同款
 .asset-node {
   display: flex;
   align-items: center;
@@ -715,8 +792,7 @@ provide('connectionSidebar', {
   border-inline-start: 2px solid transparent;
   cursor: pointer;
   position: relative;
-  transition: background var(--motion-fast) var(--ease-standard),
-    border-color var(--motion-fast) var(--ease-standard);
+  transition: background var(--motion-fast), border-color var(--motion-fast);
 }
 .asset-node:hover { background: var(--app-hover); }
 .asset-node:focus-visible {
@@ -725,10 +801,9 @@ provide('connectionSidebar', {
   border-inline-start-color: var(--accent);
 }
 .asset-node.is-active {
-  background: var(--app-hover);
+  background: var(--app-selected);
   border-inline-start-color: var(--accent);
 }
-
 .asset-body {
   flex: 1 1 auto;
   min-width: 0;
@@ -737,106 +812,190 @@ provide('connectionSidebar', {
   gap: 1px;
 }
 .asset-name {
-  font-size: var(--text-sm);
-  color: var(--app-strong);
+  font-size: 13px;
+  color: var(--app-text);
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .asset-meta {
-  font-size: var(--text-xs);
+  font-size: 11px;
   color: var(--app-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
 }
-
 .dot {
   flex: 0 0 auto;
   width: 8px;
   height: 8px;
-  border-radius: var(--radius-pill);
+  border-radius: 50%;
   background: var(--app-subtle);
 }
 .dot.running {
   background: var(--success);
-  box-shadow: 0 0 0 2px color-mix(in oklab, var(--success), transparent 72%);
+  box-shadow: 0 0 0 2px var(--success-soft);
 }
 .dot.warn {
   background: var(--warn);
-  box-shadow: 0 0 0 2px color-mix(in oklab, var(--warn), transparent 72%);
+  box-shadow: 0 0 0 2px var(--warn-soft);
 }
 
 // ============================================================
-// Empty / no-result state
+// Empty state（app.css L453-475 sb-empty 虚线边框容器）
 // ============================================================
-.empty-state {
+.sb-empty {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--space-2);
-  padding: var(--space-8) var(--space-4);
+  gap: 8px;
+  padding: 32px 16px;
+  margin: 8px 4px;
   text-align: center;
+  border: 1px dashed var(--app-border-strong);
+  border-radius: 8px;
 }
-
-.empty-icon { color: var(--app-subtle); }
-
-.empty-text {
-  margin: 0;
-  font-size: var(--text-xs);
+.sb-empty-icon {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--app-panel-2);
+  border: 1px solid var(--app-border);
+  color: var(--app-subtle);
+}
+.sb-empty-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--app-text);
+}
+.sb-empty-desc {
+  font-size: 11.5px;
+  color: var(--app-muted);
+  line-height: 1.5;
+}
+.sb-empty-desc kbd,
+.sb-quick-hint kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 1px 5px;
+  border: 1px solid var(--app-border);
+  border-radius: 4px;
+  background: var(--app-panel-2);
   color: var(--app-muted);
 }
-
-.empty-cta {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: 4px 10px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-sm);
-  background: var(--app-control);
-  color: var(--app-text);
-  font-size: var(--text-xs);
+// 主按钮（app.css L319-332 btn-primary）
+.btn-primary {
+  height: 30px;
+  padding: 0 14px;
+  background: var(--accent);
+  color: var(--accent-on);
+  border: 0;
+  border-radius: 7px;
+  font-size: 12.5px;
   font-weight: 500;
   cursor: pointer;
-  transition: background var(--motion-fast) var(--ease-standard),
-    border-color var(--motion-fast) var(--ease-standard);
+  margin-top: 4px;
+  transition: background var(--motion-fast);
 }
-
-.empty-cta:hover {
-  background: var(--app-hover);
-  border-color: var(--app-border-strong);
-}
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-primary:active { background: var(--accent-active); }
 
 // ============================================================
-// Footer
+// Footer（app.css L416-418 + L419-433 sb-footer + sb-quick）
 // ============================================================
-.sidebar-footer {
+.sb-footer {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-3);
-  border-block-start: 1px solid var(--app-border);
-  background: var(--app-panel);
-  position: sticky;
-  inset-block-end: 0;
-  z-index: var(--z-sticky);
+  gap: 6px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--app-border-soft);
+  background: var(--app-window);
 }
-
-.footer-hint {
-  display: inline-flex;
+.sb-quick {
+  display: flex;
   align-items: center;
-  gap: var(--space-1);
-  margin: 0;
-  font-size: 10px;
-  color: var(--app-subtle);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  gap: 8px;
+  height: 30px;
+  padding: 0 10px;
+  background: var(--app-panel-2);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  transition: border-color var(--motion-fast), background var(--motion-fast);
 }
+.sb-quick:focus-within {
+  background: var(--app-control);
+  border-color: var(--accent);
+}
+.sb-quick svg {
+  width: 13px;
+  height: 13px;
+  color: var(--app-muted);
+  stroke-width: 1.7;
+  flex-shrink: 0;
+}
+.sb-quick-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--app-text);
+  outline: none;
+}
+.sb-quick-input::placeholder { color: var(--app-subtle); }
+.sb-quick-hint {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  padding-left: 2px;
+  font-size: 11px;
+  color: var(--app-subtle);
+}
+.sb-quick-hint svg { color: var(--app-subtle); }
 
-.footer-hint svg { color: var(--app-subtle); }
+// ============================================================
+// Collapsed rail（实用优先偏离点：保留竖排图标列）
+// app.html 设计稿折叠态几乎空白，但保留竖排图标列保证折叠后仍可操作（展开/新建分组/新增）
+// ============================================================
+.sidebar.is-collapsed {
+  grid-template-rows: 1fr;
+  padding: 8px 0;
+  place-items: start center;
+}
+.sidebar.is-collapsed .sb-header,
+.sidebar.is-collapsed .sb-search-wrap,
+.sidebar.is-collapsed .sb-tree,
+.sidebar.is-collapsed .sb-footer {
+  display: none;
+}
+.sidebar.is-collapsed .sb-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding-top: 4px;
+}
+.sb-rail-divider {
+  width: 18px;
+  height: 1px;
+  background: var(--app-border);
+  margin: 2px 0;
+}
+.sb-rail .icon-btn.primary {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.sb-rail .icon-btn.primary:hover {
+  background: var(--accent-soft-strong);
+  color: var(--accent-hover);
+}
 </style>

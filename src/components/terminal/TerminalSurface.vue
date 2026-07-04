@@ -200,8 +200,8 @@ function openAssetEditor() { uiStore.modal = { type: 'assetEditor', asset: null 
 </script>
 
 <template>
-  <div class="terminal-surface" :class="{ 'aside-open': terminalAsideOpen }">
-    <!-- Row 1: session tab strip -->
+  <div class="region-terminal" :class="{ 'aside-open': terminalAsideOpen }">
+    <!-- Row 1: session tab strip（term-tabs 38px）-->
     <TerminalTabs
       :sessions="sessions"
       :active-session-id="activeSession?.sessionId || ''"
@@ -213,7 +213,7 @@ function openAssetEditor() { uiStore.modal = { type: 'assetEditor', asset: null 
       @new-terminal="sessionsStore.connectSelected"
     />
 
-    <!-- Row 2: toolbar + conditional search bar -->
+    <!-- Row 2: toolbar + conditional search bar（term-toolbar-row 44px）-->
     <TerminalToolbar
       :session="activeSession"
       :font-size="terminalFontSize"
@@ -246,16 +246,29 @@ function openAssetEditor() { uiStore.modal = { type: 'assetEditor', asset: null 
       @close="sessionsStore.closeTerminalSearchInline()"
     />
 
-    <!-- Row 3: xterm pane (flex:1, fills remaining height) -->
-    <TerminalPane
-      :store="sessionsStore"
-      :has-active-session="!!activeSession"
-      :is-tauri-core="isTauriCore"
-      :selected-asset="selectedAsset"
-      @connect-selected="handleTerminalPaneConnect"
-      @open-asset-editor="openAssetEditor"
-      @context-menu="handleTerminalContextMenu"
-    />
+    <!-- Row 3: term-canvas-wrap（终端 canvas 区，含 watermark + xterm pane + ready 光标）-->
+    <div class="term-canvas-wrap">
+      <!-- 网格水印背景（app.css term-watermark，始终深色，不滚动）-->
+      <div class="term-watermark" aria-hidden="true"></div>
+
+      <!-- xterm pane（TerminalPane 内部渲染 xterm canvas + 空状态）-->
+      <TerminalPane
+        :store="sessionsStore"
+        :has-active-session="!!activeSession"
+        :is-tauri-core="isTauriCore"
+        :selected-asset="selectedAsset"
+        @connect-selected="handleTerminalPaneConnect"
+        @open-asset-editor="openAssetEditor"
+        @context-menu="handleTerminalContextMenu"
+      />
+
+      <!-- ready 光标（app.css term-cursor，仅无活跃会话时显示，提示终端就绪）-->
+      <div v-if="!activeSession" class="term-cursor" aria-hidden="true">
+        <span>ready</span>
+        <span class="ready-bar"></span>
+      </div>
+    </div>
+
     <AppContextMenu
       :open="terminalMenu.open"
       :items="terminalMenuItems"
@@ -287,11 +300,13 @@ function openAssetEditor() { uiStore.modal = { type: 'assetEditor', asset: null 
 <style scoped lang="scss">
 @use '@/styles/_tokens' as *;
 
-// No nested card chrome — 无圆角无外框：与 grid region 贴合平齐，靠 region
-// 间 1px 分隔线（AppShellLayout 的 border-block-end 等）划分边界，保持整体性。
-.terminal-surface {
-  display: flex;
-  flex-direction: column;
+// ============================================================
+// region-terminal（app.css L529-536 严格同步）
+// grid 38px(term-tabs) 44px(term-toolbar-row) 1fr(term-canvas-wrap)
+// ============================================================
+.region-terminal {
+  display: grid;
+  grid-template-rows: 38px 44px 1fr;
   width: 100%;
   height: 100%;
   min-height: 0;
@@ -301,23 +316,82 @@ function openAssetEditor() { uiStore.modal = { type: 'assetEditor', asset: null 
   overflow: hidden;
 }
 
-// Row 1: tab strip.
-.terminal-surface :deep(.terminal-tabs) {
-  flex: 0 0 auto;
-  border-block-end: 1px solid var(--app-border);
-  padding: var(--space-1) var(--space-2);
-}
-
-// Rows 2-3: toolbar + search bar.
-.terminal-surface :deep(.terminal-toolbar),
-.terminal-surface :deep(.terminal-searchbar) {
+// Row 1: tab strip（由 TerminalTabs 子组件渲染，固定 38px 高）
+.region-terminal :deep(.terminal-tabs) {
   flex: 0 0 auto;
 }
 
-// Row 4: xterm pane fills remaining height. CRITICAL: do not apply
-// transform / filter / opacity here — it breaks the WebGL addon canvas.
-.terminal-surface :deep(.terminal-pane-host) {
+// Row 2: toolbar + search bar（由 TerminalToolbar/TerminalSearchBar 渲染，固定 44px）
+.region-terminal :deep(.terminal-toolbar),
+.region-terminal :deep(.terminal-searchbar) {
+  flex: 0 0 auto;
+}
+
+// ============================================================
+// term-canvas-wrap（app.css L619-623）：终端 canvas 区
+// ============================================================
+.term-canvas-wrap {
+  position: relative;
+  background: var(--term-bg);
+  overflow: hidden;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+// TerminalPane 子组件渲染 xterm canvas，填满 canvas-wrap
+.region-terminal :deep(.terminal-pane-host) {
   flex: 1 1 auto;
   min-height: 0;
+  position: relative;
+  z-index: 1;
+}
+
+// ============================================================
+// term-watermark（app.css L625-632）：网格水印背景
+// 始终深色，固定父容器，不滚动，pointer-events:none
+// ============================================================
+.term-watermark {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  background-size: 24px 24px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+// ============================================================
+// term-cursor（app.css L668-685）：右下角 ready 光标
+// 仅无活跃会话时显示（提示终端就绪可输入）
+// ============================================================
+.term-cursor {
+  position: absolute;
+  right: 24px;
+  bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--term-muted);
+  pointer-events: none;
+  z-index: 2;
+}
+.ready-bar {
+  width: 8px;
+  height: 16px;
+  background: rgba(255, 255, 255, 0.75);
+  animation: term-blink 1.1s steps(1) infinite;
+}
+@keyframes term-blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+// reduced-motion 加固（app.css L940-948）
+@media (prefers-reduced-motion: reduce) {
+  .ready-bar { animation: none; opacity: 1; }
 }
 </style>

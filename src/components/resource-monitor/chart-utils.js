@@ -23,6 +23,22 @@ export function formatRate(bytesPerSec) {
   return `${(bytesPerSec / 1024 / 1024 / 1024).toFixed(2)}GB/s`;
 }
 
+export function formatCompactRate(bytesPerSec) {
+  if (!bytesPerSec || bytesPerSec <= 0) return '0';
+  if (bytesPerSec < 1024) return `${Math.round(bytesPerSec)}B`;
+
+  const units = [
+    { unit: 'K', value: bytesPerSec / 1024 },
+    { unit: 'M', value: bytesPerSec / 1024 / 1024 },
+    { unit: 'G', value: bytesPerSec / 1024 / 1024 / 1024 }
+  ];
+  const match = units.find((item) => item.value < 1024) ?? units[units.length - 1];
+  const displayValue = Math.min(match.value, 999);
+  const digits = displayValue < 10 ? 1 : 0;
+  const suffix = match.value > 999 ? '+' : '';
+  return `${displayValue.toFixed(digits).replace(/\.0$/, '')}${match.unit}${suffix}`;
+}
+
 export function buildLinePath(pts, max) {
   if (!pts.length) return '';
   const stepX = (CHART_W - CHART_PAD * 2) / Math.max(1, MAX_POINTS - 1);

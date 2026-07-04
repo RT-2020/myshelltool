@@ -71,15 +71,15 @@ function tooltipFor(s) {
 
 <template>
   <div class="terminal-tabs-host">
-    <div class="tabbar terminal-tabs" ref="barRef" role="tablist" aria-label="SSH 会话标签">
-      <button class="workspace-tab terminal-tab-new" role="tab" @click="emit('new-terminal')" title="新建会话">
+    <div class="term-tabs terminal-tabs" ref="barRef" role="tablist" aria-label="SSH 会话标签">
+      <button class="tab workspace-tab terminal-tab-new" role="tab" @click="emit('new-terminal')" title="新建会话">
         <Plus :size="14" />
         <span class="new-label">新建</span>
       </button>
       <div
         v-for="session in visibleSessions"
         :key="session.sessionId"
-        :class="['workspace-tab', 'session-tab', { active: session.sessionId === activeSessionId }]"
+        :class="['tab', 'workspace-tab', 'session-tab', { active: session.sessionId === activeSessionId }]"
         role="tab"
         tabindex="0"
         :aria-selected="String(session.sessionId === activeSessionId)"
@@ -92,13 +92,14 @@ function tooltipFor(s) {
         @contextmenu="onContextMenu($event, session.sessionId)"
         @mousedown.middle.prevent="onTabClick($event, session.sessionId); emit('close', session.sessionId)"
       >
-        <span :class="['session-status-dot', statusFor(session)]"></span>
-        <span class="session-tab-name">{{ session.asset?.name }}</span>
+        <span :class="['conn-dot', 'session-status-dot', statusFor(session)]"></span>
+        <span class="tab-name session-tab-name">{{ session.asset?.name }}</span>
         <span class="session-tab-host">{{ session.asset?.host }}</span>
         <span v-if="session.oscTitle" class="session-tab-osc">· {{ session.oscTitle }}</span>
         <button class="tab-close" title="关闭 (Ctrl+W)" @click="onTabClose($event, session.sessionId)" tabindex="-1"><X :size="12" /></button>
       </div>
-      <button v-if="hiddenSessions.length" class="workspace-tab overflow-trigger" :class="{ active: overflowMenuOpen }" @click="overflowMenuOpen = !overflowMenuOpen" title="更多会话">
+      <div class="term-tabs-spacer"></div>
+      <button v-if="hiddenSessions.length" class="tab workspace-tab overflow-trigger" :class="{ active: overflowMenuOpen }" @click="overflowMenuOpen = !overflowMenuOpen" title="更多会话">
         <MoreHorizontal :size="14" />
       </button>
     </div>
@@ -127,30 +128,42 @@ function tooltipFor(s) {
 
 .terminal-tabs-host {
   position: relative;
-  flex: 1;
   min-width: 0;
+  height: 100%;
 }
 
-.terminal-tabs {
+.term-tabs {
   display: flex;
   align-items: center;
-  gap: 1px;
+  height: 100%;
   overflow: hidden;
+  background: var(--app-chrome);
+  border-bottom: 1px solid var(--app-border);
 }
 
-.workspace-tab { min-width: 0; }
+.term-tabs-spacer {
+  flex: 1;
+  min-width: var(--space-2);
+}
+
+.tab,
+.workspace-tab {
+  min-width: 0;
+  height: 100%;
+}
 
 .terminal-tab-new {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   flex: 0 0 auto;
-  padding: 4px 8px;
+  padding: 0 10px;
   border: none;
   background: transparent;
   color: var(--app-muted);
   cursor: pointer;
-  border-radius: var(--radius-sm);
+  border-radius: 0;
+  border-right: 1px solid var(--app-border-soft);
   transition: background var(--motion-fast) var(--ease-standard),
     color var(--motion-fast) var(--ease-standard);
 }
@@ -164,15 +177,15 @@ function tooltipFor(s) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 8px;
+  padding: 0 10px;
   border: none;
   background: transparent;
-  border-radius: var(--radius-sm);
+  border-radius: 0;
   cursor: pointer;
   max-width: 220px;
   flex: 0 1 auto;
   min-width: 0;
-  // Tabby-style: single-pixel bottom border is the only emphasis for active.
+  border-right: 1px solid var(--app-border-soft);
   border-block-end: 2px solid transparent;
   transition: background var(--motion-fast) var(--ease-standard),
     border-color var(--motion-fast) var(--ease-standard);
@@ -183,11 +196,12 @@ function tooltipFor(s) {
 }
 
 .session-tab.active {
-  background: var(--app-hover);
+  background: var(--app-panel);
   border-block-end-color: var(--accent);
   color: var(--app-strong);
 }
 
+.conn-dot,
 .session-status-dot {
   width: 8px;
   height: 8px;
@@ -253,10 +267,10 @@ function tooltipFor(s) {
 
 .overflow-trigger {
   flex: 0 0 auto;
-  padding: 4px 8px;
+  padding: 0 10px;
   border: none;
   background: transparent;
-  border-radius: var(--radius-sm);
+  border-radius: 0;
   cursor: pointer;
   color: var(--app-muted);
 }

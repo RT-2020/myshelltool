@@ -71,6 +71,17 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     watch(() => uiStore.systemPrefersDark, v => { sessionsStore.systemPrefersDark = v; });
     sessionsStore.systemPrefersDark = uiStore.systemPrefersDark;
 
+    if (!isTauriRuntime()) {
+      uiStore.backendStatus = { ready: false, mode: 'preview' };
+      uiStore.statusMessage = '';
+      assetsStore.assetSource = { source: 'preview', count: 0 };
+      assetsStore.assets = [];
+      assetsStore.declaredGroups = [];
+      assetsStore.githubPatConfigured = false;
+      tunnelsStore.tunnels = [];
+      return;
+    }
+
     // 3. backend + assets + tunnels 启动加载
     try {
       const [status, assetResult, credential, tunnelResult] = await Promise.all([

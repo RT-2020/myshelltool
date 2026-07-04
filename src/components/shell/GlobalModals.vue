@@ -32,6 +32,8 @@ import AppInput from '@/components/ui/AppInput.vue';
 import AppSelect from '@/components/ui/AppSelect.vue';
 import McpPanelContent from '@/components/shell/McpPanelContent.vue';
 import SyncPanelContent from '@/components/shell/SyncPanelContent.vue';
+import SettingsPanelContent from '@/components/shell/SettingsPanelContent.vue';
+import PatConfigCard from '@/components/shell/PatConfigCard.vue';
 
 const store = useWorkbenchStore();
 const {
@@ -40,8 +42,7 @@ const {
   keyboardPrompt,
   mcpApprovalPrompt,
   remotePath,
-  localPath,
-  githubPatConfigured
+  localPath
 } = storeToRefs(store);
 
 // ============================================================
@@ -52,7 +53,6 @@ const {
 const editingAsset = reactive(emptyAsset());
 const editingCredential = reactive(emptyCredential());
 const tunnelForm = reactive(emptyTunnelForm());
-const tokenInput = ref('');
 const mkdirName = ref('');
 const renameTarget = reactive({ path: '', current: '', next: '' });
 const keyboardResponses = reactive({});
@@ -95,6 +95,7 @@ const modalTitle = computed(() => {
     case 'mcpApproval': return 'MCP 高危操作审批';
     case 'mcpPanel': return 'MCP 服务管理';
     case 'syncPanel': return '资产同步（Gist）';
+    case 'settings': return '设置';
     case 'mkdir': return '新建远程目录';
     case 'rename': return '重命名远程条目';
     case 'localMkdir': return '新建本地目录';
@@ -260,9 +261,9 @@ function submitModal() {
       return;
     }
     case 'tokenConfig':
-      store.saveToken(tokenInput.value).then(saved => {
-        if (saved) tokenInput.value = '';
-      });
+      // v1.8：PAT 表单已抽到 PatConfigCard（自带保存按钮，自包含）。
+      // 主按钮「确认」仅关闭弹窗，保存动作在卡片内完成。
+      closeModal();
       return;
     case 'tunnelCreate':
       store.createTunnel({
@@ -471,6 +472,9 @@ function denyMcpApproval() {
         <!-- v1.3 syncPanel：Gist 资产同步管理（setup/push/pull/冲突/重置/清空） -->
         <SyncPanelContent v-else-if="modal.type === 'syncPanel'" />
 
+        <!-- v1.8 settings：统一设置中心（关于与更新/外观/同步/MCP，内容抽到子组件避免本 SFC 超 500 行） -->
+        <SettingsPanelContent v-else-if="modal.type === 'settings'" />
+
         <!-- mkdir / localMkdir / rename / localRename (forms render here;
              triggers live in FileSurface). -->
         <div v-else-if="modal.type === 'mkdir'" class="stack">
@@ -551,30 +555,22 @@ function denyMcpApproval() {
           </label>
         </div>
 
-        <!-- default: tokenConfig / settingsHub -->
-        <div v-else class="stack">
-          <p>token 仅写入本地安全存储。界面提交后只展示"已配置"或"未配置"。</p>
-          <label class="stack"><span class="muted">Personal Access Token</span>
-            <AppInput :model-value="tokenInput" type="password" data-sync-token placeholder="粘贴 token，保存后立即隐藏"
-              @update:model-value="v => tokenInput = v" />
-          </label>
-          <p class="muted" data-token-storage-status>本地安全存储：{{ githubPatConfigured ? '已配置' : '未配置' }}</p>
-          <AppButton variant="danger" data-delete-credential @click="store.deleteToken">清除已保存的 token</AppButton>
-        </div>
+        <!-- default: tokenConfig（PAT 表单已抽到 PatConfigCard，供此处与 settings 同步 tab 复用） -->
+        <PatConfigCard v-else />
       </div>
       <div class="modal-actions">
         <button v-if="modal.type === 'hostKeyVerify'" class="btn danger" @click="denyHostKey">拒绝</button>
         <button v-if="modal.type === 'mcpApproval'" class="btn danger" @click="denyMcpApproval">拒绝执行</button>
-        <!-- mcpPanel / syncPanel 等自包含面板隐藏「取消」（操作在面板内部完成） -->
-        <button v-if="modal.type !== 'mcpPanel' && modal.type !== 'syncPanel'" class="btn" id="modalSecondary" @click="closeModal">取消</button>
+        <!-- mcpPanel / syncPanel / settings 等自包含面板隐藏「取消」（操作在面板内部完成） -->
+        <button v-if="modal.type !== 'mcpPanel' && modal.type !== 'syncPanel' && modal.type !== 'settings'" class="btn" id="modalSecondary" @click="closeModal">取消</button>
         <button
           v-if="modal.type === 'confirmDelete'"
           class="btn danger"
           data-modal-primary-danger
           @click="submitModal"
         >删除</button>
-        <!-- v1.2 mcpPanel / v1.3 syncPanel：自包含面板，主按钮「关闭」 -->
-        <button v-else-if="modal.type === 'mcpPanel' || modal.type === 'syncPanel'" class="btn primary" id="modalPrimary" @click="submitModal">关闭</button>
+        <!-- v1.2 mcpPanel / v1.3 syncPanel / v1.8 settings：自包含面板，主按钮「关闭」 -->
+        <button v-else-if="modal.type === 'mcpPanel' || modal.type === 'syncPanel' || modal.type === 'settings'" class="btn primary" id="modalPrimary" @click="submitModal">关闭</button>
         <button v-else class="btn primary" id="modalPrimary" @click="submitModal">确认</button>
       </div>
     </div>

@@ -13,6 +13,9 @@
 // 3. Utility classes
 @use './utilities';
 
+// 4. Workbench runtime shell
+@use './workbench-shell';
+
 // ===========================================================================
 // Backward compatibility: 暴露 tokens 模块的 CSS 变量到全局
 // （@use 默认不输出 CSS；用 @forward 让 :root 块正常发出）

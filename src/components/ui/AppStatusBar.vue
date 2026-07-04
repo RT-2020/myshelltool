@@ -3,7 +3,7 @@ defineProps({});
 </script>
 
 <template>
-  <div class="app-status-bar">
+  <div class="app-status-bar statusbar">
     <div class="app-status-cell app-status-left">
       <slot name="left" />
     </div>
@@ -20,31 +20,37 @@ defineProps({});
 @use '@/styles/_tokens' as *;
 
 .app-status-bar {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  display: flex;
   align-items: center;
-  height: 28px;
-  padding: 0 var(--space-3);
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  height: var(--statusbar-h);
+  padding: 0 12px;
   background: var(--app-chrome);
   border-top: 1px solid var(--app-border);
-  font-size: var(--text-xs);
+  font: 11.5px var(--font-mono);
   color: var(--app-muted);
+  overflow: hidden;
 }
 
 .app-status-cell {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: 6px;
   min-width: 0;
 }
 
 .app-status-left {
   justify-content: flex-start;
+  flex: 1 1 0;
 }
 .app-status-center {
   justify-content: center;
+  flex: 0 0 auto;
 }
 .app-status-right {
   justify-content: flex-end;
+  flex: 1 1 0;
 }
 </style>

@@ -33,13 +33,30 @@ const props = defineProps({
 
 // 父级注入的 handler / state（见上方注释清单）
 const sidebar = inject('connectionSidebar');
+
+function assetIndicatorClasses(asset) {
+  const status = sidebar.statusClass(asset);
+  return [
+    status,
+    status === 'running' ? 'success' : '',
+    status === 'warn' ? 'warn' : '',
+    status !== 'running' && status !== 'warn' ? 'idle' : ''
+  ].filter(Boolean);
+}
+
+function assetStatusLabel(asset) {
+  const status = sidebar.statusClass(asset);
+  if (status === 'running') return '在线';
+  if (status === 'warn') return '警告';
+  return '待命';
+}
 </script>
 
 <template>
-  <div class="group-node">
+  <div class="sb-group group-node">
     <button
       type="button"
-      class="group-header"
+      class="sb-group-head group-header"
       :class="sidebar.groupHeaderClass(node.path)"
       :style="{ 'padding-inline-start': 8 + depth * 12 + 'px' }"
       :aria-expanded="String(!sidebar.isCollapsed(node.path))"
@@ -53,13 +70,15 @@ const sidebar = inject('connectionSidebar');
       @dragleave="sidebar.onGroupDragLeave($event, node.path)"
       @drop.prevent="sidebar.onGroupDrop($event, node.path, node.parent, node.name)"
     >
-      <component
-        :is="sidebar.isCollapsed(node.path) ? ChevronRight : ChevronDown"
-        :size="12"
-        class="group-chevron"
-      />
-      <span class="group-name">{{ node.name }}</span>
-      <span class="group-count">{{ node.items.length + node.children.length }}</span>
+      <span class="sb-group-left">
+        <component
+          :is="sidebar.isCollapsed(node.path) ? ChevronRight : ChevronDown"
+          :size="12"
+          class="sb-group-chevron group-chevron"
+        />
+        <span class="sb-group-name group-name">{{ node.name }}</span>
+      </span>
+      <span class="sb-group-count group-count">{{ node.items.length + node.children.length }}</span>
     </button>
 
     <div v-show="!sidebar.isCollapsed(node.path)" class="group-body">
@@ -71,13 +90,13 @@ const sidebar = inject('connectionSidebar');
         :depth="depth + 1"
       />
       <!-- 该组直属资产项 -->
-      <ul v-if="node.items.length" class="group-items" role="group">
+      <ul v-if="node.items.length" class="sb-asset-list group-items" role="group">
         <li
           v-for="asset in node.items"
           :key="asset.id"
           :ref="el => sidebar.registerAssetEl(asset.id, el)"
-          class="asset-node"
-          :class="{ 'is-active': sidebar.isActiveAsset(asset), 'is-dragging': sidebar.isDraggingAsset(asset.id) }"
+          class="sb-asset asset-node"
+          :class="{ active: sidebar.isActiveAsset(asset), 'is-active': sidebar.isActiveAsset(asset), 'is-dragging': sidebar.isDraggingAsset(asset.id) }"
           role="treeitem"
           tabindex="0"
           draggable="true"
@@ -91,31 +110,34 @@ const sidebar = inject('connectionSidebar');
           @dragstart="sidebar.onAssetDragStart($event, asset)"
           @dragend="sidebar.onAssetDragEnd($event)"
         >
-          <span class="dot" :class="sidebar.statusClass(asset)" aria-hidden="true"></span>
-          <div class="asset-body">
-            <div class="asset-name">{{ asset.name }}</div>
-            <div class="asset-meta">{{ asset.host }} · {{ asset.username }}</div>
+          <span class="sb-asset-indicator dot" :class="assetIndicatorClasses(asset)" aria-hidden="true"></span>
+          <div class="sb-asset-body asset-body">
+            <div class="sb-asset-title asset-name">{{ asset.name }}</div>
+            <div class="sb-asset-meta asset-meta">{{ asset.host }} · {{ asset.username }}</div>
           </div>
           <!-- 悬停快捷按钮：编辑 / 删除 -->
-          <div class="asset-quick-actions">
-            <button
-              type="button"
-              class="quick-btn"
-              title="编辑"
-              tabindex="-1"
-              @click.stop="sidebar.onEditAsset(asset)"
-            >
-              <Pencil :size="13" />
-            </button>
-            <button
-              type="button"
-              class="quick-btn quick-btn--danger"
-              title="删除"
-              tabindex="-1"
-              @click.stop="sidebar.onDeleteAsset(asset)"
-            >
-              <Trash2 :size="13" />
-            </button>
+          <div class="asset-trail">
+            <span class="sb-asset-tag">{{ assetStatusLabel(asset) }}</span>
+            <div class="asset-quick-actions">
+              <button
+                type="button"
+                class="quick-btn"
+                title="编辑"
+                tabindex="-1"
+                @click.stop="sidebar.onEditAsset(asset)"
+              >
+                <Pencil :size="13" />
+              </button>
+              <button
+                type="button"
+                class="quick-btn quick-btn--danger"
+                title="删除"
+                tabindex="-1"
+                @click.stop="sidebar.onDeleteAsset(asset)"
+              >
+                <Trash2 :size="13" />
+              </button>
+            </div>
           </div>
         </li>
       </ul>
@@ -135,20 +157,22 @@ const sidebar = inject('connectionSidebar');
 .group-header {
   display: flex;
   align-items: center;
-  gap: var(--space-1);
+  justify-content: space-between;
+  gap: 12px;
   width: 100%;
-  padding-block: var(--space-1);
-  padding-inline-end: var(--space-2);
+  min-height: 34px;
+  padding-block: 0;
+  padding-inline-end: 8px;
   border: none;
   background: transparent;
-  color: var(--app-muted);
+  color: var(--app-text);
   cursor: pointer;
   text-align: start;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  font-size: var(--text-xs);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12.5px;
   font-weight: 600;
-  border-radius: var(--radius-sm);
+  border-radius: 8px;
   transition: color var(--motion-fast) var(--ease-standard),
     background var(--motion-fast) var(--ease-standard);
 }
@@ -158,9 +182,17 @@ const sidebar = inject('connectionSidebar');
   background: var(--app-hover);
 }
 
+.sb-group-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .group-chevron {
   flex: 0 0 auto;
   color: var(--app-subtle);
+  transition: transform var(--motion-fast) var(--ease-standard);
 }
 
 .group-name {
@@ -178,33 +210,35 @@ const sidebar = inject('connectionSidebar');
   min-width: 18px;
   height: 16px;
   padding: 0 var(--space-1);
-  background: var(--app-control);
+  background: var(--app-panel-2);
   color: var(--app-muted);
   border-radius: var(--radius-pill);
-  font-size: 10px;
+  font: 11px var(--font-mono);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
 
 .group-items {
   list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
+  margin: 6px 0 0 18px;
+  padding: 0 0 0 2px;
+  display: grid;
+  gap: 4px;
+  border-left: 1px solid var(--app-border-soft);
 }
 
 // ============================================================
 // Asset node — 与 ConnectionSidebar 原有样式保持一致
 // ============================================================
 .asset-node {
-  display: flex;
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
   align-items: center;
-  gap: var(--space-2);
-  padding-block: var(--space-1);
-  padding-inline-end: var(--space-2);
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 8px 8px 10px;
   margin-block-end: 1px;
-  border-radius: var(--radius-sm);
+  border-radius: 10px;
   border-inline-start: 2px solid transparent;
   cursor: pointer;
   position: relative;
@@ -223,7 +257,7 @@ const sidebar = inject('connectionSidebar');
 }
 
 .asset-node.is-active {
-  background: var(--app-hover);
+  background: var(--app-selected);
   border-inline-start-color: var(--accent);
 }
 
@@ -245,12 +279,28 @@ const sidebar = inject('connectionSidebar');
 }
 
 .asset-meta {
-  font-size: var(--text-xs);
+  font-size: 11px;
   color: var(--app-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
+}
+
+.asset-trail {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sb-asset-tag {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--app-panel-2);
+  color: var(--app-muted);
+  font: 10.5px var(--font-display);
+  letter-spacing: 0.04em;
 }
 
 // ============================================================
@@ -291,6 +341,9 @@ const sidebar = inject('connectionSidebar');
 .dot.warn {
   background: var(--warn);
   box-shadow: 0 0 0 2px color-mix(in oklab, var(--warn), transparent 72%);
+}
+.dot.idle {
+  background: var(--app-subtle);
 }
 
 // ============================================================

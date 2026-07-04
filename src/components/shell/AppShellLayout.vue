@@ -1,34 +1,33 @@
 <script setup>
 /**
- * AppShellLayout — 5-region CSS Grid shell.
+ * AppShellLayout — 五区域 CSS Grid 外壳（app.html 全量还原）。
  *
- * Layout (Tabby/Termius × FinalShell topology):
+ * Layout（open-design app.html 严格同步）：
  *
  *   ┌──────────────────────────────────────────────┐
- *   │ titlebar  (52px, full width)                  │
+ *   │ titlebar  (--titlebar-h 52px, full width)     │
  *   ├───────────┬───────────────────┬──────────────┤
- *   │           │  center-top       │              │
- *   │           │  (terminal)       │   right      │
+ *   │           │  .main > terminal  │              │
+ *   │           │  (--center-top-h)  │   right      │
  *   │  sidebar  ├───────────────────┤  (resources  │
- *   │  (assets) │  center-bottom    │   + ops)     │
- *   │           │  (files)          │              │
+ *   │  (assets) │  .main > files     │   + ops)     │
+ *   │           │  (1fr 吃剩余)      │              │
  *   ├───────────┴───────────────────┴──────────────┤
- *   │ statusbar  (28px, full width)                 │
+ *   │ statusbar (--statusbar-h 28px, full width)    │
  *   └──────────────────────────────────────────────┘
  *
- * Borders are single-pixel on the inline-end side only — no nested
- * card backgrounds, per Architect recommendation (avoids FinalShell
- * "card-stack" visual weight).
+ * 与旧版差异（app.html 还原）：
+ *   - grid 从扁平 4 行改为 3 行 + .main 二级 grid（terminal/files 由 .main 内部分配）
+ *   - class .shell-layout → .app；shell-region--* → 直接 grid-area 命名
+ *   - 拖拽条 class resize-divider → resize（data-target="sidebar|right|split"）
+ *   - 折叠态：.app.sidebar-collapsed / .app.right-collapsed（类名驱动，替代旧 dataset）
  *
- * Each region exposes a `data-region="<name>"` attribute for ui-smoke
- * Wave 5 selectors.
+ * Slots: titlebar | sidebar | center-top(terminal) | center-bottom(files) | right | statusbar
+ *   注：slot 名保留 center-top/center-bottom（App.vue 不用改），内部由 .main 包裹做二级 grid。
  *
- * Slots: titlebar | sidebar | center-top | center-bottom | right | statusbar
- *
- * 布局自由化（Wave）：三列宽（--sidebar-w/--right-w）与中间两行高
- * （--center-top-h）由 usePanelResize composable 拖拽控制。本组件渲染
- * 3 个拖拽 divider（绝对定位细条），pointerdown 调用传入的 startResize。
- * 折叠态（sidebar/right）隐藏对应 divider。
+ * 变量驱动：
+ *   --sidebar-w / --right-w：列宽，usePanelResize 拖拽写入 + 折叠态覆盖
+ *   --center-top-h：终端区行高（usePanelResize 写入），.main grid-template-rows 消费
  */
 defineProps({
   // usePanelResize 暴露的 startResize(event, which)
@@ -39,50 +38,47 @@ defineProps({
 </script>
 
 <template>
-  <div class="shell-layout" role="application" aria-label="myshelltool 主窗口">
-    <header class="shell-region shell-region--titlebar" data-region="titlebar">
-      <slot name="titlebar" />
-    </header>
+  <div
+    class="app"
+    role="application"
+    aria-label="myshelltool 主窗口"
+    :class="{
+      'sidebar-collapsed': sidebarCollapsed,
+      'right-collapsed': rightCollapsed
+    }"
+  >
+    <slot name="titlebar" />
+    <slot name="sidebar" />
 
-    <aside class="shell-region shell-region--sidebar" data-region="sidebar" aria-label="侧栏">
-      <slot name="sidebar" />
-    </aside>
-
-    <main class="shell-region shell-region--center-top" data-region="center-top" aria-label="终端">
+    <!-- .main 二级 grid：terminal + files 上下分栏（--center-top-h 驱动）-->
+    <main class="main" data-region="main">
       <slot name="center-top" />
+      <slot name="center-bottom" />
     </main>
 
-    <section class="shell-region shell-region--center-bottom" data-region="center-bottom" aria-label="文件">
-      <slot name="center-bottom" />
-    </section>
+    <slot name="right" />
+    <slot name="statusbar" />
 
-    <aside class="shell-region shell-region--right" data-region="right" aria-label="资源监控与运维摘要">
-      <slot name="right" />
-    </aside>
-
-    <footer class="shell-region shell-region--statusbar" data-region="statusbar">
-      <slot name="statusbar" />
-    </footer>
-
-    <!-- 拖拽分隔条（绝对定位，浮于 grid 之上）。折叠态隐藏对应竖条。 -->
+    <!-- 拖拽分隔条（绝对定位，浮于 grid 之上）。折叠态由 CSS 隐藏对应条。 -->
     <div
-      v-if="!sidebarCollapsed"
-      class="resize-divider resize-divider--col resize-divider--sidebar"
+      class="resize resize-h"
+      data-target="sidebar"
       role="separator"
       aria-orientation="vertical"
       aria-label="调整侧栏宽度"
       @pointerdown="startResize($event, 'sidebar')"
     ></div>
     <div
-      v-if="!rightCollapsed"
-      class="resize-divider resize-divider--col resize-divider--right"
+      class="resize resize-h"
+      data-target="right"
       role="separator"
       aria-orientation="vertical"
       aria-label="调整右侧面板宽度"
       @pointerdown="startResize($event, 'right')"
     ></div>
     <div
-      class="resize-divider resize-divider--row resize-divider--center-row"
+      class="resize resize-v"
+      data-target="split"
       role="separator"
       aria-orientation="horizontal"
       aria-label="调整终端与文件区高度"
@@ -94,146 +90,157 @@ defineProps({
 <style scoped lang="scss">
 @use '@/styles/_tokens' as *;
 
-.shell-layout {
+// ============================================================
+// 五区域 Grid（app.css L191-204 严格同步）
+// ============================================================
+.app {
   position: relative; // 拖拽 divider 绝对定位的参照系
   display: grid;
+  grid-template-columns: var(--sidebar-w, 260px) minmax(0, 1fr) var(--right-w, 280px);
+  grid-template-rows: var(--titlebar-h, 52px) minmax(0, 1fr) var(--statusbar-h, 28px);
+  grid-template-areas:
+    'titlebar  titlebar  titlebar'
+    'sidebar   main      right'
+    'statusbar statusbar statusbar';
   width: 100vw;
   height: 100vh;
-  min-width: 1280px; // Step 5.2: below 1280px → horizontal scroll fallback
+  min-width: 1280px; // 低于 1280px → 横向滚动 fallback
   overflow: hidden;
-  grid-template-areas:
-    'titlebar titlebar titlebar'
-    'sidebar center-top right'
-    'sidebar center-bottom right'
-    'statusbar statusbar statusbar';
-  // --center-top-h 控制终端区行高（默认不设 → 两行 1fr 平分；拖拽后 usePanelResize 写入 px）。
-  // center-bottom 吃剩余空间（minmax 保证最小）。
-  grid-template-rows: 52px var(--center-top-h, minmax(0, 1fr)) minmax(0, 1fr) 28px;
-  // sidebar/right 列宽由 --sidebar-w / --right-w 控制；
-  // data-assets=collapsed 时全局根覆盖 --sidebar-w 为 44px（ui.js toggleAssets 写 dataset）；
-  // data-right=collapsed 时全局根覆盖 --right-w 为 0（整列折叠）。
-  // 拖拽时 usePanelResize 写内联 style 同名变量；折叠态优先（composable 跳过拖拽）。
-  grid-template-columns: var(--sidebar-w, minmax(220px, 280px)) minmax(0, 1fr) var(--right-w, 280px);
   background: var(--app-bg);
   color: var(--app-text);
   font-family: var(--font-body);
 }
 
-// :global 选择器：dataset 在 <html> 上，scoped 样式够不着，必须用全局选择器响应收起态列宽。
-:global(:root[data-assets='collapsed']) {
-  --sidebar-w: 44px;
-}
-:global(:root[data-right='collapsed']) {
-  --right-w: 0px;
-}
+// grid-area 映射。区域节点由 slot 子组件提供，避免和子组件根节点形成双壳。
+.app > :global(.titlebar)      { grid-area: titlebar; }
+.app > :global(.sidebar)       { grid-area: sidebar; }
+.main                          { grid-area: main; }
+.app > :global(.right-sidebar) { grid-area: right; }
+.app > :global(.app-status-bar),
+.app > :global(.statusbar)     { grid-area: statusbar; }
 
-.shell-region {
-  display: flex;
-  flex-direction: column;
+// 区域基础：min-width/min-height 防 grid 子项撑爆
+.app > :global(.titlebar),
+.app > :global(.sidebar),
+.main,
+.app > :global(.right-sidebar),
+.app > :global(.app-status-bar),
+.app > :global(.statusbar) {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
 
-.shell-region--titlebar {
-  grid-area: titlebar;
+// 区域边框（app.css：chrome 用 --app-border）
+.app > :global(.titlebar) {
   background: var(--app-chrome);
-  border-block-end: 1px solid var(--app-border);
+  border-bottom: 1px solid var(--app-border);
 }
-
-.shell-region--sidebar {
-  grid-area: sidebar;
+.app > :global(.sidebar) {
   background: var(--app-panel);
-  border-inline-end: 1px solid var(--app-border);
+  border-right: 1px solid var(--app-border);
 }
-
-.shell-region--center-top {
-  grid-area: center-top;
-  background: var(--app-window);
-  border-block-end: 1px solid var(--app-border);
-}
-
-.shell-region--center-bottom {
-  grid-area: center-bottom;
-  background: var(--app-window);
-}
-
-.shell-region--right {
-  grid-area: right;
+.app > :global(.right-sidebar) {
   background: var(--app-panel);
-  border-inline-start: 1px solid var(--app-border);
+  border-left: 1px solid var(--app-border);
 }
-// 右侧整列折叠（--right-w:0）时，去掉边框避免 0 宽度下残影边线。
-// 注意：绝不用 visibility:hidden —— 它会因继承/scoped-global 选择器组合导致整页白（实测 bug）。
-// 0 宽列已自然裁掉内容，只需去边框 + min-width:0 防子项撑开。
-:global(:root[data-right='collapsed']) .shell-region--right {
-  border-inline-start: none;
+.app > :global(.app-status-bar),
+.app > :global(.statusbar) {
+  background: var(--app-chrome);
+  border-top: 1px solid var(--app-border);
+}
+
+// ============================================================
+// .main 二级 grid：terminal + files 上下分栏（app.css L453-460）
+// --center-top-h 由 usePanelResize 写入（拖拽），fallback 1fr（上下平分）
+// ============================================================
+.main {
+  display: grid;
+  grid-template-rows: var(--center-top-h, 1fr) minmax(0, 1fr);
+  background: var(--app-bg);
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+.main > :global(.region-terminal) {
+  background: var(--app-panel);
+  border-bottom: 1px solid var(--app-border);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.main > :global(.region-files) {
+  background: var(--app-panel);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+// ============================================================
+// 折叠态：在 .app 根元素加类，覆盖列宽变量（app.css L435-450）
+// 注：ui.js 现在写 dataset 到 <html>，本组件通过 props sidebarCollapsed/rightCollapsed
+//   在 .app 上加 .sidebar-collapsed / .right-collapsed 类（App.vue 已传 props）
+// ============================================================
+.app.sidebar-collapsed {
+  --sidebar-w: var(--sidebar-w-collapsed, 44px);
+}
+.app.right-collapsed {
+  --right-w: var(--right-w-collapsed, 0px);
+}
+// 右侧整列折叠（--right-w:0）时去边框，避免 0 宽度下残影边线。
+// 绝不用 visibility:hidden —— 会因继承/scoped 选择器组合导致整页白（实测 bug）。
+.app.right-collapsed > :global(.right-sidebar) {
+  border-left: none;
   min-width: 0;
 }
 
-.shell-region--statusbar {
-  grid-area: statusbar;
-  background: var(--app-chrome);
-  border-block-start: 1px solid var(--app-border);
-}
-
 // ============================================================
-// 拖拽分隔条：绝对定位细条，浮于 grid 之上。位置由 CSS 变量驱动
-// （--sidebar-w / --right-w / --center-top-h），与列/行边界对齐。
-// 默认透明不可见，hover/drag 显色。z-index 高于 region 但低于 modal。
+// 拖拽分隔条（app.css L212-250 严格同步）
 // ============================================================
-.resize-divider {
+.resize {
   position: absolute;
-  z-index: var(--z-sticky, 100);
-}
-
-// 竖向分隔条（列宽）：4px 宽，纵向覆盖中间区（titlebar 下到 statusbar 上）
-.resize-divider--col {
-  top: 52px;          // titlebar 高
-  bottom: 28px;       // statusbar 高
-  width: 5px;
-  cursor: col-resize;
-  // 拖拽热区：透明，hover 时显色。用 margin 扩大命中区。
-  margin-inline-start: -2px;
-}
-
-// sidebar 分隔条贴在 sidebar 列右边缘
-.resize-divider--sidebar {
-  left: var(--sidebar-w, 280px);
-}
-// right 分隔条贴在 right 列左边缘
-.resize-divider--right {
-  right: var(--right-w, 280px);
-}
-
-// 横向分隔条（行高）：覆盖中间区全宽，贴在 center-top 底部。
-// fallback 用视口中点（减去 titlebar52+statusbar28=80 后平分），与 grid 默认两行 1fr 平分一致——
-// 之前用 50% 会相对包含块算偏低（落在文件区），拖拽后才跳到正确位置（初始错位 bug）。
-.resize-divider--row {
-  left: var(--sidebar-w, 280px);
-  right: var(--right-w, 280px);
-  top: calc(52px + var(--center-top-h, calc((100vh - 80px) / 2)));
-  height: 5px;
-  cursor: row-resize;
-  margin-block-start: -2px;
-}
-
-// 默认：极淡背景（几乎不可见，提示可拖）。hover/active 显色加粗。
-.resize-divider--col,
-.resize-divider--row {
+  z-index: var(--z-sticky, 200);
   background: transparent;
-  transition: background var(--motion-fast, 0.12s) ease;
 }
-.resize-divider--col:hover,
-.resize-divider--row:hover {
-  background: var(--accent);
+.resize-h { width: 5px; cursor: col-resize; }
+.resize-v { height: 5px; cursor: row-resize; }
+
+.resize[data-target='sidebar'] {
+  left: calc(var(--sidebar-w, 260px) - 2px);
+  top: var(--titlebar-h, 52px);
+  bottom: var(--statusbar-h, 28px);
+  width: 5px;
 }
-// 拖拽中（composable 设 body.userSelect=none，这里用 :active 兜底视觉）
-.resize-divider--col:active,
-.resize-divider--row:active {
-  background: var(--accent);
+.resize[data-target='right'] {
+  right: calc(var(--right-w, 280px) - 2px);
+  top: var(--titlebar-h, 52px);
+  bottom: var(--statusbar-h, 28px);
+  width: 5px;
+}
+.resize[data-target='split'] {
+  left: var(--sidebar-w, 260px);
+  right: var(--right-w, 280px);
+  height: 5px;
+  top: calc(var(--titlebar-h, 52px) + var(--center-top-h, calc((100vh - 80px) / 2)) - 2px);
 }
 
-// 折叠态下变量被 dataset 覆盖（44px/0），分隔条位置自动跟随；
-// 折叠列的 divider 已被 v-if 隐藏，无需额外处理。
+// hover/active 显色（::before 覆盖热区）
+.resize::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+}
+.resize:hover::before,
+.resize:focus-visible::before {
+  background: var(--accent);
+  opacity: 0.4;
+}
+.resize:active::before {
+  background: var(--accent);
+  opacity: 0.6;
+}
+
+// 折叠态隐藏对应分界
+.app.sidebar-collapsed .resize[data-target='sidebar'] { display: none; }
+.app.right-collapsed .resize[data-target='right'] { display: none; }
 </style>

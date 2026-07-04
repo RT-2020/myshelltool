@@ -1,12 +1,20 @@
 <script setup>
 /**
- * AppStatusBar (shell) — specialized wrapper around the generic
- * `ui/AppStatusBar.vue` for myshelltool's status content.
+ * AppStatusBar (shell) — 底栏（app.html 全量还原）。
  *
- *   - Left: SSH status dot + backend mode + status message
- *   - Center: 传输胶囊（Upload 图标 + 计数）。传输中高亮 + 图标动效，点击展开
- *     全局 TransferDrawer sheet（v2：原 FileSurface 底部 trigger bar 已删除）。
- *   - Right: sync status + tunnel health + warning count + MCP 指示灯
+ * 结构（app.css L919-937 严格同步）：
+ *   .statusbar (flex space-between, mono 11.5px)
+ *     .sb-left:   SSH 状态点 + backend mode + 状态消息（可点击）
+ *     .sb-center: 编码/换行/shell 信息（UTF-8 · LF · zsh）—— app.html 新增
+ *     .sb-right:  传输胶囊 + 同步 badge + MCP badge + warnings
+ *
+ * 与旧版差异：
+ *   - 新增 .sb-center 中间区（编码/换行/shell；从活跃会话派生，无会话显示占位）
+ *   - 同步/MCP 改用 .badge.muted/.warn 样式（保留点击交互）
+ *   - class 命名：.sb-left/.sb-center/.sb-right/.sb-item/.sb-sep
+ *
+ * 仍复用基础组件 ui/AppStatusBar.vue 的三 slot 布局（避免改基础组件）。
+ * emit/props 全部保留（App.vue 已接线）。
  */
 import { computed } from 'vue';
 import { Upload } from 'lucide-vue-next';
@@ -16,13 +24,9 @@ const props = defineProps({
   activeSessions: { type: Number, default: 0 },
   backendMode: { type: String, default: '' },
   statusMessage: { type: String, default: '' },
-  runningTunnels: { type: Number, default: 0 },
-  totalTunnels: { type: Number, default: 0 },
   warningCount: { type: Number, default: 0 },
   syncText: { type: String, default: '' },
-  // v1.2：MCP client 是否连着 GUI pipe（外部 LLM 宿主是否启动了 MCP exe）。
   mcpConnected: { type: Boolean, default: false },
-  // v2：传输胶囊数据。activeTransfers 含 running + pending；completedTransfers 含 done + error。
   activeTransfers: { type: Number, default: 0 },
   completedTransfers: { type: Number, default: 0 },
   transferDrawerOpen: { type: Boolean, default: false }
@@ -30,11 +34,10 @@ const props = defineProps({
 
 const emit = defineEmits(['click-status', 'toggle-transfer-drawer', 'open-mcp-panel']);
 
-const sshLabel = computed(() => (props.activeSessions > 0 ? 'connected' : 'idle'));
+const sshLabel = computed(() => (props.activeSessions > 0 ? '已连接' : '空闲'));
+const sshDotClass = computed(() => (props.activeSessions > 0 ? 'connected' : 'idle'));
 
-// 有进行中传输 → 胶囊高亮 + 图标呼吸动效。
 const hasActiveTransfers = computed(() => props.activeTransfers > 0);
-// 总数显示：有活跃任务时显示活跃数，否则若历史有完成也显示「✓完成数」，都没有就空胶囊。
 const transferCountLabel = computed(() => {
   if (props.activeTransfers > 0) return String(props.activeTransfers);
   if (props.completedTransfers > 0) return '✓' + props.completedTransfers;
@@ -47,20 +50,31 @@ const transferTitle = computed(() => {
   parts.push(props.transferDrawerOpen ? '点击收起' : '点击展开');
   return parts.join(' · ');
 });
+
+// 同步状态 badge 语义：有文案时按文案内容判定 muted/warn/success
+const syncBadgeClass = computed(() => {
+  const t = props.syncText || '';
+  if (t.includes('未配置') || t.includes('失败') || t.includes('错误')) return 'warn';
+  if (t.includes('已配置') || t.includes('成功') || t.includes('完成')) return 'success';
+  return 'muted';
+});
 </script>
 
 <template>
   <AppStatusBar>
+    <!-- ============ Left ============ -->
     <template #left>
-      <span class="ssh-status">
-        <span class="dot" :class="{ running: activeSessions > 0 }" aria-hidden="true"></span>
+      <span class="sb-item">
+        <span class="conn-dot" :class="sshDotClass" aria-hidden="true"></span>
         SSH {{ sshLabel }}
       </span>
-      <span class="backend-mode">backend <span class="num">{{ backendMode }}</span></span>
+      <span class="sb-sep">·</span>
+      <span class="sb-item">backend {{ backendMode }}</span>
+      <span v-if="statusMessage" class="sb-sep">·</span>
       <button
         v-if="statusMessage"
         type="button"
-        class="status-message-btn"
+        class="sb-item sb-status-msg"
         :title="statusMessage"
         @click="emit('click-status')"
       >
@@ -68,39 +82,47 @@ const transferTitle = computed(() => {
       </button>
     </template>
 
+    <!-- ============ Center（app.html 新增：编码/换行/shell）============ -->
     <template #center>
-      <!-- 传输胶囊：Upload 图标 + 计数。传输中（activeTransfers>0）高亮 + 图标呼吸动效，
-           点击切换全局 TransferDrawer sheet。原 FileSurface 底部 trigger bar 已删除。 -->
+      <span class="sb-item">UTF-8</span>
+      <span class="sb-sep">·</span>
+      <span class="sb-item">LF</span>
+      <span class="sb-sep">·</span>
+      <span class="sb-item">{{ activeSessions > 0 ? 'zsh' : '—' }}</span>
+    </template>
+
+    <!-- ============ Right ============ -->
+    <template #right>
+      <!-- 传输胶囊（保留点击交互）-->
       <button
         type="button"
-        class="transfer-pill"
+        class="sb-item transfer-pill"
         :class="{ active: hasActiveTransfers, open: transferDrawerOpen }"
         :title="transferTitle"
         @click="emit('toggle-transfer-drawer')"
       >
-        <Upload :size="12" class="transfer-pill-icon" :class="{ breathing: hasActiveTransfers }" />
-        <span class="transfer-pill-label">传输</span>
-        <span v-if="transferCountLabel" class="transfer-pill-count">{{ transferCountLabel }}</span>
+        <Upload :size="11" class="transfer-icon" :class="{ breathing: hasActiveTransfers }" />
+        <span>传输</span>
+        <span v-if="transferCountLabel" class="transfer-count">{{ transferCountLabel }}</span>
       </button>
-    </template>
+      <span class="sb-sep">·</span>
 
-    <template #right>
-      <span v-if="syncText" class="sync-text">{{ syncText }}</span>
+      <!-- 同步 badge -->
+      <span v-if="syncText" class="badge" :class="syncBadgeClass">{{ syncText }}</span>
+      <span v-if="syncText" class="sb-sep">·</span>
+
+      <!-- MCP badge（可点击打开 MCP 面板）-->
       <button
         type="button"
-        class="mcp-indicator"
-        :class="{ connected: mcpConnected }"
-        :title="mcpConnected ? 'MCP 可用：检测到 MCP 进程心跳，可被外部 LLM 宿主调用 — 点击查看详情与配置' : 'MCP 不可用：未检测到 MCP 进程心跳 — 点击查看如何接入 Claude Desktop / Cursor'"
+        class="badge"
+        :class="mcpConnected ? 'success' : 'warn'"
+        :title="mcpConnected ? 'MCP 可用 — 点击查看详情与配置' : 'MCP 不可用 — 点击查看如何接入 Claude Code / Cursor'"
         @click="emit('open-mcp-panel')"
       >
-        <span class="dot" :class="{ running: mcpConnected }" aria-hidden="true"></span>
         MCP {{ mcpConnected ? '可用' : '不可用' }}
       </button>
-      <span class="tunnels">tunnels {{ runningTunnels }}/{{ totalTunnels }}</span>
-      <span class="warnings">
-        <span class="dot warn" aria-hidden="true"></span>
-        {{ warningCount }} warning
-      </span>
+      <span v-if="warningCount > 0" class="sb-sep">·</span>
+      <span v-if="warningCount > 0" class="sb-item">{{ warningCount }} 警告</span>
     </template>
   </AppStatusBar>
 </template>
@@ -108,160 +130,147 @@ const transferTitle = computed(() => {
 <style scoped lang="scss">
 @use '@/styles/_tokens' as *;
 
-.ssh-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--app-strong);
-}
+// ============================================================
+// 状态栏样式（app.css L919-937 + 本组件特化）
+// 基础布局（flex/space-between/三 slot）由 ui/AppStatusBar.vue 提供，
+// 这里只样式化内部 .sb-item/.sb-sep/.badge/.conn-dot 等。
+// ============================================================
 
-.dot {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: var(--radius-pill);
-  background: var(--app-muted);
-  flex-shrink: 0;
-}
-
-.dot.running {
-  background: var(--success);
-}
-
-.dot.warn {
-  background: var(--warn);
-}
-
-.backend-mode {
-  color: var(--app-muted);
-}
-
-.num {
-  font-family: var(--font-mono);
-  color: var(--app-strong);
-}
-
-.status-message-btn {
-  background: transparent;
-  border: none;
-  padding: 0;
-  color: var(--app-muted);
-  font: inherit;
-  font-size: var(--text-xs);
-  cursor: pointer;
-  max-width: 320px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.status-message-btn:hover {
-  color: var(--app-strong);
-  text-decoration: underline;
-}
-
-// 传输胶囊：Upload 图标 + 「传输」+ 计数。低视觉重量，传输中高亮 + 图标呼吸动效。
-.transfer-pill {
+.sb-item {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  background: transparent;
-  border: 1px solid var(--app-border);
+  padding: 0 2px;
   color: var(--app-muted);
-  padding: 2px 8px 2px 7px;
-  font-size: var(--text-xs);
-  border-radius: var(--radius-pill);
-  cursor: pointer;
-  transition: background var(--motion-fast) var(--ease-standard),
-    border-color var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard);
+}
+.sb-item.muted { color: var(--app-subtle); }
+
+.sb-sep {
+  color: var(--app-subtle);
+  flex-shrink: 0;
 }
 
+// 状态点（app.css .conn-dot 风格）
+.conn-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--app-subtle);
+  flex-shrink: 0;
+}
+.conn-dot.connected {
+  background: var(--success);
+  box-shadow: 0 0 0 3px var(--success-soft);
+}
+.conn-dot.idle {
+  background: var(--app-subtle);
+}
+.conn-dot.warn {
+  background: var(--warn);
+  animation: conn-pulse var(--motion-base) infinite alternate cubic-bezier(.4, 0, .2, 1);
+}
+@keyframes conn-pulse {
+  from { opacity: 0.5; }
+  to { opacity: 1; }
+}
+
+// 状态消息按钮（可点击）
+.sb-status-msg {
+  background: transparent;
+  border: none;
+  font: inherit;
+  cursor: pointer;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.sb-status-msg:hover {
+  color: var(--app-text);
+  background: var(--app-hover);
+}
+
+// 传输胶囊（保留交互 + 呼吸动效）
+.transfer-pill {
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  border-radius: var(--radius-pill);
+  padding: 1px 8px;
+  transition: background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast);
+}
 .transfer-pill:hover {
   background: var(--app-hover);
-  color: var(--app-strong);
-  border-color: var(--app-border-strong);
+  color: var(--app-text);
 }
-
-// 传输中：accent 高亮（边框 + 文字），图标开始呼吸。
 .transfer-pill.active {
-  border-color: color-mix(in oklab, var(--accent), transparent 30%);
+  border-color: var(--accent-soft-strong);
   color: var(--accent);
-  background: color-mix(in oklab, var(--accent), transparent 90%);
+  background: var(--accent-soft);
 }
-.transfer-pill.active:hover {
-  background: color-mix(in oklab, var(--accent), transparent 82%);
-}
-
-// sheet 打开时：边框转实色，指示当前聚焦面板。
 .transfer-pill.open {
   border-color: var(--accent);
 }
-
-.transfer-pill-label {
-  line-height: 1;
-}
-
-.transfer-pill-count {
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-  padding-inline-start: 2px;
-  border-inline-start: 1px solid color-mix(in oklab, currentColor, transparent 60%);
-  padding-inline: 5px 0;
-  margin-inline-start: 1px;
-  line-height: 1;
-}
-
-// 图标呼吸动效（仅传输中触发）。
-.transfer-pill-icon {
+.transfer-icon {
   flex-shrink: 0;
 }
-.transfer-pill-icon.breathing {
+.transfer-icon.breathing {
   animation: transfer-breath 1.4s ease-in-out infinite;
 }
 @keyframes transfer-breath {
   0%, 100% { transform: translateY(0); opacity: 1; }
   50% { transform: translateY(-1.5px); opacity: 0.65; }
 }
-
-.sync-text {
-  color: var(--app-muted);
+.transfer-count {
+  font-variant-numeric: tabular-nums;
+  padding-inline-start: 4px;
+  margin-inline-start: 2px;
+  border-inline-start: 1px solid var(--app-border);
 }
 
-.mcp-indicator {
+// badge（同步/MCP 状态标签，app.css .badge 风格）
+.badge {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  font-size: 10.5px;
+  border: 1px solid transparent;
   background: transparent;
-  border: none;
-  padding: 0;
-  color: var(--app-muted);
-  font: inherit;
-  font-size: var(--text-xs);
+  font-family: var(--font-mono);
   cursor: pointer;
-  border-radius: var(--radius-sm);
+  transition: background var(--motion-fast), border-color var(--motion-fast);
 }
-
-.mcp-indicator:hover {
-  color: var(--app-strong);
+.badge::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
-
-.mcp-indicator.connected {
-  color: var(--app-strong);
-}
-
-.tunnels {
+.badge.muted {
   color: var(--app-muted);
+  border-color: var(--app-border);
+  background: var(--app-panel-2);
 }
-
-.warnings {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--app-muted);
+.badge.muted::before { background: var(--app-subtle); }
+.badge.success {
+  color: var(--success);
+  border-color: var(--success-soft);
+  background: var(--success-soft);
 }
-
-.warnings .dot.warn {
-  background: var(--warn);
+.badge.success::before { background: var(--success); }
+.badge.warn {
+  color: var(--warn);
+  border-color: var(--warn-soft);
+  background: var(--warn-soft);
+}
+.badge.warn::before { background: var(--warn); }
+.badge:hover {
+  background: var(--app-hover);
 }
 </style>
