@@ -18,19 +18,14 @@ import { storeToRefs } from 'pinia';
 import {
   ChevronUp,
   ChevronDown,
-  ChevronRight,
   Folder,
   File as FileIcon,
   Link2,
-  ArrowUp,
-  RefreshCw,
-  Filter as FilterIcon,
-  Pencil,
-  Loader2,
-  X
+  Loader2
 } from 'lucide-vue-next';
 import { useFilesStore } from '@/stores/files.js';
 import { useUiStore } from '@/stores/ui.js';
+import FileColumnHeader from './FileColumnHeader.vue';
 import {
   buildPathCrumbs,
   formatFileEntryOwner,
@@ -373,6 +368,10 @@ const crumbs = computed(() => {
   return buildPathCrumbs(currentPath.value);
 });
 
+const manualPathInput = computed(() => (
+  isLocal.value ? manualLocalPathInput.value : manualRemotePathInput.value
+));
+
 function enterPathEditing() {
   // 切到编辑态时把当前路径填进输入框（避免空白）。
   if (isLocal.value) filesStore.setManualLocalPath(currentPath.value || '');
@@ -402,30 +401,6 @@ function crumbClick(seg) {
 // 过滤浮动窗（挂在列表右上角）
 // click-outside 关闭；filterValue 非空时图标高亮。
 // ============================================================
-const filterOpen = ref(false);
-const filterPopoverRef = ref(null);
-const filterBtnRef = ref(null);
-const filterInputRef = ref(null);
-
-function toggleFilter(event) {
-  event.stopPropagation();
-  filterOpen.value = !filterOpen.value;
-  if (filterOpen.value) {
-    // 打开后聚焦输入框（nextTick 确保 DOM 已渲染）。
-    requestAnimationFrame(() => filterInputRef.value?.focus());
-  }
-}
-function onWindowClick(event) {
-  if (!filterOpen.value) return;
-  const pop = filterPopoverRef.value;
-  const btn = filterBtnRef.value;
-  if (pop && !pop.contains(event.target) && btn && !btn.contains(event.target)) {
-    filterOpen.value = false;
-  }
-}
-onMounted(() => window.addEventListener('click', onWindowClick));
-onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
-
 // ============================================================
 // 新列展示 helper：类型 / 权限 / 用户:组
 // ============================================================
@@ -448,110 +423,32 @@ function formatOwner(entry) {
   >
     <!-- Header: 单行 title+count / 路径(面包屑或编辑input) / 过滤按钮 / 上级目录+刷新。
          过滤框已移到列表右上角浮动小窗，路径框内部显示可点击面包屑（点✎切原始 input）。 -->
-    <header class="pane-header file-column-head">
-      <span class="pane-tag" :class="kind">{{ columnTitle }}</span>
-      <div class="file-column-head-meta">
-        <strong class="file-column-title">{{ columnTitle }}</strong>
-        <span class="file-column-count" v-if="selectionCount">{{ selectionCount }} 项已选</span>
-        <span class="file-column-count" v-else>{{ effectiveEntries().length }} 项</span>
-      </div>
-      <div class="file-column-path">
-        <!-- 面包屑态：每段可点跳转，末端 ✎ 切编辑 -->
-        <nav v-if="!pathEditing" class="breadcrumb file-column-breadcrumb" @dblclick="enterPathEditing">
-          <template v-if="crumbs.length">
-            <button
-              v-for="(seg, idx) in crumbs"
-              :key="seg.path + idx"
-              type="button"
-              class="crumb"
-              :class="{ active: idx === crumbs.length - 1 }"
-              :title="seg.path"
-              @click="crumbClick(seg)"
-            >
-              <span class="crumb-label">{{ seg.label }}</span>
-              <ChevronRight v-if="idx < crumbs.length - 1" :size="11" class="crumb-sep" />
-            </button>
-            <button
-              type="button"
-              class="crumb-edit"
-              title="编辑路径"
-              @click.stop="enterPathEditing"
-            >
-              <Pencil :size="11" />
-            </button>
-          </template>
-          <span v-else class="crumb-empty" @click="enterPathEditing">点此输入路径…</span>
-        </nav>
-        <!-- 编辑态：原始路径 input，回车跳转、Esc 退出 -->
-        <input
-          v-else
-          class="file-column-manual-path"
-          :value="isLocal ? manualLocalPathInput : manualRemotePathInput"
-          :placeholder="isLocal ? '路径（回车跳转，Esc 取消）' : '路径（回车跳转，Esc 取消）'"
-          spellcheck="false"
-          autofocus
-          @input="onManualPathInput"
-          @keydown="onPathInputKeydown"
-        />
-      </div>
-      <div class="pane-tools file-column-head-actions">
-        <!-- 可选前置按钮插槽（如「本地」列切换），插在过滤按钮之前，避免与悬浮按钮冲突。 -->
+    <FileColumnHeader
+      :kind="kind"
+      :column-title="columnTitle"
+      :selection-count="selectionCount"
+      :entry-count="effectiveEntries().length"
+      :crumbs="crumbs"
+      :path-editing="pathEditing"
+      :manual-path-input="manualPathInput"
+      :filter-value="filterValue"
+      :show-filter-clear="showFilterClear"
+      :is-busy="isBusy"
+      :disable-up="isBusy || (isLocal && !localPath)"
+      :disable-refresh="isBusy || (isLocal && !!disabledHint)"
+      @enter-path-editing="enterPathEditing"
+      @manual-path-input="onManualPathInput"
+      @path-input-keydown="onPathInputKeydown"
+      @crumb-click="crumbClick"
+      @toggle-filter-input="onFilterInput"
+      @clear-filter="clearFilter"
+      @go-up="goUp"
+      @refresh="refresh"
+    >
+      <template #actions-leading>
         <slot name="actions-leading" />
-        <!-- 过滤浮动窗触发按钮（filterValue 非空时高亮） -->
-        <div class="filter-host">
-          <button
-            ref="filterBtnRef"
-            class="icon-btn"
-            :class="{ active: filterValue !== '' || filterOpen }"
-            type="button"
-            :title="'过滤当前目录'"
-            @click="toggleFilter"
-          >
-            <FilterIcon :size="14" />
-          </button>
-          <!-- 浮动过滤面板：绝对定位挂在右上角 -->
-          <div v-if="filterOpen" ref="filterPopoverRef" class="filter-popover" @click.stop>
-            <span class="filter-popover-icon"><FilterIcon :size="12" /></span>
-            <input
-              ref="filterInputRef"
-              class="filter-popover-input"
-              :value="filterValue"
-              placeholder="过滤当前目录..."
-              spellcheck="false"
-              @input="onFilterInput"
-            />
-            <button
-              v-if="showFilterClear"
-              class="filter-popover-clear"
-              type="button"
-              title="清空"
-              @click="clearFilter"
-            >
-              <X :size="12" />
-            </button>
-          </div>
-        </div>
-        <button
-          class="icon-btn"
-          type="button"
-          title="上级目录"
-          :disabled="isBusy || (isLocal && !localPath)"
-          @click="goUp"
-        >
-          <ArrowUp :size="14" />
-        </button>
-        <button
-          class="icon-btn"
-          type="button"
-          title="刷新"
-          :disabled="isBusy || (isLocal && !!disabledHint)"
-          @click="refresh"
-        >
-          <Loader2 v-if="isBusy" class="spin" :size="14" />
-          <RefreshCw v-else :size="14" />
-        </button>
-      </div>
-    </header>
+      </template>
+    </FileColumnHeader>
 
     <!-- Column headers (sortable) — only in detailed list mode.
          列：名称 / 大小 / 类型 / 修改时间 / 权限 / 用户组。-->
@@ -719,255 +616,6 @@ function formatOwner(entry) {
 
 .file-column.is-local-disabled {
   opacity: 0.6;
-}
-
-// Header row: 单行承载 title+count / 路径框+过滤框 / 上级目录/刷新。
-// 原独立 pathrow / filterrow 已合并，省两行高度（每列净省 ~46px 让给终端区）。
-.pane-header,
-.file-column-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 0 8px;
-  position: sticky;
-  top: 0;
-  z-index: var(--z-sticky);
-  background: var(--app-panel-2);
-  border-block-end: 1px solid var(--app-border);
-  min-height: 34px;
-}
-.pane-tag {
-  display: inline-flex;
-  align-items: center;
-  height: 18px;
-  padding: 0 7px;
-  border-radius: var(--radius-pill);
-  font: 500 10px var(--font-display);
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-}
-.pane-tag.local {
-  color: var(--info);
-  background: var(--info-soft);
-}
-.pane-tag.remote {
-  color: var(--accent);
-  background: var(--accent-soft);
-}
-.file-column-head-meta {
-  display: none;
-  align-items: baseline;
-  gap: var(--space-2);
-  flex: 0 0 auto;
-  min-width: 0;
-}
-.file-column-title {
-  font-size: var(--text-sm);
-  font-weight: 600;
-  color: var(--app-text);
-  white-space: nowrap;
-}
-.file-column-count {
-  font-size: var(--text-xs);
-  color: var(--app-muted);
-  white-space: nowrap;
-}
-// 路径区：吃剩余宽度，承载面包屑或编辑态 input。
-.file-column-path {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-}
-.pane-tools,
-.file-column-head-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  flex: 0 0 auto;
-}
-
-// 面包屑：每段可点跳转，分隔符 ChevronRight。
-.file-column-breadcrumb {
-  display: flex;
-  align-items: center;
-  gap: 1px;
-  min-width: 0;
-  flex: 1;
-  overflow-x: auto;
-  scrollbar-width: none;
-  &::-webkit-scrollbar { display: none; }
-}
-.crumb {
-  display: inline-flex;
-  align-items: center;
-  gap: 1px;
-  background: transparent;
-  border: none;
-  padding: 2px 4px;
-  color: var(--app-muted);
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-  font-size: var(--text-xs);
-  font-family: var(--font-mono);
-  white-space: nowrap;
-  flex: 0 0 auto;
-  transition: background var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard);
-}
-.crumb:hover {
-  background: var(--app-hover);
-  color: var(--app-strong);
-}
-.crumb.active {
-  color: var(--app-strong);
-  font-weight: 600;
-}
-.crumb-sep {
-  color: var(--app-subtle);
-  flex-shrink: 0;
-}
-.crumb-edit {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  background: transparent;
-  border: none;
-  color: var(--app-subtle);
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-  flex: 0 0 auto;
-  margin-inline-start: 2px;
-  transition: background var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard);
-}
-.crumb-edit:hover {
-  background: var(--app-hover);
-  color: var(--app-strong);
-}
-.crumb-empty {
-  color: var(--app-subtle);
-  font-size: var(--text-xs);
-  cursor: text;
-  padding: 2px 4px;
-}
-
-.icon-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  background: transparent;
-  border: none;
-  color: var(--app-muted);
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-  transition: background var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard);
-}
-.icon-btn:hover:not(:disabled) {
-  background: var(--app-hover);
-  color: var(--app-strong);
-}
-.icon-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-// 过滤按钮激活态（有过滤值或面板打开时）。
-.icon-btn.active {
-  color: var(--accent);
-  background: color-mix(in oklab, var(--accent), transparent 88%);
-}
-
-// 路径编辑态 input（吃满路径区宽度）。
-.file-column-manual-path {
-  flex: 1 1 auto;
-  min-width: 60px;
-  padding: 2px 6px;
-  height: 22px;
-  background: var(--app-control);
-  color: var(--app-text);
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-sm);
-  font-size: var(--text-xs);
-  font-family: var(--font-mono);
-  outline: none;
-  transition: border-color var(--motion-fast) var(--ease-standard),
-    box-shadow var(--motion-fast) var(--ease-standard);
-}
-.file-column-manual-path:focus {
-  border-color: var(--accent);
-  box-shadow: var(--focus-ring);
-}
-
-// 过滤浮动窗宿主：相对定位，popover 绝对定位挂其下。
-.filter-host {
-  position: relative;
-  display: inline-flex;
-}
-// 浮动过滤面板：绝对定位贴在 header 下方右侧。
-.filter-popover {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  z-index: var(--z-dropdown);
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px 8px;
-  min-width: 200px;
-  background: var(--app-panel);
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-sm);
-  box-shadow: var(--app-shadow);
-}
-.filter-popover-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--app-subtle);
-  pointer-events: none;
-  flex-shrink: 0;
-}
-.filter-popover-input {
-  flex: 1;
-  min-width: 0;
-  padding: 3px 6px;
-  height: 22px;
-  background: var(--app-control);
-  color: var(--app-text);
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-sm);
-  outline: none;
-  font-size: var(--text-xs);
-  font-family: var(--font-body);
-  transition: border-color var(--motion-fast) var(--ease-standard),
-    box-shadow var(--motion-fast) var(--ease-standard);
-}
-.filter-popover-input::placeholder { color: var(--app-subtle); }
-.filter-popover-input:focus {
-  border-color: var(--accent);
-  box-shadow: var(--focus-ring);
-}
-.filter-popover-clear {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  background: transparent;
-  border: none;
-  color: var(--app-muted);
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-  flex-shrink: 0;
-}
-.filter-popover-clear:hover {
-  background: var(--app-hover);
-  color: var(--app-strong);
 }
 
 // Sortable column headers. 列：名称(flex) / 大小 / 类型 / 修改时间 / 权限 / 用户组。
