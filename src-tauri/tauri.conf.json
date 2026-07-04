@@ -4,8 +4,8 @@
   "version": "0.6.0",
   "identifier": "com.redtei.myshelltool",
   "build": {
-    "beforeDevCommand": "pnpm run dev -- --port 41234 --strictPort",
-    "beforeBuildCommand": "pnpm run build",
+    "beforeDevCommand": "npm run dev -- --port 41234 --strictPort",
+    "beforeBuildCommand": "npm run build",
     "devUrl": "http://127.0.0.1:41234",
     "frontendDist": "../dist"
   },
