@@ -48,6 +48,7 @@
 | 2026-07-04 | 文件管理 loading 接线：`files.js` 约 780（远程/本地文件操作 busy stack + messages），`FileColumn.vue` 约 1150（列级遮罩/Spinner/忙碌时交互 guard），`FileSurface.vue` 约 420（远程忙碌时禁用上传/刷新/新建）。 | none（复用现有 Pinia files store、lucide `Loader2`、TransferDrawer 的 spinner 语义；未新增抽象，因热点文件已超限仅做 scoped 接线） | medium | passed — `npm run build` exit 0；`git diff --check` exit 0（仅 CRLF 提示）。 |
 | 2026-07-05 | 文件管理拆分第一刀：`FileColumn.vue` 1176→1136，新增 `fileColumnUtils.js` 50 行，抽出类型/大小/时间/owner/路径面包屑纯 helper；`bump-version.mjs` release 防呆已先提交。 | none（helper 属于 files 组件同域展示层，未跨 store/后端边界；模板函数名保留为薄转发以降低行为风险） | medium | passed — `node --check src/components/files/fileColumnUtils.js` exit 0；纯函数断言通过；`npm run build` exit 0。 |
 | 2026-07-05 | 文件管理拆分第二刀：`FileColumn.vue` 1194→842，新增 `FileColumnHeader.vue` 466，把路径面包屑、路径输入、过滤弹层、上级/刷新按钮迁出父列组件。 | none（同属 `src/components/files` 展示层，父组件继续持有 store 绑定与 SFTP/本地动作；新组件只接 props/emit，不新增状态源或跨层依赖） | medium | passed — `node --check src/components/files/fileColumnUtils.js` exit 0；`npm run build` exit 0。 |
+| 2026-07-05 | 文件管理拆分第三刀：`FileColumn.vue` 842→589，新增 `FileColumnList.vue` 308，把文件行、空状态、loading overlay 迁出父列组件。 | none（沿用 `FileColumnHeader.vue` 的同域 props/emit 模式；父组件继续持有选择、导航、下载、右键菜单行为，列表组件只渲染并转发事件） | medium | passed — `npm run build` exit 0；`npm run test:ui` exit 0；`git diff --check` exit 0（仅 CRLF 提示）。 |
 
 ## Baseline snapshot (2026-06-23, RESET 鈥?measured via `wc -l` via PowerShell `Get-Content.Count`)
 
