@@ -31,6 +31,13 @@ import {
 } from 'lucide-vue-next';
 import { useFilesStore } from '@/stores/files.js';
 import { useUiStore } from '@/stores/ui.js';
+import {
+  buildPathCrumbs,
+  formatFileEntryOwner,
+  formatFileEntrySize,
+  formatFileEntryTime,
+  inferFileEntryType
+} from './fileColumnUtils.js';
 
 const props = defineProps({
   kind: { type: String, required: true, validator: (v) => v === 'local' || v === 'remote' },
@@ -115,11 +122,7 @@ function setLocalSort(key) {
 
 // 类型推断（排序用，与模板内 inferType 同义；定义在 computed 之前避免前向引用）。
 function typeOfEntry(e) {
-  if (e.kind === 'directory') return 'DIR';
-  if (e.kind === 'symlink') return 'LNK';
-  const dot = e.name.lastIndexOf('.');
-  if (dot <= 0 || dot === e.name.length - 1) return 'FILE';
-  return e.name.slice(dot + 1).toUpperCase();
+  return inferFileEntryType(e);
 }
 
 // Apply local sort (files store doesn't expose local sort, so re-sort here).
@@ -348,19 +351,11 @@ onBeforeUnmount(() => {
 // Display helpers
 // ============================================================
 function formatBytes(bytes) {
-  const size = Number(bytes) || 0;
-  if (size >= 1024 * 1024) return Math.round(size / 1024 / 1024) + ' MB';
-  if (size >= 1024) return Math.round(size / 1024) + ' KB';
-  return size + ' B';
+  return formatFileEntrySize(bytes);
 }
 
 function formatEntryTime(entry) {
-  if (!entry.modified) return '—';
-  if (/^\d+$/.test(entry.modified) && entry.modified.length >= 8) {
-    const d = new Date(Number(entry.modified) * 1000);
-    if (!isNaN(d.getTime())) return d.toLocaleString();
-  }
-  return entry.modified;
+  return formatFileEntryTime(entry);
 }
 
 const filterValue = computed(() => (isLocal.value ? localFilterQuery.value : remoteFilter.value));
@@ -375,32 +370,7 @@ const pathEditing = ref(false);
 // 把路径切成累积段：/srv/app/release → [{/, /}, {srv, /srv}, {app, /srv/app}, ...]。
 // 同时支持 Unix '/' 与 Windows '\'。
 const crumbs = computed(() => {
-  const raw = currentPath.value || '';
-  if (!raw) return [];
-  // 规范分隔为 '/' 便于切分；Windows 盘符 D:\ → D:/。
-  const norm = raw.replace(/\\/g, '/');
-  const isAbs = norm.startsWith('/');
-  const segs = norm.split('/').filter(Boolean);
-  const result = [];
-  if (isAbs) {
-    // Unix 根
-    result.push({ label: '/', path: '/' });
-    let acc = '';
-    for (const seg of segs) {
-      acc += '/' + seg;
-      result.push({ label: seg, path: acc });
-    }
-  } else {
-    // 相对 / Windows 路径（首段可能是盘符 D:）
-    let acc = '';
-    segs.forEach((seg, idx) => {
-      acc = idx === 0 ? seg : acc + '/' + seg;
-      // Windows 盘符根：D: → D:\ （navigateLocalPath 能识别）
-      const displayPath = /^[a-zA-Z]:$/.test(seg) ? seg + '\\' : acc;
-      result.push({ label: seg, path: displayPath });
-    });
-  }
-  return result;
+  return buildPathCrumbs(currentPath.value);
 });
 
 function enterPathEditing() {
@@ -460,21 +430,11 @@ onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
 // 新列展示 helper：类型 / 权限 / 用户:组
 // ============================================================
 function inferType(entry) {
-  if (entry.kind === 'directory') return 'DIR';
-  if (entry.kind === 'symlink') return 'LNK';
-  const dot = entry.name.lastIndexOf('.');
-  if (dot <= 0 || dot === entry.name.length - 1) return 'FILE';
-  // 扩展名大写，超长截断（如 .tar.gz 取最后段 GZ）。
-  const ext = entry.name.slice(dot + 1).toUpperCase();
-  return ext.length > 5 ? ext.slice(0, 5) : ext;
+  return inferFileEntryType(entry);
 }
 
 function formatOwner(entry) {
-  const u = entry.user;
-  const g = entry.group;
-  if (!u && !g) return '—';
-  if (u && g) return u + ':' + g;
-  return u || g || '—';
+  return formatFileEntryOwner(entry);
 }
 </script>
 
