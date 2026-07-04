@@ -1,120 +1,216 @@
 #!/usr/bin/env node
-// bump-version.mjs — 一次性把 4 个文件的版本号改成同一个值，并刷新 Cargo.lock。
-//
-// 用法：
-//   node scripts/bump-version.mjs 0.6.0          # bump 到 0.6.0
-//   node scripts/bump-version.mjs 0.6.0 --commit # bump + 自动 git commit
-//
-// 为何要脚本化：4 个文件手动改容易漏（package.json / tauri.conf.json /
-// 两个 Cargo.toml），版本漂移会导致 CI 因 lockfile 与 manifest 不符而报错。
-// 脚本保证原子一致 + 校验格式 + 可选自动提交，发版 skill 也调用它。
+// Bump every release version source in one pass:
+// package.json, package-lock.json, tauri.conf.json, both Cargo manifests,
+// and both Cargo.lock files.
 
 import { readFileSync, writeFileSync } from 'node:fs';
-import { execSync } from 'node:child_process';
-import { resolve, dirname } from 'node:path';
+import { execFileSync, execSync } from 'node:child_process';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, '..');
 
-// ─── 参数解析 ───
 const args = process.argv.slice(2);
 const doCommit = args.includes('--commit');
-const version = args.find(a => !a.startsWith('--'));
+const version = args.find((arg) => !arg.startsWith('--'));
+
+const packageLockPath = 'package-lock.json';
+const srcTauriLockPath = 'src-tauri/Cargo.lock';
+const coreLockPath = 'crates/myshelltool-core/Cargo.lock';
 
 if (!version) {
-  console.error('用法: node scripts/bump-version.mjs <版本号> [--commit]');
-  console.error('示例: node scripts/bump-version.mjs 0.6.0');
+  console.error('Usage: node scripts/bump-version.mjs <version> [--commit]');
+  console.error('Example: node scripts/bump-version.mjs 0.6.1');
   process.exit(1);
 }
 
-// 语义化版本格式校验（x.y.z 或 x.y.z-pre.build 等），拼错立即拦下。
 if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/.test(version)) {
-  console.error(`错误: 版本号 "${version}" 不符合 semver 格式（应为 x.y.z，如 0.6.0）`);
+  console.error(`Error: "${version}" is not a valid semver version. Use x.y.z, for example 0.6.1.`);
   process.exit(1);
 }
 
-// ─── 4 个目标文件的精确替换规则 ───
-// 每项：文件路径 + 一个把「旧版本占位」替换为新版本的正则。
-// 用正则而非全文替换，避免误伤同文件里其他数字。
+function projectPath(file) {
+  return resolve(root, file);
+}
+
+function readProjectFile(file) {
+  return readFileSync(projectPath(file), 'utf8');
+}
+
+function writeProjectFile(file, content) {
+  writeFileSync(projectPath(file), content);
+}
+
+function replaceOrFail(file, content, pattern, replacement) {
+  const next = content.replace(pattern, replacement);
+  if (next === content) {
+    throw new Error(`${file}: version field was not found; file structure may have changed`);
+  }
+  return next;
+}
+
+function updatePackageLock(content) {
+  const lock = JSON.parse(content);
+  lock.version = version;
+  lock.packages ??= {};
+  lock.packages[''] ??= {};
+  lock.packages[''].version = version;
+  return JSON.stringify(lock, null, 2) + '\n';
+}
+
+function cargoLockPackageVersion(content, packageName) {
+  const pattern = new RegExp(`\\[\\[package\\]\\]\\s+name = "${packageName}"\\s+version = "([^"]+)"`, 'm');
+  return content.match(pattern)?.[1];
+}
+
+function assertVersion(label, actual) {
+  if (actual !== version) {
+    throw new Error(`${label} is ${actual ?? '<missing>'}, expected ${version}`);
+  }
+}
+
 const targets = [
   {
     file: 'package.json',
-    replace: content => content.replace(/("version"\s*:\s*")\d+\.\d+\.\d+[^"]*(")/, `$1${version}$2`)
+    replace: (content) => replaceOrFail(
+      'package.json',
+      content,
+      /("version"\s*:\s*")\d+\.\d+\.\d+[^"]*(")/,
+      `$1${version}$2`
+    )
+  },
+  {
+    file: packageLockPath,
+    replace: updatePackageLock
   },
   {
     file: 'src-tauri/tauri.conf.json',
-    replace: content => content.replace(/("version"\s*:\s*")\d+\.\d+\.\d+[^"]*(")/, `$1${version}$2`)
+    replace: (content) => replaceOrFail(
+      'src-tauri/tauri.conf.json',
+      content,
+      /("version"\s*:\s*")\d+\.\d+\.\d+[^"]*(")/,
+      `$1${version}$2`
+    )
   },
   {
     file: 'src-tauri/Cargo.toml',
-    // 只改 [package] name="myshelltool" 下紧跟的 version 行
-    replace: content => content.replace(
+    replace: (content) => replaceOrFail(
+      'src-tauri/Cargo.toml',
+      content,
       /(name\s*=\s*"myshelltool"\s*\n\s*version\s*=\s*")\d+\.\d+\.\d+[^"]*(")/,
       `$1${version}$2`
     )
   },
   {
     file: 'crates/myshelltool-core/Cargo.toml',
-    replace: content => content.replace(
+    replace: (content) => replaceOrFail(
+      'crates/myshelltool-core/Cargo.toml',
+      content,
       /(name\s*=\s*"myshelltool-core"\s*\n\s*version\s*=\s*")\d+\.\d+\.\d+[^"]*(")/,
       `$1${version}$2`
     )
   }
 ];
 
-// ─── 执行替换 + 逐个校验是否真的改到了 ───
-console.log(`Bump 版本号 → ${version}\n`);
-for (const t of targets) {
-  const fullPath = resolve(root, t.file);
-  const before = readFileSync(fullPath, 'utf8');
-  const after = t.replace(before);
+console.log(`Bump version -> ${version}\n`);
 
-  // 校验：替换后内容必须与原文不同，否则说明文件里没匹配到版本字段
-  // （字段名变了 / 文件被重构了），立即报错而非静默跳过。
-  if (before === after) {
-    console.error(`❌ ${t.file}: 未找到版本字段，文件结构可能变了，请人工检查`);
-    process.exit(1);
-  }
-
-  writeFileSync(fullPath, after);
-  console.log(`  ✓ ${t.file}`);
+for (const target of targets) {
+  const before = readProjectFile(target.file);
+  const after = target.replace(before);
+  writeProjectFile(target.file, after);
+  console.log(`  updated ${target.file}`);
 }
 
-// ─── 刷新 Cargo.lock：Rust manifest 版本变了，lockfile 必须同步，否则
-// cargo build 会因 lockfile 与 manifest 不符而警告或重算。───
-console.log('\n刷新 Cargo.lock...');
+console.log('\nRefresh package-lock.json...');
 try {
-  execSync('cargo update -p myshelltool --precise ' + version, {
-    cwd: resolve(root, 'src-tauri'),
+  execSync('npm install --package-lock-only --ignore-scripts', {
+    cwd: root,
     stdio: 'inherit'
   });
-  execSync('cargo update -p myshelltool-core --precise ' + version, {
-    cwd: resolve(root, 'src-tauri'),
-    stdio: 'inherit'
-  });
-  console.log('  ✓ Cargo.lock 已同步');
-} catch (e) {
-  // cargo update 失败不致命（lockfile 会在下次 build 时自动修正），只提示。
-  console.warn('  ⚠ cargo update 失败（不致命，下次 build 会自动修正）：' + e.message);
+  console.log('  package-lock.json synchronized');
+} catch (error) {
+  console.error(`  npm lockfile sync failed: ${error.message}`);
+  process.exit(1);
 }
 
-// ─── 可选：自动 git commit ───
+console.log('\nRefresh Cargo.lock files...');
+try {
+  execSync(`cargo update -p myshelltool --precise ${version}`, {
+    cwd: projectPath('src-tauri'),
+    stdio: 'inherit'
+  });
+  execSync(`cargo update -p myshelltool-core --precise ${version}`, {
+    cwd: projectPath('src-tauri'),
+    stdio: 'inherit'
+  });
+  execSync(`cargo update -p myshelltool-core --precise ${version}`, {
+    cwd: projectPath('crates/myshelltool-core'),
+    stdio: 'inherit'
+  });
+  console.log('  Cargo.lock files synchronized');
+} catch (error) {
+  console.error(`  Cargo.lock sync failed: ${error.message}`);
+  process.exit(1);
+}
+
+console.log('\nValidate version consistency...');
+try {
+  const packageJson = JSON.parse(readProjectFile('package.json'));
+  const packageLock = JSON.parse(readProjectFile(packageLockPath));
+  const tauriConfig = JSON.parse(readProjectFile('src-tauri/tauri.conf.json'));
+  const tauriToml = readProjectFile('src-tauri/Cargo.toml');
+  const coreToml = readProjectFile('crates/myshelltool-core/Cargo.toml');
+  const tauriLock = readProjectFile(srcTauriLockPath);
+  const coreLock = readProjectFile(coreLockPath);
+
+  assertVersion('package.json', packageJson.version);
+  assertVersion('package-lock.json', packageLock.version);
+  assertVersion('package-lock.json packages[""]', packageLock.packages?.['']?.version);
+  assertVersion('src-tauri/tauri.conf.json', tauriConfig.version);
+  assertVersion('src-tauri/Cargo.toml', tauriToml.match(/name\s*=\s*"myshelltool"\s*\n\s*version\s*=\s*"([^"]+)"/)?.[1]);
+  assertVersion('crates/myshelltool-core/Cargo.toml', coreToml.match(/name\s*=\s*"myshelltool-core"\s*\n\s*version\s*=\s*"([^"]+)"/)?.[1]);
+  assertVersion('src-tauri/Cargo.lock myshelltool', cargoLockPackageVersion(tauriLock, 'myshelltool'));
+  assertVersion('src-tauri/Cargo.lock myshelltool-core', cargoLockPackageVersion(tauriLock, 'myshelltool-core'));
+  assertVersion('crates/myshelltool-core/Cargo.lock myshelltool-core', cargoLockPackageVersion(coreLock, 'myshelltool-core'));
+  console.log('  all release version sources match');
+} catch (error) {
+  console.error(`  version consistency check failed: ${error.message}`);
+  process.exit(1);
+}
+
 if (doCommit) {
-  console.log('\n提交改动...');
+  console.log('\nCommit release bump...');
   try {
-    // 只 add 改过的文件，避免把工作区其他未完成的改动一起带进版本提交。
-    const files = targets.map(t => t.file).concat(['src-tauri/Cargo.lock', 'crates/myshelltool-core/Cargo.lock']);
-    execSync(`git add ${files.map(f => `"${f}"`).join(' ')}`, { cwd: root, stdio: 'inherit' });
-    execSync(`git commit -m "chore: bump v${version}"`, { cwd: root, stdio: 'inherit' });
-    console.log(`  ✓ 已提交 "chore: bump v${version}"`);
-  } catch (e) {
-    console.error('  ❌ git 提交失败：' + e.message);
+    const files = [
+      ...new Set([
+        ...targets.map((target) => target.file),
+        srcTauriLockPath,
+        coreLockPath
+      ])
+    ];
+    execFileSync('git', ['add', ...files], { cwd: root, stdio: 'inherit' });
+    execFileSync('git', [
+      'commit',
+      '-m', `Release v${version}`,
+      '-m', `This keeps all release manifests and lockfiles aligned at ${version} so the tag, installer metadata, updater manifest, and package locks agree.`,
+      '-m', 'Constraint: Release commits must pass the local Lore commit guard and include the OmX co-author trailer',
+      '-m', 'Rejected: Commit with a conventional one-line bump message | the hook blocks messages without Lore trailers',
+      '-m', 'Confidence: high',
+      '-m', 'Scope-risk: narrow',
+      '-m', 'Directive: Do not hand-edit release versions; use scripts/bump-version.mjs so every manifest and lockfile is audited',
+      '-m', `Tested: node scripts/bump-version.mjs ${version}; built-in version consistency audit`,
+      '-m', 'Not-tested: GitHub Actions release artifacts before pushing the tag',
+      '-m', 'Co-authored-by: OmX <omx@oh-my-codex.dev>'
+    ], { cwd: root, stdio: 'inherit' });
+    console.log(`  committed Release v${version}`);
+  } catch (error) {
+    console.error(`  git commit failed: ${error.message}`);
     process.exit(1);
   }
 }
 
-console.log(`\n✅ 完成。下一步: git tag v${version} && git push origin master --tags`);
+console.log(`\nDone. Next: git tag v${version} && git push origin master --tags`);
 if (!doCommit) {
-  console.log('   （本脚本未带 --commit，改动已写盘但未提交，请自行检查后提交）');
+  console.log('Changes were written but not committed because --commit was not provided.');
 }
