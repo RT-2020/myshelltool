@@ -24,23 +24,24 @@ description: 发布 myshelltool（Tauri 2 桌面 SSH 客户端）的新版本。
 
 发版就是改版本号 → 生成发布说明 → 提交 → 打 tag → 推送 → 等产物。每一步都要做对。
 
-### 步骤 1：bump 版本号（用脚本，一次改 4 个文件 + 刷新 Cargo.lock）
+### 步骤 1：bump 版本号（用脚本，一次改 7 个版本源）
 
-**不要手工逐个改 4 个文件**——用 `scripts/bump-version.mjs`，它保证 4 个文件版本号原子一致 + 自动刷新 Cargo.lock + 校验格式，避免版本漂移。
+**不要手工逐个改版本号**——用 `scripts/bump-version.mjs`，它保证 5 个 manifest/config 文件 + 2 个 Cargo.lock 版本号原子一致，并同步 `package-lock.json`，避免版本漂移。
 
 ```bash
 node scripts/bump-version.mjs X.Y.Z --commit
 # 例如: node scripts/bump-version.mjs 0.6.0 --commit
 ```
 
-`--commit` 会自动执行 `git add` + `git commit -m "chore: bump vX.Y.Z"`，只 add 版本相关文件（4 个 manifest + 2 个 lockfile），不误带工作区其他未完成改动。
+`--commit` 会自动执行 `git add` + Lore 格式 `git commit`，只 add 版本相关文件（`package.json` / `package-lock.json` / `tauri.conf.json` / 两个 `Cargo.toml` / 两个 `Cargo.lock`），不误带工作区其他未完成改动。
 
 **手动核对（脚本已内置校验，但发版是关键操作，复查一遍）**：
 ```bash
 grep '"version"' package.json src-tauri/tauri.conf.json
+grep '"version"' package-lock.json | head -2
 grep '^version' src-tauri/Cargo.toml crates/myshelltool-core/Cargo.toml
 ```
-四个值必须完全相同。脚本原理与失败处理见文末「附录：脚本说明」。
+应用自身版本值必须完全相同。脚本原理与失败处理见文末「附录：脚本说明」。
 
 ### 步骤 2：（可选）生成发布说明
 
@@ -165,6 +166,7 @@ git push origin vX.Y.Z                          # 推 tag 触发 workflow
 
 - **CI（ci.yml）红屏但 release.yml 没问题**：CI 只是构建守护，红屏不阻塞发版。但建议修，因为 release.yml 在 tag 上跑，CI 在 master 跑，代码同一份。
 - **Build 步骤失败含 os error 32**：本地才有，是 DLL 被进程占用（`tasklist | grep myshelltool` 找占用进程）；CI 上不会遇到。
+- **Build 步骤失败在 `beforeBuildCommand` / pnpm install**：release.yml 使用 `npm ci`，所以 `src-tauri/tauri.conf.json` 的 `beforeBuildCommand` 必须走 `npm run build`。不要把 Tauri hook 改回 `pnpm run build`，否则 CI 已经用 npm 装好依赖后，pnpm 会在打包阶段重新安装并可能因 ignored build scripts 失败。v0.6.0 就踩过这个坑，v0.6.1 修复为 npm 后发布成功。
 
 ---
 
@@ -178,6 +180,7 @@ echo "2. updater.pubkey 已配:"; grep -c "pubkey" src-tauri/tauri.conf.json
 echo "3. updater 插件已注册:"; grep -c "tauri_plugin_updater" src-tauri/src/lib.rs
 echo "4. workflows 存在:"; ls .github/workflows/
 echo "5. 当前版本:"; grep '"version"' package.json src-tauri/tauri.conf.json | head -1
+echo "6. Tauri build hook 使用 npm:"; grep -c '"beforeBuildCommand": "npm run build"' src-tauri/tauri.conf.json
 ```
 
 ---
@@ -186,7 +189,7 @@ echo "5. 当前版本:"; grep '"version"' package.json src-tauri/tauri.conf.json
 
 假设要发 0.6.0：
 ```bash
-# 1. bump 版本号 + 自动提交（脚本改 4 文件 + 刷 Cargo.lock + git commit）
+# 1. bump 版本号 + 自动提交（脚本改 7 个版本源 + Lore commit）
 node scripts/bump-version.mjs 0.6.0 --commit
 # 2. （可选）生成结构化发布说明，待会儿粘贴到 Release
 node scripts/gen-changelog.mjs --for v0.6.0 -o notes-v0.6.0.md
@@ -206,16 +209,16 @@ git push origin master --tags
 
 ### `scripts/bump-version.mjs` — 版本号 bump
 
-一次性把 4 个文件版本号改成同一个值 + 刷新 Cargo.lock。
+一次性把版本号改成同一个值，并刷新 npm/Cargo lockfile。
 
 ```bash
 node scripts/bump-version.mjs <版本号> [--commit]
 ```
 
-- **为什么需要它**：4 个文件（package.json / tauri.conf.json / 两个 Cargo.toml）手动改容易漏，版本漂移会让 CI 报错或产物版本号错乱。脚本保证原子一致。
-- **内置校验**：semver 格式校验（`0.6` 会被拒，必须 `0.6.0`）；每个文件替换后对比原文，未匹配到立即报错而非静默跳过。
-- **`--commit`**：自动 `git add`（只 add 4 个 manifest + 2 个 lockfile）+ `git commit -m "chore: bump vX.Y.Z"`。
-- **Cargo.lock 同步**：跑 `cargo update -p myshelltool --precise X.Y.Z` 刷新 lockfile，避免 manifest/lockfile 不符。失败不致命（下次 build 自动修正）。
+- **为什么需要它**：`package.json` / `package-lock.json` / `tauri.conf.json` / 两个 `Cargo.toml` / 两个 `Cargo.lock` 手动改容易漏，版本漂移会让 CI 报错或产物版本号错乱。脚本保证原子一致。
+- **内置校验**：semver 格式校验（`0.6` 会被拒，必须 `0.6.0`）；每个文件替换后对比原文，未匹配到立即报错而非静默跳过；最后逐项校验所有版本源是否等于目标版本。
+- **`--commit`**：自动 `git add`（只 add 版本相关文件）+ Lore 格式 `git commit`，并带 `Co-authored-by: OmX <omx@oh-my-codex.dev>`，满足本地 commit hook。
+- **lockfile 同步**：跑 `npm install --package-lock-only --ignore-scripts`、`cargo update -p myshelltool --precise X.Y.Z`、`cargo update -p myshelltool-core --precise X.Y.Z`（分别覆盖 `src-tauri` 和 `crates/myshelltool-core`），避免 manifest/lockfile 不符。失败即中止，不允许带脏版本继续发版。
 - **原理**：每个文件用针对性正则替换（按文件结构调整），不是粗暴全文替换，避免误伤其他数字。
 
 ### `scripts/gen-changelog.mjs` — 发布说明生成
