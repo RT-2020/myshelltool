@@ -642,13 +642,6 @@ export const useSessionsStore = defineStore('sessions', () => {
       wb().modal = { type: 'assetEditor', asset };
       return;
     }
-    const existing = sessions.value.find(session => session.asset.id === asset.id);
-    if (existing) {
-      setActiveSession(existing.sessionId);
-      wb().setTab('terminal');
-      announce('已切换到会话：' + asset.name);
-      return;
-    }
     await ensureHostKeyListeners();
     wb().setTab('terminal');
     announce('正在连接：' + asset.name);

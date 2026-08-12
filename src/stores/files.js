@@ -235,13 +235,21 @@ export const useFilesStore = defineStore('files', () => {
   // ============================================================
   // Sessions lazy 解析（避免循环 import）
   // ============================================================
+  // 解析指定资产当前应使用的会话：优先活跃会话（若同资产），否则回退首个匹配会话。
+  // 同资产多会话场景下，文件浏览跟随当前聚焦的 tab。
+  function resolveSessionForAsset(asset) {
+    const sessionsStore = wb().sessionsStore();
+    const active = sessionsStore.activeSession;
+    if (active && active.asset?.id === asset.id) return active;
+    return sessionsStore.sessions.find(item => item.asset.id === asset.id) || null;
+  }
   function getActiveSession() {
     const sessionsStore = wb().sessionsStore();
     const active = sessionsStore.activeSession;
     if (active) return active;
     const asset = wb().selectedAsset;
     if (!asset) return null;
-    return sessionsStore.sessions.find(item => item.asset.id === asset.id) || null;
+    return resolveSessionForAsset(asset);
   }
 
   // ============================================================
@@ -252,8 +260,7 @@ export const useFilesStore = defineStore('files', () => {
     const asset = wb().selectedAsset;
     if (!asset) return;
     const targetPath = path || remotePathForAsset(asset);
-    const sessionsStore = wb().sessionsStore();
-    const activeSession = sessionsStore.sessions.find(session => session.asset.id === asset.id);
+    const activeSession = resolveSessionForAsset(asset);
     if (activeSession) {
       const result = await invokeBackend('sftp_list_dir', { sessionId: activeSession.sessionId, path: targetPath });
       applyRemoteListing(targetPath, result.entries || []);
