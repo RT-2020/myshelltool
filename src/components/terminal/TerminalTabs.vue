@@ -67,6 +67,13 @@ function tooltipFor(s) {
   if (s.oscTitle) parts.push(s.oscTitle);
   return parts.filter(Boolean).join(' · ');
 }
+// 同资产多会话场景：为重名 tab 追加序号后缀（如 " (1)"）以便区分。
+function dupSuffixFor(session) {
+  const same = props.sessions.filter(s => s.asset?.id && s.asset?.id === session.asset?.id);
+  if (same.length < 2) return '';
+  const idx = same.findIndex(s => s.sessionId === session.sessionId);
+  return ' (' + (idx + 1) + ')';
+}
 </script>
 
 <template>
@@ -93,7 +100,7 @@ function tooltipFor(s) {
         @mousedown.middle.prevent="onTabClick($event, session.sessionId); emit('close', session.sessionId)"
       >
         <span :class="['conn-dot', 'session-status-dot', statusFor(session)]"></span>
-        <span class="tab-name session-tab-name">{{ session.asset?.name }}</span>
+        <span class="tab-name session-tab-name">{{ session.asset?.name }}{{ dupSuffixFor(session) }}</span>
         <span class="session-tab-host">{{ session.asset?.host }}</span>
         <span v-if="session.oscTitle" class="session-tab-osc">· {{ session.oscTitle }}</span>
         <button class="tab-close" title="关闭 (Ctrl+W)" @click="onTabClose($event, session.sessionId)" tabindex="-1"><X :size="12" /></button>
@@ -108,7 +115,7 @@ function tooltipFor(s) {
       <div v-if="overflowMenuOpen && hiddenSessions.length" class="overflow-menu" @click.stop>
         <button v-for="session in hiddenSessions" :key="session.sessionId" :class="['overflow-item', { active: session.sessionId === activeSessionId }]" @click="() => { onTabClick(session.sessionId); overflowMenuOpen = false; }">
           <span :class="['session-status-dot', statusFor(session)]"></span>
-          <span class="overflow-name">{{ session.asset?.name }}</span>
+          <span class="overflow-name">{{ session.asset?.name }}{{ dupSuffixFor(session) }}</span>
           <span class="overflow-host muted">{{ session.asset?.host }}</span>
         </button>
       </div>
