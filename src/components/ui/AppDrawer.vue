@@ -1,13 +1,17 @@
 <script setup>
-import { watch, onBeforeUnmount } from 'vue';
+import { ref, watch, nextTick, onBeforeUnmount } from 'vue';
 
 const props = defineProps({
   open: { type: Boolean, default: false },
   side: { type: String, default: 'right' }, // right | bottom
   width: { type: String, default: '320px' },
-  height: { type: String, default: 'auto' }
+  height: { type: String, default: 'auto' },
+  ariaLabel: { type: String, default: '侧边抽屉' }
 });
 const emit = defineEmits(['close']);
+
+const panelRef = ref(null);
+const lastFocus = ref(null);
 
 function close() {
   emit('close');
@@ -27,8 +31,24 @@ function onBackdropClick(e) {
 watch(
   () => props.open,
   (v) => {
-    if (v) document.addEventListener('keydown', onKeydown);
-    else document.removeEventListener('keydown', onKeydown);
+    if (v) {
+      // 打开时记住触发元素，关闭后还原焦点
+      lastFocus.value = document.activeElement;
+      document.addEventListener('keydown', onKeydown);
+      nextTick(() => {
+        if (panelRef.value) {
+          const focusable = panelRef.value.querySelector(
+            'a[href], area[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+          );
+          if (focusable) focusable.focus();
+        }
+      });
+    } else {
+      document.removeEventListener('keydown', onKeydown);
+      if (lastFocus.value && lastFocus.value.isConnected) {
+        lastFocus.value.focus();
+      }
+    }
   }
 );
 
@@ -42,8 +62,12 @@ onBeforeUnmount(() => {
     <Transition :name="`app-drawer-fade-${side}`">
     <div v-if="open" class="app-drawer-backdrop" @click="onBackdropClick" @mousedown="onBackdropClick">
       <div
+        ref="panelRef"
         class="app-drawer"
         :class="[`app-drawer--${side}`]"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="ariaLabel"
         :style="side === 'right' ? { width } : { height }"
         @click.stop
       >
@@ -87,11 +111,11 @@ onBeforeUnmount(() => {
 // Transitions
 .app-drawer-fade-right-enter-active,
 .app-drawer-fade-right-leave-active {
-  transition: opacity var(--motion-base) var(--ease-standard);
+  transition: opacity var(--motion-base);
 }
 .app-drawer-fade-right-enter-active .app-drawer,
 .app-drawer-fade-right-leave-active .app-drawer {
-  transition: transform var(--motion-base) var(--ease-standard);
+  transition: transform var(--motion-base);
 }
 .app-drawer-fade-right-enter-from,
 .app-drawer-fade-right-leave-to {
@@ -104,11 +128,11 @@ onBeforeUnmount(() => {
 
 .app-drawer-fade-bottom-enter-active,
 .app-drawer-fade-bottom-leave-active {
-  transition: opacity var(--motion-base) var(--ease-standard);
+  transition: opacity var(--motion-base);
 }
 .app-drawer-fade-bottom-enter-active .app-drawer,
 .app-drawer-fade-bottom-leave-active .app-drawer {
-  transition: transform var(--motion-base) var(--ease-standard);
+  transition: transform var(--motion-base);
 }
 .app-drawer-fade-bottom-enter-from,
 .app-drawer-fade-bottom-leave-to {

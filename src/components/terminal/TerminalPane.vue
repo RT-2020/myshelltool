@@ -56,7 +56,7 @@ function onContextMenu(event) {
         </button>
         <button v-if="isTauriCore" class="btn-primary secondary" type="button" @click="emit('open-asset-editor')">新增连接</button>
         <button v-else class="btn-primary" type="button" @click="emit('open-asset-editor')">打开新会话</button>
-        <span class="hint-keys"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> 新建标签</span>
+        <span class="hint-keys"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> 连接所选主机</span>
       </div>
     </div>
   </div>

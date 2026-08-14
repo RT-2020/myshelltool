@@ -247,7 +247,7 @@ function selectTheme(value) {
   height: 48px;
   border-radius: var(--radius-md, 8px);
   background: var(--app-accent, var(--app-primary));
-  color: #fff;
+  color: var(--accent-on);
   font-weight: 700;
   font-size: 18px;
   letter-spacing: -0.02em;

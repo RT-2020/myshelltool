@@ -83,9 +83,9 @@ myshelltool/
 │   ├── main.js                 # 应用入口：createApp(App).use(createPinia()).mount('#app')
 │   ├── App.vue                 # 根组件：5 区域布局 + onMounted 调 store.initialize() 启动加载
 │   ├── components/
-│   │   ├── shell/              # 外壳：AppShellLayout / AppTitleBar / AppStatusBar
-│   │   │                       #        ConnectionSidebar / AssetGroupNode(递归)
-│   │   │                       #        GlobalModals(弹窗中枢) / OpsSummaryPanel
+│   │   ├── shell/              # 外壳：ConnectionSidebar / AssetGroupNode(递归) /
+│   │   │                       #        GlobalModals(弹窗中枢) / OpsSummaryPanel / RightSidebar
+│   │   ├── workbench/          # 实际运行的外壳：WorkbenchShell（标题栏/状态栏/拖拽条）
 │   │   ├── terminal/           # 终端：TerminalSurface / TerminalTabs / TerminalToolbar
 │   │   ├── files/              # 文件：FileSurface / FileColumn / ...
 │   │   ├── resource-monitor/   # 资源监控：Cpu/Memory/Network/Disk 图表 + chart-utils
@@ -103,8 +103,9 @@ myshelltool/
 │   │   ├── mcp.js              # 【v1.2】MCP 探测状态 + 配置引导（refresh 触发探测，无事件监听）
 │   │   └── sync.js             # 【v1.3】Gist 资产同步（push/pull/冲突解决/状态展示）
 │   ├── composables/            # useTheme / useClipboard / useTerminalConfig /
-│   │                           # useTerminalShortcuts / useAutoReconnect
-│   ├── lib/                    # terminalController / terminalThemes / dangerousCommands
+│   │                           # useAutoReconnect / usePanelResize / useAutoUpdate
+│   ├── lib/                    # terminalThemes / dangerousCommands / terminalGuards /
+│   │                           # transferUtils（S2/S3 新增的纯函数模块）
 │   ├── services/
 │   │   └── backend.js          # Tauri IPC 桥：invokeBackend / listenBackendEvent /
 │   │                           #                 normalizeAsset / slugify

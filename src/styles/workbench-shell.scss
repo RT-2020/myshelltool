@@ -185,23 +185,7 @@
   border-radius: 8px;
 }
 
-.icon-btn {
-  width: 28px;
-  height: 28px;
-  display: inline-grid;
-  place-items: center;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  color: var(--app-muted);
-  transition: background var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast);
-}
-
-.icon-btn svg { width: 14px; height: 14px; stroke-width: 1.6; }
-.icon-btn:hover { background: var(--app-hover); color: var(--app-text); }
-.icon-btn.primary { color: var(--accent); }
-.icon-btn.primary:hover { background: var(--accent-soft); color: var(--accent-hover); }
-.icon-btn[aria-disabled='true'],
-.icon-btn:disabled { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
+// 通用 icon-btn（含 .primary/:disabled）已收敛为全局类（_utilities.scss）
 
 .window-controls {
   display: inline-flex;
@@ -572,17 +556,6 @@
 
 .sb-item.muted { color: var(--app-subtle); }
 .sb-sep { color: var(--app-subtle); }
-.conn-dot {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--app-subtle);
-  flex-shrink: 0;
-}
-
-.conn-dot.connected,
-.conn-dot.success { background: var(--success); }
-.conn-dot.warn { background: var(--warn); }
+// 状态栏圆点已收敛为全局 .dot（_utilities.scss，WorkbenchShell 模板挂 .dot idle）
 .transfer-pill { color: var(--app-muted); border-radius: 999px; }
 .transfer-pill .mono { margin-left: 4px; }

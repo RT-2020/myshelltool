@@ -147,14 +147,22 @@ try {
     files.downloadEntry(files.remoteEntries[0]);
   });
   await page.waitForFunction(() => window.__MST_FILE_LOADING_MOCK.downloadStarted > 0, { timeout: 5000 });
-  await overlay.waitFor({ state: 'visible', timeout: 5000 });
-  const downloadOverlayText = await overlay.textContent();
-  if (!downloadOverlayText?.includes('正在下载远程文件')) {
-    throw new Error(`remote file loading overlay text missing or wrong: ${downloadOverlayText}`);
+
+  // S2 行为变更：传输与浏览 busy 解耦——下载期间文件列表可继续浏览，
+  // 不再显示阻塞性 loading 遮罩；进行中状态改由传输队列（状态栏胶囊/抽屉）表达。
+  await page.waitForFunction(() => {
+    const files = document.querySelector('#app').__vue_app__.config.globalProperties.$pinia._s.get('files');
+    return files.activeTransfers.length > 0;
+  }, { timeout: 5000 });
+  if (!(await overlay.isHidden())) {
+    throw new Error('download must NOT lock the file list with a blocking overlay (S2 decoupled transfer busy from browse busy)');
   }
 
   await page.evaluate(() => window.__MST_FILE_LOADING_MOCK.releaseDownload?.());
-  await overlay.waitFor({ state: 'hidden', timeout: 5000 });
+  await page.waitForFunction(() => {
+    const files = document.querySelector('#app').__vue_app__.config.globalProperties.$pinia._s.get('files');
+    return files.activeTransfers.length === 0;
+  }, { timeout: 5000 });
 
   console.log('File loading UI test passed');
 } finally {

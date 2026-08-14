@@ -1,3 +1,11 @@
+// 文件列 grid 模板权威定义（S5）：行（FileColumnList）与表头（FileColumnColumns）
+// 共享同一组列宽，避免两处硬编码漂移导致表头与行错位。
+// 行首列 16px 是图标列；表头无图标列故不含 16px。
+export const FILE_COLUMN_COLS = '64px 56px 130px 56px 92px'; // size/type/mtime/perm/owner
+export const FILE_COLUMN_GRID_ROW = `16px minmax(0, 1fr) ${FILE_COLUMN_COLS}`;
+export const FILE_COLUMN_GRID_HEADER = `minmax(0, 1fr) ${FILE_COLUMN_COLS}`;
+export const FILE_COLUMN_GRID_COMPACT = '16px minmax(0, 1fr)';
+
 export function inferFileEntryType(entry) {
   if (entry.kind === 'directory') return 'DIR';
   if (entry.kind === 'symlink') return 'LNK';

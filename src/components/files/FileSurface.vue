@@ -207,7 +207,12 @@ const contextMenuItems = computed(() => {
       <FileColumn
         kind="remote"
         class="file-pane file-pane-remote"
-      />
+      >
+        <!-- 远程列表头弱提示（S2）：常显，最少打扰 -->
+        <template #actions-leading>
+          <span class="file-column-hint" title="右键文件或空白处查看更多操作">右键查看更多操作</span>
+        </template>
+      </FileColumn>
     </div>
 
     <!-- ============ drop-hint（app.css L770-785：底部胶囊提示）============ -->
@@ -283,36 +288,7 @@ const contextMenuItems = computed(() => {
   margin-left: auto;
 }
 
-// 通用 icon-btn（与全局同规格）
-.icon-btn {
-  width: 28px;
-  height: 28px;
-  display: inline-grid;
-  place-items: center;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  color: var(--app-muted);
-  cursor: pointer;
-  transition: background var(--motion-fast), color var(--motion-fast);
-}
-.icon-btn svg {
-  width: 14px;
-  height: 14px;
-  stroke-width: 1.6;
-}
-.icon-btn:hover {
-  background: var(--app-hover);
-  color: var(--app-text);
-}
-.icon-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-.icon-btn:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
+// 通用 icon-btn 已收敛为全局类（_utilities.scss 单一权威实现），模板直接使用
 
 // ============================================================
 // view-pills（app.css L703-727：视图胶囊 双栏/仅远程）
@@ -366,6 +342,18 @@ const contextMenuItems = computed(() => {
 }
 .file-divider {
   background: var(--app-border);
+}
+
+// S2：远程列表头弱提示（右键查看更多操作）
+.file-column-hint {
+  font-size: var(--text-xs);
+  color: var(--app-subtle);
+  white-space: nowrap;
+  padding-inline: 4px;
+  user-select: none;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 // ============================================================

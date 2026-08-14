@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import {
   Menu,
   Minus,
@@ -49,6 +49,7 @@ const emit = defineEmits([
 const sidebarSearch = ref('');
 const quickConnect = ref('');
 const menuOpen = ref(false);
+const menuRef = ref(null);
 const isMaximized = ref(false);
 const searchInputRef = ref(null);
 const activeSearchIndex = ref(0);
@@ -58,6 +59,8 @@ const activeTransferCount = computed(() => props.store.activeTransfers?.length |
 const completedTransferCount = computed(() => props.store.completedTransfers?.length || 0);
 const syncText = computed(() => props.store.syncText || '未配置同步');
 const mcpText = computed(() => props.store.mcpClientConnected ? 'MCP 可用' : 'MCP 不可用');
+// 状态栏中间区：真实连接状态（sessions 列表非空即视为已连接，替代原假数据 zsh）
+const activeSessions = computed(() => props.store.sessions?.length || 0);
 const appClasses = computed(() => ({
   'sidebar-collapsed': props.store.assetsCollapsed,
   'right-collapsed': props.store.rightCollapsed
@@ -76,6 +79,35 @@ watch(
 
 watch(searchSuggestions, () => {
   activeSearchIndex.value = 0;
+});
+
+// 布局菜单：打开时挂 document 监听（外部点击 + Escape 关闭），关闭时移除。
+// 菜单项自身点击会先冒泡到 document，这里用容器包含判断放行，
+// 保证菜单项动作执行完毕后再关闭。
+watch(menuOpen, open => {
+  if (open) {
+    document.addEventListener('click', onDocClick);
+    document.addEventListener('keydown', onDocKeydown);
+  } else {
+    document.removeEventListener('click', onDocClick);
+    document.removeEventListener('keydown', onDocKeydown);
+  }
+});
+
+function onDocClick(event) {
+  if (menuRef.value && menuRef.value.contains(event.target)) return;
+  menuOpen.value = false;
+}
+
+function onDocKeydown(event) {
+  if (event.key === 'Escape') {
+    menuOpen.value = false;
+  }
+}
+
+onBeforeUnmount(() => {
+  document.removeEventListener('click', onDocClick);
+  document.removeEventListener('keydown', onDocKeydown);
 });
 
 function openSearch() {
@@ -244,7 +276,7 @@ onMounted(() => {
             @input="updateSearchQuery"
             @keydown="onSearchKeydown"
           />
-          <kbd>⌘K</kbd>
+          <kbd>Ctrl K</kbd>
           <ul v-if="searchOpen" class="tb-suggestions" role="listbox">
             <li
               v-for="(item, idx) in searchSuggestions"
@@ -265,33 +297,33 @@ onMounted(() => {
       </div>
 
       <div class="tb-right">
-        <button class="icon-btn" type="button" title="切换主题" @click="emit('toggle-theme')">
+        <button class="icon-btn" type="button" aria-label="切换主题" title="切换主题" @click="emit('toggle-theme')">
           <Sun v-if="store.effectiveTheme === 'light'" />
           <Moon v-else />
         </button>
-        <button class="icon-btn" type="button" title="同步配置" @click="emit('open-sync')">
+        <button class="icon-btn" type="button" aria-label="打开同步配置" title="同步配置" @click="emit('open-sync')">
           <RefreshCw />
         </button>
         <button
           class="icon-btn"
           type="button"
+          aria-label="收起或展开右侧面板"
           :title="store.rightCollapsed ? '展开右侧面板' : '收起右侧面板'"
           :aria-pressed="String(store.rightCollapsed)"
           @click="emit('toggle-right')"
         >
           <PanelRight />
         </button>
-        <button class="icon-btn" type="button" title="设置" @click="emit('open-settings')">
+        <button class="icon-btn" type="button" aria-label="打开设置" title="设置" @click="emit('open-settings')">
           <Settings />
         </button>
-        <div class="tb-menu" :data-open="String(menuOpen)">
-          <button class="icon-btn" type="button" title="布局菜单" @click="menuOpen = !menuOpen">
+        <div ref="menuRef" class="tb-menu" :data-open="String(menuOpen)">
+          <button class="icon-btn" type="button" aria-label="布局菜单" title="布局菜单" @click="menuOpen = !menuOpen">
             <Menu />
           </button>
           <div class="menu-popover" role="menu">
             <button class="menu-item" type="button" @click="emit('reset-layout'); menuOpen = false">
               <span class="menu-item-label">恢复默认布局</span>
-              <span class="menu-item-hint">⌘0</span>
             </button>
           </div>
         </div>
@@ -390,19 +422,17 @@ onMounted(() => {
 
     <footer class="statusbar app-status-bar" data-region="statusbar">
       <div class="sb-left">
-        <span class="sb-item"><span class="conn-dot idle"></span>SSH 空闲 · 后端 {{ backendMode }}</span>
+        <span class="sb-item"><span class="dot idle"></span>SSH 空闲 · 后端 {{ backendMode }}</span>
         <span class="sb-sep">·</span>
-        <span class="sb-item muted">{{ store.statusMessage || '无新消息' }}</span>
+        <span class="sb-item muted" aria-live="polite">{{ store.statusMessage || '无新消息' }}</span>
       </div>
       <div class="sb-center">
         <span class="sb-item mono">UTF-8</span>
         <span class="sb-sep">·</span>
-        <span class="sb-item mono">LF</span>
-        <span class="sb-sep">·</span>
-        <span class="sb-item mono">zsh</span>
+        <span class="sb-item">{{ activeSessions > 0 ? 'SSH 已连接' : '未连接' }}</span>
       </div>
       <div class="sb-right">
-        <button class="sb-item transfer-pill" type="button" @click="emit('toggle-transfer-drawer')">
+        <button class="sb-item transfer-pill" type="button" aria-label="打开传输队列" @click="emit('toggle-transfer-drawer')">
           传输 <span class="mono">{{ activeTransferCount }} / {{ completedTransferCount }}</span>
         </button>
         <span class="sb-sep">·</span>

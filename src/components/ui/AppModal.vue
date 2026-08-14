@@ -10,6 +10,7 @@ const props = defineProps({
 const emit = defineEmits(['close']);
 
 const panelRef = ref(null);
+const lastFocus = ref(null);
 
 function close() {
   emit('close');
@@ -52,6 +53,8 @@ watch(
   () => props.open,
   (v) => {
     if (v) {
+      // 打开时记住触发元素，关闭后还原焦点
+      lastFocus.value = document.activeElement;
       document.addEventListener('keydown', onKeydown);
       nextTick(() => {
         if (panelRef.value) {
@@ -63,6 +66,9 @@ watch(
       });
     } else {
       document.removeEventListener('keydown', onKeydown);
+      if (lastFocus.value && lastFocus.value.isConnected) {
+        lastFocus.value.focus();
+      }
     }
   }
 );
@@ -74,26 +80,29 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="body">
-    <div v-if="open" class="app-modal-backdrop" @click="onBackdropClick" @mousedown="onBackdropClick">
-      <div
-        ref="panelRef"
-        class="app-modal"
-        role="dialog"
-        aria-modal="true"
-        :style="{ maxWidth: width }"
-        @click.stop
-      >
-        <div class="app-modal-header">
-          <div class="app-modal-title">{{ title }}</div>
-          <button class="app-modal-close" title="关闭 (Esc)" @click="close">
-            <X :size="16" />
-          </button>
-        </div>
-        <div class="app-modal-body">
-          <slot />
+    <Transition name="app-modal">
+      <div v-if="open" class="app-modal-backdrop" @click="onBackdropClick">
+        <div
+          ref="panelRef"
+          class="app-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="app-modal-title"
+          :style="{ maxWidth: width }"
+          @click.stop
+        >
+          <div class="app-modal-header">
+            <div class="app-modal-title" id="app-modal-title">{{ title }}</div>
+            <button class="app-modal-close" title="关闭 (Esc)" @click="close">
+              <X :size="16" />
+            </button>
+          </div>
+          <div class="app-modal-body">
+            <slot />
+          </div>
         </div>
       </div>
-    </div>
+    </Transition>
   </Teleport>
 </template>
 
@@ -157,5 +166,30 @@ onBeforeUnmount(() => {
 .app-modal-body {
   padding: var(--space-4);
   overflow: auto;
+}
+
+// —— 开合动效：backdrop fade + panel scale/fade（enter 200ms，leave 略快）——
+.app-modal-enter-active,
+.app-modal-leave-active {
+  transition: opacity var(--motion-base);
+}
+.app-modal-leave-active {
+  transition: opacity var(--motion-fast);
+}
+.app-modal-enter-active .app-modal,
+.app-modal-leave-active .app-modal {
+  transition: opacity var(--motion-base), transform var(--motion-base);
+}
+.app-modal-leave-active .app-modal {
+  transition: opacity var(--motion-fast), transform var(--motion-fast);
+}
+.app-modal-enter-from,
+.app-modal-leave-to {
+  opacity: 0;
+}
+.app-modal-enter-from .app-modal,
+.app-modal-leave-to .app-modal {
+  opacity: 0;
+  transform: scale(0.96);
 }
 </style>

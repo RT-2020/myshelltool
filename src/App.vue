@@ -7,6 +7,7 @@ import { useAutoUpdate } from './composables/useAutoUpdate.js';
 import WorkbenchShell from './components/workbench/WorkbenchShell.vue';
 import GlobalModals from './components/shell/GlobalModals.vue';
 import TransferDrawer from './components/files/TransferDrawer.vue';
+import AppToastHost from './components/ui/AppToastHost.vue';
 
 const store = useWorkbenchStore();
 const panelResize = usePanelResize();
@@ -101,6 +102,7 @@ function toggleRight() {
 
     <TransferDrawer :open="store.transferDrawerOpen" @toggle="store.toggleTransferDrawer" />
     <GlobalModals />
+    <AppToastHost />
   </div>
 </template>
 
@@ -112,9 +114,9 @@ function toggleRight() {
   right: 0;
   z-index: var(--z-toast, 9999);
   padding: 10px 24px;
-  background: #fef3c7;
-  color: #78350f;
-  border-bottom: 1px solid #f59e0b;
+  background: var(--warn-soft);
+  color: var(--warn);
+  border-bottom: 1px solid var(--warn);
   font-size: 13px;
   text-align: center;
 }
@@ -122,7 +124,7 @@ function toggleRight() {
 .desktop-only-banner code {
   padding: 2px 6px;
   border-radius: 3px;
-  background: rgba(0, 0, 0, 0.08);
+  background: var(--app-hover);
   font-family: var(--font-mono);
 }
 

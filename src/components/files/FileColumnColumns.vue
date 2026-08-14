@@ -1,5 +1,6 @@
 <script setup>
 import { ChevronDown, ChevronUp } from 'lucide-vue-next';
+import { FILE_COLUMN_GRID_HEADER } from './fileColumnUtils.js';
 
 defineProps({
   sortKey: { type: String, default: 'name' },
@@ -43,7 +44,7 @@ const columns = [
 .col-header,
 .file-column-cols {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 64px 56px 130px 56px 92px;
+  grid-template-columns: v-bind(FILE_COLUMN_GRID_HEADER);
   gap: 8px;
   padding: 0 12px;
   min-height: 30px;
