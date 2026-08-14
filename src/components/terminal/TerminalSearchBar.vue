@@ -51,7 +51,7 @@ const matchText = computed(() => {
     <button class="search-toggle" :class="{ active: caseSensitive }" title="区分大小写" :aria-pressed="caseSensitive" @click="emit('update:caseSensitive', !caseSensitive)"><CaseSensitive :size="14" /></button>
     <button class="search-toggle" :class="{ active: wholeWord }" title="全字匹配" :aria-pressed="wholeWord" @click="emit('update:wholeWord', !wholeWord)"><WholeWord :size="14" /></button>
     <button class="search-toggle" :class="{ active: regex }" title="正则表达式" :aria-pressed="regex" @click="emit('update:regex', !regex)"><Regex :size="14" /></button>
-    <span v-if="matchText" class="search-count" :class="{ miss: result === 'miss' }">{{ matchText }}</span>
+    <span v-if="matchText" class="search-count" :class="{ miss: result === 'miss' }" aria-live="polite">{{ matchText }}</span>
     <button class="btn mini" title="上一个 (Shift+Enter)" aria-label="上一个匹配" @click="emit('prev')"><ChevronUp :size="14" /></button>
     <button class="btn mini" title="下一个 (Enter)" aria-label="下一个匹配" @click="emit('next')"><ChevronDown :size="14" /></button>
     <button class="btn mini" title="关闭 (Esc)" aria-label="关闭搜索" @click="emit('close')"><X :size="14" /></button>

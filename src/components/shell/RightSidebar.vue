@@ -22,7 +22,15 @@ const connState = computed(() => {
   return { dot: 'connected', text: '已连接' };
 });
 
-const pauseBtnTitle = computed(() => (rm.enabled ? '暂停采样' : '继续采样'));
+const pauseBtnTitle = computed(() => {
+  if (!sessions.activeSessionId) return '连接后可用';
+  return rm.enabled ? '暂停采样' : '继续采样';
+});
+
+const exportBtnTitle = computed(() => (rm.snapshot ? '导出快照' : '连接后可用'));
+const exportBtnAria = computed(() =>
+  rm.snapshot ? '导出资源快照到剪贴板' : '无采样数据，连接后可用'
+);
 
 async function onPauseToggle() {
   if (rm.enabled) {
@@ -58,21 +66,28 @@ async function onExport() {
       <div class="rs-header-left">
         <span class="rs-title">监控</span>
         <span class="rs-status-pill" :data-state="connState.dot">
-          <span class="conn-dot" :class="connState.dot"></span>
+          <span class="dot" :class="connState.dot"></span>
           {{ connState.text }}
         </span>
       </div>
 
       <div class="rs-header-actions">
-        <button class="icon-btn" type="button" :title="pauseBtnTitle" :aria-label="pauseBtnTitle" @click="onPauseToggle">
+        <button
+          class="icon-btn"
+          type="button"
+          :title="pauseBtnTitle"
+          :aria-label="pauseBtnTitle"
+          :disabled="!sessions.activeSessionId"
+          @click="onPauseToggle"
+        >
           <Pause v-if="rm.enabled" />
           <Play v-else />
         </button>
         <button
           class="icon-btn"
           type="button"
-          title="导出快照"
-          aria-label="导出资源快照到剪贴板"
+          :title="exportBtnTitle"
+          :aria-label="exportBtnAria"
           :disabled="!rm.snapshot"
           @click="onExport"
         >
@@ -153,20 +168,7 @@ async function onExport() {
   color: var(--app-muted);
 }
 
-.conn-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--app-subtle);
-  flex-shrink: 0;
-}
-
-.conn-dot.connecting {
-  background: var(--warn);
-  animation: rs-dot-pulse var(--motion-base) infinite alternate cubic-bezier(.4, 0, .2, 1);
-}
-
-.conn-dot.connected { background: var(--success); }
+// 状态圆点已收敛为全局 .dot（_utilities.scss，含 connecting pulse）
 
 .rs-header-actions {
   display: flex;
@@ -174,38 +176,15 @@ async function onExport() {
   flex-shrink: 0;
 }
 
-.icon-btn {
+// icon-btn 全局类（_utilities.scss）；仅保留本组件 24×24 紧凑尺寸的局部覆盖
+.rs-header-actions .icon-btn {
   width: 24px;
   height: 24px;
-  display: inline-grid;
-  place-items: center;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  color: var(--app-muted);
-  transition: background var(--motion-fast), color var(--motion-fast);
 }
 
-.icon-btn svg {
-  width: 14px;
-  height: 14px;
-  stroke-width: 1.6;
-}
-
-.icon-btn:hover:not(:disabled) {
-  background: var(--app-hover);
-  color: var(--app-text);
-}
-
-.icon-btn:focus-visible,
 .collapse-btn:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
-}
-
-.icon-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-  pointer-events: none;
 }
 
 .rs-body {
@@ -264,10 +243,5 @@ async function onExport() {
 .collapse-btn:hover {
   background: var(--app-hover);
   color: var(--app-text);
-}
-
-@keyframes rs-dot-pulse {
-  from { opacity: 0.5; transform: scale(0.9); }
-  to { opacity: 1; transform: scale(1.1); }
 }
 </style>

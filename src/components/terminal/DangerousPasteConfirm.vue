@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue';
+import { computed, ref, watch, nextTick } from 'vue';
 import { AlertTriangle, X } from 'lucide-vue-next';
 
 const props = defineProps({
@@ -8,6 +8,28 @@ const props = defineProps({
   matchedPattern: { type: String, default: '' }
 });
 const emit = defineEmits(['confirm', 'cancel']);
+
+const rememberRule = ref(false);
+const confirmRef = ref(null);
+
+// 打开时聚焦「仍然粘贴」（Enter 即确认）；每次打开重置不再拦截勾选
+watch(() => props.open, async (v) => {
+  if (v) {
+    rememberRule.value = false;
+    await nextTick();
+    confirmRef.value?.focus();
+  }
+});
+
+function onKeydown(e) {
+  if (e.key === 'Enter') { e.preventDefault(); confirm(); }
+  else if (e.key === 'Escape') { e.preventDefault(); emit('cancel'); }
+}
+
+// confirm 携带 allowedPattern（勾选「本会话不再拦截此规则」时传 matchedPattern）
+function confirm() {
+  emit('confirm', rememberRule.value ? props.matchedPattern : null);
+}
 
 const preview = computed(() => {
   if (!props.command) return '';
@@ -19,7 +41,7 @@ const preview = computed(() => {
 
 <template>
   <Teleport to="body">
-    <div v-if="open" class="danger-overlay" @click.self="emit('cancel')" role="alertdialog" aria-modal="true" aria-label="危险命令确认">
+    <div v-if="open" class="danger-overlay" @click.self="emit('cancel')" @keydown="onKeydown" role="alertdialog" aria-modal="true" aria-label="危险命令确认">
       <div class="danger-modal">
         <header class="danger-header">
           <AlertTriangle :size="22" class="danger-icon" />
@@ -33,8 +55,11 @@ const preview = computed(() => {
           <p class="muted small">如果这是你刻意执行的（例如在沙箱里测试），可以仍然粘贴。否则请取消。</p>
         </div>
         <footer class="danger-footer">
+          <label class="remember-rule">
+            <input v-model="rememberRule" type="checkbox" /> 本会话不再拦截此规则
+          </label>
           <button class="btn ghost" @click="emit('cancel')">取消</button>
-          <button class="btn danger" @click="emit('confirm')">仍然粘贴</button>
+          <button ref="confirmRef" class="btn danger" @click="confirm">仍然粘贴</button>
         </footer>
       </div>
     </div>
@@ -117,6 +142,19 @@ const preview = computed(() => {
 }
 
 .small { font-size: var(--text-xs); }
+
+.remember-rule {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--app-muted);
+  cursor: pointer;
+  margin-right: auto;
+}
+.remember-rule input {
+  accent-color: var(--accent);
+}
 
 .danger-footer {
   display: flex;

@@ -78,3 +78,12 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   box-shadow: var(--focus-ring);
   border-radius: var(--radius-sm);
 }
+
+// Reduced motion（a11y）：尊重系统「减弱动态效果」偏好
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

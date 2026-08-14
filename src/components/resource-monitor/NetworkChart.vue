@@ -108,7 +108,10 @@ const detailText = computed(() => (props.hasData ? `接收 ${formatRate(props.rx
 
 .line-empty { stroke: var(--app-border-strong); }
 .line-rx-data { stroke: var(--info); }
-.line-tx-data { stroke: var(--success); }
+.line-tx-data {
+  stroke: var(--success);
+  stroke-dasharray: 4 3;
+}
 
 .metric-foot {
   display: flex;
@@ -127,12 +130,18 @@ const detailText = computed(() => (props.hasData ? `接收 ${formatRate(props.rx
   gap: 6px;
 }
 
+// 图例与系列线双编码：颜色 + 线型（rx 实线 / tx 虚线），色弱可区分
 .legend i {
-  width: 8px;
-  height: 2px;
-  border-radius: 1px;
-  background: var(--info);
+  width: 10px;
+  height: 0;
+  border: 0;
+  border-top: 2px solid var(--info);
+  border-radius: 0;
+  background: transparent;
 }
 
-.legend i.tx { background: var(--success); }
+.legend i.tx {
+  border-top-style: dashed;
+  border-color: var(--success);
+}
 </style>

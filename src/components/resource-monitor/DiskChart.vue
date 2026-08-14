@@ -119,7 +119,10 @@ const detailText = computed(() => (props.hasData ? `读取 ${formatRate(props.re
 
 .line-empty { stroke: var(--app-border-strong); }
 .line-rd-data { stroke: var(--info); }
-.line-wr-data { stroke: var(--warn); }
+.line-wr-data {
+  stroke: var(--warn);
+  stroke-dasharray: 4 3;
+}
 
 .disk-row {
   display: grid;

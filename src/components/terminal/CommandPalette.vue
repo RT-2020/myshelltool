@@ -11,6 +11,7 @@ const emit = defineEmits(['close', 'selectSession', 'runAction']);
 
 const query = ref('');
 const inputRef = ref(null);
+const listRef = ref(null);
 const activeIdx = ref(0);
 
 const ACTIONS = [
@@ -68,12 +69,26 @@ watch(() => props.open, (v) => {
 
 watch(results, () => { activeIdx.value = 0; });
 
+// 键盘导航时保持选中项可见（列表可滚动时防止选中项滚出视口）
+watch(activeIdx, () => {
+  nextTick(() => {
+    listRef.value?.querySelector('.palette-item.active')?.scrollIntoView({ block: 'nearest' });
+  });
+});
+
 function onKeydown(e) {
-  if (e.key === 'ArrowDown') { e.preventDefault(); activeIdx.value = Math.min(activeIdx.value + 1, results.value.length - 1); }
-  else if (e.key === 'ArrowUp') { e.preventDefault(); activeIdx.value = Math.max(activeIdx.value - 1, 0); }
-  else if (e.key === 'Enter') {
+  if (e.key === 'ArrowDown') {
     e.preventDefault();
-    pick(results.value[activeIdx.value]);
+    // 空列表保持 0，防止 length-1 算出 -1
+    activeIdx.value = results.value.length ? Math.min(activeIdx.value + 1, results.value.length - 1) : 0;
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    activeIdx.value = Math.max(activeIdx.value - 1, 0);
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    const item = results.value[activeIdx.value];
+    if (!item) { emit('close'); return; } // 无匹配项：直接关闭
+    pick(item);
   } else if (e.key === 'Escape') {
     e.preventDefault();
     emit('close');
@@ -107,7 +122,7 @@ function pick(item) {
             @keydown="onKeydown"
           />
         </div>
-        <ul class="palette-list" v-if="results.length">
+        <ul ref="listRef" class="palette-list" v-if="results.length">
           <li
             v-for="(item, idx) in results"
             :key="item.id"

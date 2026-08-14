@@ -46,11 +46,10 @@ const summaryRows = computed(() => {
   return [
     { label: '会话', value: activeSession.value ? `${sessionId.slice(0, 8)} · ${connected ? '已连接' : '连接中'}` : '— · 未连接', muted: !activeSession.value },
     { label: '主机', value: `${selected.value.username || '—'}@${selected.value.host || '—'}:${selected.value.port || 22}` },
-    { label: '指纹', value: connected ? 'SHA256 · 已隐藏' : '—', muted: !connected },
+    // 指纹暂无真实数据源：connected 时也显示 '—'，不伪造「SHA256 · 已隐藏」
+    { label: '指纹', value: '—', muted: true },
     { label: '时长', value: connected ? (activeSession.value?.uptime || '—') : '—', muted: !connected },
     { label: '隧道', value: `${tunnelsActive.value} / ${tunnelsTotal.value}`, muted: tunnelsTotal.value === 0 },
-    { label: '转发', value: '0 / 0', muted: true },
-    { label: '快照', value: '0', muted: true },
     { label: '最近命令', value: connecting ? '等待终端就绪' : '—', muted: true }
   ];
 });
@@ -82,7 +81,7 @@ const systemRows = computed(() => [
         <rect x="3" y="14" width="18" height="6" rx="1.5" />
         <path d="M7 7h.01M7 17h.01" stroke-linecap="round" />
       </svg>
-      <span>未选择主机 · 从左侧资产树选择一个连接</span>
+      <span>未选择主机 · 点击左侧资产树选择一个连接</span>
     </div>
 
     <template v-else>
@@ -245,13 +244,14 @@ const systemRows = computed(() => [
 .summary-row .val {
   display: block;
   overflow: hidden;
-  color: var(--app-subtle);
+  color: var(--app-muted);
   font: 11.5px var(--font-mono);
   letter-spacing: 0.01em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+// muted 行（占位/未连接）比普通值更弱一档，形成视觉层级
 .summary-row .val.muted { color: var(--app-subtle); }
 
 .system-block {

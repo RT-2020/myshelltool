@@ -34,8 +34,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   // ============================================================
   // 公共 announce — 委托到 uiStore（statusMessage 的 owner）
   // ============================================================
-  function announce(message) {
-    uiStore.statusMessage = message;
+  function announce(message, opts) {
+    uiStore.notify(message, opts);
   }
 
   // ============================================================
@@ -230,6 +230,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     assetsCollapsed: computed(() => uiStore.assetsCollapsed),
     rightCollapsed: computed(() => uiStore.rightCollapsed),
     statusMessage: computed(() => uiStore.statusMessage),
+    toasts: computed(() => uiStore.toasts),
     // modal 必须可写：App.vue onCreateAsset / GlobalModals closeModal 等通过
     // `store.modal = {...}` 赋值。纯 computed 是只读的，赋值静默失败（曾导致
     // "新建连接打不开" / modal 无法关闭）。这里加 setter 转发到 uiStore.modal，
@@ -295,6 +296,10 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     localPaneVisible: computed(() => filesStore.localPaneVisible),
     activeTransfers: computed(() => filesStore.activeTransfers),
     completedTransfers: computed(() => filesStore.completedTransfers),
+    failedTransfers: computed(() => filesStore.failedTransfers),
+    pendingFileDelete: computed(() => filesStore.pendingFileDelete),
+    remoteError: computed(() => filesStore.remoteError),
+    localListMode: computed(() => filesStore.localListMode),
     filteredRemoteEntries: computed(() => filesStore.filteredRemoteEntries),
     sortedRemoteEntries: computed(() => filesStore.sortedRemoteEntries),
     selectedRemoteEntries: computed(() => filesStore.selectedRemoteEntries),
@@ -306,6 +311,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     disposeEventListeners,
     setupEventListeners,
     announce,
+    dismissToast: uiStore.dismissToast,
     selectAsset,
     setTab: uiStore.setTab,
     toggleTheme: uiStore.toggleTheme,
@@ -349,6 +355,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     setRemoteSort: filesStore.setRemoteSort,
     setRemoteFilter: filesStore.setRemoteFilter,
     setRemoteListMode: filesStore.setRemoteListMode,
+    setLocalListMode: filesStore.setLocalListMode,
     setManualRemotePath: filesStore.setManualRemotePath,
     goToManualRemotePath: filesStore.goToManualRemotePath,
     setManualLocalPath: filesStore.setManualLocalPath,
@@ -358,6 +365,13 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     batchRemoteDelete: filesStore.batchRemoteDelete,
     batchRemoteDownload: filesStore.batchRemoteDownload,
     copyRemotePath: filesStore.copyRemotePath,
+    // S2：删除确认链 + 上传覆盖 + 传输取消/重试
+    confirmFileDelete: filesStore.confirmFileDelete,
+    cancelFileDelete: filesStore.cancelFileDelete,
+    confirmFileOverwrite: filesStore.confirmFileOverwrite,
+    cancelFileOverwrite: filesStore.cancelFileOverwrite,
+    cancelTransfer: filesStore.cancelTransfer,
+    retryTransfer: filesStore.retryTransfer,
     toggleLocalSelection: filesStore.toggleLocalSelection,
     selectAllLocal: filesStore.selectAllLocal,
     clearLocalSelection: filesStore.clearLocalSelection,
@@ -380,11 +394,18 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     terminalFontSize: computed(() => sessionsStore.terminalFontSize),
     terminalAsideOpen: computed(() => sessionsStore.terminalAsideOpen),
     terminalSearch: computed(() => sessionsStore.terminalSearch),
+    // S3：连接错误卡片 / 取消 / 危险粘贴守卫（sessions store 权威状态，按约定 re-export）
+    dangerousPastePrompt: computed(() => sessionsStore.dangerousPastePrompt),
     connectSelected: sessionsStore.connectSelected,
     setActiveSession: sessionsStore.setActiveSession,
     disconnectSession: sessionsStore.disconnectSession,
     reconnectSession: sessionsStore.reconnectSession,
+    cancelConnect: sessionsStore.cancelConnect,
+    dismissSessionError: sessionsStore.dismissSessionError,
     runTerminalAction: sessionsStore.runTerminalAction,
+    requestDangerousPaste: sessionsStore.requestDangerousPaste,
+    approveDangerousPaste: sessionsStore.approveDangerousPaste,
+    cancelDangerousPaste: sessionsStore.cancelDangerousPaste,
     resolveHostKeyPrompt: sessionsStore.resolveHostKeyPrompt,
     resolveKeyboardPrompt: sessionsStore.resolveKeyboardPrompt,
     // --- v1.2：MCP 服务可观测性 (re-export from useMcpStore) ---
@@ -405,6 +426,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     openTerminalSearchInline: sessionsStore.openTerminalSearchInline,
     closeTerminalSearchInline: sessionsStore.closeTerminalSearchInline,
     setTerminalSearchQuery: sessionsStore.setTerminalSearchQuery,
+    setTerminalSearchOpts: sessionsStore.setTerminalSearchOpts,
     findTerminalNext: sessionsStore.findTerminalNext,
     setTerminalContainer: sessionsStore.setTerminalContainer,
     setTerminalFontSize: sessionsStore.setTerminalFontSize,

@@ -19,13 +19,15 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
+  Search,
   Server,
-  Terminal
+  Terminal,
+  Zap
 } from 'lucide-vue-next';
-import AppInput from '../ui/AppInput.vue';
 import AppContextMenu from '../ui/AppContextMenu.vue';
 import AssetGroupNode from './AssetGroupNode.vue';
 import { useSessionsStore } from '@/stores/sessions.js';
+import { useWorkbenchStore } from '@/stores/workbench.js';
 import { normalizeStatus } from '@/stores/workbench.js';
 
 const props = defineProps({
@@ -65,6 +67,7 @@ const emit = defineEmits([
 // connected/connecting 会话。无会话时回退 asset.status（编辑器初始值，通常 Idle → 灰点）。
 // ============================================================
 const sessionsStore = useSessionsStore();
+const workbench = useWorkbenchStore();
 const connectedAssetIds = computed(() => {
   const set = new Set();
   for (const session of sessionsStore.sessions) {
@@ -321,11 +324,28 @@ function parseQuickConnect(input) {
   };
 }
 
+// 快速连接解析失败就地提示（输入变化即清除）
+const quickConnectError = ref('');
+
+function onQuickConnectInput(event) {
+  quickConnectError.value = '';
+  emit('update:quickConnectInput', event.target.value);
+}
+
 function onQuickConnectEnter() {
   const parsed = parseQuickConnect(props.quickConnectInput);
   if (parsed) {
+    quickConnectError.value = '';
     emit('quick-connect', parsed);
     emit('update:quickConnectInput', '');
+    return;
+  }
+  // 非空输入解析失败 → 输入框下方红字提示 + warn toast；
+  // 解析成功后的落盘（saveAsset）由父级 WorkbenchShell 处理，本组件不做。
+  const input = (props.quickConnectInput || '').trim();
+  if (input) {
+    quickConnectError.value = '格式：ssh user@host[:port]';
+    workbench.announce('快速连接格式错误：应为 ssh user@host[:port]', { level: 'warn' });
   }
 }
 
@@ -526,10 +546,7 @@ provide('connectionSidebar', {
          Search（app.html sb-search-wrap + sb-search-input）
          ============================================================ -->
     <div class="sb-search-wrap">
-      <svg class="sb-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
-        <circle cx="11" cy="11" r="7" />
-        <path d="M21 21l-4.3-4.3" stroke-linecap="round" />
-      </svg>
+      <Search :size="13" class="sb-search-icon" aria-hidden="true" />
       <input
         type="search"
         class="sb-search-input"
@@ -580,9 +597,7 @@ provide('connectionSidebar', {
          ============================================================ -->
     <footer class="sb-footer">
       <div class="sb-quick">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
-          <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
+        <Zap :size="13" aria-hidden="true" />
         <input
           type="text"
           class="sb-quick-input"
@@ -590,10 +605,12 @@ provide('connectionSidebar', {
           placeholder="ssh user@host[:port]"
           spellcheck="false"
           aria-label="快速连接"
-          @input="emit('update:quickConnectInput', $event.target.value)"
+          aria-describedby="quick-connect-error"
+          @input="onQuickConnectInput"
           @keydown.enter.prevent="onQuickConnectEnter"
         />
       </div>
+      <p v-if="quickConnectError" id="quick-connect-error" class="sb-quick-error" role="alert">{{ quickConnectError }}</p>
       <p class="sb-quick-hint">
         <Terminal :size="12" />
         <span>输入 <kbd>ssh user@host</kbd> 回车连接</span>
@@ -679,39 +696,8 @@ provide('connectionSidebar', {
   display: none;
 }
 
-// 通用 icon-btn（与 TitleBar/RightSidebar 同规格，app.css L298-317）
-.icon-btn {
-  width: 28px;
-  height: 28px;
-  display: inline-grid;
-  place-items: center;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  color: var(--app-muted);
-  cursor: pointer;
-  padding: 0;
-  transition: background var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast);
-}
-.icon-btn svg {
-  width: 14px;
-  height: 14px;
-  stroke-width: 1.6;
-}
-.icon-btn:hover {
-  background: var(--app-hover);
-  color: var(--app-text);
-}
-.icon-btn:active { background: var(--app-active); }
-.icon-btn:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-.icon-btn.primary { color: var(--accent); }
-.icon-btn.primary:hover {
-  background: var(--accent-soft);
-  color: var(--accent-hover);
-}
+// 通用 icon-btn 已收敛为全局类（_utilities.scss 单一权威实现），
+// 仅保留折叠 rail 的局部 .primary 变体（常显 accent-soft 底，见文件尾）
 
 // ============================================================
 // Search（app.css L420-446 sb-search-wrap + sb-search-input）
@@ -780,68 +766,6 @@ provide('connectionSidebar', {
   background-clip: padding-box;
 }
 .sb-tree::-webkit-scrollbar-thumb:hover { background: var(--app-border-strong); }
-
-// 顶层直属资产（树根 items）—— 与 AssetGroupNode 内 .asset-node 同款
-.asset-node {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-2);
-  margin-block-end: 1px;
-  border-radius: var(--radius-sm);
-  border-inline-start: 2px solid transparent;
-  cursor: pointer;
-  position: relative;
-  transition: background var(--motion-fast), border-color var(--motion-fast);
-}
-.asset-node:hover { background: var(--app-hover); }
-.asset-node:focus-visible {
-  outline: none;
-  background: var(--app-hover);
-  border-inline-start-color: var(--accent);
-}
-.asset-node.is-active {
-  background: var(--app-selected);
-  border-inline-start-color: var(--accent);
-}
-.asset-body {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.asset-name {
-  font-size: 13px;
-  color: var(--app-text);
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.asset-meta {
-  font-size: 11px;
-  color: var(--app-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono);
-}
-.dot {
-  flex: 0 0 auto;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--app-subtle);
-}
-.dot.running {
-  background: var(--success);
-  box-shadow: 0 0 0 2px var(--success-soft);
-}
-.dot.warn {
-  background: var(--warn);
-  box-shadow: 0 0 0 2px var(--warn-soft);
-}
 
 // ============================================================
 // Empty state（app.css L453-475 sb-empty 虚线边框容器）
@@ -950,6 +874,12 @@ provide('connectionSidebar', {
   outline: none;
 }
 .sb-quick-input::placeholder { color: var(--app-subtle); }
+.sb-quick-error {
+  margin: 0;
+  padding-left: 2px;
+  font-size: 11px;
+  color: var(--danger);
+}
 .sb-quick-hint {
   display: flex;
   align-items: center;
@@ -990,6 +920,7 @@ provide('connectionSidebar', {
   background: var(--app-border);
   margin: 2px 0;
 }
+// 折叠 rail：primary 按钮常显 accent-soft 底（全局 .icon-btn.primary 仅在 hover 时上色）
 .sb-rail .icon-btn.primary {
   background: var(--accent-soft);
   color: var(--accent);

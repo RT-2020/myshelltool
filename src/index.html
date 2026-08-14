@@ -4,6 +4,14 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>myshelltool · 工作台</title>
+  <script>
+    // 防深色主题启动闪白：在 CSS/字体加载前先把持久化主题写到 <html data-theme>。
+    // 'system' 分支由 _tokens.scss 的 @media (prefers-color-scheme) 处理，勿画蛇添足。
+    try {
+      var t = localStorage.getItem('myshelltool-theme');
+      document.documentElement.dataset.theme = ['system', 'light', 'dark'].indexOf(t) >= 0 ? t : 'system';
+    } catch (e) { document.documentElement.dataset.theme = 'system'; }
+  </script>
   <!--
     字体加载：Inter（UI）+ JetBrains Mono（等宽）。
     桌面应用最终应自托管 woff2 离线加载；当前先用 Google Fonts CDN 验证视觉一致性，

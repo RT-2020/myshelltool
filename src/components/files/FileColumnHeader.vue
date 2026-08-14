@@ -325,36 +325,7 @@ onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
   padding: 2px 4px;
 }
 
-.icon-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  background: transparent;
-  border: none;
-  color: var(--app-muted);
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-  transition:
-    background var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard);
-}
-
-.icon-btn:hover:not(:disabled) {
-  background: var(--app-hover);
-  color: var(--app-strong);
-}
-
-.icon-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.icon-btn.active {
-  color: var(--accent);
-  background: color-mix(in oklab, var(--accent), transparent 88%);
-}
+// 通用 icon-btn（含 .active 激活态）已收敛为全局类（_utilities.scss 单一权威实现）
 
 .file-column-manual-path {
   flex: 1 1 auto;

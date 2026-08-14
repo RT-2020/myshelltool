@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue';
-import { Search, Copy, ClipboardPaste, Plus, Minus, Eraser, RefreshCw, PanelRight, Maximize2 } from 'lucide-vue-next';
+import { Search, Copy, ClipboardPaste, Plus, Minus, Eraser, RefreshCw, XCircle, PanelRight, Maximize2 } from 'lucide-vue-next';
 
 const props = defineProps({
   session: { type: Object, default: null },
@@ -14,7 +14,7 @@ const props = defineProps({
 
 const emit = defineEmits([
   'search', 'copy', 'paste', 'font-inc', 'font-dec', 'clear',
-  'reconnect', 'toggle-aside', 'fullscreen', 'connect'
+  'reconnect', 'cancel-connect', 'toggle-aside', 'fullscreen', 'connect'
 ]);
 
 const status = computed(() => {
@@ -25,13 +25,13 @@ const status = computed(() => {
 const hostName = computed(() => props.session?.asset?.name || props.selectedAsset?.name || '未连接');
 const oscTitle = computed(() => props.session?.oscTitle || '');
 const statusLabel = computed(() => {
-  if (props.reconnectAttempt > 0) return `reconnect ${props.reconnectAttempt}/${props.reconnectTotal}`;
+  if (props.reconnectAttempt > 0) return `重连 ${props.reconnectAttempt}/${props.reconnectTotal}`;
   switch (status.value) {
-    case 'connected': return 'connected';
-    case 'connecting': return 'connecting';
-    case 'disconnected': return 'disconnected';
-    case 'error': return 'error';
-    default: return 'idle';
+    case 'connected': return '已连接';
+    case 'connecting': return '连接中';
+    case 'disconnected': return '已断开';
+    case 'error': return '错误';
+    default: return '空闲';
   }
 });
 </script>
@@ -46,15 +46,16 @@ const statusLabel = computed(() => {
     <button class="icon-btn" aria-label="字号减小" title="字号减小 (Ctrl+-)" @click="emit('font-dec')"><Minus :size="16" /></button>
     <span class="terminal-font-badge" :title="'字体 ' + fontSize + 'px'">{{ fontSize }}px</span>
     <span class="tb-sep" aria-hidden="true"></span>
-    <button class="icon-btn" aria-label="清屏" title="清屏 (Ctrl+L)" @click="emit('clear')"><Eraser :size="16" /></button>
-    <button v-if="session && session.status !== 'connected'" class="icon-btn warn" aria-label="重连" title="重连" @click="emit('reconnect')"><RefreshCw :size="16" /></button>
+    <button class="icon-btn" aria-label="清屏" title="清屏" @click="emit('clear')"><Eraser :size="16" /></button>
+    <button v-if="session && session.status === 'connecting'" class="icon-btn warn" aria-label="取消连接" title="取消连接" @click="emit('cancel-connect')"><XCircle :size="16" /></button>
+    <button v-if="session && (session.status === 'disconnected' || session.status === 'error')" class="icon-btn warn" aria-label="重连" title="重连" @click="emit('reconnect')"><RefreshCw :size="16" /></button>
     <button class="icon-btn" :class="{ active: asideOpen }" aria-label="会话详情" title="会话详情抽屉" @click="emit('toggle-aside')"><PanelRight :size="16" /></button>
     <button class="icon-btn" aria-label="全屏" title="全屏 (Alt+Enter)" @click="emit('fullscreen')"><Maximize2 :size="16" /></button>
 
     <div class="term-toolbar-spacer"></div>
 
-    <span class="term-status-pill" :title="subtitle || hostName">
-      <span :class="['conn-dot', status]" aria-hidden="true"></span>
+    <span class="term-status-pill" role="status" aria-live="polite" :title="subtitle || hostName">
+      <span :class="['dot', status]" aria-hidden="true"></span>
       <span>{{ statusLabel }}</span>
       <span class="terminal-host">{{ hostName }}</span>
       <span v-if="oscTitle" class="terminal-osc-title">· {{ oscTitle }}</span>
@@ -75,34 +76,7 @@ const statusLabel = computed(() => {
   min-width: 0;
 }
 
-.icon-btn {
-  width: 28px;
-  height: 28px;
-  display: inline-grid;
-  place-items: center;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  color: var(--app-muted);
-  cursor: pointer;
-  transition: background var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast);
-}
-.icon-btn svg {
-  width: 14px;
-  height: 14px;
-  stroke-width: 1.6;
-}
-.icon-btn:hover {
-  background: var(--app-hover);
-  color: var(--app-text);
-}
-.icon-btn.active {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-.icon-btn.warn {
-  color: var(--warn);
-}
+// 通用 icon-btn（含 .active/.warn）已收敛为全局类（_utilities.scss 单一权威实现）
 
 .tb-sep {
   width: 1px;
@@ -131,17 +105,7 @@ const statusLabel = computed(() => {
   white-space: nowrap;
 }
 
-.conn-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--app-subtle);
-}
-.conn-dot.connected { background: var(--success); }
-.conn-dot.connecting,
-.conn-dot.reconnecting { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
-.conn-dot.disconnected,
-.conn-dot.error { background: var(--danger); }
+// 状态圆点已收敛为全局 .dot（_utilities.scss，含 connecting/reconnecting pulse）
 
 .terminal-host {
   max-width: 130px;
@@ -154,10 +118,5 @@ const statusLabel = computed(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--app-subtle);
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.45; }
 }
 </style>

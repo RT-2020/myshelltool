@@ -141,10 +141,60 @@ export const useUiStore = defineStore('ui', () => {
     return workbenchBridge;
   }
   function announce(message) {
-    if (workbenchBridge && typeof workbenchBridge.announce === 'function') {
-      return workbenchBridge.announce(message);
+    // 对外兼容入口：不带 level，只更新状态栏，不进 toast 队列
+    return notify(message);
+  }
+
+  // ============================================================
+  // Actions — toast 通知（分级反馈 + 自动消失，上限 5 条）
+  // ============================================================
+  const TOAST_LEVELS = ['info', 'success', 'warn', 'error'];
+  const toasts = ref([]);
+  let toastSeq = 0;
+  const toastTimers = new Map();
+
+  function clearToastTimer(id) {
+    const timer = toastTimers.get(id);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      toastTimers.delete(id);
     }
+  }
+
+  function notify(message, opts = {}) {
+    // 状态栏保持原有行为：任何 notify 都写入底部一行文字
     statusMessage.value = message;
+    // 仅带 level 的通知进 toast 队列（announce 不带 level，保持旧行为）
+    if (!TOAST_LEVELS.includes(opts.level)) return null;
+    const id = ++toastSeq;
+    const toast = { id, level: opts.level, message, action: opts.action ?? null };
+    toasts.value.push(toast);
+    // 上限 5 条，超出移除最早一条并清理其 timer
+    if (toasts.value.length > 5) {
+      clearToastTimer(toasts.value[0].id);
+      toasts.value.shift();
+    }
+    scheduleToastDismiss(id, opts);
+    return id;
+  }
+
+  function scheduleToastDismiss(id, opts) {
+    // 默认时长：info/success 3500ms、warn/error 6000ms、带 action 8000ms；
+    // opts.duration 可覆盖。带 action 也可超时消失（保持简单）。
+    let duration = opts.duration;
+    if (typeof duration !== 'number') {
+      duration = opts.action
+        ? 8000
+        : (opts.level === 'warn' || opts.level === 'error' ? 6000 : 3500);
+    }
+    clearToastTimer(id);
+    toastTimers.set(id, setTimeout(() => dismissToast(id), duration));
+  }
+
+  function dismissToast(id) {
+    clearToastTimer(id);
+    const idx = toasts.value.findIndex(t => t.id === id);
+    if (idx !== -1) toasts.value.splice(idx, 1);
   }
 
   // ============================================================
@@ -332,6 +382,7 @@ export const useUiStore = defineStore('ui', () => {
     assetsCollapsed,
     rightCollapsed,
     statusMessage,
+    toasts,
     modal,
     searchState,
     // computed
@@ -355,6 +406,9 @@ export const useUiStore = defineStore('ui', () => {
     openGlobalSearch,
     closeGlobalSearch,
     setGlobalSearchQuery,
-    activateSuggestion
+    activateSuggestion,
+    // toast actions
+    notify,
+    dismissToast
   };
 });

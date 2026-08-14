@@ -11,7 +11,8 @@ const groups = [
     title: '会话',
     items: [
       { keys: ['Ctrl', 'Shift', 'T'], label: '连接所选主机' },
-      { keys: ['Ctrl', 'T'], label: '切换到下一个会话' },
+      { keys: ['Ctrl', 'Tab'], label: '切换到下一个会话' },
+      { keys: ['Ctrl', 'Shift', 'Tab'], label: '切换到上一个会话' },
       { keys: ['Ctrl', 'W'], label: '关闭当前会话' }
     ]
   },

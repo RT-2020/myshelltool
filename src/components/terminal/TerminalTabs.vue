@@ -9,9 +9,28 @@ const props = defineProps({
 const emit = defineEmits(['select', 'close', 'close-others', 'close-right', 'copy-host', 'new-terminal']);
 
 const barRef = ref(null);
+const overflowTriggerRef = ref(null);
 const overflowed = ref([]);
 const overflowMenuOpen = ref(false);
+const overflowMenuStyle = ref({ left: 0, top: 0 });
 const contextMenu = ref({ open: false, x: 0, y: 0, sessionId: '' });
+
+// 浮动菜单 clamp 到视口内（x 超界则翻转），菜单宽/高取近似值
+function clampMenu(x, y, width = 200, height = 180) {
+  const pad = 8;
+  let left = x;
+  let top = y;
+  if (left + width > window.innerWidth - pad) left = window.innerWidth - width - pad;
+  if (left < pad) left = pad;
+  if (top + height > window.innerHeight - pad) top = window.innerHeight - height - pad;
+  if (top < pad) top = pad;
+  return { left, top };
+}
+
+const contextMenuStyle = computed(() => {
+  const { left, top } = clampMenu(contextMenu.value.x, contextMenu.value.y);
+  return { left: left + 'px', top: top + 'px' };
+});
 
 function updateOverflow() {
   const bar = barRef.value;
@@ -53,6 +72,44 @@ function closeAllMenus() {
   overflowMenuOpen.value = false;
 }
 
+// tablist roving tabindex：方向键在可见 tab 间移动焦点，Enter/Space 触发选择
+function onTabKeydown(e, sessionId) {
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    e.preventDefault();
+    const list = visibleSessions.value;
+    const idx = list.findIndex(s => s.sessionId === sessionId);
+    if (idx < 0) return;
+    const dir = e.key === 'ArrowRight' ? 1 : -1;
+    const next = list[(idx + dir + list.length) % list.length];
+    const el = barRef.value?.querySelector(`[data-session-id="${next.sessionId}"]`);
+    el?.focus();
+    return;
+  }
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    onTabClick(sessionId);
+  }
+}
+
+function onTabFocus(sessionId) {
+  // 焦点所在 tab 置 tabindex=0，其余 -1（roving tabindex 约定）
+  for (const s of visibleSessions.value) {
+    const el = barRef.value?.querySelector(`[data-session-id="${s.sessionId}"]`);
+    if (el) el.tabIndex = s.sessionId === sessionId ? 0 : -1;
+  }
+}
+
+function toggleOverflowMenu() {
+  overflowMenuOpen.value = !overflowMenuOpen.value;
+  if (overflowMenuOpen.value) {
+    const rect = overflowTriggerRef.value?.getBoundingClientRect();
+    if (rect) {
+      const { left, top } = clampMenu(rect.right - 200, rect.bottom + 4, 200, 220);
+      overflowMenuStyle.value = { left: left + 'px', top: top + 'px' };
+    }
+  }
+}
+
 const visibleSessions = computed(() => props.sessions.filter(s => !overflowed.value.includes(s.sessionId)));
 const hiddenSessions = computed(() => props.sessions.filter(s => overflowed.value.includes(s.sessionId)));
 
@@ -60,6 +117,7 @@ function statusFor(s) {
   if (s.status === 'connected') return 'connected';
   if (s.status === 'connecting') return 'connecting';
   if (s.status === 'disconnected') return 'disconnected';
+  if (s.status === 'error') return 'error';
   return 'idle';
 }
 function tooltipFor(s) {
@@ -67,12 +125,16 @@ function tooltipFor(s) {
   if (s.oscTitle) parts.push(s.oscTitle);
   return parts.filter(Boolean).join(' · ');
 }
-// 同资产多会话场景：为重名 tab 追加序号后缀（如 " (1)"）以便区分。
+// 同资产多会话场景：为重名 tab 追加 sessionId 末 4 位后缀（如 " (#a3f9)"）以便区分。
+// 用后端会话 id 而非数组序号：关闭中间 tab 不会引起后缀重排，锚点稳定。
+// 取末位是因为连接中的占位 id 为 'pending-<assetId>-<时间戳>'，同资产前缀相同，
+// 末 4 位（时间戳尾 / UUID 尾）在任何阶段都唯一。连接成功后占位 id 被替换为
+// 真实 UUID，后缀会一次性变化，之后固定。
 function dupSuffixFor(session) {
   const same = props.sessions.filter(s => s.asset?.id && s.asset?.id === session.asset?.id);
   if (same.length < 2) return '';
-  const idx = same.findIndex(s => s.sessionId === session.sessionId);
-  return ' (' + (idx + 1) + ')';
+  const id = String(session.sessionId || '');
+  return ' (#' + id.slice(-4) + ')';
 }
 </script>
 
@@ -88,38 +150,54 @@ function dupSuffixFor(session) {
         :key="session.sessionId"
         :class="['tab', 'workspace-tab', 'session-tab', { active: session.sessionId === activeSessionId }]"
         role="tab"
-        tabindex="0"
+        :tabindex="session.sessionId === activeSessionId ? 0 : -1"
         :aria-selected="String(session.sessionId === activeSessionId)"
         :data-session-id="session.sessionId"
         data-session-tab
         :title="tooltipFor(session)"
         @click="onTabClick(session.sessionId)"
-        @keydown.enter.prevent="onTabClick(session.sessionId)"
-        @keydown.space.prevent="onTabClick(session.sessionId)"
+        @keydown="onTabKeydown($event, session.sessionId)"
+        @focus="onTabFocus(session.sessionId)"
         @contextmenu="onContextMenu($event, session.sessionId)"
-        @mousedown.middle.prevent="onTabClick($event, session.sessionId); emit('close', session.sessionId)"
+        @mousedown.middle.prevent="emit('close', session.sessionId)"
       >
-        <span :class="['conn-dot', 'session-status-dot', statusFor(session)]"></span>
+        <span :class="['dot', statusFor(session)]"></span>
         <span class="tab-name session-tab-name">{{ session.asset?.name }}{{ dupSuffixFor(session) }}</span>
         <span class="session-tab-host">{{ session.asset?.host }}</span>
         <span v-if="session.oscTitle" class="session-tab-osc">· {{ session.oscTitle }}</span>
-        <button class="tab-close" title="关闭 (Ctrl+W)" @click="onTabClose($event, session.sessionId)" tabindex="-1"><X :size="12" /></button>
+        <button class="tab-close" aria-label="关闭会话" @click="onTabClose($event, session.sessionId)"><X :size="12" /></button>
       </div>
       <div class="term-tabs-spacer"></div>
-      <button v-if="hiddenSessions.length" class="tab workspace-tab overflow-trigger" :class="{ active: overflowMenuOpen }" @click="overflowMenuOpen = !overflowMenuOpen" title="更多会话">
+      <button
+        v-if="hiddenSessions.length"
+        ref="overflowTriggerRef"
+        class="tab workspace-tab overflow-trigger"
+        :class="{ active: overflowMenuOpen }"
+        aria-haspopup="menu"
+        :aria-expanded="overflowMenuOpen"
+        @click="toggleOverflowMenu"
+        title="更多会话"
+      >
         <MoreHorizontal :size="14" />
       </button>
     </div>
 
     <Teleport to="body">
-      <div v-if="overflowMenuOpen && hiddenSessions.length" class="overflow-menu" @click.stop>
-        <button v-for="session in hiddenSessions" :key="session.sessionId" :class="['overflow-item', { active: session.sessionId === activeSessionId }]" @click="() => { onTabClick(session.sessionId); overflowMenuOpen = false; }">
-          <span :class="['session-status-dot', statusFor(session)]"></span>
+      <div v-if="overflowMenuOpen && hiddenSessions.length" class="overflow-menu" :style="overflowMenuStyle" @click.stop role="menu" aria-label="更多会话">
+        <div
+          v-for="session in hiddenSessions"
+          :key="session.sessionId"
+          :class="['overflow-item', { active: session.sessionId === activeSessionId }]"
+          role="menuitem"
+          @click="() => { onTabClick(session.sessionId); overflowMenuOpen = false; }"
+        >
+          <span :class="['dot', statusFor(session)]"></span>
           <span class="overflow-name">{{ session.asset?.name }}{{ dupSuffixFor(session) }}</span>
           <span class="overflow-host muted">{{ session.asset?.host }}</span>
-        </button>
+          <button class="overflow-close" aria-label="关闭会话" @click.stop="emit('close', session.sessionId)"><X :size="12" /></button>
+        </div>
       </div>
-      <div v-if="contextMenu.open" class="tab-context-menu" :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }" @click.stop>
+      <div v-if="contextMenu.open" class="tab-context-menu" :style="contextMenuStyle" @click.stop>
         <button @click="emit('copy-host', contextMenu.sessionId); closeAllMenus()"><Copy :size="14" /> 复制主机地址</button>
         <button @click="emit('close-others', contextMenu.sessionId); closeAllMenus()"><FolderX :size="14" /> 关闭其他</button>
         <button @click="emit('close-right', contextMenu.sessionId); closeAllMenus()"><SquareX :size="14" /> 关闭右侧</button>
@@ -208,19 +286,7 @@ function dupSuffixFor(session) {
   color: var(--app-strong);
 }
 
-.conn-dot,
-.session-status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: var(--radius-pill);
-  background: var(--app-subtle);
-  flex: 0 0 auto;
-}
-
-.session-status-dot.connected { background: var(--success); }
-.session-status-dot.connecting { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
-.session-status-dot.disconnected { background: var(--danger); }
-.session-status-dot.idle { background: var(--app-subtle); }
+// 会话状态圆点已收敛为全局 .dot（_utilities.scss 单一权威实现）
 
 .session-tab-name {
   font-size: var(--text-xs);
@@ -340,6 +406,26 @@ function dupSuffixFor(session) {
   margin-left: auto;
 }
 
+.overflow-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+  color: var(--app-muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  flex: 0 0 auto;
+  transition: background var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard);
+}
+.overflow-close:hover {
+  background: color-mix(in oklab, var(--danger) 18%, transparent);
+  color: var(--danger);
+}
+
 .tab-context-menu button.danger:hover {
   background: color-mix(in oklab, var(--danger) 18%, transparent);
   color: var(--danger);
@@ -350,10 +436,5 @@ function dupSuffixFor(session) {
   inset: 0;
   z-index: calc(var(--z-dropdown) - 1);
   background: transparent;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
 }
 </style>

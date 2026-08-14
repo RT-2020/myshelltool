@@ -95,7 +95,7 @@ defineProps({
 
 .app-btn--danger {
   background: var(--danger);
-  color: #ffffff;
+  color: var(--accent-on);
   border-color: var(--danger);
 }
 .app-btn--danger:hover:not(.is-disabled) {

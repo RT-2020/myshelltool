@@ -3,6 +3,11 @@ import { ref, computed } from 'vue';
 import { invokeBackend, isTauriRuntime, listenBackendEvent } from '../services/backend.js';
 
 const MAX_HISTORY = 60;
+const INTERVAL_MS = 2000;
+
+// 供 UI（ResourceMonitorPanel 头部 meta）派生展示，避免硬编码「2秒 · 60点」
+export const RESOURCE_MONITOR_INTERVAL_MS = INTERVAL_MS;
+export const RESOURCE_MONITOR_MAX_HISTORY = MAX_HISTORY;
 
 export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
   const activeSessionId = ref(null);
@@ -12,6 +17,8 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
   const error = ref(null);
 
   let unlisten = null;
+  // 最近一次尝试采样的 sessionId：stop() 清空 activeSessionId 后 retry() 仍可重连
+  let lastSessionId = null;
   const prevNetRx = ref(0);
   const prevNetTx = ref(0);
   const prevDiskRead = ref(0);
@@ -118,7 +125,7 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
     if (history.value.length > MAX_HISTORY) history.value.shift();
   }
 
-  async function start(sessionId, intervalMs = 2000) {
+  async function start(sessionId, intervalMs = INTERVAL_MS) {
     if (!isTauriRuntime()) {
       enabled.value = false;
       activeSessionId.value = null;
@@ -128,6 +135,7 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
       error.value = 'resourceMonitor.start: sessionId required';
       return;
     }
+    lastSessionId = sessionId;
     if (activeSessionId.value === sessionId && enabled.value) return;
     if (activeSessionId.value && activeSessionId.value !== sessionId) {
       await stop().catch(() => {});
@@ -179,6 +187,13 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
     return invokeBackend('resource_monitor_snapshot', { sessionId });
   }
 
+  // 重试最近一次采样：先干净停掉（含 unlisten/历史清零），再按 lastSessionId 重启。
+  async function retry() {
+    if (!lastSessionId) return;
+    await stop().catch(() => {});
+    await start(lastSessionId);
+  }
+
   async function listActive() {
     if (!isTauriRuntime()) return [];
     return invokeBackend('resource_monitor_list_active');
@@ -206,6 +221,7 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
     diskWriteHistoryPoints,
     start,
     stop,
+    retry,
     snapshotOnce,
     listActive,
     dispose,

@@ -51,6 +51,9 @@ const {
   remoteSortDir,
   remoteFilter,
   remoteListMode,
+  localListMode,
+  remoteError,
+  remoteLoaded,
   manualRemotePathInput,
   manualLocalPathInput,
   selectedRemotePaths,
@@ -90,6 +93,8 @@ const sortKey = computed(() => (isLocal.value ? localSortKey.value : remoteSortK
 const sortDir = computed(() => (isLocal.value ? localSortDir.value : remoteSortDir.value));
 const isBusy = computed(() => (isLocal.value ? localBusy.value : remoteBusy.value));
 const busyMessage = computed(() => (isLocal.value ? localBusyMessage.value : remoteBusyMessage.value));
+// 列表模式按列解耦：本地列用 localListMode，远程列用 remoteListMode（S2）
+const columnListMode = computed(() => (isLocal.value ? localListMode.value : remoteListMode.value));
 
 // Local filter/sort kept locally per-column (files store only tracks remote).
 // These preserve parity without polluting the store with local equivalents.
@@ -152,7 +157,11 @@ function effectiveEntries() {
 function onRowClick(event, entry) {
   if (isBusy.value) return;
   if (isLocal.value) {
-    filesStore.toggleLocalSelection(entry.path, { additive: event.ctrlKey || event.metaKey });
+    // shift 范围多选：与远程行 range 逻辑同构（复用 files.js 的 range 参数）
+    filesStore.toggleLocalSelection(entry.path, {
+      additive: event.ctrlKey || event.metaKey,
+      range: event.shiftKey
+    });
   } else if (event.ctrlKey || event.metaKey) {
     filesStore.toggleRemoteSelection(entry.path, { additive: true });
   } else if (event.shiftKey) {
@@ -421,7 +430,7 @@ function crumbClick(seg) {
     </FileColumnHeader>
 
     <FileColumnColumns
-      v-if="remoteListMode === 'detailed'"
+      v-if="columnListMode === 'detailed'"
       :sort-key="sortKey"
       :sort-dir="sortDir"
       @sort="setSort"
@@ -430,18 +439,21 @@ function crumbClick(seg) {
     <FileColumnList
       :entries="effectiveEntries()"
       :selection-set="selectionSet"
-      :list-mode="remoteListMode"
+      :list-mode="columnListMode"
       :is-local="isLocal"
       :disabled-hint="disabledHint"
       :current-path="currentPath"
       :remote-entries-length="remoteEntries.length"
       :remote-filter="remoteFilter"
+      :remote-error="remoteError"
+      :remote-loaded="remoteLoaded"
       :is-busy="isBusy"
       :busy-message="busyMessage"
       @list-click="onListClickSelf"
       @row-click="onRowClick"
       @row-double-click="onRowDblClick"
       @row-context-menu="onContextMenu"
+      @retry="filesStore.refreshRemoteFiles()"
     />
   </section>
 </template>

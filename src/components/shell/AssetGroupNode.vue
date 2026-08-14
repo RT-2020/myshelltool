@@ -35,19 +35,17 @@ const props = defineProps({
 const sidebar = inject('connectionSidebar');
 
 function assetIndicatorClasses(asset) {
+  // 返回全局 .dot 修饰符集（_utilities.scss）：connected / warn / idle
   const status = sidebar.statusClass(asset);
-  return [
-    status,
-    status === 'running' ? 'success' : '',
-    status === 'warn' ? 'warn' : '',
-    status !== 'running' && status !== 'warn' ? 'idle' : ''
-  ].filter(Boolean);
+  if (status === 'running') return ['connected'];
+  if (status === 'warn') return ['warn'];
+  return ['idle'];
 }
 
 function assetStatusLabel(asset) {
-  const status = sidebar.statusClass(asset);
-  if (status === 'running') return '在线';
-  if (status === 'warn') return '警告';
+  const cls = assetIndicatorClasses(asset);
+  if (cls.includes('connected')) return '在线';
+  if (cls.includes('warn')) return '警告';
   return '待命';
 }
 </script>
@@ -123,7 +121,7 @@ function assetStatusLabel(asset) {
                 type="button"
                 class="quick-btn"
                 title="编辑"
-                tabindex="-1"
+                aria-label="编辑连接"
                 @click.stop="sidebar.onEditAsset(asset)"
               >
                 <Pencil :size="13" />
@@ -132,7 +130,7 @@ function assetStatusLabel(asset) {
                 type="button"
                 class="quick-btn quick-btn--danger"
                 title="删除"
-                tabindex="-1"
+                aria-label="删除连接"
                 @click.stop="sidebar.onDeleteAsset(asset)"
               >
                 <Trash2 :size="13" />
@@ -326,25 +324,8 @@ function assetStatusLabel(asset) {
   box-shadow: inset 0 -2px 0 0 var(--accent);
 }
 
-// .dot 全局工具类；modifier 配对 _utilities.scss
-.dot {
-  flex: 0 0 auto;
-  width: 8px;
-  height: 8px;
-  border-radius: var(--radius-pill);
-  background: var(--app-subtle);
-}
-.dot.running {
-  background: var(--success);
-  box-shadow: 0 0 0 2px color-mix(in oklab, var(--success), transparent 72%);
-}
-.dot.warn {
-  background: var(--warn);
-  box-shadow: 0 0 0 2px color-mix(in oklab, var(--warn), transparent 72%);
-}
-.dot.idle {
-  background: var(--app-subtle);
-}
+// .dot 为全局工具类（_utilities.scss），assetIndicatorClasses 返回其修饰符
+// （connected/warn/idle），此处无 scoped 副本
 
 // ============================================================
 // 悬停快捷按钮 — 默认隐藏，hover/focus-within 显示
