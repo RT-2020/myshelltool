@@ -456,8 +456,7 @@ async fn connect_authenticated(
         let key_str = String::from_utf8_lossy(&key_data);
         let key_pair = russh::keys::decode_secret_key(&key_str, resolved_passphrase.as_deref())
             .map_err(|e| format!("Failed to load private key: {e}"))?;
-        let key_with_hash = russh::keys::key::PrivateKeyWithHashAlg::new(Arc::new(key_pair), None)
-            .map_err(|e| format!("Key wrap failed: {e}"))?;
+        let key_with_hash = wrap_key_with_preferred_hash(key_pair)?;
         handle
             .authenticate_publickey(username, key_with_hash)
             .await
@@ -554,6 +553,22 @@ async fn keyboard_interactive_loop(
             }
         }
     }
+}
+
+/// 包裹私钥用于 publickey 认证。RSA 密钥必须指定 rsa-sha2-256：传 None 会
+/// 退回 SHA-1 的 ssh-rsa 算法，OpenSSH 8.8+ 服务器默认禁用该算法，导致
+/// RSA 私钥（云厂商下发的 PEM 几乎都是）对现代服务器必然认证失败。
+/// 非 RSA 密钥必须传 None（russh 对非 RSA 传 Some 会报 InvalidParameters）。
+fn wrap_key_with_preferred_hash(
+    key_pair: russh::keys::PrivateKey,
+) -> Result<russh::keys::key::PrivateKeyWithHashAlg, String> {
+    let hash_alg = if key_pair.algorithm().is_rsa() {
+        Some(russh::keys::HashAlg::Sha256)
+    } else {
+        None
+    };
+    russh::keys::key::PrivateKeyWithHashAlg::new(Arc::new(key_pair), hash_alg)
+        .map_err(|e| format!("Key wrap failed: {e}"))
 }
 
 fn expand_home_path(path: &str) -> String {
@@ -1991,8 +2006,7 @@ pub async fn connect_headless(
         let key_str = String::from_utf8_lossy(&key_data);
         let key_pair = russh::keys::decode_secret_key(&key_str, resolved_passphrase.as_deref())
             .map_err(|e| format!("Failed to load private key: {e}"))?;
-        let key_with_hash = russh::keys::key::PrivateKeyWithHashAlg::new(Arc::new(key_pair), None)
-            .map_err(|e| format!("Key wrap failed: {e}"))?;
+        let key_with_hash = wrap_key_with_preferred_hash(key_pair)?;
         handle
             .authenticate_publickey(&params.username, key_with_hash)
             .await
