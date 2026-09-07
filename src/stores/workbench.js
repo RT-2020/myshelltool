@@ -413,6 +413,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     mcpStatus: computed(() => mcpStore.status),
     mcpProbe: computed(() => mcpStore.probe),
     mcpClientConnected: computed(() => mcpStore.clientConnected),
+    mcpLoading: computed(() => mcpStore.loading),
     mcpTools: computed(() => mcpStore.tools),
     mcpResources: computed(() => mcpStore.resources),
     mcpPrompts: computed(() => mcpStore.prompts),

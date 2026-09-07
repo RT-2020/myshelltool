@@ -31,6 +31,7 @@ import AppInput from '@/components/ui/AppInput.vue';
 import SyncPatGuide from '@/components/shell/SyncPatGuide.vue';
 import SyncAutoSyncControl from '@/components/shell/SyncAutoSyncControl.vue';
 import SyncConflictResolver from '@/components/shell/SyncConflictResolver.vue';
+import PatConfigCard from '@/components/shell/PatConfigCard.vue';
 
 const store = useWorkbenchStore();
 const {
@@ -75,14 +76,20 @@ async function onSetup() {
 
 async function onPush() {
   // v1.6：启用自动同步后主密码可留空（走会话密钥）；否则必须输入
-  if (!opPassword.value && !syncAutoSyncEnabled.value) return;
+  if (!opPassword.value && !syncAutoSyncEnabled.value) {
+    store.announce('请先输入主密码以推送更新', { level: 'warn' });
+    return;
+  }
   const result = await store.syncPush(opPassword.value);
   if (result) opPassword.value = '';
 }
 
 async function onPull() {
   // v1.6：启用自动同步后主密码可留空（走会话密钥）；否则必须输入
-  if (!opPassword.value && !syncAutoSyncEnabled.value) return;
+  if (!opPassword.value && !syncAutoSyncEnabled.value) {
+    store.announce('请先输入主密码以拉取远端更新', { level: 'warn' });
+    return;
+  }
   const result = await store.syncPull(opPassword.value);
   if (!result) return;
   // pull 成功（含 PullRemote/Conflict 解决后）刷新资产列表
@@ -244,6 +251,12 @@ function fmtTime(iso) {
             :disabled="!resetOldPassword || resetNewPassword.length < 6 || syncLoading"
             @click="onResetPassword">重置</AppButton>
         </div>
+      </section>
+
+      <!-- GitHub Token (PAT) 管理 -->
+      <section class="block">
+        <header class="block-head"><KeyRound :size="12" />GitHub Token (PAT)</header>
+        <PatConfigCard />
       </section>
 
       <!-- 清空（逃生口）—— 内联二次确认，不用 window.confirm（AGENTS.md 红线） -->

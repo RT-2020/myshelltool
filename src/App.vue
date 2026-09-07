@@ -11,7 +11,7 @@ import AppToastHost from './components/ui/AppToastHost.vue';
 
 const store = useWorkbenchStore();
 const panelResize = usePanelResize();
-const autoUpdate = useAutoUpdate({ announce: msg => store.announce(msg) });
+const autoUpdate = useAutoUpdate({ announce: (msg, opts) => store.announce(msg, opts) });
 const desktopRuntimeAvailable = computed(() => isTauriRuntime());
 
 onMounted(() => {
