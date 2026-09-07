@@ -49,6 +49,8 @@ tauri-plugin-clipboard-manager = "2"
 # 外链打开插件（v1.6 同步面板「打开 GitHub Token 设置页」按钮直达系统浏览器）
 # Tauri v2 官方推荐，比 shell open 更轻量、权限更收敛。
 tauri-plugin-opener = "2"
+# 系统文件选择对话框（资产编辑器选择私钥文件，替代手输路径）
+tauri-plugin-dialog = "2"
 # 应用内自动更新（v1.7 发版）：检查 GitHub Release 的 latest.json + 校验签名 + 下载安装。
 # NSIS 安装包在 CI 用 TAURI_SIGNING_PRIVATE_KEY 签名，私钥存 GitHub Secrets 不入仓库。
 tauri-plugin-updater = "2"

@@ -790,6 +790,16 @@ export const useSessionsStore = defineStore('sessions', () => {
   // 对已有 session 建立 SSH 连接 + 事件接线（首次连接 / 自动重连 / 手动重连共用）。
   // 复用 termDiv/term 不销毁；失败返回 false 并置 status='error' + connectError。
   async function attachSessionStream(session) {
+    // saveAsset 成功后会整体重建 assets 数组（新对象），session.asset 是建连时
+    // 捕获的旧快照——重连（reauth 换密码 / 编辑连接后重试 / 自动重连）前按 id
+    // 重新解析最新资产，否则仍会用旧认证参数连接（如已切 Password 仍走 PrivateKey）。
+    const latestAssets = workbenchBridge && typeof workbenchBridge.assets === 'function'
+      ? workbenchBridge.assets()
+      : null;
+    const freshAsset = Array.isArray(latestAssets)
+      ? latestAssets.find(item => item && item.id === session.asset.id)
+      : null;
+    if (freshAsset) session.asset = freshAsset;
     const asset = session.asset;
     // 清理上一次连接的监听（重连时旧 ssh-output-/ssh-closed- 监听必须先解绑）
     if (typeof session.unlisten === 'function') {
@@ -797,6 +807,9 @@ export const useSessionsStore = defineStore('sessions', () => {
       session.unlisten = null;
     }
     const prevRealId = String(session.sessionId).startsWith('pending-') ? null : session.sessionId;
+    // 覆盖 sessionId 前记录旧值：重连场景 activeSessionId 仍指向旧 id，成功后需
+    // 据此恢复激活态，否则 activeSession 严格 find 落空 → 终端区空白/错误卡片消失。
+    const previousSessionId = session.sessionId;
     session.sessionId = 'pending-' + asset.id + '-' + Date.now();
     if (prevRealId) await invokeBackend('ssh_disconnect', { sessionId: prevRealId }).catch(() => null);
     session.status = 'connecting';
@@ -833,7 +846,7 @@ export const useSessionsStore = defineStore('sessions', () => {
         await invokeBackend('ssh_disconnect', { sessionId: realSessionId }).catch(() => null);
         return false;
       }
-      const wasActive = activeSessionId.value === session.sessionId;
+      const wasActive = activeSessionId.value === previousSessionId;
       session.sessionId = realSessionId;
       if (wasActive) activeSessionId.value = realSessionId;
       session.status = 'connected';
