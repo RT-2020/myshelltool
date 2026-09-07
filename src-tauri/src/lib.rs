@@ -50,6 +50,11 @@ fn backend_status() -> BackendStatus {
     }
 }
 
+#[tauri::command]
+fn app_relaunch(app: tauri::AppHandle) {
+    app.restart();
+}
+
 // ─── v1.2：MCP 服务可观测性（前端状态栏/管理面板的聚合查询）───
 //
 // 把 pipe server 维护的连接状态 + MCP server 的静态能力声明（tools/resources/prompts）
@@ -438,6 +443,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             backend_status,
+            app_relaunch,
             // v1.2：MCP 服务可观测性聚合查询（前端状态栏/管理面板）
             mcp_status,
             // v1.5：MCP 高危工具 GUI 弹窗审批的用户回传命令

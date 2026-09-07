@@ -18,9 +18,9 @@
  * 由 GlobalModals.vue 的 modal.type === 'settings' 分支渲染。抽成独立组件是为
  * 避免 GlobalModals.vue 超 500 行 SFC 硬上限（AGENTS.md 质量红线）。
  */
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, unref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
-import { Info, Palette, RefreshCw, Plug, Sun, Moon, Monitor, Download } from 'lucide-vue-next';
+import { Info, Palette, RefreshCw, Plug, Sun, Moon, Monitor, Download, ExternalLink } from 'lucide-vue-next';
 import { useWorkbenchStore } from '@/stores/workbench.js';
 import { THEME_ORDER, THEME_LABELS } from '@/composables/useTheme.js';
 import AppTabGroup from '@/components/ui/AppTabGroup.vue';
@@ -47,7 +47,27 @@ const TABS = [
 ];
 // 默认 about；外部入口通过 modal.tab 指定（合法 tab id 才采纳，否则回退 about）。
 const validTabs = TABS.map(t => t.id);
-const activeTab = ref(validTabs.includes(modal.value.tab) ? modal.value.tab : 'about');
+const activeTab = ref(validTabs.includes(modal.value?.tab) ? modal.value.tab : 'about');
+
+watch(() => modal.value?.tab, next => {
+  if (next && validTabs.includes(next)) {
+    activeTab.value = next;
+  }
+});
+
+async function openExternal(url) {
+  if (!isTauriRuntime()) {
+    window.open(url, '_blank', 'noopener');
+    return;
+  }
+  try {
+    const { openUrl } = await import('@tauri-apps/plugin-opener');
+    await openUrl(url);
+  } catch (e) {
+    console.warn('[settings] opener failed, fallback to window.open:', e);
+    window.open(url, '_blank', 'noopener');
+  }
+}
 
 // —— 版本号（关于与更新 tab）——
 // 接 @tauri-apps/api/app 的 getVersion（运行时真实值）；浏览器预览无 Tauri runtime 时 fallback。
@@ -65,18 +85,21 @@ onMounted(async () => {
 // —— 更新按钮状态机（关于与更新 tab）——
 // 复用注入的 autoUpdate（来自 App.vue，与状态栏点击同一实例）。未注入时隐藏整个更新区。
 const hasUpdater = computed(() => !!autoUpdate.value);
-const updateState = computed(() => autoUpdate.value?.state?.value || 'idle');
-const newVersion = computed(() => autoUpdate.value?.newVersion?.value || '');
-// 下载进度：useAutoUpdate 把进度写进 statusMessage（文字流），这里展示一个 indeterminate 进度条占位。
+const updateState = computed(() => unref(autoUpdate.value?.state) || 'idle');
+const newVersion = computed(() => unref(autoUpdate.value?.newVersion) || '');
+const errorMessage = computed(() => unref(autoUpdate.value?.errorMessage) || '');
+const downloadProgress = computed(() => unref(autoUpdate.value?.downloadProgress) ?? 0);
+// 下载进度：useAutoUpdate 把进度写进 statusMessage（文字流），这里展示进度条。
 const isBusy = computed(() => updateState.value === 'checking' || updateState.value === 'downloading');
 
 // 主按钮文案随状态机变化（单一主操作，ui-ux-pro-max §4）。
 const updateBtnLabel = computed(() => {
   switch (updateState.value) {
     case 'checking': return '检查中…';
-    case 'downloading': return '下载中…';
+    case 'downloading': return downloadProgress.value > 0 ? `下载中 ${downloadProgress.value}%` : '下载中…';
     case 'available': return `下载并安装 v${newVersion.value}`;
     case 'error': return '重试';
+    case 'up_to_date': return '重新检查';
     default: return '检查更新';
   }
 });
@@ -129,21 +152,38 @@ function selectTheme(value) {
               <RefreshCw v-if="isBusy" :size="12" class="spin" />
               {{ updateBtnLabel }}
             </AppButton>
-            <span class="muted update-hint">
-              <template v-if="updateState === 'available'">发现新版本，点击下载并安装，完成后自动重启</template>
-              <template v-else-if="updateState === 'downloading'">正在下载，进度显示在底部状态栏</template>
-              <template v-else-if="updateState === 'error'">检查或下载失败，点击重试</template>
+            <span
+              class="muted update-hint"
+              :class="{
+                'is-error': updateState === 'error',
+                'is-success': updateState === 'available' || updateState === 'up_to_date'
+              }"
+            >
+              <template v-if="updateState === 'available'">发现新版本 v{{ newVersion }}，点击下载并安装，完成后自动重启</template>
+              <template v-else-if="updateState === 'downloading'">正在下载更新安装包（{{ downloadProgress }}%），请稍候…</template>
+              <template v-else-if="updateState === 'error'">检查或更新失败：{{ errorMessage || '网络连接失败或超时' }}</template>
+              <template v-else-if="updateState === 'up_to_date'">当前已是最新版本 (v{{ appVersion }})</template>
               <template v-else>检查 GitHub releases 是否有新版本</template>
             </span>
           </div>
-          <AppProgress v-if="updateState === 'downloading'" :value="null" />
+          <AppProgress v-if="updateState === 'downloading'" :value="downloadProgress > 0 ? downloadProgress : null" />
         </section>
 
         <section class="block">
           <header class="block-head"><Info :size="12" />关于</header>
           <dl class="detail-grid">
             <dt>项目主页</dt>
-            <dd><code class="mono-path">github.com/RT-2020/myshelltool</code></dd>
+            <dd>
+              <button
+                type="button"
+                class="link-action"
+                title="在系统默认浏览器中打开"
+                @click="openExternal('https://github.com/RT-2020/myshelltool')"
+              >
+                <code class="mono-path">github.com/RT-2020/myshelltool</code>
+                <ExternalLink :size="12" />
+              </button>
+            </dd>
             <dt>许可</dt>
             <dd>MIT</dd>
           </dl>
@@ -275,6 +315,15 @@ function selectTheme(value) {
 }
 .update-hint {
   font-size: 12px;
+  line-height: 1.5;
+
+  &.is-error {
+    color: var(--danger);
+  }
+
+  &.is-success {
+    color: var(--success);
+  }
 }
 
 // —— 主题选择卡片 ——
@@ -305,6 +354,23 @@ function selectTheme(value) {
     border-color: var(--app-accent, var(--app-primary));
     color: var(--text-primary, var(--app-fg));
     box-shadow: 0 0 0 1px var(--app-accent, var(--app-primary)) inset;
+  }
+}
+
+.link-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+
+  &:hover {
+    color: var(--accent-hover);
+    text-decoration: underline;
   }
 }
 

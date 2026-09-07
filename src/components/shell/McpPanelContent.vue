@@ -16,7 +16,7 @@
  * 由 GlobalModals.vue 的 modal.type === 'mcpPanel' 分支渲染。抽成独立组件
  * 是为避免 GlobalModals.vue 超 500 行 SFC 硬上限（AGENTS.md 质量红线）。
  */
-import { computed, ref } from 'vue';
+import { computed, ref, onMounted } from 'vue';
 import { storeToRefs } from 'pinia';
 import { Plug, Copy, RefreshCw, FileCode2, Database } from 'lucide-vue-next';
 import { useWorkbenchStore } from '@/stores/workbench.js';
@@ -26,7 +26,7 @@ import McpCapabilityList from '@/components/shell/McpCapabilityList.vue';
 
 const store = useWorkbenchStore();
 const {
-  mcpStatus, mcpProbe, mcpClientConnected, mcpDataDir, mcpServerVersion,
+  mcpStatus, mcpProbe, mcpClientConnected, mcpLoading, mcpDataDir, mcpServerVersion,
   mcpTools, mcpResources, mcpPrompts
 } = storeToRefs(store);
 
@@ -65,6 +65,12 @@ function flashHint(msg) {
   setTimeout(() => { copiedHint.value = ''; }, 2000);
 }
 function onRefresh() { store.refreshMcpStatus(); }
+
+onMounted(() => {
+  if (!hasStatus.value) {
+    store.refreshMcpStatus();
+  }
+});
 </script>
 
 <template>
@@ -85,7 +91,9 @@ function onRefresh() { store.refreshMcpStatus(); }
       <div class="hero-meta">
         <span class="meta-item"><span class="meta-label">版本</span><span class="meta-val num">myshelltool {{ mcpServerVersion }}</span></span>
         <span v-if="mcpProbe?.probedAt" class="meta-item"><span class="meta-label">探测时间</span><span class="meta-val num">{{ fmtTime(mcpProbe.probedAt) }}</span></span>
-        <AppButton variant="subtle" size="sm" @click="onRefresh"><RefreshCw :size="12" />刷新</AppButton>
+        <AppButton variant="subtle" size="sm" :loading="mcpLoading" @click="onRefresh">
+          <RefreshCw v-if="!mcpLoading" :size="12" />刷新
+        </AppButton>
       </div>
     </div>
 

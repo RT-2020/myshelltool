@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, unref, watch } from 'vue';
 import {
   Menu,
   Minus,
@@ -63,7 +63,7 @@ const syncText = computed(() => props.store.syncText || '未配置同步');
 const mcpText = computed(() => props.store.mcpClientConnected ? 'MCP 可用' : 'MCP 不可用');
 // 应用内更新状态：available → 状态栏消息可点击下载安装 + 设置图标红点；
 // error → 状态栏消息可点击重试；其余状态保持纯文本（aria-live）。
-const updateState = computed(() => props.autoUpdate?.state?.value || 'idle');
+const updateState = computed(() => unref(props.autoUpdate?.state) || 'idle');
 const updateClickable = computed(() => updateState.value === 'available' || updateState.value === 'error');
 // 状态栏中间区：真实连接状态（sessions 列表非空即视为已连接，替代原假数据 zsh）
 const activeSessions = computed(() => props.store.sessions?.length || 0);
