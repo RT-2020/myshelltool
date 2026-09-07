@@ -169,12 +169,28 @@ export const useAssetsStore = defineStore('assets', () => {
     if (credentials.password) {
       await invokeBackend('save_credential', { id: credentialIdFor(id, 'password'), secret: credentials.password });
       item.credential_id = credentialIdFor(id, 'password');
+    } else if (credentials.clearPassword) {
+      // 编辑器「清除已存密码」：保存时删除凭据并置空引用（否则旧密码永远无法移除）
+      try {
+        await invokeBackend('delete_credential', { id: credentialIdFor(id, 'password') });
+      } catch {
+        // 凭据可能已不存在（被外部清理），删除失败不阻断保存
+      }
+      item.credential_id = null;
     } else if (previous?.credential_id) {
       item.credential_id = previous.credential_id;
     }
     if (credentials.passphrase) {
       await invokeBackend('save_credential', { id: credentialIdFor(id, 'passphrase'), secret: credentials.passphrase });
       item.passphrase_credential_id = credentialIdFor(id, 'passphrase');
+    } else if (credentials.clearPassphrase) {
+      // 同上：换用无口令私钥时需能清掉残留的 passphrase
+      try {
+        await invokeBackend('delete_credential', { id: credentialIdFor(id, 'passphrase') });
+      } catch {
+        // 凭据可能已不存在（被外部清理），删除失败不阻断保存
+      }
+      item.passphrase_credential_id = null;
     } else if (previous?.passphrase_credential_id) {
       item.passphrase_credential_id = previous.passphrase_credential_id;
     }

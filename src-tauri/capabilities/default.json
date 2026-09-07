@@ -23,6 +23,7 @@
     "clipboard-manager:allow-write-text",
     "clipboard-manager:allow-read-text",
     "opener:default",
+    "dialog:allow-open",
     "updater:default"
   ]
 }

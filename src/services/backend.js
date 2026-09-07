@@ -24,6 +24,23 @@ export async function listenBackendEvent(eventName, handler) {
   throw new Error(`Event "${eventName}" requires the Tauri desktop runtime.`);
 }
 
+// 打开系统文件选择对话框选择私钥文件（tauri-plugin-dialog 的 open 命令）。
+// 返回所选文件的绝对路径字符串；用户取消时返回 null。
+// 非 Tauri runtime（浏览器预览）下抛错，与 invokeBackend 行为一致。
+export async function openPrivateKeyFileDialog() {
+  return invokeBackend('plugin:dialog|open', {
+    options: {
+      title: '选择私钥文件',
+      multiple: false,
+      directory: false,
+      filters: [
+        { name: 'SSH 私钥', extensions: ['pem', 'key', 'openssh', 'id_rsa', 'id_ed25519', 'ppk'] },
+        { name: '所有文件', extensions: ['*'] }
+      ]
+    }
+  });
+}
+
 // 返回 Tauri 2 当前窗口对象（WebviewWindow 或 Window），无 runtime 时 null。
 // 用于调 setFullscreen / maximize / minimize 等 OS 级窗口 API。
 export function getTauriWindow() {

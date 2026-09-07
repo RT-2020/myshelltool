@@ -176,6 +176,13 @@ function handleCommandPaletteAction(action) {
 function handleTerminalPaneConnect() { sessionsStore.connectSelected(); }
 
 function openAssetEditor() { uiStore.modal = { type: 'assetEditor', asset: null }; }
+
+// 认证失败特征（对应后端 ssh.rs 的错误文案）：命中时错误卡片追加
+// 「重新输入密码 / 更换密钥」引导（密钥未授权、密码变更、passphrase 不符等场景）
+function isAuthFailure(connectError) {
+  return /Authentication failed|Public key auth failed|Auth failed|permission denied|The key is encrypted/i
+    .test(connectError || '');
+}
 </script>
 
 <template>
@@ -236,6 +243,10 @@ function openAssetEditor() { uiStore.modal = { type: 'assetEditor', asset: null 
       <div v-if="activeSession && activeSession.status === 'error'" class="term-error-banner" role="alert">
         <AlertTriangle :size="16" class="term-error-icon" aria-hidden="true" />
         <span class="term-error-text">{{ activeSession.connectError || '连接失败' }}</span>
+        <template v-if="isAuthFailure(activeSession.connectError)">
+          <button class="term-error-btn" type="button" @click="uiStore.modal = { type: 'reauthPassword', asset: activeSession.asset, payload: { sessionId: activeSession.sessionId } }">重新输入密码</button>
+          <button class="term-error-btn" type="button" @click="uiStore.modal = { type: 'assetEditor', asset: { ...activeSession.asset, auth_method: 'PrivateKey' } }">更换密钥</button>
+        </template>
         <button class="term-error-btn" type="button" @click="sessionsStore.reconnectSession(activeSession.sessionId)"><RotateCw :size="13" /> 重试</button>
         <button class="term-error-btn" type="button" @click="uiStore.modal = { type: 'assetEditor', asset: activeSession.asset }">编辑连接</button>
         <button class="term-error-btn" type="button" @click="sessionsStore.dismissSessionError(activeSession.sessionId)">关闭</button>
@@ -352,6 +363,7 @@ function openAssetEditor() { uiStore.modal = { type: 'assetEditor', asset: null 
   z-index: 3;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   background: color-mix(in oklab, var(--danger) 14%, var(--app-panel));

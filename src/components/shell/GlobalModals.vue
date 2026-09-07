@@ -15,6 +15,7 @@
  *
  * Modal types handled:
  *   - assetEditor      : 资产编辑表单
+ *   - reauthPassword   : 认证失败快捷重输密码（TerminalSurface 错误卡片入口）
  *   - tunnelCreate     : 新建隧道表单
  *   - hostKeyVerify    : 主机密钥验证（confirm/deny）
  *   - keyboardInteractive : 键盘交互提示
@@ -34,6 +35,7 @@ import McpPanelContent from '@/components/shell/McpPanelContent.vue';
 import SyncPanelContent from '@/components/shell/SyncPanelContent.vue';
 import SettingsPanelContent from '@/components/shell/SettingsPanelContent.vue';
 import PatConfigCard from '@/components/shell/PatConfigCard.vue';
+import { openPrivateKeyFileDialog } from '@/services/backend.js';
 
 const store = useWorkbenchStore();
 const {
@@ -71,6 +73,8 @@ const assetFormError = ref('');
 const groupFormError = ref('');
 // 异步提交进行中：主/副按钮禁用 + spinner，防止重复提交
 const submitting = ref(false);
+// reauthPassword：连接失败快捷重认证表单（TerminalSurface 错误卡片入口）
+const reauthForm = reactive({ password: '', error: '' });
 
 // 认证方式选项。Token 认证后端支持存疑，本轮不加（follow-up：确认 save_credential
 // / ssh_connect 的 token 语义后再补选项）。
@@ -90,6 +94,7 @@ const tunnelKindOptions = [
 const modalTitle = computed(() => {
   switch (modal.value.type) {
     case 'assetEditor': return editingAsset.id ? '编辑连接资产' : '新增连接资产';
+    case 'reauthPassword': return '重新输入密码';
     case 'tunnelCreate': return '新增隧道';
     case 'tokenConfig': return '配置 / 更新 GitHub token';
     case 'hostKeyVerify': return '主机密钥验证';
@@ -148,6 +153,10 @@ watch(() => modal.value.type, type => {
     Object.assign(editingCredential, emptyCredential());
     assetFormError.value = '';
   }
+  if (type === 'reauthPassword') {
+    reauthForm.password = '';
+    reauthForm.error = '';
+  }
   if (type === 'renameGroup') {
     // 默认填入当前分组名的最后一段（方便就地改名）
     const path = modal.value.path || '';
@@ -199,7 +208,9 @@ function emptyAsset() {
 }
 
 function emptyCredential() {
-  return { password: '', passphrase: '' };
+  // clearPassword / clearPassphrase：编辑器「清除」按钮的标记（保存时删除凭据）。
+  // 与重新输入互斥：password/passphrase 输入框有值会重置对应标记。
+  return { password: '', passphrase: '', clearPassword: false, clearPassphrase: false };
 }
 
 function emptyTunnelForm() {
@@ -226,6 +237,25 @@ function splitTags(tags) {
   return Array.isArray(tags) ? tags : String(tags || '').split(/[·,，\s]+/).filter(Boolean);
 }
 
+// 浏览选择私钥文件（系统对话框）；用户取消或浏览器预览模式不影响手输路径
+async function browsePrivateKey() {
+  try {
+    const path = await openPrivateKeyFileDialog();
+    if (path) editingAsset.private_key_path = path;
+  } catch {
+    // 浏览器预览模式（无 Tauri runtime）无系统对话框——静默回退到手输路径
+  }
+}
+
+// 标记清除已存凭据（保存时生效；再次点击撤销；重新输入也会撤销）
+function toggleClearPassword() {
+  editingCredential.clearPassword = !editingCredential.clearPassword;
+}
+
+function toggleClearPassphrase() {
+  editingCredential.clearPassphrase = !editingCredential.clearPassphrase;
+}
+
 // ============================================================
 // Modal actions — close / submit / deny (mirror App.vue)
 // ============================================================
@@ -242,17 +272,23 @@ async function submitModal() {
   if (submitting.value) return;
   switch (modal.value.type) {
     case 'assetEditor':
-      if (editingAsset.auth_method === 'Password' && !editingAsset.credential_id && !editingCredential.password) {
-        assetFormError.value = 'Password 认证首次保存需填写密码字段，否则无法连接。';
+      if (editingAsset.auth_method === 'Password' && !editingAsset.credential_id && !editingCredential.password && !editingCredential.clearPassword) {
+        assetFormError.value = '首次保存 Password 认证需填写密码；若要用私钥登录，请将认证方式切换为 PrivateKey。';
         return;
       }
       assetFormError.value = '';
       await runSubmit(() =>
         store.saveAsset(
-          { ...editingAsset, tags: splitTags(editingAsset.tags) },
+          {
+            ...editingAsset,
+            private_key_path: String(editingAsset.private_key_path || '').trim() || null,
+            tags: splitTags(editingAsset.tags)
+          },
           {
             password: editingCredential.password,
-            passphrase: editingCredential.passphrase
+            passphrase: editingCredential.passphrase,
+            clearPassword: editingCredential.clearPassword,
+            clearPassphrase: editingCredential.clearPassphrase
           }
         )
       );
@@ -337,6 +373,26 @@ async function submitModal() {
         store.executeTerminalSearch(modal.value.payload.sessionId, store.terminalSearch.query);
       }
       return;
+    case 'reauthPassword': {
+      if (!reauthForm.password) {
+        reauthForm.error = '请输入密码';
+        return;
+      }
+      reauthForm.error = '';
+      await runSubmit(async () => {
+        // 从 store 取最新资产（modal 里的 asset 是打开弹窗时的快照，可能已被编辑过）
+        const current = (store.assets || []).find(a => a && a.id === modal.value.asset?.id) || modal.value.asset;
+        // saveAsset 成功后会关闭 modal，先取 sessionId 再调用；
+        // 切到密码认证时顺带清掉残留的 passphrase 凭据（PrivateKey 专属，避免换回时旧值干扰）
+        const sessionId = modal.value.payload?.sessionId;
+        await store.saveAsset(
+          { ...current, auth_method: 'Password' },
+          { password: reauthForm.password, clearPassphrase: true }
+        );
+        if (sessionId) await store.reconnectSession(sessionId);
+      });
+      return;
+    }
     default:
       closeModal();
   }
@@ -352,7 +408,9 @@ async function runSubmit(task) {
   try {
     await task();
     return true;
-  } catch {
+  } catch (error) {
+    // 提交失败必须可见（部分 store action 不自带失败 announce），弹窗保持打开可重试
+    store.announce('操作失败：' + (error?.message || error), { level: 'error' });
     return false;
   } finally {
     submitting.value = false;
@@ -470,8 +528,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydownEsc));
                 @update:model-value="v => editingAsset.auth_method = v" />
             </label>
             <label class="stack"><span class="muted">私钥路径</span>
-              <AppInput :model-value="editingAsset.private_key_path" :disabled="editingAsset.auth_method !== 'PrivateKey'"
-                placeholder="~/.ssh/id_ed25519" @update:model-value="v => editingAsset.private_key_path = v" data-asset-field="private_key_path" />
+              <div class="inline-field-row">
+                <AppInput :model-value="editingAsset.private_key_path" :disabled="editingAsset.auth_method !== 'PrivateKey'"
+                  placeholder="~/.ssh/id_ed25519 或点击浏览选择" @update:model-value="v => editingAsset.private_key_path = v" data-asset-field="private_key_path" />
+                <AppButton size="sm" :disabled="editingAsset.auth_method !== 'PrivateKey'" @click="browsePrivateKey">浏览…</AppButton>
+              </div>
             </label>
           </div>
           <div class="callout">
@@ -484,15 +545,38 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydownEsc));
               <span class="muted">密码（明文不会回显，仅保存到本地安全存储）
                 <span v-if="!editingAsset.credential_id" style="color:var(--danger)"> · 首次保存必填</span>
               </span>
-              <AppInput :model-value="editingCredential.password" type="password" placeholder="首次保存必填；编辑时留空保留既有密码"
-                @update:model-value="v => editingCredential.password = v" data-asset-field="password" />
+              <div class="inline-field-row">
+                <AppInput :model-value="editingCredential.password" type="password" placeholder="首次保存必填；编辑时留空保留既有密码"
+                  @update:model-value="v => { editingCredential.password = v; editingCredential.clearPassword = false; }" data-asset-field="password" />
+                <AppButton v-if="editingAsset.credential_id" size="sm" variant="danger" @click="toggleClearPassword">
+                  {{ editingCredential.clearPassword ? '撤销清除' : '清除密码' }}
+                </AppButton>
+              </div>
             </label>
             <label v-if="editingAsset.auth_method === 'PrivateKey'" class="stack">
               <span class="muted">Passphrase（可选）</span>
-              <AppInput :model-value="editingCredential.passphrase" type="password" placeholder="无加密私钥留空"
-                @update:model-value="v => editingCredential.passphrase = v" data-asset-field="passphrase" />
+              <div class="inline-field-row">
+                <AppInput :model-value="editingCredential.passphrase" type="password" placeholder="无加密私钥留空"
+                  @update:model-value="v => { editingCredential.passphrase = v; editingCredential.clearPassphrase = false; }" data-asset-field="passphrase" />
+                <AppButton v-if="editingAsset.passphrase_credential_id" size="sm" variant="danger" @click="toggleClearPassphrase">
+                  {{ editingCredential.clearPassphrase ? '撤销清除' : '清除 passphrase' }}
+                </AppButton>
+              </div>
             </label>
           </div>
+        </div>
+
+        <!-- reauthPassword：认证失败快捷重连（TerminalSurface 错误卡片入口） -->
+        <div v-else-if="modal.type === 'reauthPassword'" class="stack">
+          <p class="muted">
+            连接 <strong>{{ modal.asset?.name }}</strong>（{{ modal.asset?.username }}@{{ modal.asset?.host }}）认证失败。
+            输入登录密码后将切换为密码认证并自动重连。
+          </p>
+          <label class="stack"><span class="muted">密码</span>
+            <AppInput :model-value="reauthForm.password" type="password" placeholder="服务器登录密码"
+              @update:model-value="v => reauthForm.password = v" data-asset-field="reauth_password" />
+          </label>
+          <p v-if="reauthForm.error" class="form-error">{{ reauthForm.error }}</p>
         </div>
 
         <!-- tunnelCreate -->
@@ -845,6 +929,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydownEsc));
   font-size: 12px;
 }
 .callout strong { display: block; margin-bottom: 4px; }
+
+/* 表单内联组：输入框 + 附加按钮（私钥路径浏览 / 凭据清除） */
+.inline-field-row {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+
+.inline-field-row > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .num { font-family: ui-monospace, monospace; }
 
 /* 分组移动用的原生 input（AppInput 不透传 list 属性，故裸 input 对齐 AppInput 视觉）。 */
