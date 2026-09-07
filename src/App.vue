@@ -87,6 +87,7 @@ function toggleRight() {
       :store="store"
       :desktop-runtime-available="desktopRuntimeAvailable"
       :panel-resize="panelResize"
+      :auto-update="autoUpdate"
       @create-asset="createAsset"
       @create-group="createGroup"
       @connect-selected="connectSelected"

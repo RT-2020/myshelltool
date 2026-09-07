@@ -29,7 +29,9 @@ import {
 const props = defineProps({
   store: { type: Object, required: true },
   desktopRuntimeAvailable: { type: Boolean, default: false },
-  panelResize: { type: Object, default: null }
+  panelResize: { type: Object, default: null },
+  // App.vue 的 useAutoUpdate 实例（statusbar 更新提示可点击 + 设置图标徽标）
+  autoUpdate: { type: Object, default: null }
 });
 
 const emit = defineEmits([
@@ -59,6 +61,10 @@ const activeTransferCount = computed(() => props.store.activeTransfers?.length |
 const completedTransferCount = computed(() => props.store.completedTransfers?.length || 0);
 const syncText = computed(() => props.store.syncText || '未配置同步');
 const mcpText = computed(() => props.store.mcpClientConnected ? 'MCP 可用' : 'MCP 不可用');
+// 应用内更新状态：available → 状态栏消息可点击下载安装 + 设置图标红点；
+// error → 状态栏消息可点击重试；其余状态保持纯文本（aria-live）。
+const updateState = computed(() => props.autoUpdate?.state?.value || 'idle');
+const updateClickable = computed(() => updateState.value === 'available' || updateState.value === 'error');
 // 状态栏中间区：真实连接状态（sessions 列表非空即视为已连接，替代原假数据 zsh）
 const activeSessions = computed(() => props.store.sessions?.length || 0);
 const appClasses = computed(() => ({
@@ -314,8 +320,16 @@ onMounted(() => {
         >
           <PanelRight />
         </button>
-        <button class="icon-btn" type="button" aria-label="打开设置" title="设置" @click="emit('open-settings')">
+        <button
+          class="icon-btn"
+          :class="{ 'has-update': updateState === 'available' }"
+          type="button"
+          aria-label="打开设置"
+          :title="updateState === 'available' ? '设置（有新版本）' : '设置'"
+          @click="emit('open-settings')"
+        >
           <Settings />
+          <span v-if="updateState === 'available'" class="update-badge" aria-hidden="true"></span>
         </button>
         <div ref="menuRef" class="tb-menu" :data-open="String(menuOpen)">
           <button class="icon-btn" type="button" aria-label="布局菜单" title="布局菜单" @click="menuOpen = !menuOpen">
@@ -424,7 +438,17 @@ onMounted(() => {
       <div class="sb-left">
         <span class="sb-item"><span class="dot idle"></span>SSH 空闲 · 后端 {{ backendMode }}</span>
         <span class="sb-sep">·</span>
-        <span class="sb-item muted" aria-live="polite">{{ store.statusMessage || '无新消息' }}</span>
+        <!-- 更新提示在 available/error 态渲染为可点击按钮（useAutoUpdate 的文案
+             引导用户「点击状态栏更新」，此前是纯 span 死链接）；其余状态纯文本 -->
+        <button
+          v-if="updateClickable"
+          class="sb-item sb-update-btn"
+          :class="{ 'is-error': updateState === 'error' }"
+          type="button"
+          :title="updateState === 'available' ? '下载并安装新版本' : '重试检查更新'"
+          @click="props.autoUpdate.onClick()"
+        >{{ store.statusMessage }}</button>
+        <span v-else class="sb-item muted" aria-live="polite">{{ store.statusMessage || '无新消息' }}</span>
       </div>
       <div class="sb-center">
         <span class="sb-item mono">UTF-8</span>

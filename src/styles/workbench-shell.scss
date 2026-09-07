@@ -559,3 +559,33 @@
 // 状态栏圆点已收敛为全局 .dot（_utilities.scss，WorkbenchShell 模板挂 .dot idle）
 .transfer-pill { color: var(--app-muted); border-radius: 999px; }
 .transfer-pill .mono { margin-left: 4px; }
+
+// 状态栏更新消息按钮（available/error 态替代纯文本 span）：
+// useAutoUpdate 文案引导「点击状态栏更新」，此处补上真正的点击接线与视觉可供性。
+.sb-update-btn {
+  padding: 0;
+  background: none;
+  border: none;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+
+  &:hover { text-decoration-style: solid; color: var(--accent-hover); }
+  &:focus-visible { outline: 2px solid var(--accent-soft-strong); outline-offset: 2px; border-radius: var(--radius-sm); }
+  &.is-error { color: var(--danger); }
+}
+
+// 设置图标「有新版本」红点徽标（autoUpdate available 态）
+.icon-btn.has-update { position: relative; }
+.update-badge {
+  position: absolute;
+  top: var(--space-1);
+  right: var(--space-1);
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--danger);
+  box-shadow: 0 0 0 2px var(--app-panel); // 与按钮底色隔离的一圈描边
+}
