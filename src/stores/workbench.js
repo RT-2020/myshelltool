@@ -197,7 +197,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     announce,
     get modal() { return uiStore.modal; },
     set modal(v) { uiStore.modal = v; },
-    clearFileSelection: filesStore.clearSelection
+    clearFileSelection: filesStore.clearSelection,
+    autoPushIfEnabled: syncStore.autoPushIfEnabled
   });
 
   // v1.5：mcp store 需 modal setter（弹/关审批窗）+ announce（超时提示）。

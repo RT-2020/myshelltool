@@ -52,6 +52,16 @@ export const useAssetsStore = defineStore('assets', () => {
     console.log('[assets] announce:', message);
   }
 
+  /**
+   * v1.6 自动同步 helper：资产写操作完成后调用，经 workbench bridge 触发
+   * syncStore.autoPushIfEnabled。bridge 未注入时静默跳过（启动序列尚未完成）。
+   */
+  function maybeAutoPush() {
+    if (workbenchBridge && typeof workbenchBridge.autoPushIfEnabled === 'function') {
+      workbenchBridge.autoPushIfEnabled();
+    }
+  }
+
   // ============================================================
   // Computed（原 workbench.js:85-100）
   // ============================================================
