@@ -15,14 +15,13 @@ const listRef = ref(null);
 const activeIdx = ref(0);
 
 const ACTIONS = [
-  { id: 'action:search', label: '搜索终端内容', hint: 'Ctrl+Shift+F', keywords: 'search find' },
+  { id: 'action:search', label: '搜索终端内容', hint: 'Ctrl+F', keywords: 'search find' },
   { id: 'action:copy', label: '复制选中', hint: 'Ctrl+Shift+C', keywords: 'copy' },
   { id: 'action:paste', label: '粘贴', hint: 'Ctrl+Shift+V', keywords: 'paste' },
   { id: 'action:font-inc', label: '字体增大', hint: 'Ctrl+=', keywords: 'font larger' },
   { id: 'action:font-dec', label: '字体减小', hint: 'Ctrl+-', keywords: 'font smaller' },
   { id: 'action:font-reset', label: '字体重置', hint: 'Ctrl+0', keywords: 'font reset' },
-  { id: 'action:clear', label: '清屏', hint: '', keywords: 'clear' },
-  { id: 'action:fullscreen', label: '切换全屏', hint: 'Alt+Enter', keywords: 'fullscreen' },
+  { id: 'action:clear', label: '清屏', hint: 'Ctrl+Shift+L', keywords: 'clear' },
   { id: 'action:connect', label: '连接所选主机', hint: 'Ctrl+Shift+T', keywords: 'connect ssh' },
   { id: 'action:cheatsheet', label: '查看快捷键速查', hint: '?', keywords: 'help shortcut' }
 ];

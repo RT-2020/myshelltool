@@ -23,7 +23,7 @@ const SESSION_STATUS_EVENT = 'ssh-session-status';
 
 // localStorage key（CRITICAL: do NOT rename — Critic 改进 3）
 const TERMINAL_FONT_KEY = 'myshelltool-terminal-font';
-const TERMINAL_ASIDE_KEY = 'myshelltool-terminal-aside';
+const TERMINAL_LINEHEIGHT_KEY = 'myshelltool-terminal-lineheight';
 
 function readStored(key) {
   try {
@@ -49,8 +49,11 @@ export const useSessionsStore = defineStore('sessions', () => {
   const activeSessionId = ref(null);
   const hostKeyPrompt = ref(null);
   const keyboardPrompt = ref(null);
-  const terminalFontSize = ref(Number(readStored(TERMINAL_FONT_KEY)) || 14);
-  const terminalAsideOpen = ref(readStored(TERMINAL_ASIDE_KEY) === 'open');
+  const terminalFontSize = ref(Number(readStored(TERMINAL_FONT_KEY)) || 13);
+  // 行高（xterm lineHeight）：1.0 紧凑 ~ 2.0 宽松，默认 1.2；设置面板可调。
+  const clampLineHeight = v => Math.min(2, Math.max(1, Math.round(v * 10) / 10));
+  const storedLineHeight = Number(readStored(TERMINAL_LINEHEIGHT_KEY));
+  const terminalLineHeight = ref(Number.isFinite(storedLineHeight) && storedLineHeight >= 1 ? clampLineHeight(storedLineHeight) : 1.2);
   const terminalSearch = ref({ open: false, query: '', direction: 'next', result: null });
 
   // 用于驱动终端主题更新（原 workbench.js:24，仅保留与终端主题相关的部分）
@@ -372,23 +375,33 @@ export const useSessionsStore = defineStore('sessions', () => {
   }
 
   function resetTerminalFontSize() {
-    if (terminalFontSize.value === 14) return;
-    terminalFontSize.value = 14;
-    localStorage.setItem(TERMINAL_FONT_KEY, '14');
+    if (terminalFontSize.value === 13) return;
+    terminalFontSize.value = 13;
+    localStorage.setItem(TERMINAL_FONT_KEY, '13');
     applyTerminalFontSizeAll();
-    announce('终端字号已重置：14px');
+    announce('终端字号已重置：13px');
   }
 
   // ============================================================
-  // Terminal aside（原 workbench.js:555-562）
+  // Line height（设置面板可调，改变即热更新所有终端并持久化）
   // ============================================================
-  function toggleTerminalAside() {
-    terminalAsideOpen.value = !terminalAsideOpen.value;
-    localStorage.setItem(TERMINAL_ASIDE_KEY, terminalAsideOpen.value ? 'open' : 'closed');
-    setTimeout(() => {
-      const session = activeSession.value;
-      if (session) try { session.fit.fit(); } catch {}
-    }, 60);
+  function applyTerminalLineHeightAll() {
+    for (const session of sessions.value) {
+      try {
+        session.term.options.lineHeight = terminalLineHeight.value;
+        if (session.term.rows > 0) session.term.refresh(0, session.term.rows - 1);
+        session.fit.fit();
+      } catch {}
+    }
+  }
+
+  function setTerminalLineHeight(value) {
+    const next = clampLineHeight(Number(value));
+    if (!Number.isFinite(next) || next === terminalLineHeight.value) return;
+    terminalLineHeight.value = next;
+    localStorage.setItem(TERMINAL_LINEHEIGHT_KEY, String(next));
+    applyTerminalLineHeightAll();
+    announce('终端行间距：' + next.toFixed(1));
   }
 
   // ============================================================
@@ -488,32 +501,6 @@ export const useSessionsStore = defineStore('sessions', () => {
   }
 
   // ============================================================
-  // Fullscreen（原 workbench.js:1208-1231）
-  // ============================================================
-  async function toggleTerminalFullscreen() {
-    const win = getTauriWindow();
-    if (win && typeof win.setFullscreen === 'function') {
-      try {
-        let isFull = false;
-        try { isFull = await win.isFullscreen(); } catch { /* 读权限失败时假设 false */ }
-        await win.setFullscreen(!isFull);
-        const session = activeSession.value;
-        if (session) setTimeout(() => { try { session.fit.fit(); } catch {} }, 120);
-        announce(isFull ? '已退出全屏' : '已进入全屏');
-        return;
-      } catch (error) {
-        announce('全屏切换失败：' + error.message);
-        return;
-      }
-    }
-    // Fallback：浏览器预览模式
-    document.documentElement.dataset.terminalFullscreen = document.documentElement.dataset.terminalFullscreen === 'true' ? 'false' : 'true';
-    const session = activeSession.value;
-    if (session) setTimeout(() => { try { session.fit.fit(); } catch {} }, 30);
-    announce(document.documentElement.dataset.terminalFullscreen === 'true' ? '终端已全屏（预览模式）' : '终端已退出全屏');
-  }
-
-  // ============================================================
   // Run terminal action dispatcher
   // ============================================================
   function runTerminalAction(action) {
@@ -556,16 +543,8 @@ export const useSessionsStore = defineStore('sessions', () => {
       pasteToTerminal(session);
       return;
     }
-    if (action === 'fullscreen') {
-      toggleTerminalFullscreen();
-      return;
-    }
     if (action === 'reconnect') {
       reconnectSession(session.sessionId);
-      return;
-    }
-    if (action === 'toggle-aside') {
-      toggleTerminalAside();
       return;
     }
   }
@@ -677,6 +656,7 @@ export const useSessionsStore = defineStore('sessions', () => {
 
     const term = markRaw(new terminalModules.Terminal(buildTerminalOptions({
       fontSize: terminalFontSize.value,
+      lineHeight: terminalLineHeight.value,
       themeMode: effectiveTheme().value
     })));
     const fit = markRaw(new terminalModules.FitAddon());
@@ -949,7 +929,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     hostKeyPrompt,
     keyboardPrompt,
     terminalFontSize,
-    terminalAsideOpen,
+    terminalLineHeight,
     terminalSearch,
     dangerousPastePrompt,
     systemPrefersDark,
@@ -979,8 +959,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     findTerminalNext,
     setTerminalFontSize,
     resetTerminalFontSize,
-    toggleTerminalAside,
-    toggleTerminalFullscreen,
+    setTerminalLineHeight,
     updateAllTerminalThemes,
     writeToActiveTerminal,
     // 危险粘贴守卫（单一入口）

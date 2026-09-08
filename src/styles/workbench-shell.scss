@@ -59,8 +59,6 @@
 
 .tb-brand svg { color: var(--accent); stroke-width: 1.7; }
 .tb-name { font-weight: 600; color: var(--app-text); }
-.tb-sep { color: var(--app-subtle); }
-.tb-project { color: var(--app-muted); font-weight: 400; }
 
 .tb-search {
   position: relative;
@@ -149,40 +147,6 @@
   font: 11px var(--font-mono);
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.tb-menu { position: relative; }
-.menu-popover {
-  position: absolute;
-  top: calc(100% + 10px);
-  right: 0;
-  min-width: 210px;
-  padding: 6px;
-  border: 1px solid var(--app-border);
-  border-radius: 10px;
-  background: var(--app-panel);
-  box-shadow: var(--shadow-pop);
-  opacity: 0;
-  transform: translateY(-4px);
-  pointer-events: none;
-  transition: opacity var(--motion-fast), transform var(--motion-fast);
-  z-index: var(--z-dropdown);
-}
-
-.tb-menu[data-open='true'] .menu-popover {
-  opacity: 1;
-  transform: translateY(0);
-  pointer-events: auto;
-}
-
-.menu-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  min-height: 34px;
-  padding: 0 10px;
-  border-radius: 8px;
 }
 
 // 通用 icon-btn（含 .primary/:disabled）已收敛为全局类（_utilities.scss）
@@ -390,24 +354,7 @@
 .sb-asset-indicator.success { background: var(--success); }
 .sb-asset-indicator.warn { background: var(--warn); }
 .sb-asset-indicator.idle { background: var(--app-subtle); }
-.sb-asset-body { min-width: 0; display: grid; gap: 2px; }
 .sb-asset-title { font-size: 12.5px; font-weight: 500; line-height: 1.2; }
-.sb-asset-meta {
-  font: 11px var(--font-mono);
-  color: var(--app-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.sb-asset-tag {
-  flex-shrink: 0;
-  font: 10.5px var(--font-display);
-  color: var(--app-muted);
-  background: var(--app-panel-2);
-  padding: 2px 7px;
-  border-radius: 999px;
-}
 
 .sb-empty {
   margin: 32px 12px;
@@ -532,7 +479,6 @@
 }
 
 .sb-left,
-.sb-center,
 .sb-right {
   display: flex;
   align-items: center;
@@ -545,7 +491,6 @@
 .sb-left,
 .sb-right { flex: 1 1 0; }
 .sb-right { justify-content: flex-end; }
-.sb-center { flex: 0 0 auto; }
 .sb-item {
   display: inline-flex;
   align-items: center;
@@ -559,6 +504,13 @@
 // 状态栏圆点已收敛为全局 .dot（_utilities.scss，WorkbenchShell 模板挂 .dot idle）
 .transfer-pill { color: var(--app-muted); border-radius: 999px; }
 .transfer-pill .mono { margin-left: 4px; }
+
+// 状态栏 badge（同步状态文案）溢出保护：长文案截断省略，避免撑破右栏
+.statusbar .badge {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 // 状态栏更新消息按钮（available/error 态替代纯文本 span）：
 // useAutoUpdate 文案引导「点击状态栏更新」，此处补上真正的点击接线与视觉可供性。

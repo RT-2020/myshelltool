@@ -141,9 +141,8 @@ function dupSuffixFor(session) {
 <template>
   <div class="terminal-tabs-host">
     <div class="term-tabs terminal-tabs" ref="barRef" role="tablist" aria-label="SSH 会话标签">
-      <button class="tab workspace-tab terminal-tab-new" role="tab" @click="emit('new-terminal')" title="新建会话">
+      <button class="tab workspace-tab terminal-tab-new" role="tab" @click="emit('new-terminal')" title="新建会话" aria-label="新建会话">
         <Plus :size="14" />
-        <span class="new-label">新建</span>
       </button>
       <div
         v-for="session in visibleSessions"
@@ -163,8 +162,6 @@ function dupSuffixFor(session) {
       >
         <span :class="['dot', statusFor(session)]"></span>
         <span class="tab-name session-tab-name">{{ session.asset?.name }}{{ dupSuffixFor(session) }}</span>
-        <span class="session-tab-host">{{ session.asset?.host }}</span>
-        <span v-if="session.oscTitle" class="session-tab-osc">· {{ session.oscTitle }}</span>
         <button class="tab-close" aria-label="关闭会话" @click="onTabClose($event, session.sessionId)"><X :size="12" /></button>
       </div>
       <div class="term-tabs-spacer"></div>
@@ -295,22 +292,6 @@ function dupSuffixFor(session) {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 110px;
-}
-
-.session-tab-host {
-  font-size: 10px;
-  color: var(--app-muted);
-  font-family: var(--font-mono);
-  white-space: nowrap;
-}
-
-.session-tab-osc {
-  font-size: 10px;
-  color: var(--app-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100px;
 }
 
 .tab-close {

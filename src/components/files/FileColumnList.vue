@@ -2,7 +2,6 @@
 import { computed } from 'vue';
 import { File as FileIcon, Folder, Link2, Loader2, AlertCircle, RefreshCw } from 'lucide-vue-next';
 import {
-  formatFileEntryOwner,
   formatFileEntrySize,
   formatFileEntryTime,
   inferFileEntryType,
@@ -30,8 +29,28 @@ const emit = defineEmits([
   'row-click',
   'row-double-click',
   'row-context-menu',
-  'retry'
+  'retry',
+  'drag-start'
 ]);
+
+// ============================================================
+// 栏间拖拽上传（本地 → 远程）：仅本地行可拖，dragstart 写自定义 MIME。
+// 与 ConnectionSidebar 的 DRAG_MIME 同模式；drop 侧判定在 FileSurface。
+// ============================================================
+const FILE_DRAG_MIME = 'application/x-myshelltool-file';
+
+function onRowDragStart(event, entry) {
+  if (!props.isLocal || !event.dataTransfer) return;
+  // 该行在选中集内 → 携带整个选中集（当前可见条目）；否则仅该行。
+  // 目录也允许拖（drop 侧过滤并提示，uploadLocalEntry 仅支持文件）。
+  const payloadEntries = props.selectionSet.has(entry.path)
+    ? props.entries.filter((e) => props.selectionSet.has(e.path))
+    : [entry];
+  event.dataTransfer.setData(FILE_DRAG_MIME, JSON.stringify({ entries: payloadEntries }));
+  event.dataTransfer.effectAllowed = 'copy';
+  event.dataTransfer.dropEffect = 'copy';
+  emit('drag-start', payloadEntries.length);
+}
 
 // ============================================================
 // 空态四分支（远程侧，S2）：error → 加载失败+重试；未加载 → 尚未加载远程目录；
@@ -74,6 +93,8 @@ const emptyDesc = computed(() => {
       }"
       :data-path="entry.path"
       :data-kind="entry.kind"
+      :draggable="isLocal ? 'true' : 'false'"
+      @dragstart="onRowDragStart($event, entry)"
       @click="emit('row-click', $event, entry)"
       @dblclick="emit('row-double-click', entry)"
       @contextmenu="emit('row-context-menu', $event, entry)"
@@ -90,10 +111,6 @@ const emptyDesc = computed(() => {
           {{ inferFileEntryType(entry) }}
         </span>
         <span class="col-mtime file-row-time">{{ formatFileEntryTime(entry) }}</span>
-        <span class="col-perm file-row-perm">{{ entry.permissions || '—' }}</span>
-        <span class="col-owner file-row-owner" :title="formatFileEntryOwner(entry)">
-          {{ formatFileEntryOwner(entry) }}
-        </span>
       </template>
     </div>
 
@@ -267,23 +284,6 @@ const emptyDesc = computed(() => {
 .file-row-time {
   font-size: var(--text-xs);
   color: var(--app-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.file-row-perm {
-  font-size: var(--text-xs);
-  color: var(--app-muted);
-  font-family: var(--font-mono);
-  text-align: end;
-  white-space: nowrap;
-}
-
-.file-row-owner {
-  font-size: var(--text-xs);
-  color: var(--app-muted);
-  font-family: var(--font-mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

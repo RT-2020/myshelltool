@@ -241,8 +241,6 @@ export const useWorkbenchStore = defineStore('workbench', () => {
       set: (v) => { uiStore.modal = v; }
     }),
     searchState: computed(() => uiStore.searchState),
-    backendStatusText: computed(() => uiStore.backendStatusText),
-    backendMode: computed(() => uiStore.backendMode),
     // --- assets re-export ---
     assetSource: computed(() => assetsStore.assetSource),
     assets: computed(() => assetsStore.assets),
@@ -393,7 +391,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     hostKeyPrompt: computed(() => sessionsStore.hostKeyPrompt),
     keyboardPrompt: computed(() => sessionsStore.keyboardPrompt),
     terminalFontSize: computed(() => sessionsStore.terminalFontSize),
-    terminalAsideOpen: computed(() => sessionsStore.terminalAsideOpen),
+    terminalLineHeight: computed(() => sessionsStore.terminalLineHeight),
     terminalSearch: computed(() => sessionsStore.terminalSearch),
     // S3：连接错误卡片 / 取消 / 危险粘贴守卫（sessions store 权威状态，按约定 re-export）
     dangerousPastePrompt: computed(() => sessionsStore.dangerousPastePrompt),
@@ -433,7 +431,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     setTerminalContainer: sessionsStore.setTerminalContainer,
     setTerminalFontSize: sessionsStore.setTerminalFontSize,
     resetTerminalFontSize: sessionsStore.resetTerminalFontSize,
-    toggleTerminalAside: sessionsStore.toggleTerminalAside,
+    setTerminalLineHeight: sessionsStore.setTerminalLineHeight,
     writeToActiveTerminal: sessionsStore.writeToActiveTerminal
   };
 });

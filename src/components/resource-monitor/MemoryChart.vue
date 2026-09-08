@@ -43,11 +43,6 @@ const detailText = computed(() => (props.hasData ? `${formatBytes(props.memUsed)
     <div class="mem-bar" role="progressbar" :aria-valuenow="usedPct.toFixed(0)" aria-valuemin="0" aria-valuemax="100">
       <div class="mem-bar-fill" :style="{ width: usedPct + '%' }"></div>
     </div>
-
-    <div class="metric-foot">
-      <span>{{ hasData ? `已用 ${formatBytes(memUsed)}` : '已用 —' }}</span>
-      <span>{{ hasData ? `空闲 ${formatBytes(Math.max(0, memTotal - memUsed))}` : '空闲 —' }}</span>
-    </div>
   </article>
 </template>
 
@@ -117,15 +112,5 @@ const detailText = computed(() => (props.hasData ? `${formatBytes(props.memUsed)
   height: 100%;
   border-radius: inherit;
   background: var(--success);
-}
-
-.metric-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 6px;
-  color: var(--app-subtle);
-  font: 10px var(--font-mono);
-  letter-spacing: 0.04em;
 }
 </style>

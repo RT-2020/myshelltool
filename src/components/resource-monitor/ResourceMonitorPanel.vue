@@ -1,11 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, watch } from 'vue';
-import { AlertTriangle, MonitorOff, Pause, Play } from 'lucide-vue-next';
-import {
-  useResourceMonitorStore,
-  RESOURCE_MONITOR_INTERVAL_MS,
-  RESOURCE_MONITOR_MAX_HISTORY
-} from '@/stores/resourceMonitor.js';
+import { AlertTriangle, MonitorOff } from 'lucide-vue-next';
+import { useResourceMonitorStore } from '@/stores/resourceMonitor.js';
 import { useSessionsStore } from '@/stores/sessions.js';
 import CpuChart from './CpuChart.vue';
 import MemoryChart from './MemoryChart.vue';
@@ -51,29 +47,6 @@ const emptyText = computed(() => {
 const snapshot = computed(() => rm.snapshot);
 const hasData = computed(() => Boolean(rm.snapshot));
 
-// 头部 meta 从 store 常量派生（原硬编码「2秒 · 60点」）
-const metaText = computed(() =>
-  hasData.value
-    ? `${RESOURCE_MONITOR_INTERVAL_MS / 1000}秒 · ${RESOURCE_MONITOR_MAX_HISTORY}点`
-    : '— · —'
-);
-
-// 头部开始/停止：无活跃会话时禁用并说明原因
-const toggleTitle = computed(() => {
-  if (!sessions.activeSessionId) return '连接后可用';
-  return rm.enabled ? '停止采样' : '开始采样';
-});
-
-async function onToggleMonitor() {
-  if (rm.enabled) {
-    await rm.stop().catch(() => {});
-    return;
-  }
-  if (sessions.activeSessionId) {
-    await rm.start(sessions.activeSessionId).catch(() => {});
-  }
-}
-
 async function onRetry() {
   await rm.retry().catch(() => {});
 }
@@ -83,20 +56,6 @@ async function onRetry() {
   <section class="rs-section rm-section" data-region="resource-monitor">
     <div class="rs-section-head">
       <span class="rs-section-title">资源监控</span>
-      <div class="rs-head-right">
-        <span class="rs-section-meta">{{ metaText }}</span>
-        <button
-          type="button"
-          class="rm-toggle"
-          :title="toggleTitle"
-          :aria-label="toggleTitle"
-          :disabled="!sessions.activeSessionId"
-          @click="onToggleMonitor"
-        >
-          <Pause v-if="rm.enabled" :size="13" />
-          <Play v-else :size="13" />
-        </button>
-      </div>
     </div>
 
     <div v-if="placeholder === 'error'" class="rm-error-banner" role="alert">
@@ -117,7 +76,6 @@ async function onRetry() {
       <CpuChart
         :points="rm.cpuHistoryPoints"
         :current="snapshot?.cpuUsage || 0"
-        :cores="snapshot?.cpuCores || 0"
         :has-data="hasData"
       />
       <MemoryChart
@@ -166,48 +124,6 @@ async function onRetry() {
   color: var(--app-subtle);
   font: 500 10px var(--font-mono);
   letter-spacing: 0.08em;
-}
-
-.rs-section-meta {
-  color: var(--app-subtle);
-  font: 10px var(--font-mono);
-  letter-spacing: 0.04em;
-}
-
-.rs-head-right {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.rm-toggle {
-  display: inline-grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-sm);
-  background: var(--app-panel-2);
-  color: var(--app-muted);
-  cursor: pointer;
-  transition: background var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast);
-}
-
-.rm-toggle:hover:not(:disabled) {
-  background: var(--app-hover);
-  color: var(--app-text);
-  border-color: var(--app-border-strong);
-}
-
-.rm-toggle:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-
-.rm-toggle:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 .rm-error-banner {

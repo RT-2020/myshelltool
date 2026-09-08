@@ -59,9 +59,8 @@ export const useFilesStore = defineStore('files', () => {
   const contextMenu = ref({ visible: false, x: 0, y: 0, side: 'remote', entry: null });
   // 传输队列抽屉默认收起：用户有传输时状态栏「传输」或文件区 trigger 可展开。
   const transferDrawerOpen = ref(false);
-  // 本地/远程双栏：app.html 设计稿默认双栏（localPaneVisible=true）。
-  // 用户可点 view-pills 的「仅远程」收起本地面板。
-  const localPaneVisible = ref(true);
+  // 文件区默认「仅远程」（远程栏独享全宽），点 view-pills 的「双栏」展开本地面板。
+  const localPaneVisible = ref(false);
   const fileOperationStack = ref({ remote: [], local: [] });
   // 删除确认链：removeRemote / localDelete / batchRemoteDelete 只组装 pending 并弹
   // confirmFileDelete modal，真正删除在 confirmFileDelete()（用户点「删除」后）执行。

@@ -20,12 +20,13 @@
  */
 import { ref, computed, onMounted, unref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
-import { Info, Palette, RefreshCw, Plug, Sun, Moon, Monitor, Download, ExternalLink } from 'lucide-vue-next';
+import { Info, LayoutGrid, Palette, RefreshCw, Plug, Sun, Moon, Monitor, Download, ExternalLink, TerminalSquare } from 'lucide-vue-next';
 import { useWorkbenchStore } from '@/stores/workbench.js';
 import { THEME_ORDER, THEME_LABELS } from '@/composables/useTheme.js';
 import AppTabGroup from '@/components/ui/AppTabGroup.vue';
 import AppButton from '@/components/ui/AppButton.vue';
 import AppProgress from '@/components/ui/AppProgress.vue';
+import AppSelect from '@/components/ui/AppSelect.vue';
 import McpPanelContent from '@/components/shell/McpPanelContent.vue';
 import SyncPanelContent from '@/components/shell/SyncPanelContent.vue';
 import { isTauriRuntime } from '@/services/backend.js';
@@ -36,6 +37,21 @@ const { theme, modal } = storeToRefs(store);
 // autoUpdate 实例由 App.vue 通过 modal payload 注入（store.modal = { type:'settings', autoUpdate, tab }）。
 // 同一实例，与状态栏点击共享状态。未注入时（浏览器预览）更新区降级隐藏。
 const autoUpdate = computed(() => modal.value?.autoUpdate || null);
+
+// resetLayout 回调由 App.vue 通过 modal payload 注入（原顶栏布局菜单删除后的
+// 补偿入口）。无回调时不渲染「恢复默认布局」按钮。
+const resetLayout = computed(() => modal.value?.resetLayout || null);
+
+// —— 终端排版（外观 tab）——
+const fontSizeOptions = [10, 11, 12, 13, 14, 15, 16, 18, 20]
+  .map(px => ({ label: `${px}px`, value: px }));
+const lineHeightOptions = [1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.8, 2.0]
+  .map(lh => ({ label: lh.toFixed(1), value: lh }));
+// store 的 setTerminalFontSize 是增量式（delta）；面板选绝对值 → 换算差值复用同一管线。
+function setTerminalFontSizeTo(value) {
+  const delta = Number(value) - store.terminalFontSize;
+  if (delta) store.setTerminalFontSize(delta);
+}
 
 // —— Tab 导航 ——
 // tab 列表固定 4 项；icon 用 lucide 组件，AppTabGroup 透传给 AppTab。
@@ -207,6 +223,39 @@ function selectTheme(value) {
           </button>
         </div>
         <p class="muted">「跟随系统」随系统明暗自动切换；切换即时生效并持久化。</p>
+
+        <!-- 终端排版：字号 / 行间距（sessions store 权威值，改变即热更新所有终端） -->
+        <section class="block">
+          <header class="block-head"><TerminalSquare :size="12" />终端排版</header>
+          <div class="terminal-typography-row">
+            <label class="setting-field">
+              <span class="setting-label">字号</span>
+              <AppSelect
+                :model-value="store.terminalFontSize"
+                :options="fontSizeOptions"
+                @update:model-value="v => setTerminalFontSizeTo(v)"
+              />
+            </label>
+            <label class="setting-field">
+              <span class="setting-label">行间距</span>
+              <AppSelect
+                :model-value="store.terminalLineHeight"
+                :options="lineHeightOptions"
+                @update:model-value="v => store.setTerminalLineHeight(v)"
+              />
+            </label>
+          </div>
+          <p class="muted">即时生效并持久化；字号也可在终端内 Ctrl+滚轮 / Ctrl+= / Ctrl+- 调整。</p>
+        </section>
+
+        <!-- 恢复默认布局：次要操作（低频不常驻），无 resetLayout 回调时不渲染 -->
+        <section v-if="resetLayout" class="block">
+          <header class="block-head"><LayoutGrid :size="12" />布局</header>
+          <div class="update-row">
+            <AppButton variant="subtle" size="sm" @click="resetLayout()">恢复默认布局</AppButton>
+            <span class="muted update-hint">重置侧栏与终端/文件的分区宽度</span>
+          </div>
+        </section>
       </section>
 
       <!-- ③ 同步（复用 SyncPanelContent + PatConfigCard，零 props 自包含） -->
@@ -304,6 +353,24 @@ function selectTheme(value) {
 .about-ver {
   font-size: 12px;
   color: var(--text-secondary, var(--app-muted));
+}
+
+// —— 终端排版区 ——
+.terminal-typography-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+.setting-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 120px;
+}
+.setting-label {
+  font-size: var(--text-xs);
+  color: var(--app-muted);
 }
 
 // —— 更新区 ——

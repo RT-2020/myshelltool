@@ -89,11 +89,12 @@ function dismiss(id) {
   pointer-events: auto;
 }
 
-// 按 level 上色：边框 + soft 背景 + 图标色
-.toast-item.success { border-color: var(--success); background: var(--success-soft); }
-.toast-item.warn { border-color: var(--warn); background: var(--warn-soft); }
-.toast-item.error { border-color: var(--danger); background: var(--danger-soft); }
-.toast-item.info { border-color: var(--accent); background: var(--accent-soft); }
+// 按 level 上色：边框 + 图标色；背景用语义色混入面板实色（深色主题的 *-soft 是半透明，
+// 单独用作 toast 底会透出终端内容导致文字看不清，color-mix 保证不透明）
+.toast-item.success { border-color: var(--success); background: color-mix(in oklab, var(--success) 14%, var(--app-panel)); }
+.toast-item.warn    { border-color: var(--warn);    background: color-mix(in oklab, var(--warn) 14%, var(--app-panel)); }
+.toast-item.error   { border-color: var(--danger);  background: color-mix(in oklab, var(--danger) 14%, var(--app-panel)); }
+.toast-item.info    { border-color: var(--accent);  background: color-mix(in oklab, var(--accent) 14%, var(--app-panel)); }
 .toast-item.success .toast-icon { color: var(--success); }
 .toast-item.warn .toast-icon { color: var(--warn); }
 .toast-item.error .toast-icon { color: var(--danger); }

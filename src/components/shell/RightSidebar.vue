@@ -15,13 +15,6 @@ const sessions = useSessionsStore();
 const workbench = useWorkbenchStore();
 const clipboard = useClipboard();
 
-const connState = computed(() => {
-  if (!rm.isDesktopRuntime) return { dot: 'idle', text: '浏览器预览' };
-  if (!sessions.activeSessionId) return { dot: 'idle', text: '空闲' };
-  if (!rm.snapshot) return { dot: 'connecting', text: '采样中' };
-  return { dot: 'connected', text: '已连接' };
-});
-
 const pauseBtnTitle = computed(() => {
   if (!sessions.activeSessionId) return '连接后可用';
   return rm.enabled ? '暂停采样' : '继续采样';
@@ -65,10 +58,6 @@ async function onExport() {
     <header class="rs-header">
       <div class="rs-header-left">
         <span class="rs-title">监控</span>
-        <span class="rs-status-pill" :data-state="connState.dot">
-          <span class="dot" :class="connState.dot"></span>
-          {{ connState.text }}
-        </span>
       </div>
 
       <div class="rs-header-actions">
@@ -103,14 +92,6 @@ async function onExport() {
       <ResourceMonitorPanel />
       <OpsSummaryPanel />
     </div>
-
-    <footer class="rs-footer">
-      <span class="rs-footer-meta">采样 2 秒 · 历史 60 点</span>
-      <button class="collapse-btn" type="button" @click="emit('collapse')">
-        <PanelRightClose />
-        <span>收起</span>
-      </button>
-    </footer>
   </aside>
 </template>
 
@@ -120,7 +101,7 @@ async function onExport() {
 .right-sidebar {
   grid-area: right;
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto 1fr;
   min-width: 0;
   min-height: 0;
   height: 100%;
@@ -155,21 +136,6 @@ async function onExport() {
   white-space: nowrap;
 }
 
-.rs-status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-  padding: 2px 8px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-pill);
-  background: var(--app-panel-2);
-  font: 11px var(--font-mono);
-  color: var(--app-muted);
-}
-
-// 状态圆点已收敛为全局 .dot（_utilities.scss，含 connecting pulse）
-
 .rs-header-actions {
   display: flex;
   gap: 2px;
@@ -180,11 +146,6 @@ async function onExport() {
 .rs-header-actions .icon-btn {
   width: 24px;
   height: 24px;
-}
-
-.collapse-btn:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
 }
 
 .rs-body {
@@ -201,47 +162,4 @@ async function onExport() {
   border-radius: 4px;
 }
 .rs-body::-webkit-scrollbar-thumb:hover { background: var(--app-border-strong); }
-
-.rs-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border-top: 1px solid var(--app-border-soft);
-  background: var(--app-panel);
-}
-
-.rs-footer-meta {
-  overflow: hidden;
-  color: var(--app-subtle);
-  font: 10px var(--font-mono);
-  letter-spacing: 0.04em;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.collapse-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  height: 24px;
-  padding: 0 8px;
-  border: 1px solid var(--app-border);
-  border-radius: 6px;
-  color: var(--app-muted);
-  font: 11px var(--font-display);
-}
-
-.collapse-btn svg {
-  width: 13px;
-  height: 13px;
-  stroke-width: 1.7;
-}
-
-.collapse-btn:hover {
-  background: var(--app-hover);
-  color: var(--app-text);
-}
 </style>

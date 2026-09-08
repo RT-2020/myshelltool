@@ -21,7 +21,6 @@ import {
   Plus,
   Search,
   Server,
-  Terminal,
   Zap
 } from 'lucide-vue-next';
 import AppContextMenu from '../ui/AppContextMenu.vue';
@@ -561,11 +560,6 @@ provide('connectionSidebar', {
          Tree (scrollable middle) — 递归渲染分组树（app.html sb-tree）
          ============================================================ -->
     <div class="sb-tree" role="tree" aria-label="连接资产列表">
-      <div v-if="hasAssets" class="sb-tree-head">
-        <span class="chrome-label">已有分组</span>
-        <span class="sb-tree-hint">拖拽资产即可重新分组</span>
-      </div>
-
       <!-- Empty state: no assets at all（app.html sb-empty 虚线边框容器）-->
       <div v-if="!hasAssets" class="sb-empty">
         <div class="sb-empty-icon" aria-hidden="true">
@@ -611,10 +605,6 @@ provide('connectionSidebar', {
         />
       </div>
       <p v-if="quickConnectError" id="quick-connect-error" class="sb-quick-error" role="alert">{{ quickConnectError }}</p>
-      <p class="sb-quick-hint">
-        <Terminal :size="12" />
-        <span>输入 <kbd>ssh user@host</kbd> 回车连接</span>
-      </p>
     </footer>
 
     <!-- ============================================================
@@ -745,18 +735,6 @@ provide('connectionSidebar', {
   padding: 4px 8px 12px;
   min-height: 0;
 }
-.sb-tree-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 4px 6px 8px;
-}
-.sb-tree-hint {
-  font-size: 11px;
-  color: var(--app-subtle);
-  white-space: nowrap;
-}
 // 滚动条（app.css L958-962）
 .sb-tree::-webkit-scrollbar { width: 8px; }
 .sb-tree::-webkit-scrollbar-thumb {
@@ -802,8 +780,7 @@ provide('connectionSidebar', {
   color: var(--app-muted);
   line-height: 1.5;
 }
-.sb-empty-desc kbd,
-.sb-quick-hint kbd {
+.sb-empty-desc kbd {
   font-family: var(--font-mono);
   font-size: 10px;
   padding: 1px 5px;
@@ -880,16 +857,6 @@ provide('connectionSidebar', {
   font-size: 11px;
   color: var(--danger);
 }
-.sb-quick-hint {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin: 0;
-  padding-left: 2px;
-  font-size: 11px;
-  color: var(--app-subtle);
-}
-.sb-quick-hint svg { color: var(--app-subtle); }
 
 // ============================================================
 // Collapsed rail（实用优先偏离点：保留竖排图标列）

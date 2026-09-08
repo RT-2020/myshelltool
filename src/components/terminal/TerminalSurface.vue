@@ -17,7 +17,6 @@ import { useAssetsStore } from '@/stores/assets.js';
 import { useClipboard } from '@/composables/useClipboard.js';
 import { isTauriRuntime } from '@/services/backend.js';
 import TerminalTabs from './TerminalTabs.vue';
-import TerminalToolbar from './TerminalToolbar.vue';
 import TerminalSearchBar from './TerminalSearchBar.vue';
 import TerminalPane from './TerminalPane.vue';
 import ShortcutCheatsheet from './ShortcutCheatsheet.vue';
@@ -31,7 +30,7 @@ import { AppContextMenu } from '@/components/ui/index.js';
 const sessionsStore = useSessionsStore();
 const uiStore = useUiStore();
 const assetsStore = useAssetsStore();
-const { sessions, activeSession, activeSessionId, terminalFontSize, terminalAsideOpen, terminalSearch } =
+const { sessions, activeSession, activeSessionId, terminalSearch } =
   storeToRefs(sessionsStore);
 const { activeTab } = storeToRefs(uiStore);
 const { selectedAsset } = storeToRefs(assetsStore);
@@ -44,12 +43,6 @@ const { selectedAsset } = storeToRefs(assetsStore);
 const shortcutCheatsheetOpen = ref(false);
 const commandPaletteOpen = ref(false);
 const { copy: clipboardCopy } = useClipboard();
-
-const terminalSubtitle = computed(() => {
-  if (activeSession.value) return `${activeSession.value.asset.username}@${activeSession.value.asset.host}`;
-  if (selectedAsset.value) return `${selectedAsset.value.username}@${selectedAsset.value.host}`;
-  return '点击左侧主机连接';
-});
 
 const isTauriCore = computed(() => isTauriRuntime());
 
@@ -72,15 +65,15 @@ function handleKeydown(event) {
   const mod = event.ctrlKey || event.metaKey;
   const shift = event.shiftKey;
 
-  // Ctrl+Shift+F: inline search / Ctrl+Shift+P: command palette
-  if (mod && shift && (event.key === 'F' || event.key === 'f')) { event.preventDefault(); sessionsStore.openTerminalSearchInline(); return; }
+  // Ctrl+F: terminal search / Ctrl+Shift+P: command palette
+  if (mod && !shift && (event.key === 'F' || event.key === 'f')) { event.preventDefault(); sessionsStore.openTerminalSearchInline(); return; }
   if (mod && shift && (event.key === 'P' || event.key === 'p')) { event.preventDefault(); commandPaletteOpen.value = true; return; }
   // Ctrl+Shift+C: copy
   if (mod && shift && (event.key === 'C' || event.key === 'c')) { event.preventDefault(); sessionsStore.runTerminalAction('copy'); return; }
   // Ctrl+Shift+V: paste（经 store 统一危险粘贴守卫）
   if (mod && shift && (event.key === 'V' || event.key === 'v')) { event.preventDefault(); sessionsStore.runTerminalAction('paste'); return; }
-  // Alt+Enter: fullscreen
-  if (event.altKey && event.key === 'Enter') { event.preventDefault(); sessionsStore.runTerminalAction('fullscreen'); return; }
+  // Ctrl+Shift+L: clear
+  if (mod && shift && (event.key === 'L' || event.key === 'l')) { event.preventDefault(); sessionsStore.runTerminalAction('clear'); return; }
   // Ctrl+= / Ctrl++: font inc / Ctrl+-: font dec / Ctrl+0: font reset
   if (mod && (event.key === '=' || event.key === '+')) { event.preventDefault(); sessionsStore.runTerminalAction('font-inc'); return; }
   if (mod && event.key === '-') { event.preventDefault(); sessionsStore.runTerminalAction('font-dec'); return; }
@@ -111,15 +104,6 @@ onMounted(() => window.addEventListener('keydown', handleKeydown));
 onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown));
 
 // ============================================================
-// Paste guard — 统一入口在 sessions store（requestDangerousPaste /
-// approveDangerousPaste / cancelDangerousPaste + dangerousPastePrompt），
-// 命令面板/右键/工具栏/Ctrl+Shift+V 全部经 runTerminalAction('paste') 转发。
-// ============================================================
-function handlePasteWithGuard() {
-  sessionsStore.runTerminalAction('paste');
-}
-
-// ============================================================
 // Terminal pane context menu (右键复制/粘贴) — emit 来自 TerminalPane
 // 复制走 copyTerminalSelection；粘贴经 runTerminalAction('paste') 统一守卫。
 // ============================================================
@@ -135,6 +119,7 @@ function handleTerminalContextMenu({ x, y, hasSelection }) {
 const terminalMenuItems = computed(() => [
   { label: '复制选中', action: () => sessionsStore.runTerminalAction('copy'), disabled: !terminalMenu.hasSelection },
   { label: '粘贴', action: () => sessionsStore.runTerminalAction('paste') },
+  { label: '清屏', action: () => sessionsStore.runTerminalAction('clear') },
   { separator: true },
   { label: '复制主机地址', action: () => { if (activeSession.value) handleCopyHost(activeSession.value.sessionId); } }
 ]);
@@ -186,7 +171,7 @@ function isAuthFailure(connectError) {
 </script>
 
 <template>
-  <div class="region-terminal" :class="{ 'aside-open': terminalAsideOpen }">
+  <div class="region-terminal">
     <!-- Row 1: session tab strip（term-tabs 38px）-->
     <TerminalTabs
       :sessions="sessions"
@@ -199,46 +184,27 @@ function isAuthFailure(connectError) {
       @new-terminal="sessionsStore.connectSelected"
     />
 
-    <!-- Row 2: toolbar + conditional search bar（term-toolbar-row 44px）-->
-    <TerminalToolbar
-      :session="activeSession"
-      :font-size="terminalFontSize"
-      :subtitle="terminalSubtitle"
-      :aside-open="terminalAsideOpen"
-      :selected-asset="selectedAsset"
-      :reconnect-attempt="activeSession?.reconnectAttempt || 0"
-      :reconnect-total="activeSession?.reconnectTotal || 0"
-      @search="sessionsStore.openTerminalSearchInline()"
-      @copy="sessionsStore.runTerminalAction('copy')"
-      @paste="handlePasteWithGuard"
-      @font-inc="sessionsStore.runTerminalAction('font-inc')"
-      @font-dec="sessionsStore.runTerminalAction('font-dec')"
-      @clear="sessionsStore.runTerminalAction('clear')"
-      @reconnect="sessionsStore.runTerminalAction('reconnect')"
-      @cancel-connect="activeSession && sessionsStore.cancelConnect(activeSession.sessionId)"
-      @toggle-aside="sessionsStore.toggleTerminalAside()"
-      @fullscreen="sessionsStore.runTerminalAction('fullscreen')"
-    />
-    <TerminalSearchBar
-      :open="terminalSearch.open"
-      :query="terminalSearch.query"
-      :result="terminalSearch.result"
-      :match-index="activeSession?.searchMatch?.index || 0"
-      :match-total="activeSession?.searchMatch?.total || 0"
-      :case-sensitive="activeSession?.searchOpts?.caseSensitive || false"
-      :regex="activeSession?.searchOpts?.regex || false"
-      :whole-word="activeSession?.searchOpts?.wholeWord || false"
-      @update:query="sessionsStore.setTerminalSearchQuery"
-      @update:case-sensitive="(v) => activeSession && sessionsStore.setTerminalSearchOpts(activeSession.sessionId, { caseSensitive: v })"
-      @update:regex="(v) => activeSession && sessionsStore.setTerminalSearchOpts(activeSession.sessionId, { regex: v })"
-      @update:whole-word="(v) => activeSession && sessionsStore.setTerminalSearchOpts(activeSession.sessionId, { wholeWord: v })"
-      @next="sessionsStore.findTerminalNext('next')"
-      @prev="sessionsStore.findTerminalNext('prev')"
-      @close="sessionsStore.closeTerminalSearchInline()"
-    />
-
-    <!-- Row 3: term-canvas-wrap（终端 canvas 区，含错误横幅 + watermark + xterm pane + ready 光标）-->
+    <!-- Row 2: term-canvas-wrap（终端 canvas 区，含错误横幅 + 搜索浮层 + watermark + xterm pane + ready 光标）-->
     <div class="term-canvas-wrap">
+      <!-- 终端搜索浮层（Ctrl+F 呼出，绝对定位不挤压终端布局）-->
+      <TerminalSearchBar
+        :open="terminalSearch.open"
+        :query="terminalSearch.query"
+        :result="terminalSearch.result"
+        :match-index="activeSession?.searchMatch?.index || 0"
+        :match-total="activeSession?.searchMatch?.total || 0"
+        :case-sensitive="activeSession?.searchOpts?.caseSensitive || false"
+        :regex="activeSession?.searchOpts?.regex || false"
+        :whole-word="activeSession?.searchOpts?.wholeWord || false"
+        @update:query="sessionsStore.setTerminalSearchQuery"
+        @update:case-sensitive="(v) => activeSession && sessionsStore.setTerminalSearchOpts(activeSession.sessionId, { caseSensitive: v })"
+        @update:regex="(v) => activeSession && sessionsStore.setTerminalSearchOpts(activeSession.sessionId, { regex: v })"
+        @update:whole-word="(v) => activeSession && sessionsStore.setTerminalSearchOpts(activeSession.sessionId, { wholeWord: v })"
+        @next="sessionsStore.findTerminalNext('next')"
+        @prev="sessionsStore.findTerminalNext('prev')"
+        @close="sessionsStore.closeTerminalSearchInline()"
+      />
+
       <!-- 连接失败错误卡片：active session status==='error' 时显示在 xterm 上方 -->
       <div v-if="activeSession && activeSession.status === 'error'" class="term-error-banner" role="alert">
         <AlertTriangle :size="16" class="term-error-icon" aria-hidden="true" />
@@ -305,12 +271,12 @@ function isAuthFailure(connectError) {
 @use '@/styles/_tokens' as *;
 
 // ============================================================
-// region-terminal（app.css L529-536 严格同步）
-// grid 38px(term-tabs) 44px(term-toolbar-row) 1fr(term-canvas-wrap)
+// region-terminal
+// grid 38px(term-tabs) 1fr(term-canvas-wrap)——工具栏已删，搜索条为画布内浮层
 // ============================================================
 .region-terminal {
   display: grid;
-  grid-template-rows: 38px 44px 1fr;
+  grid-template-rows: 38px 1fr;
   width: 100%;
   height: 100%;
   min-height: 0;
@@ -322,12 +288,6 @@ function isAuthFailure(connectError) {
 
 // Row 1: tab strip（由 TerminalTabs 子组件渲染，固定 38px 高）
 .region-terminal :deep(.terminal-tabs) {
-  flex: 0 0 auto;
-}
-
-// Row 2: toolbar + search bar（由 TerminalToolbar/TerminalSearchBar 渲染，固定 44px）
-.region-terminal :deep(.terminal-toolbar),
-.region-terminal :deep(.terminal-searchbar) {
   flex: 0 0 auto;
 }
 
