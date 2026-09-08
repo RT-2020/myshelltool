@@ -1,22 +1,22 @@
 import { pickTerminalTheme } from '../lib/terminalThemes.js';
 
 // xterm Terminal options 工厂：集中所有终端配置，方便 store 在 connectSession 时调用。
-// 人机工程学选项：cursorStyle bar / scrollback 10000 / lineHeight 1.3 / minimumContrastRatio 4.5
-//   / fastScrollModifier alt
+// 人机工程学选项：cursorStyle bar / scrollback 10000 / lineHeight（可配置，默认 1.2）/
+//   minimumContrastRatio 4.5 / fastScrollModifier alt
 // 注：rightClickSelectsWord 已移除——右键改由 TerminalPane 的 @contextmenu 弹复制粘贴菜单，
 // 双击仍可选词（xterm 默认行为）。
-export function buildTerminalOptions({ fontSize, themeMode }) {
+export function buildTerminalOptions({ fontSize, lineHeight, themeMode }) {
   return {
     cursorBlink: true,
     cursorStyle: 'bar',
-    fontSize: fontSize || 14,
+    fontSize: fontSize || 13,
     // 字体优先级与设计稿 --font-mono 同源（JetBrains Mono 优先，需在 index.html 加载）。
     // 回退链：JetBrains Mono → Cascadia Code（Win11 自带）→ Consolas（Win10）→ 系统等宽
     fontFamily: '"JetBrains Mono", "Cascadia Code", Consolas, "Courier New", ui-monospace, monospace',
     theme: pickTerminalTheme(themeMode),
     allowProposedApi: true,
     scrollback: 10000,
-    lineHeight: 1.3,
+    lineHeight: lineHeight || 1.2,
     letterSpacing: 0,
     minimumContrastRatio: 4.5,
     fastScrollModifier: 'alt',

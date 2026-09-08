@@ -1,11 +1,10 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, unref, watch } from 'vue';
+import { computed, nextTick, onMounted, ref, unref, watch } from 'vue';
 import {
-  Menu,
+  ArrowUpDown,
   Minus,
   Moon,
   PanelRight,
-  RefreshCw,
   Search,
   Settings,
   Square,
@@ -39,34 +38,26 @@ const emit = defineEmits([
   'create-group',
   'connect-selected',
   'open-settings',
-  'open-sync',
   'open-mcp-panel',
   'toggle-theme',
   'toggle-assets',
   'toggle-right',
-  'reset-layout',
   'toggle-transfer-drawer'
 ]);
 
 const sidebarSearch = ref('');
 const quickConnect = ref('');
-const menuOpen = ref(false);
-const menuRef = ref(null);
 const isMaximized = ref(false);
 const searchInputRef = ref(null);
 const activeSearchIndex = ref(0);
 
-const backendMode = computed(() => props.store.backendStatus?.mode || 'tauri');
 const activeTransferCount = computed(() => props.store.activeTransfers?.length || 0);
-const completedTransferCount = computed(() => props.store.completedTransfers?.length || 0);
 const syncText = computed(() => props.store.syncText || '未配置同步');
 const mcpText = computed(() => props.store.mcpClientConnected ? 'MCP 可用' : 'MCP 不可用');
 // 应用内更新状态：available → 状态栏消息可点击下载安装 + 设置图标红点；
 // error → 状态栏消息可点击重试；其余状态保持纯文本（aria-live）。
 const updateState = computed(() => unref(props.autoUpdate?.state) || 'idle');
 const updateClickable = computed(() => updateState.value === 'available' || updateState.value === 'error');
-// 状态栏中间区：真实连接状态（sessions 列表非空即视为已连接，替代原假数据 zsh）
-const activeSessions = computed(() => props.store.sessions?.length || 0);
 const appClasses = computed(() => ({
   'sidebar-collapsed': props.store.assetsCollapsed,
   'right-collapsed': props.store.rightCollapsed
@@ -85,35 +76,6 @@ watch(
 
 watch(searchSuggestions, () => {
   activeSearchIndex.value = 0;
-});
-
-// 布局菜单：打开时挂 document 监听（外部点击 + Escape 关闭），关闭时移除。
-// 菜单项自身点击会先冒泡到 document，这里用容器包含判断放行，
-// 保证菜单项动作执行完毕后再关闭。
-watch(menuOpen, open => {
-  if (open) {
-    document.addEventListener('click', onDocClick);
-    document.addEventListener('keydown', onDocKeydown);
-  } else {
-    document.removeEventListener('click', onDocClick);
-    document.removeEventListener('keydown', onDocKeydown);
-  }
-});
-
-function onDocClick(event) {
-  if (menuRef.value && menuRef.value.contains(event.target)) return;
-  menuOpen.value = false;
-}
-
-function onDocKeydown(event) {
-  if (event.key === 'Escape') {
-    menuOpen.value = false;
-  }
-}
-
-onBeforeUnmount(() => {
-  document.removeEventListener('click', onDocClick);
-  document.removeEventListener('keydown', onDocKeydown);
 });
 
 function openSearch() {
@@ -257,8 +219,6 @@ onMounted(() => {
         <div class="tb-brand">
           <TerminalSquare :size="16" />
           <span class="tb-name">myshelltool</span>
-          <span class="tb-sep">·</span>
-          <span class="tb-project">未命名工作区</span>
         </div>
       </div>
 
@@ -307,9 +267,6 @@ onMounted(() => {
           <Sun v-if="store.effectiveTheme === 'light'" />
           <Moon v-else />
         </button>
-        <button class="icon-btn" type="button" aria-label="打开同步配置" title="同步配置" @click="emit('open-sync')">
-          <RefreshCw />
-        </button>
         <button
           class="icon-btn"
           type="button"
@@ -331,16 +288,6 @@ onMounted(() => {
           <Settings />
           <span v-if="updateState === 'available'" class="update-badge" aria-hidden="true"></span>
         </button>
-        <div ref="menuRef" class="tb-menu" :data-open="String(menuOpen)">
-          <button class="icon-btn" type="button" aria-label="布局菜单" title="布局菜单" @click="menuOpen = !menuOpen">
-            <Menu />
-          </button>
-          <div class="menu-popover" role="menu">
-            <button class="menu-item" type="button" @click="emit('reset-layout'); menuOpen = false">
-              <span class="menu-item-label">恢复默认布局</span>
-            </button>
-          </div>
-        </div>
         <div v-if="desktopWindowControlsVisible" class="window-controls" data-no-drag="true" aria-label="窗口控制">
           <button class="window-btn" type="button" aria-label="最小化" title="最小化" @click="minimizeWindow">
             <Minus :size="14" />
@@ -436,8 +383,6 @@ onMounted(() => {
 
     <footer class="statusbar app-status-bar" data-region="statusbar">
       <div class="sb-left">
-        <span class="sb-item"><span class="dot idle"></span>SSH 空闲 · 后端 {{ backendMode }}</span>
-        <span class="sb-sep">·</span>
         <!-- 更新提示在 available/error 态渲染为可点击按钮（useAutoUpdate 的文案
              引导用户「点击状态栏更新」，此前是纯 span 死链接）；其余状态纯文本 -->
         <button
@@ -450,14 +395,10 @@ onMounted(() => {
         >{{ store.statusMessage }}</button>
         <span v-else class="sb-item muted" aria-live="polite">{{ store.statusMessage || '无新消息' }}</span>
       </div>
-      <div class="sb-center">
-        <span class="sb-item mono">UTF-8</span>
-        <span class="sb-sep">·</span>
-        <span class="sb-item">{{ activeSessions > 0 ? 'SSH 已连接' : '未连接' }}</span>
-      </div>
       <div class="sb-right">
         <button class="sb-item transfer-pill" type="button" aria-label="打开传输队列" @click="emit('toggle-transfer-drawer')">
-          传输 <span class="mono">{{ activeTransferCount }} / {{ completedTransferCount }}</span>
+          <ArrowUpDown :size="12" aria-hidden="true" />
+          <span class="mono">{{ activeTransferCount }}</span>
         </button>
         <span class="sb-sep">·</span>
         <span class="badge muted">{{ syncText }}</span>

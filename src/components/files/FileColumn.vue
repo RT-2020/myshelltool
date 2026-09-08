@@ -37,7 +37,8 @@ const emit = defineEmits([
   'item-double-click',
   'sort-change',
   'context-menu-open',
-  'selection-change'
+  'selection-change',
+  'drag-start'
 ]);
 
 const filesStore = useFilesStore();
@@ -454,6 +455,7 @@ function crumbClick(seg) {
       @row-double-click="onRowDblClick"
       @row-context-menu="onContextMenu"
       @retry="filesStore.refreshRemoteFiles()"
+      @drag-start="(count) => emit('drag-start', count)"
     />
   </section>
 </template>

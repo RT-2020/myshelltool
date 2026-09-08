@@ -13,9 +13,7 @@ const columns = [
   { key: 'name', label: '名称', className: 'col-name col-sort' },
   { key: 'size', label: '大小', className: 'col-size col-sort col-sort--num' },
   { key: 'type', label: '类型', className: 'col-type col-sort' },
-  { key: 'modified', label: '修改时间', className: 'col-mtime col-sort' },
-  { key: 'permissions', label: '权限', className: 'col-perm col-sort col-sort--num' },
-  { key: 'owner', label: '用户组', className: 'col-owner col-sort' }
+  { key: 'modified', label: '修改时间', className: 'col-mtime col-sort' }
 ];
 </script>
 

@@ -62,12 +62,18 @@ const matchText = computed(() => {
 @use '@/styles/_tokens' as *;
 
 .terminal-searchbar {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-3);
+  z-index: 5;
   display: flex;
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   background: var(--app-panel-2);
-  border-block-end: 1px solid var(--app-border);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
 }
 
 .search-icon {
@@ -76,7 +82,8 @@ const matchText = computed(() => {
 }
 
 .terminal-searchbar input {
-  flex: 1;
+  flex: 0 1 220px;
+  width: 220px;
   border: 1px solid var(--app-border);
   border-radius: var(--radius-sm);
   background: var(--app-panel);

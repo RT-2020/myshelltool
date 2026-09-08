@@ -34,7 +34,17 @@ function handleGlobalKeydown(event) {
 }
 
 function openSettings(tab = 'about') {
-  store.modal = { type: 'settings', tab, autoUpdate };
+  // resetLayout：恢复默认布局回调，供设置弹窗「外观」tab 的次要按钮调用
+  // （原顶栏布局菜单入口删除后的补偿入口）
+  store.modal = {
+    type: 'settings',
+    tab,
+    autoUpdate,
+    resetLayout: () => {
+      panelResize.resetLayout();
+      store.announce('布局已恢复默认');
+    }
+  };
 }
 
 function createAsset() {
@@ -49,19 +59,9 @@ function connectSelected() {
   store.connectSelected();
 }
 
-function openSync() {
-  store.syncRefreshStatus();
-  openSettings('sync');
-}
-
 function openMcpPanel() {
   store.refreshMcpStatus();
   openSettings('mcp');
-}
-
-function resetLayout() {
-  panelResize.resetLayout();
-  store.announce('布局已恢复默认');
 }
 
 function toggleAssets() {
@@ -92,12 +92,10 @@ function toggleRight() {
       @create-group="createGroup"
       @connect-selected="connectSelected"
       @open-settings="openSettings"
-      @open-sync="openSync"
       @open-mcp-panel="openMcpPanel"
       @toggle-theme="store.toggleTheme"
       @toggle-assets="toggleAssets"
       @toggle-right="toggleRight"
-      @reset-layout="resetLayout"
       @toggle-transfer-drawer="store.toggleTransferDrawer"
     />
 

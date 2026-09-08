@@ -5,7 +5,6 @@ import { CHART_H, CHART_W, buildAreaPath, buildLinePath } from './chart-utils.js
 const props = defineProps({
   points: { type: Array, default: () => [] },
   current: { type: Number, default: 0 },
-  cores: { type: Number, default: 0 },
   hasData: { type: Boolean, default: true }
 });
 
@@ -13,7 +12,6 @@ const GRAD_ID = 'rm-cpu-grad';
 const path = computed(() => buildLinePath(props.points, 100));
 const areaPath = computed(() => buildAreaPath(path.value));
 const valueText = computed(() => (props.hasData ? props.current.toFixed(1) : '—'));
-const footText = computed(() => `${props.cores || 0} 核 · 负载 0`);
 </script>
 
 <template>
@@ -41,11 +39,6 @@ const footText = computed(() => `${props.cores || 0} 核 · 负载 0`);
       <path v-else class="line-empty" :d="`M0,${CHART_H - 4} L${CHART_W},${CHART_H - 4}`" />
       <line class="baseline" x1="0" :y1="CHART_H - 1" :x2="CHART_W" :y2="CHART_H - 1" />
     </svg>
-
-    <div class="metric-foot">
-      <span>{{ footText }}</span>
-      <span>2秒 · 60点</span>
-    </div>
   </article>
 </template>
 
@@ -109,15 +102,5 @@ const footText = computed(() => `${props.cores || 0} 核 · 负载 0`);
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.2;
-}
-
-.metric-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 6px;
-  color: var(--app-subtle);
-  font: 10px var(--font-mono);
-  letter-spacing: 0.04em;
 }
 </style>

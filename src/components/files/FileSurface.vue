@@ -40,6 +40,7 @@ function onFilePick(event) {
 
 // 拖拽上传：Windows 资源管理器拖文件进来即触发 uploadFiles。
 // dragover 时显示半透明 accent 边框 + 「松开上传」浮层（dragging=true）。
+// 仅认 'Files' 类型：栏间拖拽（自定义 MIME）走下方独立通道，两条互不干扰。
 const dragging = ref(false);
 let dragLeaveTimer = null;
 
@@ -51,9 +52,11 @@ function onDrop(event) {
   if (files?.length && !remoteBusy.value) filesStore.uploadFiles(files);
 }
 function onDragOver(event) {
-  // 必须 preventDefault 才能触发 drop；仅含文件时才显提示。
+  // 必须 preventDefault 才能触发 drop；仅含 OS 文件时才整面放行并显提示。
+  // 栏间拖拽的自定义 MIME 不在整面放行（远程栏 wrapper 单独判定），拖到非远程区域即浏览器默认禁止。
+  if (!event.dataTransfer?.types?.includes('Files')) return;
   event.preventDefault();
-  if (!remoteBusy.value && event.dataTransfer?.types?.includes('Files')) {
+  if (!remoteBusy.value) {
     dragging.value = true;
     if (dragLeaveTimer) { clearTimeout(dragLeaveTimer); dragLeaveTimer = null; }
   }
@@ -62,6 +65,76 @@ function onDragLeave() {
   // 用 timer 延迟隐藏，避免子元素切换触发的误判 dragleave。
   if (dragLeaveTimer) clearTimeout(dragLeaveTimer);
   dragLeaveTimer = setTimeout(() => { dragging.value = false; }, 80);
+}
+
+// ============================================================
+// 栏间拖拽上传（本地 → 远程）：本地行 dragstart（FileColumnList）写自定义 MIME，
+// 远程栏 wrapper 判定后放行 drop，逐条走 filesStore.uploadLocalEntry 现有管线
+// （分块上传 / 同名覆盖确认 / 传输队列 / toast 均复用，不新增 store 逻辑）。
+// ============================================================
+const FILE_DRAG_MIME = 'application/x-myshelltool-file';
+const columnDragging = ref(false);
+const dragEntryCount = ref(0);
+let columnDragLeaveTimer = null;
+
+function hasInternalFileDrag(event) {
+  return Boolean(event.dataTransfer?.types?.includes(FILE_DRAG_MIME));
+}
+
+function onLocalDragStart(count) {
+  dragEntryCount.value = Number(count) || 1;
+}
+
+function onRemoteColumnDragOver(event) {
+  if (!hasInternalFileDrag(event)) return; // OS 文件拖拽走整面 dropzone
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'copy';
+  if (remoteBusy.value) return;
+  columnDragging.value = true;
+  if (columnDragLeaveTimer) { clearTimeout(columnDragLeaveTimer); columnDragLeaveTimer = null; }
+}
+
+function onRemoteColumnDragLeave() {
+  // 照整面 dropzone 的 80ms timer 防抖，避免子元素切换误判。
+  if (columnDragLeaveTimer) clearTimeout(columnDragLeaveTimer);
+  columnDragLeaveTimer = setTimeout(() => { columnDragging.value = false; }, 80);
+}
+
+async function onRemoteColumnDrop(event) {
+  if (columnDragLeaveTimer) { clearTimeout(columnDragLeaveTimer); columnDragLeaveTimer = null; }
+  columnDragging.value = false;
+  if (!hasInternalFileDrag(event)) return;
+  event.preventDefault();
+  event.stopPropagation(); // 内部拖拽不冒泡到整面 onDrop
+  if (remoteBusy.value) return;
+  let payload = null;
+  try {
+    payload = JSON.parse(event.dataTransfer.getData(FILE_DRAG_MIME) || 'null');
+  } catch {
+    payload = null;
+  }
+  const entries = Array.isArray(payload?.entries) ? payload.entries.filter((e) => e && e.path) : [];
+  if (!entries.length) return;
+  // uploadLocalEntry 仅接受 kind='file'（目录在其内部即拒），此处先过滤。
+  const fileEntries = entries.filter((e) => e.kind === 'file');
+  if (!fileEntries.length) {
+    uiStore.notify('暂不支持目录上传', { level: 'warn' });
+    return;
+  }
+  for (const entry of fileEntries) {
+    // 逐条 await：同名覆盖确认等交互按序进行，避免并发上传互踩。
+    await filesStore.uploadLocalEntry(entry);
+  }
+  if (fileEntries.length < entries.length) {
+    uiStore.notify(`已跳过 ${entries.length - fileEntries.length} 个目录（暂不支持目录上传）`, { level: 'warn' });
+  }
+}
+
+function onAnyDragEnd() {
+  // 拖拽源（本地行）结束（含 Esc 取消）：清栏级拖入态，防 overlay 残留。
+  // OS 外部文件拖入不触发本元素 dragend，不影响整面 dropzone 行为。
+  if (columnDragLeaveTimer) { clearTimeout(columnDragLeaveTimer); columnDragLeaveTimer = null; }
+  columnDragging.value = false;
 }
 
 // 本地列折叠切换：首次展开时若本地未加载则触发加载。
@@ -147,6 +220,7 @@ const contextMenuItems = computed(() => {
     @drop="onDrop"
     @dragover="onDragOver"
     @dragleave="onDragLeave"
+    @dragend="onAnyDragEnd"
   >
     <input
       ref="fileInput"
@@ -156,22 +230,10 @@ const contextMenuItems = computed(() => {
       @change="onFilePick"
     />
 
-    <!-- ============ file-header（app.css L694-701：chrome-label + view-pills + file-actions）============ -->
+    <!-- ============ file-header（app.css L694-701：view-pills + file-actions）============ -->
     <header class="file-header">
-      <div class="file-title">
-        <span class="chrome-label">文件传输</span>
-      </div>
-      <!-- 视图胶囊：双栏 / 仅远程（app.css view-pills L703-727）-->
+      <!-- 视图胶囊：仅远程 / 双栏（app.css view-pills L703-727）-->
       <div class="view-pills" role="tablist" aria-label="文件视图模式">
-        <button
-          type="button"
-          class="view-pill"
-          :class="{ active: localPaneVisible }"
-          role="tab"
-          :aria-selected="String(localPaneVisible)"
-          title="本地 / 远程 双栏"
-          @click="!localPaneVisible && toggleLocalPane()"
-        >本地 / 远程</button>
         <button
           type="button"
           class="view-pill"
@@ -181,6 +243,15 @@ const contextMenuItems = computed(() => {
           title="仅远程"
           @click="localPaneVisible && toggleLocalPane()"
         >仅远程</button>
+        <button
+          type="button"
+          class="view-pill"
+          :class="{ active: localPaneVisible }"
+          role="tab"
+          :aria-selected="String(localPaneVisible)"
+          title="本地 / 远程 双栏"
+          @click="!localPaneVisible && toggleLocalPane()"
+        >双栏</button>
       </div>
       <div class="file-actions">
         <button class="icon-btn" type="button" title="新建目录" aria-label="新建目录" :disabled="remoteBusy" @click="uiStore.modal = { type: 'mkdir', entry: null }">
@@ -202,32 +273,37 @@ const contextMenuItems = computed(() => {
         kind="local"
         :disabled-hint="isTauriCore ? '' : '桌面客户端运行时才支持本地浏览（npm run tauri:dev）'"
         class="file-pane file-pane-local"
+        @drag-start="onLocalDragStart"
       />
       <div v-if="localPaneVisible" class="file-divider" aria-hidden="true"></div>
-      <FileColumn
-        kind="remote"
-        class="file-pane file-pane-remote"
+      <!-- 远程栏 wrapper：栏间拖拽（自定义 MIME）的 drop 目标，与整面 OS 文件 dropzone 分离 -->
+      <div
+        class="file-pane file-pane-remote file-pane-remote-wrap"
+        @dragover="onRemoteColumnDragOver"
+        @dragleave="onRemoteColumnDragLeave"
+        @drop="onRemoteColumnDrop"
       >
-        <!-- 远程列表头弱提示（S2）：常显，最少打扰 -->
-        <template #actions-leading>
-          <span class="file-column-hint" title="右键文件或空白处查看更多操作">右键查看更多操作</span>
-        </template>
-      </FileColumn>
+        <FileColumn kind="remote">
+          <!-- 远程列表头弱提示（S2）：常显，最少打扰 -->
+          <template #actions-leading>
+            <span class="file-column-hint" title="右键文件或空白处查看更多操作">右键查看更多操作</span>
+          </template>
+        </FileColumn>
+        <!-- 栏级拖拽 overlay：仅覆盖远程栏（内缩 8px），区别于 OS 拖入的整面 drag-overlay -->
+        <div v-if="columnDragging" class="column-drag-overlay" aria-hidden="true">
+          <span>松开：上传 {{ dragEntryCount }} 项到 {{ filesStore.remotePath || '/' }}</span>
+        </div>
+      </div>
     </div>
 
-    <!-- ============ drop-hint（app.css L770-785：底部胶囊提示）============ -->
-    <!-- 拖拽上传视觉提示：dragging 时整面 accent 虚线 + 底部胶囊提示目标路径 -->
+    <!-- ============ 拖拽上传视觉提示（app.css L770-785）============ -->
+    <!-- dragging 时整面 accent 虚线 + 浮层提示目标路径；无拖拽时不渲染常驻提示 -->
     <div v-if="dragging" class="drag-overlay">
       <div class="drag-overlay-inner">
         <FolderOpen :size="28" />
         <strong>松开以上传到当前远程目录</strong>
         <span class="drag-overlay-sub">{{ filesStore.remotePath || '/' }}</span>
       </div>
-    </div>
-    <!-- 常显底部胶囊（无拖拽时也提示，app.html drop-hint）-->
-    <div v-else class="drop-hint" aria-hidden="true">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 9l5-5 5 5M12 4v12" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      <span>拖拽文件到任意一栏上传</span>
     </div>
 
     <!-- Right-click context menu (teleported by AppContextMenu). -->
@@ -261,7 +337,7 @@ const contextMenuItems = computed(() => {
 }
 
 // ============================================================
-// file-header（app.css L694-701：chrome-label + view-pills + file-actions）
+// file-header（app.css L694-701：view-pills + file-actions）
 // ============================================================
 .file-header {
   display: flex;
@@ -270,17 +346,6 @@ const contextMenuItems = computed(() => {
   padding: 0 12px;
   background: var(--app-chrome);
   border-bottom: 1px solid var(--app-border);
-}
-.file-title {
-  display: flex;
-  align-items: center;
-}
-.chrome-label {
-  font-family: var(--font-display);
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  color: var(--app-muted);
 }
 .file-actions {
   display: flex;
@@ -357,34 +422,6 @@ const contextMenuItems = computed(() => {
 }
 
 // ============================================================
-// drop-hint（app.css L770-785：底部胶囊提示，常显）
-// ============================================================
-.drop-hint {
-  position: absolute;
-  bottom: 12px;
-  left: 50%;
-  transform: translateX(-50%);
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 12px;
-  background: var(--app-panel);
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-pill);
-  box-shadow: var(--shadow-pop);
-  font-size: 11px;
-  color: var(--app-muted);
-  pointer-events: none;
-  z-index: var(--z-base);
-}
-.drop-hint svg {
-  width: 12px;
-  height: 12px;
-  stroke-width: 1.7;
-  color: var(--app-subtle);
-}
-
-// ============================================================
 // drag-overlay（拖拽时整面 accent 虚线 + 居中浮层）
 // ============================================================
 .drag-overlay {
@@ -416,5 +453,27 @@ const contextMenuItems = computed(() => {
   font-size: var(--text-xs);
   color: var(--app-muted);
   font-family: var(--font-mono);
+}
+
+// ============================================================
+// 栏间拖拽（本地 → 远程）：远程栏 wrapper + 栏级 overlay
+// ============================================================
+.file-pane-remote-wrap {
+  position: relative;
+}
+.column-drag-overlay {
+  position: absolute;
+  inset: 8px;
+  z-index: var(--z-dropdown);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-soft);
+  border: 1.5px dashed var(--accent);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  pointer-events: none;
 }
 </style>

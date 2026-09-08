@@ -3,14 +3,10 @@ import { computed } from 'vue';
 import { useAssetsStore } from '@/stores/assets.js';
 import { useTunnelsStore } from '@/stores/tunnels.js';
 import { useSessionsStore } from '@/stores/sessions.js';
-import { useMcpStore } from '@/stores/mcp.js';
-import { useSyncStore } from '@/stores/sync.js';
 
 const assets = useAssetsStore();
 const tunnels = useTunnelsStore();
 const sessions = useSessionsStore();
-const mcp = useMcpStore();
-const sync = useSyncStore();
 
 const selected = computed(() => assets.selectedAsset || null);
 const tags = computed(() => {
@@ -40,17 +36,12 @@ const summaryRows = computed(() => {
   if (!selected.value) return [];
 
   const connected = activeSession.value?.status === 'connected';
-  const connecting = activeSession.value?.status === 'connecting';
   const sessionId = activeSession.value?.sessionId || activeSession.value?.id || '';
 
   return [
     { label: '会话', value: activeSession.value ? `${sessionId.slice(0, 8)} · ${connected ? '已连接' : '连接中'}` : '— · 未连接', muted: !activeSession.value },
     { label: '主机', value: `${selected.value.username || '—'}@${selected.value.host || '—'}:${selected.value.port || 22}` },
-    // 指纹暂无真实数据源：connected 时也显示 '—'，不伪造「SHA256 · 已隐藏」
-    { label: '指纹', value: '—', muted: true },
-    { label: '时长', value: connected ? (activeSession.value?.uptime || '—') : '—', muted: !connected },
-    { label: '隧道', value: `${tunnelsActive.value} / ${tunnelsTotal.value}`, muted: tunnelsTotal.value === 0 },
-    { label: '最近命令', value: connecting ? '等待终端就绪' : '—', muted: true }
+    { label: '隧道', value: `${tunnelsActive.value} / ${tunnelsTotal.value}`, muted: tunnelsTotal.value === 0 }
   ];
 });
 
@@ -61,9 +52,9 @@ const credentialBadge = computed(() => {
     : '未绑定';
 });
 
+// MCP/同步状态不在本面板重复展示（L0 信息唯一性）：与底部状态栏 badge 重复，
+// 且状态栏版可点击打开对应设置面板。此处仅保留凭据绑定状态。
 const systemRows = computed(() => [
-  { label: 'MCP', value: mcp.clientConnected ? '可用' : '不可用', tone: mcp.clientConnected ? 'success' : 'warn' },
-  { label: '同步', value: sync.syncText || '未配置', tone: sync.configured ? 'success' : 'muted' },
   { label: '凭据', value: credentialBadge.value, tone: selected.value ? 'muted' : 'warn' }
 ]);
 </script>

@@ -41,13 +41,6 @@ function assetIndicatorClasses(asset) {
   if (status === 'warn') return ['warn'];
   return ['idle'];
 }
-
-function assetStatusLabel(asset) {
-  const cls = assetIndicatorClasses(asset);
-  if (cls.includes('connected')) return '在线';
-  if (cls.includes('warn')) return '警告';
-  return '待命';
-}
 </script>
 
 <template>
@@ -109,13 +102,9 @@ function assetStatusLabel(asset) {
           @dragend="sidebar.onAssetDragEnd($event)"
         >
           <span class="sb-asset-indicator dot" :class="assetIndicatorClasses(asset)" aria-hidden="true"></span>
-          <div class="sb-asset-body asset-body">
-            <div class="sb-asset-title asset-name">{{ asset.name }}</div>
-            <div class="sb-asset-meta asset-meta">{{ asset.host }} · {{ asset.username }}</div>
-          </div>
+          <div class="sb-asset-title asset-name">{{ asset.name }}</div>
           <!-- 悬停快捷按钮：编辑 / 删除 -->
           <div class="asset-trail">
-            <span class="sb-asset-tag">{{ assetStatusLabel(asset) }}</span>
             <div class="asset-quick-actions">
               <button
                 type="button"
@@ -226,15 +215,16 @@ function assetStatusLabel(asset) {
 }
 
 // ============================================================
-// Asset node — 与 ConnectionSidebar 原有样式保持一致
+// Asset node — 单行布局（UI 设计 token 语料 L3：状态点 + 名称，32px 行高）。
+// host/username 全量信息走 title tooltip，不占常驻空间。
 // ============================================================
 .asset-node {
   display: grid;
   grid-template-columns: 10px minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
-  min-height: 44px;
-  padding: 8px 8px 8px 10px;
+  min-height: 32px;
+  padding: 4px 8px 4px 10px;
   margin-block-end: 1px;
   border-radius: 10px;
   border-inline-start: 2px solid transparent;
@@ -259,15 +249,8 @@ function assetStatusLabel(asset) {
   border-inline-start-color: var(--accent);
 }
 
-.asset-body {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
 .asset-name {
+  min-width: 0;
   font-size: var(--text-sm);
   color: var(--app-strong);
   font-weight: 500;
@@ -276,29 +259,10 @@ function assetStatusLabel(asset) {
   white-space: nowrap;
 }
 
-.asset-meta {
-  font-size: 11px;
-  color: var(--app-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono);
-}
-
 .asset-trail {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-}
-
-.sb-asset-tag {
-  flex-shrink: 0;
-  padding: 2px 7px;
-  border-radius: var(--radius-pill);
-  background: var(--app-panel-2);
-  color: var(--app-muted);
-  font: 10.5px var(--font-display);
-  letter-spacing: 0.04em;
 }
 
 // ============================================================

@@ -1134,7 +1134,9 @@ pub async fn sftp_list_dir(
                 path: entry.path(),
                 kind,
                 size: meta.len(),
-                modified: format!("{:?}", meta.modified()),
+                // Unix 秒字符串（复用 fs_local::format_modified）：此前 format!("{:?}")
+                // 会输出 "Ok(SystemTime { tv_sec: ..., tv_nsec: 0 })" 直接透给前端。
+                modified: crate::fs_local::format_modified(meta.modified()),
                 permissions,
                 user: meta.user.clone(),
                 group: meta.group.clone(),
@@ -1398,7 +1400,8 @@ pub async fn sftp_stat(
         }
         .to_string(),
         size: meta.len(),
-        modified: format!("{:?}", meta.modified()),
+        // Unix 秒字符串（复用 fs_local::format_modified），与 sftp_list_dir 对齐
+        modified: crate::fs_local::format_modified(meta.modified()),
         permissions: meta.permissions.map(|p| format!("{:04o}", p & 0o7777)),
         user: meta.user.clone(),
         group: meta.group.clone(),

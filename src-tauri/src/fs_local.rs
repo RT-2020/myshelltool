@@ -89,8 +89,10 @@ fn parent_string(path: &Path) -> String {
     }
 }
 
-fn format_modified(modified: std::io::Result<std::time::SystemTime>) -> String {
-    // Unix 秒数字符串；前端 new Date(Number(s) * 1000) 本地化展示。
+// Unix 秒数字符串；前端 new Date(Number(s) * 1000) 本地化展示。
+// ssh.rs 的 sftp_list_dir / sftp_stat 复用（russh-sftp modified() 同为
+// io::Result<SystemTime>，None → Err(ErrorKind::InvalidData)）。
+pub(crate) fn format_modified(modified: std::io::Result<std::time::SystemTime>) -> String {
     modified
         .map(|t| {
             t.duration_since(std::time::UNIX_EPOCH)

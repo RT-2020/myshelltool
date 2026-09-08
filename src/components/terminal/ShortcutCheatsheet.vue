@@ -21,7 +21,8 @@ const groups = [
     items: [
       { keys: ['Ctrl', 'Shift', 'C'], label: '复制选中文本' },
       { keys: ['Ctrl', 'Shift', 'V'], label: '粘贴（危险命令会弹确认）' },
-      { keys: ['Ctrl', 'Shift', 'F'], label: '搜索终端内容' }
+      { keys: ['Ctrl', 'F'], label: '搜索终端内容' },
+      { keys: ['Ctrl', 'Shift', 'L'], label: '清屏' }
     ]
   },
   {

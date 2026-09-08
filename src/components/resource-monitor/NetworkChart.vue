@@ -1,7 +1,6 @@
 <script setup>
 import { computed } from 'vue';
 import { CHART_H, CHART_W, buildLinePath, formatCompactRate, formatRate } from './chart-utils.js';
-
 const props = defineProps({
   rxPoints: { type: Array, default: () => [] },
   txPoints: { type: Array, default: () => [] },
@@ -49,7 +48,6 @@ const detailText = computed(() => (props.hasData ? `接收 ${formatRate(props.rx
         <span><i class="rx"></i>接收</span>
         <span><i class="tx"></i>发送</span>
       </span>
-      <span>{{ hasData ? `峰值 ${formatRate(Math.max(rxRate, txRate))}` : '峰值 —' }}</span>
     </div>
   </article>
 </template>

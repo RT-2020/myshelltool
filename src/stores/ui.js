@@ -120,12 +120,6 @@ export const useUiStore = defineStore('ui', () => {
     return theme.value;
   });
   const themeLabel = computed(() => THEME_LABELS[theme.value] || theme.value);
-  const backendMode = computed(() => backendStatus.value?.mode || 'unknown');
-  const backendStatusText = computed(() =>
-    backendStatus.value.ready
-      ? `已连接 · ${backendMode.value}`
-      : `未就绪 · ${backendMode.value}`
-  );
 
   // ============================================================
   // 跨 store 桥接（lazy）
@@ -388,8 +382,6 @@ export const useUiStore = defineStore('ui', () => {
     // computed
     effectiveTheme,
     themeLabel,
-    backendMode,
-    backendStatusText,
     // bridge
     attachWorkbench,
     // theme actions
