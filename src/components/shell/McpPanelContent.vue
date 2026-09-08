@@ -20,15 +20,22 @@ import { computed, ref, onMounted } from 'vue';
 import { storeToRefs } from 'pinia';
 import { Plug, Copy, RefreshCw, FileCode2, Database } from 'lucide-vue-next';
 import { useWorkbenchStore } from '@/stores/workbench.js';
+import { useMcpStore } from '@/stores/mcp.js';
 import { useClipboard } from '@/composables/useClipboard.js';
 import AppButton from '@/components/ui/AppButton.vue';
 import McpCapabilityList from '@/components/shell/McpCapabilityList.vue';
+import McpInterceptionSettings from '@/components/shell/McpInterceptionSettings.vue';
+import McpExecutionLogList from '@/components/shell/McpExecutionLogList.vue';
 
 const store = useWorkbenchStore();
 const {
   mcpStatus, mcpProbe, mcpClientConnected, mcpLoading, mcpDataDir, mcpServerVersion,
   mcpTools, mcpResources, mcpPrompts
 } = storeToRefs(store);
+
+// v2：拦截设置/执行日志子组件直接用 mcp store（不经 workbench re-export）。
+// McpPanelContent 的 onMounted 顺带拉取初始数据。
+const mcpStore = useMcpStore();
 
 const { copy } = useClipboard();
 
@@ -70,6 +77,9 @@ onMounted(() => {
   if (!hasStatus.value) {
     store.refreshMcpStatus();
   }
+  // v2：拦截等级 + 执行日志（面板打开时拉初始值）
+  mcpStore.loadMcpConfig();
+  mcpStore.loadExecLogs();
 });
 </script>
 
@@ -141,7 +151,11 @@ onMounted(() => {
         </div>
       </section>
 
-      <!-- ④ 能力清单：抽到 McpCapabilityList 子组件（避免本 SFC 超 500 行） -->
+      <!-- ④ v2 拦截设置 + 执行日志（逻辑全在子组件，本 SFC 保持 <500 行） -->
+      <McpInterceptionSettings />
+      <McpExecutionLogList />
+
+      <!-- ⑤ 能力清单：抽到 McpCapabilityList 子组件（避免本 SFC 超 500 行） -->
       <McpCapabilityList :tools="mcpTools" :resources="mcpResources" :prompts="mcpPrompts" />
     </template>
   </div>

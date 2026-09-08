@@ -1,6 +1,6 @@
 mod dangerous_commands;
 mod dpapi_codec;
-mod fs_local;
+pub(crate) mod fs_local; // format_modified 被 ssh.rs 复用（SFTP mtime → Unix 秒）
 mod mcp;
 mod resource_monitor;
 mod ssh;
@@ -25,6 +25,11 @@ pub struct AppState {
     /// 与 McpToolContext 持有同一 Arc clone（lib.rs setup 时共享），让
     /// server.rs（等待审批）与 mcp_confirm_tool 命令（回传决定）互通。
     pub mcp_approval_pending: mcp::tools::ApprovalPending,
+    /// v2：MCP 拦截等级配置。与 McpToolContext 持有同一 Arc clone——
+    /// mcp_set_config 更新后，server.rs 已建 HTTP 会话下次调用即生效。
+    pub mcp_config: Arc<tokio::sync::RwLock<mcp::config::McpConfig>>,
+    /// v2：MCP 数据目录（config / 执行日志 / endpoint 同源，mcp_data_dir() 解析）。
+    pub mcp_data_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -207,6 +212,45 @@ async fn mcp_confirm_tool(
     accepted: bool,
 ) -> Result<(), String> {
     mcp::approval::resolve_approval(&state.mcp_approval_pending, &request_id, accepted).await
+}
+
+// ─── v2：MCP 拦截等级配置 + 执行日志（前端 MCP 面板）───
+
+/// 读当前拦截等级（内存 Arc，不动盘）。
+#[tauri::command]
+async fn mcp_get_config(state: State<'_, AppState>) -> Result<mcp::config::McpConfig, String> {
+    Ok(state.mcp_config.read().await.clone())
+}
+
+/// 切换拦截等级：解析枚举 → 更新共享 Arc（已建 MCP 会话下次调用即生效）→ 落盘。
+/// 无效 level（非 minimal/strict）返回 Err。
+#[tauri::command]
+async fn mcp_set_config(state: State<'_, AppState>, level: String) -> Result<mcp::config::McpConfig, String> {
+    let level_enum = mcp::config::McpInterceptLevel::parse(&level).ok_or_else(|| {
+        format!("无效的拦截等级: {level}（可选 minimal / strict）")
+    })?;
+    let new_config = mcp::config::McpConfig { level: level_enum };
+    *state.mcp_config.write().await = new_config.clone();
+    mcp::config::save_mcp_config(&mcp::config::mcp_config_path(&state.mcp_data_dir), &new_config)?;
+    Ok(new_config)
+}
+
+/// 读执行日志最近条目（timestampMs 倒序）。limit 缺省 200。
+#[tauri::command]
+fn mcp_list_execution_logs(
+    state: State<'_, AppState>,
+    limit: Option<u16>,
+) -> Result<Vec<mcp::execution_log::ExecutionLogEntry>, String> {
+    Ok(mcp::execution_log::list_entries(
+        &state.mcp_data_dir,
+        limit.unwrap_or(200) as usize,
+    ))
+}
+
+/// 清空执行日志。
+#[tauri::command]
+async fn mcp_clear_execution_logs(state: State<'_, AppState>) -> Result<(), String> {
+    mcp::execution_log::clear_entries(&state.mcp_data_dir).await
 }
 
 #[tauri::command]
@@ -403,6 +447,15 @@ pub fn run() {
             // v1.5：GUI 弹窗审批的 pending 表。一份 Arc，McpToolContext 与 AppState 共享。
             let mcp_approval_pending: mcp::tools::ApprovalPending =
                 Arc::new(AsyncMutex::new(std::collections::HashMap::new()));
+            // v2：MCP 数据目录与拦截等级配置。data_dir 统一从 mcp_data_dir() 取
+            //（环境变量优先），让 endpoint / mcp-config.json / mcp-execution-log.json
+            // 与 mcp_status 命令读到的目录一致。配置 load 失败（损坏/不存在）→ 默认 Minimal。
+            let mcp_dir = mcp_data_dir();
+            let mcp_config: Arc<tokio::sync::RwLock<mcp::config::McpConfig>> = Arc::new(
+                tokio::sync::RwLock::new(mcp::config::load_mcp_config(
+                    &mcp::config::mcp_config_path(&mcp_dir),
+                )),
+            );
             app.manage(AppState {
                 asset_store_path: app_data_dir.join("connection-assets.json"),
                 secret_store_dir: app_data_dir.join("credentials"),
@@ -410,6 +463,8 @@ pub fn run() {
                 resource_monitors: Arc::new(Mutex::new(resource_monitor::ResourceMonitorState::default())),
                 mcp_shutdown: mcp_shutdown.clone(),
                 mcp_approval_pending: mcp_approval_pending.clone(),
+                mcp_config: mcp_config.clone(),
+                mcp_data_dir: mcp_dir.clone(),
             });
 
             // v1.4：启动 MCP Streamable HTTP server（内嵌 GUI 进程）。
@@ -419,6 +474,7 @@ pub fn run() {
             //
             // v1.5：McpToolContext 用 new_with_gui 注入 AppHandle + 共享 pending 表，
             // 让 server.rs 的降级路径能 emit GUI 弹窗审批事件。
+            // v2：追加注入共享 config Arc（拦截等级）与 mcp_dir（日志/配置落盘）。
             //
             // 注意：setup hook 是同步上下文，此时 Tokio runtime 尚未在当前线程
             // 就绪——裸 `tokio::spawn` 会 panic「no reactor running」。
@@ -429,10 +485,12 @@ pub fn run() {
                 app_data_dir.join("connection-assets.json"),
                 app_data_dir.join("credentials"),
                 app_data_dir.join("known_hosts.json"),
+                mcp_config,
+                mcp_dir.clone(),
             );
             tauri::async_runtime::spawn(mcp::http_server::run_http_server(
                 mcp_ctx,
-                app_data_dir.clone(),
+                mcp_dir,
                 mcp_shutdown,
             ));
             Ok(())
@@ -448,6 +506,11 @@ pub fn run() {
             mcp_status,
             // v1.5：MCP 高危工具 GUI 弹窗审批的用户回传命令
             mcp_confirm_tool,
+            // v2：MCP 拦截等级配置 + 执行日志（前端 MCP 面板）
+            mcp_get_config,
+            mcp_set_config,
+            mcp_list_execution_logs,
+            mcp_clear_execution_logs,
             list_connection_assets,
             save_connection_asset,
             delete_connection_asset,

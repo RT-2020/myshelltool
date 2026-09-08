@@ -9,26 +9,40 @@
 //!   前端 GlobalModals 弹窗，用户在 GUI 内确认。无 GUI（headless/测试）才
 //!   退回 fail-secure 拒绝。这是 MCP 官方博客定位的 deterministic runtime
 //!   control：安全保证落在 runtime 层，不依赖 elicitation（UX hint）。
+//! v2：拦截等级用户可配置（config.rs::McpInterceptLevel）。默认 Minimal
+//!   （仅黑名单/超高危需确认，Unknown/黄名单放行）——这是**用户明确选择的
+//!   低摩擦默认**，放行记入执行日志（minimal_allowed）供事后审计，产品决策
+//!   上取代了 v1.x「未知命令 fail-secure 默认拒」。Strict 档保留原 fail-secure
+//!   语义（非白名单一律确认）。黑名单命令在两档下均恒拦截。
 //!
-//! 三层审批（D9）：
-//! - 白名单 → AutoExecute
-//! - 黄名单 → AutoExecute（+ 日志）
-//! - 黑名单 → RequestElicitation（v1.1：客户端确认；v1.5：不支持则 GUI 弹窗）
-//! - 未知命令 → RequestElicitation（v1.1：让用户决定；v1.5：同上降级）
+//! 审批分层（D9 + v2 等级）：
+//! - 白名单 → AutoExecute（两档同）
+//! - 黄名单（恒空）与未知命令 → Minimal 放行 / Strict 审批
+//! - 黑名单 → RequestElicitation（两档同，超高危永远拦；v1.5 三级降级见 server.rs）
 
 use serde::Serialize;
 
 use crate::dangerous_commands::{self, CommandRisk, DangerousMatch};
 
+use super::config::McpInterceptLevel;
 // ApprovalPending 在 tools.rs 定义（Arc<Mutex<HashMap<id, oneshot::Sender<bool>>>> 别名）。
 use super::tools::ApprovalPending;
 
 /// 审批决策结果。
 pub enum ApprovalDecision {
-    /// 自动执行（白名单/黄名单）。
-    AutoExecute,
-    /// 需要用户确认（v1.1：经 MCP elicitation 在客户端界面内弹确认框）。
+    /// 自动执行（白名单命中，或 Minimal 档对未知/黄名单的放行）。
+    /// 携带原因：server.rs 执行日志据此区分 auto_approved / minimal_allowed。
+    AutoExecute(AutoApproveReason),
+    /// 需要用户确认（v1.5 三级降级：elicitation → GUI 弹窗 → fail-secure 拒）。
     RequestElicitation(ElicitationInfo),
+}
+
+/// 自动放行原因（v2 执行日志 decision 字段的判定依据）。
+pub enum AutoApproveReason {
+    /// 命中只读白名单（两档均放行）→ 日志 decision=auto_approved。
+    Whitelist,
+    /// Minimal 档对未知/黄名单命令的放行 → 日志 decision=minimal_allowed。
+    MinimalFallback,
 }
 
 /// elicitation 请求信息（三段式：AI意图 + 真实命令 + 后果预测）。
@@ -60,10 +74,13 @@ impl ElicitationInfo {
         )
     }
 
-/// 降级用的拒绝文本（客户端不支持 elicitation 时，server.rs NotSupported 分支调用）。
+/// 降级用的拒绝文本（GUI 不可用时 server.rs NotSupported 分支调用）。
 ///
-/// fail-secure 拒绝：不支持 elicitation 的客户端（如 ZCode 用 AskUserQuestion）
-/// 无法满足高危操作的安全审批要求，直接拒绝。只读命令不受影响（走白名单自动放行）。
+/// fail-secure 拒绝：headless/emit 失败等 GUI 审批通道不可用的场景无法完成
+/// 高危操作的安全审批，直接拒绝。只读命令不受影响（走白名单自动放行）。
+/// v2 说明：等级配置（Minimal/Strict）不影响本路径——Minimal 是对「未知命令
+/// 是否需要审批」的产品决策（用户明确选择的低摩擦默认），而这里是「审批已
+/// 触发但无通道可用」的安全兜底，两档行为一致。
 pub fn to_rejection(&self) -> String {
     format_rejection(&self.intent, &self.command, &self.consequence)
 }
@@ -74,22 +91,43 @@ pub fn to_rejection(&self) -> String {
 /// `intent` 是 AI 声明的意图（来自工具调用的 intent 参数），
 /// `command` 是真实要执行的命令。
 /// `whitelist` / `yellow_list` 见 D9 决策（白名单内置，黄名单按资产配置）。
+/// `level` 是当前拦截等级（server.rs 每次 call_tool 现读共享配置快照）。
+///
+/// 等级映射（v2，详见模块头注释）：
+/// - Safe → AutoExecute(Whitelist)，两档同。
+/// - Dangerous → RequestElicitation，两档同（超高危永远拦）。
+/// - Allowed（黄名单，恒空）/ Unknown → Minimal 放行 / Strict 审批。
 pub fn evaluate(
     command: &str,
     intent: &str,
     whitelist: &[&str],
     yellow_list: &[String],
+    level: McpInterceptLevel,
 ) -> ApprovalDecision {
     let wl: Vec<String> = whitelist.iter().map(|s| s.to_string()).collect();
     match dangerous_commands::classify_command(command, &wl, yellow_list) {
         CommandRisk::Safe => {
             log::info!("approval: command approved (whitelist)");
-            ApprovalDecision::AutoExecute
+            ApprovalDecision::AutoExecute(AutoApproveReason::Whitelist)
         }
-        CommandRisk::Allowed => {
-            log::info!("approval: command approved (yellow list)");
-            ApprovalDecision::AutoExecute
-        }
+        CommandRisk::Allowed | CommandRisk::Unknown => match level {
+            McpInterceptLevel::Minimal => {
+                // v2 用户明确选择的低摩擦默认：放行 + 执行日志留痕（minimal_allowed）。
+                log::info!(
+                    "approval: command allowed under minimal level (yellow/unknown): {:?}",
+                    command
+                );
+                ApprovalDecision::AutoExecute(AutoApproveReason::MinimalFallback)
+            }
+            McpInterceptLevel::Strict => {
+                log::warn!("approval: unknown/yellow command, requesting elicitation under strict level (user decides)");
+                ApprovalDecision::RequestElicitation(ElicitationInfo {
+                    intent: intent.to_string(),
+                    command: command.to_string(),
+                    consequence: "此命令不在已知安全名单内，需要用户确认。".to_string(),
+                })
+            }
+        },
         CommandRisk::Dangerous(m) => {
             log::warn!(
                 "approval: dangerous command, requesting elicitation (pattern={})",
@@ -101,22 +139,15 @@ pub fn evaluate(
                 consequence: predict_consequence(&m),
             })
         }
-        CommandRisk::Unknown => {
-            log::warn!("approval: unknown command, requesting elicitation (user decides)");
-            ApprovalDecision::RequestElicitation(ElicitationInfo {
-                intent: intent.to_string(),
-                command: command.to_string(),
-                consequence: "此命令不在已知安全名单内，需要用户确认。".to_string(),
-            })
-        }
     }
 }
 
 /// 三段式确认信息格式（D5+D9：AI意图 + 真实命令 + 后果预测）。
 ///
-/// 用于 elicitation 不可用时的降级路径（server.rs NotSupported 分支）。
-/// 语义为 fail-secure 拒绝：不支持 elicitation 的客户端（如 ZCode）无法
-/// 完成高危操作的安全确认，直接拒绝。即使用户在 intent 里声称「查看日志」，
+/// 用于审批降级链全部不可用时（headless 无 GUI / emit 失败）的拒绝路径。
+/// 语义为 fail-secure 拒绝：无法完成高危操作的安全确认，直接拒绝（两档
+/// 等级下行为一致——Minimal 是「未知命令是否需审批」的产品决策，这里是
+/// 「审批无通道可用」的安全兜底）。即使用户在 intent 里声称「查看日志」，
 /// 但 command 是 `rm -rf /var/log`，三段对照也能让用户（或读 error 的 LLM）
 /// 识破伪装。若确需执行，用户应在支持 elicitation 的客户端（Claude Desktop）
 /// 中操作，或在 myshelltool GUI 手动执行。
@@ -250,60 +281,88 @@ mod tests {
     use super::*;
 
     #[test]
-    fn whitelist_command_auto_approved() {
-        let d = evaluate("df -h", "查询磁盘", READONLY_WHITELIST, &[]);
-        assert!(matches!(d, ApprovalDecision::AutoExecute));
+    fn whitelist_command_auto_approved_under_both_levels() {
+        for level in [McpInterceptLevel::Minimal, McpInterceptLevel::Strict] {
+            let d = evaluate("df -h", "查询磁盘", READONLY_WHITELIST, &[], level);
+            match d {
+                ApprovalDecision::AutoExecute(reason) => {
+                    // 白名单命中两档均放行，且 reason 是 Whitelist（→ auto_approved）
+                    assert!(matches!(reason, AutoApproveReason::Whitelist));
+                }
+                _ => panic!("expected AutoExecute for level={level:?}"),
+            }
+        }
     }
 
     #[test]
     fn dangerous_command_triggers_elicitation_with_three_sections() {
-        let d = evaluate("rm -rf /var/log", "清理日志", READONLY_WHITELIST, &[]);
-        match d {
-            ApprovalDecision::RequestElicitation(info) => {
-                // 三段式信息完整
-                assert_eq!(info.intent, "清理日志");
-                assert_eq!(info.command, "rm -rf /var/log");
-                assert!(info.consequence.contains("递归"));
-                // to_message 包含三段
-                let msg = info.to_message();
-                assert!(msg.contains("【AI 声明意图】清理日志"));
-                assert!(msg.contains("【真实命令】rm -rf /var/log"));
-                assert!(msg.contains("【后果预测】"));
+        for level in [McpInterceptLevel::Minimal, McpInterceptLevel::Strict] {
+            let d = evaluate("rm -rf /var/log", "清理日志", READONLY_WHITELIST, &[], level);
+            match d {
+                ApprovalDecision::RequestElicitation(info) => {
+                    // 三段式信息完整
+                    assert_eq!(info.intent, "清理日志");
+                    assert_eq!(info.command, "rm -rf /var/log");
+                    assert!(info.consequence.contains("递归"));
+                    // to_message 包含三段
+                    let msg = info.to_message();
+                    assert!(msg.contains("【AI 声明意图】清理日志"));
+                    assert!(msg.contains("【真实命令】rm -rf /var/log"));
+                    assert!(msg.contains("【后果预测】"));
+                }
+                _ => panic!("expected RequestElicitation for level={level:?}"),
             }
-            _ => panic!("expected RequestElicitation"),
         }
     }
 
     #[test]
-    fn unknown_command_triggers_elicitation() {
-        let d = evaluate("echo hello", "", READONLY_WHITELIST, &[]);
+    fn unknown_command_minimal_allows_strict_elicits() {
+        // minimal：未知命令放行（MinimalFallback → 日志 minimal_allowed）
+        let d = evaluate("echo hello", "", READONLY_WHITELIST, &[], McpInterceptLevel::Minimal);
+        match d {
+            ApprovalDecision::AutoExecute(reason) => {
+                assert!(matches!(reason, AutoApproveReason::MinimalFallback));
+            }
+            _ => panic!("expected AutoExecute under minimal"),
+        }
+
+        // strict：未知命令审批（fail-secure 语义保留）
+        let d = evaluate("echo hello", "", READONLY_WHITELIST, &[], McpInterceptLevel::Strict);
         match d {
             ApprovalDecision::RequestElicitation(info) => {
-                // intent 为空时 message 标注「未声明意图」
                 assert!(info.intent.is_empty());
                 let msg = info.to_message();
                 assert!(msg.contains("AI 未声明意图"));
             }
-            _ => panic!("expected RequestElicitation"),
+            _ => panic!("expected RequestElicitation under strict"),
         }
     }
 
     #[test]
-    fn yellow_list_allows_command() {
+    fn yellow_list_minimal_allows_strict_elicits() {
         let yellow = vec!["nginx -t".to_string()];
-        let d = evaluate("nginx -t", "测试配置", &[], &yellow);
-        assert!(matches!(d, ApprovalDecision::AutoExecute));
+        // minimal：黄名单放行（MinimalFallback）
+        let d = evaluate("nginx -t", "测试配置", &[], &yellow, McpInterceptLevel::Minimal);
+        assert!(matches!(
+            d,
+            ApprovalDecision::AutoExecute(AutoApproveReason::MinimalFallback)
+        ));
+        // strict：黄名单同样审批（黄名单当前恒空，语义按 v2 映射）
+        let d = evaluate("nginx -t", "测试配置", &[], &yellow, McpInterceptLevel::Strict);
+        assert!(matches!(d, ApprovalDecision::RequestElicitation(_)));
     }
 
     #[test]
     fn mkfs_consequence_mentioned() {
-        let d = evaluate("mkfs.ext4 /dev/sda1", "格式化", &[], &[]);
-        match d {
-            ApprovalDecision::RequestElicitation(info) => {
-                assert!(info.consequence.contains("格式化"));
-                assert!(info.consequence.contains("数据"));
+        for level in [McpInterceptLevel::Minimal, McpInterceptLevel::Strict] {
+            let d = evaluate("mkfs.ext4 /dev/sda1", "格式化", &[], &[], level);
+            match d {
+                ApprovalDecision::RequestElicitation(info) => {
+                    assert!(info.consequence.contains("格式化"));
+                    assert!(info.consequence.contains("数据"));
+                }
+                _ => panic!("expected RequestElicitation for level={level:?}"),
             }
-            _ => panic!("expected RequestElicitation"),
         }
     }
 }

@@ -6,7 +6,9 @@
 //! - `tools` — MCP Tools（9 个工具）
 //! - `resources` — 3 静态资源 + 1 template
 //! - `prompts` — 3 个诊断 prompt
-//! - `approval` — 审批判定（v1.4 改为同进程弹窗，删 v1.1 pipe 委托）
+//! - `approval` — 审批判定（v1.5 改为同进程弹窗，删 v1.1 pipe 委托）
+//! - `config` — v2 拦截等级配置（Minimal/Strict，mcp-config.json 持久化）
+//! - `execution_log` — v2 工具执行日志（mcp-execution-log.json，30 天惰性清理）
 //!
 //! 已删除（v1.4）：
 //! - `pipe` — named pipe 桥接（双进程时 MCP exe 复用 GUI 会话用，内嵌后无需）
@@ -15,6 +17,8 @@
 //! - `probe` — 从「一次性 spawn 子进程探测」改为「HTTP 健康检查」（不再 spawn）
 
 pub mod approval;
+pub mod config;
+pub mod execution_log;
 pub mod http_server;
 pub mod probe;
 pub mod prompts;

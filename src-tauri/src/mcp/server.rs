@@ -10,6 +10,10 @@
 //! GlobalModals 弹窗（同进程 GUI 审批，比 Arcade 的 URL 重定向更轻）。
 //! 无 GUI 句柄（headless/测试）才退回 fail-secure 拒绝。这是补齐 v1.4 标注的
 //! follow-up（server.rs:88 旧注释 TODO）。
+//!
+//! v2：① 审批按用户可配置的拦截等级判定（Minimal 默认仅拦黑名单/超高危，
+//! Strict 非白名单一律确认，配置见 config.rs，每次 call_tool 现读快照）；
+//! ② call_tool 为真实触发远程执行的工具调用记执行日志（execution_log.rs）。
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,24 +32,125 @@ use rmcp::{
 use tauri::Emitter;
 
 use super::approval::{self, ApprovalDecision, ElicitationInfo, McpApprovalEvent};
+use super::execution_log::{self, decision, outcome, ExecutionLogEntry};
 use super::tools::{self, McpToolContext};
 
 // ── v1.1 审批辅助 ──
 
+/// 审批通过的来源（v2：执行日志 decision 需区分 elicitation 框 / GUI 弹窗，
+/// 用枚举携带而非字符串匹配）。
+enum ApprovalVia {
+    Elicitation,
+    Gui,
+}
+
 /// elicitation 结果。
 enum ElicitOutcome {
-    /// 用户确认执行。
-    Accepted,
-    /// 用户拒绝（decline 或 cancel）。
-    Declined(String),
-    /// 客户端不支持 elicitation，降级为拒绝。
+    /// 用户确认执行（区分来源：elicitation 框 / GUI 弹窗）。
+    Accepted { via: ApprovalVia },
+    /// 用户拒绝（区分来源；reason 是给调用方的错误文本）。
+    Declined { via: ApprovalVia, reason: String },
+    /// GUI 弹窗 60s 超时（v2 从 NotSupported 中拆出，decision=timeout）。
+    Timeout,
+    /// emit 失败 / headless 无 GUI 的 fail-secure 拒（decision=rejected）。
     NotSupported(String),
+}
+
+impl ApprovalVia {
+    /// 执行日志 decision 字段值（接受路径）。
+    fn accepted_decision(&self) -> &'static str {
+        match self {
+            Self::Elicitation => decision::ELICITATION_ACCEPTED,
+            Self::Gui => decision::GUI_ACCEPTED,
+        }
+    }
+
+    /// 执行日志 decision 字段值（拒绝路径）。
+    fn declined_decision(&self) -> &'static str {
+        match self {
+            Self::Elicitation => decision::ELICITATION_DECLINED,
+            Self::Gui => decision::GUI_DECLINED,
+        }
+    }
+}
+
+/// 执行日志的记录范围：真实触发远程执行的工具调用所需的静态信息。
+///
+/// v2：所有真实触发远程执行的工具（ssh_exec / disk_usage / system_status /
+/// service_status / sftp_remove）记日志；list_assets / list_sessions / 桩工具 /
+/// 未知工具不记。command 填真实执行的命令文本（只读工具用 tools.rs 导出的
+/// 固定命令常量，sftp_remove 填目标路径）。
+struct LogScope {
+    tool: &'static str,
+    command: String,
+    asset_id: String,
+    intent: String,
+}
+
+fn log_scope_for(
+    tool_name: &str,
+    arguments: &Option<serde_json::Map<String, serde_json::Value>>,
+) -> Option<LogScope> {
+    let args = arguments.as_ref()?;
+    let asset_id = args
+        .get("asset_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let intent = args
+        .get("intent")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    match tool_name {
+        "ssh_exec" => Some(LogScope {
+            tool: "ssh_exec",
+            command: args
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            asset_id,
+            intent,
+        }),
+        "disk_usage" => Some(LogScope {
+            tool: "disk_usage",
+            command: tools::CMD_DISK_USAGE.to_string(),
+            asset_id,
+            intent,
+        }),
+        "system_status" => Some(LogScope {
+            tool: "system_status",
+            command: tools::CMD_SYSTEM_STATUS.to_string(),
+            asset_id,
+            intent,
+        }),
+        "service_status" => {
+            let service = args.get("service").and_then(|v| v.as_str()).unwrap_or("");
+            Some(LogScope {
+                tool: "service_status",
+                command: tools::service_status_command(service),
+                asset_id,
+                intent,
+            })
+        }
+        "sftp_remove" => Some(LogScope {
+            tool: "sftp_remove",
+            // 日志的 command 填目标路径本身（审批三段式里才是 sftp_remove path=…）
+            command: args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            asset_id,
+            intent,
+        }),
+        _ => None,
+    }
 }
 
 /// 对高危工具（ssh_exec）做审批判定。
 ///
 /// 返回 None 表示该工具不需要审批（只读工具），Some 表示需要审批决策。
-fn check_approval_needed(
+/// v2：读 ctx 共享配置的当前拦截等级（每次调用现读快照，改档即生效）。
+async fn check_approval_needed(
+    ctx: &McpToolContext,
     tool_name: &str,
     arguments: &Option<serde_json::Map<String, serde_json::Value>>,
 ) -> Option<ApprovalDecision> {
@@ -57,14 +162,16 @@ fn check_approval_needed(
             if command.is_empty() {
                 return None;
             }
+            let level = ctx.config.read().await.level;
             Some(approval::evaluate(
                 command,
                 intent,
                 super::approval::READONLY_WHITELIST,
                 &[],
+                level,
             ))
         }
-        // sftp_remove 始终需要确认（删除不可逆）
+        // sftp_remove 始终需要确认（删除不可逆，安全红线，不受等级配置影响）
         "sftp_remove" => {
             let intent = args.get("intent").and_then(|v| v.as_str()).unwrap_or("");
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
@@ -76,6 +183,58 @@ fn check_approval_needed(
         }
         _ => None,
     }
+}
+
+/// 资产元数据兜底：读库失败或 assetId 不存在时其余字段空串（port=0），
+/// 不丢日志条目（assetId 保留原值）。
+fn load_asset_meta(ctx: &McpToolContext, asset_id: &str) -> (String, String, u16, String) {
+    let empty = || (String::new(), String::new(), 0, String::new());
+    let Ok(store) = myshelltool_core::load_connection_asset_store(&ctx.asset_store_path) else {
+        return empty();
+    };
+    match store.assets.iter().find(|a| a.id == asset_id) {
+        Some(a) => (a.name.clone(), a.host.clone(), a.port, a.username.clone()),
+        None => empty(),
+    }
+}
+
+/// 落一条执行日志（append_entry 内部 best-effort，失败不阻断工具调用）。
+async fn append_execution_log(
+    ctx: &McpToolContext,
+    scope: &LogScope,
+    level_str: &str,
+    decision_str: &str,
+    outcome_str: &str,
+    output_text: &str,
+) {
+    let (asset_name, host, port, username) = load_asset_meta(ctx, &scope.asset_id);
+    let entry = ExecutionLogEntry {
+        id: uuid::Uuid::new_v4().to_string(),
+        timestamp_ms: execution_log::now_ms(),
+        level: level_str.to_string(),
+        tool: scope.tool.to_string(),
+        asset_id: scope.asset_id.clone(),
+        asset_name,
+        host,
+        port,
+        username,
+        command: scope.command.clone(),
+        intent: scope.intent.clone(),
+        decision: decision_str.to_string(),
+        outcome: outcome_str.to_string(),
+        output_summary: execution_log::summarize_output(output_text),
+    };
+    execution_log::append_entry(&ctx.data_dir, entry).await;
+}
+
+/// 从 CallToolResult 提取全部 text content（拼成日志的 outputSummary 素材）。
+fn extract_result_text(result: &CallToolResult) -> String {
+    result
+        .content
+        .iter()
+        .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// 客户端不支持 elicitation（或 elicitation 失败/被自动拒绝）时的降级路径。
@@ -129,14 +288,21 @@ async fn degrade_to_pipe_or_reject(
     }
 
     // 60s 超时，与 ssh.rs:118 host-key 验证对齐。前端 watcher 65s 兜底清理。
+    // v2：超时从 NotSupported 拆成独立 Timeout variant（执行日志 decision=timeout，
+    // 与 emit 失败/headless 拒绝的 decision=rejected 区分）。
     match tokio::time::timeout(Duration::from_secs(60), rx).await {
         Ok(Ok(accepted)) => {
             if accepted {
                 log::info!("mcp approval: user accepted {}", request_id);
-                ElicitOutcome::Accepted
+                ElicitOutcome::Accepted {
+                    via: ApprovalVia::Gui,
+                }
             } else {
                 log::info!("mcp approval: user declined {}", request_id);
-                ElicitOutcome::Declined("用户在 GUI 弹窗中拒绝".to_string())
+                ElicitOutcome::Declined {
+                    via: ApprovalVia::Gui,
+                    reason: "用户在 GUI 弹窗中拒绝".to_string(),
+                }
             }
         }
         Ok(Err(_)) => {
@@ -149,7 +315,7 @@ async fn degrade_to_pipe_or_reject(
             log::warn!("mcp approval: timeout (60s) for {}", request_id);
             let mut map = ctx.approval_pending.lock().await;
             map.remove(&request_id);
-            ElicitOutcome::NotSupported("GUI 审批超时（60s 未响应）".to_string())
+            ElicitOutcome::Timeout
         }
     }
 }
@@ -179,12 +345,20 @@ async fn try_elicit(
     match peer.elicit::<ApprovalForm>(info.to_message()).await {
         Ok(Some(form)) => {
             if form.confirmed {
-                ElicitOutcome::Accepted
+                ElicitOutcome::Accepted {
+                    via: ApprovalVia::Elicitation,
+                }
             } else {
-                ElicitOutcome::Declined("用户在确认框中选择了不执行".to_string())
+                ElicitOutcome::Declined {
+                    via: ApprovalVia::Elicitation,
+                    reason: "用户在确认框中选择了不执行".to_string(),
+                }
             }
         }
-        Ok(None) => ElicitOutcome::Declined("用户未提供确认".to_string()),
+        Ok(None) => ElicitOutcome::Declined {
+            via: ApprovalVia::Elicitation,
+            reason: "用户未提供确认".to_string(),
+        },
         Err(rmcp::service::ElicitationError::UserDeclined) => {
             // 无法区分「用户真拒绝」和「客户端自动拒绝」（如 Codex 伪支持
             // elicitation：握手时声明能力，运行时自动 Decline 所有请求）。
@@ -278,6 +452,9 @@ impl ServerHandler for MyshellToolMcpServer {
     /// v1.1：高危工具（ssh_exec/sftp_remove）在分发前做审批拦截——
     /// 命中黑名单/未知 → 经 MCP elicitation 在客户端界面内弹确认框（三段式），
     /// 用户 accept 才执行。客户端不支持 elicitation 时降级为 v1.0 的进程内拒绝。
+    /// v2：① 审批按当前拦截等级判定（Minimal 仅拦黑名单/超高危，Strict 非白名单
+    /// 一律确认，见 config.rs）；② 每次真实触发远程执行的工具调用记执行日志
+    /// （execution_log.rs）：决策路径 decision + 执行结果 outcome + 输出摘要。
     fn call_tool(
         &self,
         request: CallToolRequestParams,
@@ -287,26 +464,79 @@ impl ServerHandler for MyshellToolMcpServer {
         let tool_name = request.name.clone();
         let arguments = request.arguments.clone();
         async move {
-            // ── v1.1 审批拦截：高危工具先做危险判定 ──
-            if let Some(approval_needed) = check_approval_needed(&tool_name, &arguments) {
+            // ── v2 执行日志：记录范围（真实触发远程执行的工具才记）──
+            let log_scope = log_scope_for(&tool_name, &arguments);
+            let level_snapshot = ctx.config.read().await.level;
+            let level_str = level_snapshot.as_str();
+            // 决策初值：范围内但无需审批的工具（disk_usage 等只读）→ not_required
+            let mut log_decision: &'static str = decision::NOT_REQUIRED;
+
+            // ── v1.1 审批拦截：高危工具先做危险判定（v2 按当前等级）──
+            if let Some(approval_needed) = check_approval_needed(&ctx, &tool_name, &arguments).await
+            {
                 match approval_needed {
-                    super::approval::ApprovalDecision::AutoExecute => {
-                        // 白名单命令，直接放行
+                    super::approval::ApprovalDecision::AutoExecute(reason) => {
+                        // 放行：白名单命中 → auto_approved；Minimal 档放行 → minimal_allowed
+                        log_decision = match reason {
+                            super::approval::AutoApproveReason::Whitelist => {
+                                decision::AUTO_APPROVED
+                            }
+                            super::approval::AutoApproveReason::MinimalFallback => {
+                                decision::MINIMAL_ALLOWED
+                            }
+                        };
                     }
                     super::approval::ApprovalDecision::RequestElicitation(info) => {
                         // v1.5：elicitation 优先，不支持时降级 GUI 弹窗（ctx 透传）
                         match try_elicit(&context.peer, &ctx, &info).await {
-                            ElicitOutcome::Accepted => {
+                            ElicitOutcome::Accepted { via } => {
                                 log::info!("elicitation: user accepted, proceeding");
+                                log_decision = via.accepted_decision();
                                 // 放行执行
                             }
-                            ElicitOutcome::Declined(reason) => {
+                            ElicitOutcome::Declined { via, reason } => {
                                 log::info!("elicitation: user declined");
+                                if let Some(scope) = &log_scope {
+                                    append_execution_log(
+                                        &ctx,
+                                        scope,
+                                        level_str,
+                                        via.declined_decision(),
+                                        outcome::SKIPPED,
+                                        "",
+                                    )
+                                    .await;
+                                }
                                 return Ok(error_result(&reason));
                             }
+                            ElicitOutcome::Timeout => {
+                                if let Some(scope) = &log_scope {
+                                    append_execution_log(
+                                        &ctx,
+                                        scope,
+                                        level_str,
+                                        decision::TIMEOUT,
+                                        outcome::SKIPPED,
+                                        "",
+                                    )
+                                    .await;
+                                }
+                                return Ok(error_result("GUI 审批超时（60s 未响应），已拒绝执行"));
+                            }
                             ElicitOutcome::NotSupported(reason) => {
-                                // 客户端不支持 elicitation → 降级为进程内拒绝
+                                // GUI 审批通道不可用 → fail-secure 拒绝（两档等级行为一致）
                                 log::warn!("elicitation not supported, degrading to reject: {}", reason);
+                                if let Some(scope) = &log_scope {
+                                    append_execution_log(
+                                        &ctx,
+                                        scope,
+                                        level_str,
+                                        decision::REJECTED,
+                                        outcome::SKIPPED,
+                                        "",
+                                    )
+                                    .await;
+                                }
                                 return Ok(error_result(&reason));
                             }
                         }
@@ -315,15 +545,27 @@ impl ServerHandler for MyshellToolMcpServer {
             }
 
             // ── 正常分发 ──
-            match tools::call_tool(tool_name.as_ref(), request, &ctx).await {
-                Ok(result) => Ok(result),
+            let result = match tools::call_tool(tool_name.as_ref(), request, &ctx).await {
+                Ok(result) => result,
                 Err(e) => {
                     log::warn!("MCP call_tool error: {}", e);
-                    let mut result = CallToolResult::success(vec![rmcp::model::Content::text(e)]);
-                    result.is_error = Some(true);
-                    Ok(result)
+                    error_result(&e)
                 }
+            };
+
+            // ── v2 执行日志：终态落盘（outcome：通道成功 ok / 失败 error）──
+            if let Some(scope) = &log_scope {
+                let outcome_str = if result.is_error == Some(true) {
+                    outcome::ERROR
+                } else {
+                    outcome::OK
+                };
+                let output_text = extract_result_text(&result);
+                append_execution_log(&ctx, scope, level_str, log_decision, outcome_str, &output_text)
+                    .await;
             }
+
+            Ok(result)
         }
     }
 
