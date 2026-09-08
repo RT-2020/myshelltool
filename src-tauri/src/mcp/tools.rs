@@ -18,9 +18,11 @@ use std::sync::Arc;
 use rmcp::model::{CallToolRequestParams, CallToolResult, Content, Tool};
 use serde_json::{json, Map};
 use tauri::AppHandle;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{oneshot, Mutex, RwLock};
 
 use crate::ssh::{self, HeadlessConnectParams};
+
+use super::config::McpConfig;
 
 /// GUI 弹窗审批的 pending 表类型：request_id → oneshot::Sender<bool>。
 ///
@@ -30,14 +32,28 @@ use crate::ssh::{self, HeadlessConnectParams};
 /// 共享同一份表。模式照 ssh.rs:40/196 的 PendingDecisions。
 pub type ApprovalPending = Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>;
 
+// ─── 只读工具内部拼接的固定命令（单一事实源）───
+//
+// v2：server.rs 执行日志需要记录「真实执行的命令文本」，抽成 pub 常量/函数
+// 避免两处硬编码漂移。tools.rs 分发与 server.rs 日志共用同一份。
+
+/// disk_usage 工具实际执行的命令。
+pub const CMD_DISK_USAGE: &str = "df -h";
+/// system_status 工具实际执行的命令。
+pub const CMD_SYSTEM_STATUS: &str =
+    "uptime; echo '---'; free -h; echo '---'; top -bn1 | head -20";
+/// service_status 工具实际执行的命令（按服务名拼接）。
+pub fn service_status_command(service: &str) -> String {
+    format!("systemctl status {service}")
+}
+
 /// MCP 工具上下文：持有资产库路径 + 凭据/known_hosts 路径。
 ///
 /// v1.0（独立会话）：每次命令调用时按资产参数临时建连，exec 完即断。
-/// v1.1（named pipe 桥接）：会改为持有 GUI 的 SshSessionManager Arc。
-///
 /// v1.5：加 GUI 弹窗审批降级（方案 A）。elicitation 仍是主路径，但客户端
 /// 不支持 elicitation 时（如 ZCode），若 `app_handle` 存在则 emit 事件给
 /// GUI 弹窗让用户确认，替代 v1.4 的 fail-secure 拒绝。
+/// v2：加 `config`（拦截等级共享配置）与 `data_dir`（执行日志/配置落盘目录）。
 #[derive(Clone)]
 pub struct McpToolContext {
     pub asset_store_path: PathBuf,
@@ -48,6 +64,14 @@ pub struct McpToolContext {
     /// GUI 句柄，用于 emit 审批事件给前端弹窗。
     /// None = headless/测试/probe 模式（无 GUI → 退回 fail-secure 拒绝）。
     pub app_handle: Option<AppHandle>,
+    /// v2：拦截等级配置（与 AppState 共享同一 Arc）。每次 call_tool 现读快照，
+    /// mcp_set_config 后已建 HTTP 会话下次调用即生效。
+    /// 选 tokio RwLock 而非 std：与 approval_pending 的 tokio::sync::Mutex
+    /// 同族，读端可在 async 上下文无阻塞并发读。
+    pub config: Arc<RwLock<McpConfig>>,
+    /// v2：MCP 数据目录（mcp-config.json / mcp-execution-log.json 落盘位置）。
+    /// lib.rs setup 统一从 mcp_data_dir() 取（环境变量优先），与 endpoint 一致。
+    pub data_dir: PathBuf,
     /// 缓存最近一次 headless 连接的资产 id → handle，避免只读查询每次重连。
     /// v1.0 简化：M3 阶段先不缓存，每次按需建连。
     _session_cache: Arc<Mutex<()>>,
@@ -55,7 +79,7 @@ pub struct McpToolContext {
 
 impl McpToolContext {
     /// 测试/headless 构造：无 GUI 句柄，高危命令无法弹窗（退回 fail-secure 拒绝）。
-    /// approval_pending 仍是有效空表，保持 struct 完整性。
+    /// approval_pending 仍是有效空表，config 用默认等级（Minimal），保持 struct 完整性。
     ///
     /// 当前生产路径走 `new_with_gui`，本构造器为 headless/测试保留（未被调用），
     /// 故 allow(dead_code)——删除会导致测试或未来 headless bin 无可用构造路径。
@@ -64,6 +88,7 @@ impl McpToolContext {
         asset_store_path: PathBuf,
         secret_store_dir: PathBuf,
         known_hosts_path: PathBuf,
+        data_dir: PathBuf,
     ) -> Self {
         Self {
             asset_store_path,
@@ -71,18 +96,22 @@ impl McpToolContext {
             known_hosts_path,
             approval_pending: Arc::new(Mutex::new(HashMap::new())),
             app_handle: None,
+            config: Arc::new(RwLock::new(McpConfig::default())),
+            data_dir,
             _session_cache: Arc::new(Mutex::new(())),
         }
     }
 
-    /// GUI 构造：持有 AppHandle + 共享 pending 表。lib.rs setup 用此路径。
-    /// approval_pending 由调用方传入，确保与 AppState 持有同一份 Arc。
+    /// GUI 构造：持有 AppHandle + 共享 pending 表 + 共享配置。lib.rs setup 用此路径。
+    /// approval_pending / config 由调用方传入，确保与 AppState 持有同一份 Arc。
     pub fn new_with_gui(
         app_handle: AppHandle,
         approval_pending: ApprovalPending,
         asset_store_path: PathBuf,
         secret_store_dir: PathBuf,
         known_hosts_path: PathBuf,
+        config: Arc<RwLock<McpConfig>>,
+        data_dir: PathBuf,
     ) -> Self {
         Self {
             asset_store_path,
@@ -90,6 +119,8 @@ impl McpToolContext {
             known_hosts_path,
             approval_pending,
             app_handle: Some(app_handle),
+            config,
+            data_dir,
             _session_cache: Arc::new(Mutex::new(())),
         }
     }
@@ -156,7 +187,7 @@ pub fn list_all_tools() -> Vec<Tool> {
         // ─── 高危工具（M4，经 Layer 6 审批）───
         Tool::new(
             "ssh_exec",
-            "在指定资产上执行任意 Shell 命令。高危：命令经三层审批——白名单自动执行，黑名单/未知命令被拒绝并返回三段式说明（AI意图+真实命令+后果）。调用时必须如实声明 intent 意图。",
+            "在指定资产上执行任意 Shell 命令。命令按当前拦截等级判定：超高危命令需确认，其余按配置放行（等级可在 myshelltool GUI 的 MCP 面板调整）。调用时必须如实声明 intent 意图。",
             json!({
                 "type": "object",
                 "properties": {
@@ -202,8 +233,8 @@ pub async fn call_tool(
     match name {
         "list_assets" => tool_list_assets(ctx).await,
         "list_sessions" => tool_list_sessions().await,
-        "disk_usage" => exec_on_asset(ctx, &arguments, "df -h").await,
-        "system_status" => exec_on_asset(ctx, &arguments, "uptime; echo '---'; free -h; echo '---'; top -bn1 | head -20").await,
+        "disk_usage" => exec_on_asset(ctx, &arguments, CMD_DISK_USAGE).await,
+        "system_status" => exec_on_asset(ctx, &arguments, CMD_SYSTEM_STATUS).await,
         "service_status" => {
             let service = arguments
                 .get("service")
@@ -216,7 +247,7 @@ pub async fn call_tool(
             if !service.chars().all(|c| c.is_alphanumeric() || "-_@:.".contains(c)) {
                 return Ok(error_result("service 参数含非法字符"));
             }
-            exec_on_asset(ctx, &arguments, &format!("systemctl status {}", service)).await
+            exec_on_asset(ctx, &arguments, &service_status_command(service)).await
         }
         "sftp_list" => Ok(error_result("sftp_list 在 M3 阶段为桩，将在 M4 完善")),
         "resource_monitor_snapshot" => Ok(error_result("resource_monitor_snapshot 在 M3 阶段为桩，将在 M4 完善")),
@@ -281,13 +312,13 @@ async fn tool_list_assets(ctx: &McpToolContext) -> Result<CallToolResult, String
     Ok(text_result(&serde_json::to_string_pretty(&result).unwrap_or_default()))
 }
 
-/// ssh_exec：高危工具，经 Layer 6 审批后执行。
+/// ssh_exec：高危工具，经 approval.rs 审批后执行。
 ///
-/// 三层审批（D9 + approval.rs）：
-/// - command 命中白名单（READONLY_WHITELIST）→ 自动执行
-/// - command 命中黄名单（v1.0 暂无，v1.1 按资产配置）→ 自动执行
-/// - command 命中黑名单（dangerous_commands 16 条）→ 拒绝 + 三段式
-/// - command 未知（不在任何名单）→ 拒绝（fail-secure 默认拒）
+/// 审批（D9 + v2 拦截等级）：
+/// - command 命中白名单（READONLY_WHITELIST）→ 自动执行（两档同）
+/// - command 命中黑名单（dangerous_commands 16 条）→ 需确认（两档同，超高危永远拦）
+/// - command 未知/黄名单 → Minimal 放行 / Strict 需确认（等级用户可配置）
+/// v2：审批已移至 server.rs call_tool 拦截层并记执行日志。
 async fn tool_ssh_exec(
     ctx: &McpToolContext,
     args: &Map<String, serde_json::Value>,

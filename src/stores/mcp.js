@@ -35,6 +35,11 @@ const MCP_APPROVAL_EVENT = 'mcp-tool-approval';
  *
  * v1.5：本 store 从纯按需查询升级为带事件监听/dispose 的 store（approvalPrompt
  * 事件链路）。监听/超时/dispose 模式照 sessions.js 的 hostKeyPrompt（L130-234）。
+ *
+ * v2：拦截等级（interceptLevel，mcp_get_config/mcp_set_config）+ 执行日志
+ * （execLogs，mcp_list_execution_logs/mcp_clear_execution_logs）。由
+ * McpInterceptionSettings / McpExecutionLogList 组件直接 use 本 store，
+ * 不经 workbench re-export（workbench.js 已贴近 500 行硬上限）。
  */
 export const useMcpStore = defineStore('mcp', () => {
   // ============================================================
@@ -52,6 +57,12 @@ export const useMcpStore = defineStore('mcp', () => {
   let approvalUnlisten = null;
   // 65s 超时句柄（与后端 60s 对齐 + 5s 缓冲）。
   let approvalTimeout = null;
+
+  // v2：拦截等级（'minimal' | 'strict'，后端 mcp-config.json 持久化）。
+  const interceptLevel = ref('minimal');
+  // v2：执行日志列表（timestampMs 倒序）+ 加载态。
+  const execLogs = ref([]);
+  const execLogsLoading = ref(false);
 
   // workbench bridge（attachWorkbench 注入）。延迟绑定，避免循环 import。
   let workbenchBridge = null;
@@ -178,6 +189,70 @@ export const useMcpStore = defineStore('mcp', () => {
   });
 
   // ============================================================
+  // Actions：v2 拦截等级 + 执行日志
+  // ============================================================
+  //
+  // 拦截等级：minimal = 仅拦黑名单/超高危（默认，低摩擦）；strict = 非白名单
+  // 一律确认。setMcpInterceptLevel 更新后端共享配置，已建 MCP 会话下次调用
+  // 即生效。执行日志：MCP 面板查看/清空（server.rs call_tool 终态落盘）。
+
+  /** 拉取拦截等级（mcp_get_config）。浏览器预览模式静默跳过。 */
+  async function loadMcpConfig() {
+    if (!isTauriRuntime()) return;
+    try {
+      const config = await invokeBackend('mcp_get_config');
+      interceptLevel.value = config?.level ?? 'minimal';
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn('[mcp] loadMcpConfig failed:', error?.message || error);
+    }
+  }
+
+  /**
+   * 切换拦截等级（mcp_set_config）。成功更新本地 + announce；失败回滚提示
+   * （interceptLevel 不动，AppSelect 单向绑 store 值会自动弹回旧档）。
+   * @param {string} level  'minimal' | 'strict'
+   */
+  async function setMcpInterceptLevel(level) {
+    const label = level === 'strict' ? '全部需确认' : '仅拦截超高危';
+    try {
+      const config = await invokeBackend('mcp_set_config', { level });
+      interceptLevel.value = config?.level ?? level;
+      wb().announce?.(`MCP 拦截等级已切换为「${label}」`);
+    } catch (error) {
+      wb().announce?.('切换 MCP 拦截等级失败：' + (error?.message || error));
+    }
+  }
+
+  /**
+   * 拉取执行日志（mcp_list_execution_logs，timestampMs 倒序）。
+   * @param {number} [limit=200]
+   */
+  async function loadExecLogs(limit = 200) {
+    if (!isTauriRuntime() || execLogsLoading.value) return;
+    execLogsLoading.value = true;
+    try {
+      execLogs.value = await invokeBackend('mcp_list_execution_logs', { limit });
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn('[mcp] loadExecLogs failed:', error?.message || error);
+    } finally {
+      execLogsLoading.value = false;
+    }
+  }
+
+  /** 清空执行日志（mcp_clear_execution_logs）。 */
+  async function clearExecLogs() {
+    try {
+      await invokeBackend('mcp_clear_execution_logs');
+      execLogs.value = [];
+      wb().announce?.('MCP 执行日志已清空');
+    } catch (error) {
+      wb().announce?.('清空 MCP 执行日志失败：' + (error?.message || error));
+    }
+  }
+
+  // ============================================================
   // 生命周期：workbench 编排（照 sessions.js 三件套模式）
   // ============================================================
 
@@ -213,6 +288,9 @@ export const useMcpStore = defineStore('mcp', () => {
     status,
     loading,
     approvalPrompt,
+    interceptLevel,
+    execLogs,
+    execLogsLoading,
     // computed
     probe,
     clientConnected,
@@ -227,6 +305,11 @@ export const useMcpStore = defineStore('mcp', () => {
     buildConfig,
     // actions：v1.5 GUI 弹窗审批
     resolveMcpApproval,
+    // actions：v2 拦截等级 + 执行日志
+    loadMcpConfig,
+    setMcpInterceptLevel,
+    loadExecLogs,
+    clearExecLogs,
     // 生命周期
     attachWorkbench,
     setupEventListeners,

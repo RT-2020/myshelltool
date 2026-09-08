@@ -251,6 +251,10 @@ cd src-tauri && cargo check       # 更快的类型检查
 
 **MCP 服务**（`lib.rs` 调 `mcp/http_server.rs` + `mcp/probe.rs`）
 - `mcp_status` → 【v1.4】HTTP 健康检查 + 聚合能力清单。返回 `McpStatus { serverName, serverVersion, endpoint, dataDir, probe: McpProbeResult, tools[], resources[], prompts[] }`。`probe.ok` 是状态灯唯一信号源（向自己的 HTTP endpoint 发 initialize 握手，不再 spawn 子进程）。`endpoint` 是 MCP HTTP URL（如 `http://127.0.0.1:41235/mcp`），供用户配置 MCP host。
+- `mcp_get_config` → 【v2】读 MCP 危险命令拦截等级（内存共享配置，不动盘）。
+- `mcp_set_config({ level })` → 【v2】切换拦截等级（`minimal` 仅拦黑名单超高危 / `strict` 非白名单一律确认）→ 更新共享 Arc（已建 MCP 会话下次调用即生效）→ 落盘 mcp-config.json；无效 level 返 Err。
+- `mcp_list_execution_logs({ limit? })` → 【v2】读 MCP 工具执行日志最近条目（timestampMs 倒序，limit 缺省 200）。
+- `mcp_clear_execution_logs` → 【v2】清空 MCP 执行日志。
 - 【v1.4 已删】`mcp_approval_resolve`（原 v1.1 pipe 审批回传，内嵌后无 pipe）
 
 ### 事件（Rust → 前端，`listenBackendEvent`）
@@ -276,6 +280,8 @@ credential_id(Option), passphrase_credential_id(Option)
 - **资产元数据** → `connection-assets.json`（JSON-on-disk，无密钥）
 - **凭据** → `credentials/<id>.cred`（弱 XOR 混淆，非加密）
 - **known_hosts** → `known_hosts.json`
+- **MCP 拦截等级** → `mcp-config.json`（【v2】minimal/strict，缺省 Minimal；与 endpoint 同目录，经 mcp_data_dir() 解析）
+- **MCP 执行日志** → `mcp-execution-log.json`（【v2】30 天惰性清理 + 上限 1000 条，append 时触发；tokio Mutex 串行化 + `.tmp`/rename 原子写；不含任何凭据字段）
 - **活跃会话/隧道/SFTP 缓存** → 纯内存（重启丢失）
 
 ### McpStatus / McpProbeResult（MCP 健康检查，`lib.rs` + `mcp/probe.rs` + `mcp/http_server.rs`）
@@ -308,7 +314,8 @@ credential_id(Option), passphrase_credential_id(Option)
 - **【v1.4】MCP 内嵌 GUI（Streamable HTTP）**：MCP server 跑在 GUI 进程内，绑定 `127.0.0.1:41235/mcp`（占用则 +1，写 `<data_dir>/mcp-endpoint.json`）。取消双二进制（删 `bin/mcp.rs` + `pipe.rs`），根治 v1.2 的僵尸进程 + os error 32 + NSIS 打包缺口。MCP server 随 GUI 启停（`CancellationToken` 控制 graceful shutdown）。
 - **【v1.4】MCP 端口策略**：默认 41235，被占用则 +1 重试最多 10 次，**只监听 localhost**（§8 安全红线）。实际端口写 mcp-endpoint.json，前端 `mcp_status.endpoint` 返回。
 - **【v1.4 follow-up】会话复用**：`tools.rs::exec_on_asset` 当前直走 headless 建连（删了 v1.1 pipe 复用分支）。后续可注入 GUI 的 `Arc<AsyncMutex<SshSessionManager>>` 到 McpToolContext，命中已建立会话时直接复用（同进程访问，比 pipe 更简单）。
-- **【v1.4 follow-up】GUI 弹窗审批**：`server.rs::degrade_to_pipe_or_reject` 当前对不支持 elicitation 的客户端直接 fail-secure 拒绝（删了 v1.1 pipe 降级）。后续可注入 AppHandle，实现同进程 GUI 弹窗审批（像 ssh.rs host-key 验证那样 emit 前端）。
+- **【v2】MCP 审批三级降级 + 拦截等级可配置**：v1.5 已实现三级降级（elicitation → AppHandle emit `mcp-tool-approval` GUI 弹窗 + 60s oneshot 超时 → headless/emit 失败才 fail-secure 拒），不再是「不支持 elicitation 直接拒」。v2 起拦截等级用户可配置（`mcp-config.json`，GUI 经 `mcp_get_config`/`mcp_set_config` 读写）：默认 **Minimal** 仅拦黑名单/超高危（Unknown/黄名单放行，是用户明确选择的低摩擦默认，放行记执行日志 `minimal_allowed` 供审计）；**Strict** 非白名单一律确认（保留原 fail-secure 语义）。黑名单与 sftp_remove（危险文件操作红线）两档恒拦。等级存共享 `Arc<RwLock<McpConfig>>`，改档后已建 MCP 会话下次调用即生效。
+- **【v2】MCP 执行日志**：`server.rs::call_tool` 为真实触发远程执行的工具（ssh_exec/disk_usage/system_status/service_status/sftp_remove）记一条 `mcp-execution-log.json`（哪台服务器/什么命令/什么决策/什么结果），前端 MCP 面板经 `mcp_list_execution_logs`/`mcp_clear_execution_logs` 查看/清空。30 天惰性清理 + 上限 1000 条（append 时触发，无常驻定时任务）；tokio Mutex 串行化 append/clear，`.tmp`+rename 原子写，落盘失败 best-effort 不阻断工具调用。Entry 不含任何凭据字段（§8 红线）。
 
 ---
 
