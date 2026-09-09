@@ -43,3 +43,6 @@ LPT1
 LPT2
 LPT3
 LPT4
+
+# ZCode 本地会话状态
+.zcode/
