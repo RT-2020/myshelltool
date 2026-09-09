@@ -5,7 +5,7 @@
 // Wave 3.5 才删除旧 styles.css。
 
 // 1. Design tokens (CSS variables + SCSS maps)
-@use './tokens' as tokens;
+@use './_tokens.scss' as tokens;
 
 // 2. Reset + global typography
 @use './base';
@@ -20,4 +20,4 @@
 // Backward compatibility: 暴露 tokens 模块的 CSS 变量到全局
 // （@use 默认不输出 CSS；用 @forward 让 :root 块正常发出）
 // ===========================================================================
-@forward './tokens';
+@forward './_tokens.scss';

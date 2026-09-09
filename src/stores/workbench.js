@@ -158,7 +158,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   // ============================================================
   // Bridge 注入：所有 workbench state/actions 都已声明完毕。
   // sessions store 需要 selectedAsset / effectiveTheme / modal / selectedAssetId /
-  // announce / setTab / updateTransferProgress（转发到 files）。
+  // selectAsset（切标签联动资产树选中）/ announce / setTab / updateTransferProgress（转发到 files）。
   // files store 需要 announce / selectedAsset / setTab / modal + sessionsStore 引用。
   // tunnels store 需要 announce / modal + sessionsStore 引用。
   // assets store 需要 announce / modal + clearFileSelection（转发到 files）。
@@ -172,6 +172,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     set modal(v) { uiStore.modal = v; },
     get selectedAssetId() { return assetsStore.selectedAssetId; },
     set selectedAssetId(v) { assetsStore.selectedAssetId = v; },
+    selectAsset,
     announce,
     setTab: uiStore.setTab,
     updateTransferProgress: filesStore.updateTransferProgress
@@ -274,6 +275,9 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     syncEnableAutoSync: syncStore.enableAutoSync,
     syncDisableAutoSync: syncStore.disableAutoSync,
     syncCheckRemoteUpdates: syncStore.checkRemoteUpdates,
+    // 凭据与私钥同步
+    syncCredentialsEnabled: computed(() => syncStore.syncCredentialsEnabled),
+    setSyncCredentialsEnabled: syncStore.setSyncCredentialsEnabled,
     // --- files re-export ---
     remotePath: computed(() => filesStore.remotePath),
     remoteEntries: computed(() => filesStore.remoteEntries),
@@ -314,6 +318,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     selectAsset,
     setTab: uiStore.setTab,
     toggleTheme: uiStore.toggleTheme,
+    setTheme: uiStore.setTheme,
     toggleAssets: uiStore.toggleAssets,
     toggleRight: uiStore.toggleRight,
     openGlobalSearch: uiStore.openGlobalSearch,

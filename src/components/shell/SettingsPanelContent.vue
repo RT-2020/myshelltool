@@ -27,6 +27,7 @@ import AppTabGroup from '@/components/ui/AppTabGroup.vue';
 import AppButton from '@/components/ui/AppButton.vue';
 import AppProgress from '@/components/ui/AppProgress.vue';
 import AppSelect from '@/components/ui/AppSelect.vue';
+import AppBrandLogo from '@/components/ui/AppBrandLogo.vue';
 import McpPanelContent from '@/components/shell/McpPanelContent.vue';
 import SyncPanelContent from '@/components/shell/SyncPanelContent.vue';
 import { isTauriRuntime } from '@/services/backend.js';
@@ -133,6 +134,11 @@ function onUpdateClick() {
 // 读 uiStore.theme（原始三态 system/light/dark）+ 调 setTheme（点哪个选哪个）。
 // 主题图标：system→Monitor / light→Sun / dark→Moon。
 const themeIcons = { system: Monitor, light: Sun, dark: Moon };
+const themeDescription = computed(() => {
+  if (theme.value === 'light') return '「浅色」始终保持明亮清爽的界面风格，切换即时生效并持久化。';
+  if (theme.value === 'dark') return '「深色」适合弱光环境与沉浸式终端运维操作，切换即时生效并持久化。';
+  return '「跟随系统」随系统外观明暗自动无缝切换，切换即时生效并持久化。';
+});
 function selectTheme(value) {
   store.setTheme(value);
 }
@@ -147,7 +153,7 @@ function selectTheme(value) {
       <!-- ① 关于与更新（默认 tab，用户最常找的更新入口） -->
       <section v-if="activeTab === 'about'" class="stack">
         <div class="about-hero">
-          <div class="about-logo">my</div>
+          <AppBrandLogo :size="48" class="about-logo" />
           <div class="about-text">
             <span class="about-name">myshelltool</span>
             <span class="about-ver num">v{{ appVersion }}</span>
@@ -222,7 +228,7 @@ function selectTheme(value) {
             <span>{{ THEME_LABELS[t] }}</span>
           </button>
         </div>
-        <p class="muted">「跟随系统」随系统明暗自动切换；切换即时生效并持久化。</p>
+        <p class="muted theme-hint">{{ themeDescription }}</p>
 
         <!-- 终端排版：字号 / 行间距（sessions store 权威值，改变即热更新所有终端） -->
         <section class="block">
@@ -274,8 +280,7 @@ function selectTheme(value) {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  max-height: 62vh; // 与 mcpPanel/syncPanel 一致，超出 modal 内部滚动
-  overflow-y: auto;
+  // 不自带滚动：AppModal body 是唯一滚动容器，避免外层大滚动条嵌内层小滚动条
 }
 
 .tab-body {
@@ -329,17 +334,10 @@ function selectTheme(value) {
   gap: 12px;
 }
 .about-logo {
-  display: flex;
-  align-items: center;
-  justify-content: center;
   width: 48px;
   height: 48px;
-  border-radius: var(--radius-md, 8px);
-  background: var(--app-accent, var(--app-primary));
-  color: var(--accent-on);
-  font-weight: 700;
-  font-size: 18px;
-  letter-spacing: -0.02em;
+  flex-shrink: 0;
+  filter: drop-shadow(0 4px 12px rgba(44, 95, 229, 0.25));
 }
 .about-text {
   display: flex;
@@ -406,21 +404,27 @@ function selectTheme(value) {
   gap: 8px;
   padding: 16px 8px;
   border: 1px solid var(--app-border);
-  border-radius: var(--radius-md, 8px);
-  background: var(--bg-elevated, var(--app-surface));
-  color: var(--text-secondary, var(--app-muted));
+  border-radius: var(--radius-sm);
+  background: var(--app-panel-2);
+  color: var(--app-muted);
   cursor: pointer;
   font: inherit;
   font-size: 13px;
-  transition: border-color 0.15s ease, color 0.15s ease;
+  transition: border-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard),
+    background var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard);
 
   &:hover {
-    border-color: var(--app-accent, var(--app-primary));
+    border-color: var(--accent);
+    color: var(--app-strong);
+    background: var(--app-hover);
   }
   &.active {
-    border-color: var(--app-accent, var(--app-primary));
-    color: var(--text-primary, var(--app-fg));
-    box-shadow: 0 0 0 1px var(--app-accent, var(--app-primary)) inset;
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-soft);
+    box-shadow: 0 0 0 1px var(--accent) inset;
   }
 }
 
@@ -451,3 +455,4 @@ function selectTheme(value) {
 
 // .stack / .muted / .num / .mono-path 由全局 _utilities / _base 提供，此处不重复定义。
 </style>
+

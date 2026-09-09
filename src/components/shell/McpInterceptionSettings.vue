@@ -4,8 +4,9 @@
  *
  * 在 McpPanelContent 的「能力清单」之前渲染（section.block 结构与父面板一致）。
  * 两档：
- *   - minimal（默认）：仅拦截黑名单/超高危命令，其余放行（低摩擦，用户明确选择）
- *   - strict：非白名单命令一律需确认（原 fail-secure 语义）
+ *   - minimal（默认）：仅硬拦毁灭性命令（rm -rf /、mkfs 等机器报废级，两档
+ *     恒拒不弹审批），其余命令不经确认直接执行（记执行日志）
+ *   - strict：非白名单命令一律需确认（原 fail-secure 语义）；毁灭性命令两档恒拦
  * 切换即 setMcpInterceptLevel（后端更新共享配置 + 落盘，已建 MCP 会话下次
  * 调用即生效）。
  *
@@ -20,7 +21,7 @@ import AppSelect from '@/components/ui/AppSelect.vue';
 const mcpStore = useMcpStore();
 
 const LEVEL_OPTIONS = [
-  { label: '仅拦截超高危（默认）', value: 'minimal' },
+  { label: '仅拦截毁灭性命令（默认）', value: 'minimal' },
   { label: '全部需确认', value: 'strict' }
 ];
 
@@ -41,7 +42,7 @@ function onLevelChange(value) {
     <div class="setting-row">
       <div class="setting-meta">
         <span class="setting-label">拦截等级</span>
-        <span class="setting-desc muted">对 MCP 工具（ssh_exec 等）执行的命令做审批判定</span>
+        <span class="setting-desc muted">仅硬拦毁灭性命令（rm -rf /、mkfs 等），其余命令直接执行</span>
       </div>
       <div class="setting-control">
         <AppSelect
@@ -51,13 +52,13 @@ function onLevelChange(value) {
         />
       </div>
     </div>
-    <!-- 固定风险提示：Minimal 档下展示（评审 P2 要求的原文），warn 色语义 -->
+    <!-- 固定风险提示：Minimal 档下展示（低拦截风险陈述），warn 色语义 -->
     <p v-if="isMinimal" class="level-warn">
       <ShieldAlert :size="12" class="warn-icon" />
-      低拦截等级下，不在黑名单中的命令（如下载后执行等组合操作）将不经确认直接运行
+      除毁灭性命令（rm 根级删除、mkfs、写块设备等）恒拒外，其余命令（含 reboot、rm -rf 目录、curl|bash 等黑名单级命令）均不经确认直接执行，执行记录可在下方日志查看
     </p>
     <p v-else class="level-note muted">
-      所有不在只读白名单中的命令均需人工确认（超高危命令两档下始终拦截）。
+      所有不在只读白名单中的命令均需人工确认；毁灭性命令两档下均直接拦截。
     </p>
   </section>
 </template>

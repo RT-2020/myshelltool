@@ -649,7 +649,9 @@ provide('connectionSidebar', {
 // Header（app.css L405-418 sb-header + chrome-label + sb-count）
 // ============================================================
 .sb-header {
-  padding: 12px 12px 8px;
+  // 高度与终端标签条（.region-terminal 38px）、右栏 rs-header 对齐，三列头部横线共线
+  height: 38px;
+  padding: 0 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -897,3 +899,4 @@ provide('connectionSidebar', {
   color: var(--accent-hover);
 }
 </style>
+

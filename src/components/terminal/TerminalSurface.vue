@@ -280,8 +280,8 @@ function isAuthFailure(connectError) {
   width: 100%;
   height: 100%;
   min-height: 0;
-  background: var(--app-panel);
-  color: var(--app-text);
+  background: var(--term-bg);
+  color: var(--term-text);
   font-family: var(--font-body);
   overflow: hidden;
 }

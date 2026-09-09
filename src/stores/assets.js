@@ -204,6 +204,19 @@ export const useAssetsStore = defineStore('assets', () => {
     } else if (previous?.passphrase_credential_id) {
       item.passphrase_credential_id = previous.passphrase_credential_id;
     }
+    if (credentials.privateKey) {
+      await invokeBackend('save_credential', { id: credentialIdFor(id, 'private_key'), secret: credentials.privateKey });
+      item.private_key_credential_id = credentialIdFor(id, 'private_key');
+    } else if (credentials.clearPrivateKey) {
+      try {
+        await invokeBackend('delete_credential', { id: credentialIdFor(id, 'private_key') });
+      } catch {
+        // 凭据可能已不存在，忽略
+      }
+      item.private_key_credential_id = null;
+    } else if (previous?.private_key_credential_id) {
+      item.private_key_credential_id = previous.private_key_credential_id;
+    }
 
     const result = await invokeBackend('save_connection_asset', { asset: item });
     assets.value = (result.assets || []).map(normalizeAsset);
@@ -216,12 +229,12 @@ export const useAssetsStore = defineStore('assets', () => {
   }
 
   // ------------------------------------------------------------
-  // 删除连接资产 + 容错清理关联凭据（password / passphrase）。
+  // 删除连接资产 + 容错清理关联凭据（password / passphrase / private_key）。
   // ------------------------------------------------------------
   async function deleteAsset(id) {
     const target = assets.value.find(asset => asset.id === id);
-    // 清理关联凭据：密码 / passphrase 可能不存在，try/catch 容错
-    for (const kind of ['password', 'passphrase']) {
+    // 清理关联凭据：密码 / passphrase / 托管私钥可能不存在，try/catch 容错
+    for (const kind of ['password', 'passphrase', 'private_key']) {
       const credId = credentialIdFor(id, kind);
       try {
         await invokeBackend('delete_credential', { id: credId });
@@ -255,6 +268,7 @@ export const useAssetsStore = defineStore('assets', () => {
         name: asset.name + ' (副本)',
         credential_id: null,
         passphrase_credential_id: null,
+        private_key_credential_id: null,
         last_connected: '从未'
       },
       {} // 无凭据
