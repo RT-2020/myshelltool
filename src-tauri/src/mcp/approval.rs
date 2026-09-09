@@ -13,12 +13,20 @@
 //!   （仅黑名单/超高危需确认，Unknown/黄名单放行）——这是**用户明确选择的
 //!   低摩擦默认**，放行记入执行日志（minimal_allowed）供事后审计，产品决策
 //!   上取代了 v1.x「未知命令 fail-secure 默认拒」。Strict 档保留原 fail-secure
-//!   语义（非白名单一律确认）。黑名单命令在两档下均恒拦截。
+//!   语义（非白名单一律确认）。
+//! v2.1：等级语义重构——**Minimal = 零审批交互**：仅「机器报废级」毁灭性
+//!   命令（catastrophic 层，见 dangerous_commands.rs）HardBlock 直接拒绝
+//!   （不弹窗不等超时，修复 ZCode 等不支持 elicitation 的 host 下白等 60s），
+//!   其余（含**非毁灭黑名单**：rm -rf 子路径 / shutdown / reboot / ...）直接
+//!   放行记 minimal_allowed 日志。**口径变化：黑名单在 Minimal 下不再恒拦**
+//!   ——毁灭性判定上移到 catastrophic 层，且必须**先于** classify_command
+//!   执行（顺序是安全前提，见 dangerous_commands.rs 模块注释）。Strict 档
+//!   保留「非白名单一律审批」，毁灭性命令同样 HardBlock。
 //!
-//! 审批分层（D9 + v2 等级）：
+//! 审批分层（D9 + v2.1 等级）：
+//! - 毁灭性（catastrophic）→ HardBlock（两档同，不进审批链）
 //! - 白名单 → AutoExecute（两档同）
-//! - 黄名单（恒空）与未知命令 → Minimal 放行 / Strict 审批
-//! - 黑名单 → RequestElicitation（两档同，超高危永远拦；v1.5 三级降级见 server.rs）
+//! - 黄名单（恒空）/ 未知 / 非毁灭黑名单 → Minimal 放行 / Strict 审批
 
 use serde::Serialize;
 
@@ -30,9 +38,14 @@ use super::tools::ApprovalPending;
 
 /// 审批决策结果。
 pub enum ApprovalDecision {
-    /// 自动执行（白名单命中，或 Minimal 档对未知/黄名单的放行）。
+    /// 自动执行（白名单命中，或 Minimal 档对未知/黄名单/非毁灭黑名单的放行）。
     /// 携带原因：server.rs 执行日志据此区分 auto_approved / minimal_allowed。
     AutoExecute(AutoApproveReason),
+    /// 毁灭性（catastrophic）命令硬拦（v2.1）：两档等级一致直接拒绝，
+    /// **不进审批链**（不发 elicitation / 不弹 GUI 窗，避免不支持
+    /// elicitation 的 host 下白等 60s 超时）。reason 是给 MCP 主代理看的
+    /// 完整拒绝文本（server.rs 直接作为 error_result 返回）。
+    HardBlock { reason: String },
     /// 需要用户确认（v1.5 三级降级：elicitation → GUI 弹窗 → fail-secure 拒）。
     RequestElicitation(ElicitationInfo),
 }
@@ -41,7 +54,8 @@ pub enum ApprovalDecision {
 pub enum AutoApproveReason {
     /// 命中只读白名单（两档均放行）→ 日志 decision=auto_approved。
     Whitelist,
-    /// Minimal 档对未知/黄名单命令的放行 → 日志 decision=minimal_allowed。
+    /// Minimal 档对未知/黄名单及**非毁灭黑名单**命令的放行（v2.1 口径）
+    /// → 日志 decision=minimal_allowed。
     MinimalFallback,
 }
 
@@ -93,9 +107,11 @@ pub fn to_rejection(&self) -> String {
 /// `whitelist` / `yellow_list` 见 D9 决策（白名单内置，黄名单按资产配置）。
 /// `level` 是当前拦截等级（server.rs 每次 call_tool 现读共享配置快照）。
 ///
-/// 等级映射（v2，详见模块头注释）：
+/// 等级映射（v2.1，详见模块头注释）：
+/// - 毁灭性（catastrophic）→ HardBlock，两档同（**必须先于 classify 判定**，
+///   顺序是安全前提——classify 的黑名单对 rm 分离/逆序形态有 MISS）。
 /// - Safe → AutoExecute(Whitelist)，两档同。
-/// - Dangerous → RequestElicitation，两档同（超高危永远拦）。
+/// - Dangerous（非毁灭黑名单）→ Minimal 放行 / Strict 审批。
 /// - Allowed（黄名单，恒空）/ Unknown → Minimal 放行 / Strict 审批。
 pub fn evaluate(
     command: &str,
@@ -104,6 +120,17 @@ pub fn evaluate(
     yellow_list: &[String],
     level: McpInterceptLevel,
 ) -> ApprovalDecision {
+    // 1. 毁灭性命令先行硬拦（两档一致，level 不影响此路径；不进审批链）。
+    if let Some(m) = dangerous_commands::detect_catastrophic_command(command) {
+        log::warn!(
+            "approval: catastrophic command hard-blocked (pattern={})",
+            m.pattern
+        );
+        return ApprovalDecision::HardBlock {
+            reason: format_hard_block_rejection(command, &predict_consequence(&m)),
+        };
+    }
+
     let wl: Vec<String> = whitelist.iter().map(|s| s.to_string()).collect();
     match dangerous_commands::classify_command(command, &wl, yellow_list) {
         CommandRisk::Safe => {
@@ -128,17 +155,29 @@ pub fn evaluate(
                 })
             }
         },
-        CommandRisk::Dangerous(m) => {
-            log::warn!(
-                "approval: dangerous command, requesting elicitation (pattern={})",
-                m.pattern
-            );
-            ApprovalDecision::RequestElicitation(ElicitationInfo {
-                intent: intent.to_string(),
-                command: command.to_string(),
-                consequence: predict_consequence(&m),
-            })
-        }
+        // v2.1：非毁灭黑名单（rm -rf 子路径 / shutdown / reboot / chown -R /
+        // curl|bash 等）——Minimal 放行记 minimal_allowed（零审批交互），
+        // Strict 仍走审批链（沿用原 consequence 文案）。
+        CommandRisk::Dangerous(m) => match level {
+            McpInterceptLevel::Minimal => {
+                log::warn!(
+                    "approval: dangerous (non-catastrophic) command allowed under minimal level: {:?}",
+                    command
+                );
+                ApprovalDecision::AutoExecute(AutoApproveReason::MinimalFallback)
+            }
+            McpInterceptLevel::Strict => {
+                log::warn!(
+                    "approval: dangerous command, requesting elicitation under strict level (pattern={})",
+                    m.pattern
+                );
+                ApprovalDecision::RequestElicitation(ElicitationInfo {
+                    intent: intent.to_string(),
+                    command: command.to_string(),
+                    consequence: predict_consequence(&m),
+                })
+            }
+        },
     }
 }
 
@@ -165,14 +204,35 @@ fn format_rejection(intent: &str, command: &str, consequence: &str) -> String {
     )
 }
 
+/// 毁灭性命令的硬拦拒绝文本（v2.1，给 MCP 主代理看，server.rs 直接返回）。
+///
+/// 与 format_rejection 的区别：毁灭性操作**不提供审批通道**（elicitation /
+/// GUI 弹窗都不给——机器报废级后果不值得占用一次人工确认，且避免不支持
+/// elicitation 的 host 下白等 60s 超时），两档拦截等级行为一致。
+fn format_hard_block_rejection(command: &str, consequence: &str) -> String {
+    format!(
+        "【命令已被拦截】毁灭性命令，未执行。\n\n\
+         【真实命令】{}\n\n\
+         【后果预测】{}\n\n\
+         说明：毁灭性操作在任何拦截等级下均直接拒绝，不提供审批通道；\
+         检索/查看含此类关键词的文档或日志的命令同样会被拦截。\n\n\
+         如确需执行，请在 myshelltool GUI 终端手动执行；\
+         被误拦的检索类命令可改由 AI 读取文件内容（cat / grep 等）自行判断。",
+        command, consequence,
+    )
+}
+
 /// 基于命中的危险模式给出固定后果预测文案。
 ///
-/// 对应 dangerous_commands.rs 的 16 条正则，每类给出人话后果说明，
-/// 帮助用户判断是否真的要执行。
+/// 对应 dangerous_commands.rs 的 16 条正则 + catastrophic 层的 rm 根级
+/// 正则，每类给出人话后果说明，帮助用户判断是否真的要执行。
 fn predict_consequence(m: &DangerousMatch) -> String {
     let p = m.pattern.as_str();
     // 按正则特征匹配文案（顺序对应 dangerous_commands.rs 的 raw 数组）
-    if p.contains("rm\\s+") {
+    if p.contains("\\brm") {
+        // rm 根级删除（catastrophic 专属正则，见 dangerous_commands.rs RM_ROOT_SRC）
+        "将递归强制删除文件系统根/家/当前目录，系统即刻报废，数据不可恢复。".to_string()
+    } else if p.contains("rm\\s+") {
         "将递归强制删除文件或目录，且不可恢复。".to_string()
     } else if p.contains("mkfs") {
         "将格式化文件系统，磁盘上所有数据将被彻底销毁。".to_string()
@@ -295,24 +355,75 @@ mod tests {
     }
 
     #[test]
-    fn dangerous_command_triggers_elicitation_with_three_sections() {
-        for level in [McpInterceptLevel::Minimal, McpInterceptLevel::Strict] {
-            let d = evaluate("rm -rf /var/log", "清理日志", READONLY_WHITELIST, &[], level);
-            match d {
-                ApprovalDecision::RequestElicitation(info) => {
-                    // 三段式信息完整
-                    assert_eq!(info.intent, "清理日志");
-                    assert_eq!(info.command, "rm -rf /var/log");
-                    assert!(info.consequence.contains("递归"));
-                    // to_message 包含三段
-                    let msg = info.to_message();
-                    assert!(msg.contains("【AI 声明意图】清理日志"));
-                    assert!(msg.contains("【真实命令】rm -rf /var/log"));
-                    assert!(msg.contains("【后果预测】"));
+    fn noncatastrophic_dangerous_minimal_allows_strict_elicits() {
+        // v2.1：非毁灭黑名单（rm -rf 子路径）Minimal 放行（MinimalFallback → 日志 minimal_allowed）
+        let d = evaluate("rm -rf /var/log", "清理日志", READONLY_WHITELIST, &[], McpInterceptLevel::Minimal);
+        assert!(matches!(
+            d,
+            ApprovalDecision::AutoExecute(AutoApproveReason::MinimalFallback)
+        ));
+
+        // Strict：仍走审批链（三段式信息完整）
+        let d = evaluate("rm -rf /var/log", "清理日志", READONLY_WHITELIST, &[], McpInterceptLevel::Strict);
+        match d {
+            ApprovalDecision::RequestElicitation(info) => {
+                // 三段式信息完整
+                assert_eq!(info.intent, "清理日志");
+                assert_eq!(info.command, "rm -rf /var/log");
+                assert!(info.consequence.contains("递归"));
+                // to_message 包含三段
+                let msg = info.to_message();
+                assert!(msg.contains("【AI 声明意图】清理日志"));
+                assert!(msg.contains("【真实命令】rm -rf /var/log"));
+                assert!(msg.contains("【后果预测】"));
+            }
+            _ => panic!("expected RequestElicitation under strict"),
+        }
+    }
+
+    #[test]
+    fn catastrophic_commands_hard_blocked_under_both_levels() {
+        // rm -rf / + mkfs：毁灭性命令两档均 HardBlock（不进审批链）
+        for cmd in ["rm -rf /", "mkfs.ext4 /dev/sda1"] {
+            for level in [McpInterceptLevel::Minimal, McpInterceptLevel::Strict] {
+                let d = evaluate(cmd, "测试", &[], &[], level);
+                match d {
+                    ApprovalDecision::HardBlock { reason } => {
+                        assert!(reason.contains("拦截"), "cmd={cmd}");
+                        assert!(reason.contains(cmd), "cmd={cmd}");
+                    }
+                    _ => panic!("expected HardBlock for cmd={cmd} level={level:?}"),
                 }
-                _ => panic!("expected RequestElicitation for level={level:?}"),
             }
         }
+    }
+
+    #[test]
+    fn rm_root_split_and_reversed_flags_hard_blocked() {
+        // 防回归：rm -fr /、rm -r -f / 是现行黑名单 pattern 1 的 MISS 活洞
+        // （要求 r/f 在同一短选项 token 内），两档均必须 HardBlock。
+        for cmd in ["rm -fr /", "rm -r -f /"] {
+            for level in [McpInterceptLevel::Minimal, McpInterceptLevel::Strict] {
+                let d = evaluate(cmd, "清理", &[], &[], level);
+                assert!(
+                    matches!(d, ApprovalDecision::HardBlock { .. }),
+                    "expected HardBlock for cmd={cmd} level={level:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reboot_allowed_under_minimal() {
+        // v2.1：非毁灭黑名单在 Minimal 下零审批交互放行
+        let d = evaluate("reboot", "重启", &[], &[], McpInterceptLevel::Minimal);
+        assert!(matches!(
+            d,
+            ApprovalDecision::AutoExecute(AutoApproveReason::MinimalFallback)
+        ));
+        // Strict 下仍审批（原 fail-secure 语义保留）
+        let d = evaluate("reboot", "重启", &[], &[], McpInterceptLevel::Strict);
+        assert!(matches!(d, ApprovalDecision::RequestElicitation(_)));
     }
 
     #[test]
@@ -353,15 +464,16 @@ mod tests {
     }
 
     #[test]
-    fn mkfs_consequence_mentioned() {
+    fn mkfs_hard_block_reason_mentions_consequence() {
+        // v2.1：mkfs 属毁灭层，两档均 HardBlock（不再走 elicitation）
         for level in [McpInterceptLevel::Minimal, McpInterceptLevel::Strict] {
             let d = evaluate("mkfs.ext4 /dev/sda1", "格式化", &[], &[], level);
             match d {
-                ApprovalDecision::RequestElicitation(info) => {
-                    assert!(info.consequence.contains("格式化"));
-                    assert!(info.consequence.contains("数据"));
+                ApprovalDecision::HardBlock { reason } => {
+                    assert!(reason.contains("格式化"));
+                    assert!(reason.contains("数据"));
                 }
-                _ => panic!("expected RequestElicitation for level={level:?}"),
+                _ => panic!("expected HardBlock for level={level:?}"),
             }
         }
     }

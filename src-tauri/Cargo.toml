@@ -56,6 +56,8 @@ tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 # v1.3 Gist 同步 save_session_key 生成随机 salt（与 core 同版本 0.8，避免依赖分裂）。
 rand = "0.8"
+# MCP 文件传输校验和计算
+sha2 = "0.10"
 
 # Windows-only：凭据存储 DPAPI 加密（v1.3 SecretStore 升级）。
 # SecretCodec trait 在 core 层，DPAPI 实现在此（cfg(windows)）。

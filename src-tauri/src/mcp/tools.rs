@@ -1,15 +1,11 @@
-//! MCP Tools 实现（Layer 3，M3 阶段：7 个只读工具）。
+//! MCP Tools 实现（只读、执行与文件传输全能力）。
 //!
-//! 见 docs/plans/MCP服务接入-实施计划.md §5（Layer 3）。
+//! 见 docs/plans/MCP文件传输-实施计划.md。
 //!
-//! M3 范围（只读，全部自动执行无需审批）：
-//! - list_assets：资产清单（无需会话）
-//! - list_sessions：（M3 桩，返回空——v1.0 独立会话无持久 session 池）
-//! - disk_usage / system_status / service_status：经 headless 一次性 exec
-//! - sftp_list：SFTP 目录列表（M3 桩，留 M4 完善）
-//! - resource_monitor_snapshot：（M3 桩，v1.0 不走 GUI 的监控轮询）
-//!
-//! 高危工具（ssh_exec/sftp_upload/sftp_remove/tunnel_*）在 M4 落地 + Layer 6 审批。
+//! - list_assets / list_sessions / disk_usage / system_status / service_status
+//! - resource_monitor_snapshot
+//! - ssh_exec（命令审批与结构化输出）
+//! - 文件传输体系（sftp_list / sftp_read_file / sftp_write_file / sftp_upload / sftp_download / sftp_remove）委托给 file_tools.rs
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -46,6 +42,15 @@ pub const CMD_SYSTEM_STATUS: &str =
 pub fn service_status_command(service: &str) -> String {
     format!("systemctl status {service}")
 }
+
+// ─── v2.1 ssh_exec 返回截断保护（exec_on_asset 组装结构化返回时用）───
+
+/// 返回正文（不含 exit_code 行）的字符上限，超出触发头尾截断。
+const MAX_RETURN_CHARS: usize = 16000;
+/// 截断保留的头部字符数。
+const TRUNCATE_HEAD: usize = 8000;
+/// 截断保留的尾部字符数。
+const TRUNCATE_TAIL: usize = 8000;
 
 /// MCP 工具上下文：持有资产库路径 + 凭据/known_hosts 路径。
 ///
@@ -128,7 +133,7 @@ impl McpToolContext {
 
 /// 返回 M4 阶段的全部工具 schema（7 只读 + 2 高危 = 9 个）。
 pub fn list_all_tools() -> Vec<Tool> {
-    vec![
+    let mut tools = vec![
         Tool::new(
             "list_assets",
             "列出所有已配置的 SSH 连接资产（不含密码/凭据，仅元数据：name/host/port/username/group/status）",
@@ -136,7 +141,7 @@ pub fn list_all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "list_sessions",
-            "列出当前活跃的 SSH 会话（v1.0 独立模式无持久会话池，返回空列表）",
+            "列出当前客户端活跃的 SSH 会话清单（session_id 列表）。",
             empty_object_schema(),
         ),
         Tool::new(
@@ -165,29 +170,14 @@ pub fn list_all_tools() -> Vec<Tool> {
             .unwrap_or_default(),
         ),
         Tool::new(
-            "sftp_list",
-            "列出指定资产远程目录的文件/子目录（M3 桩，M4 完善 SFTP 路径）",
-            json!({
-                "type": "object",
-                "properties": {
-                    "asset_id": { "type": "string" },
-                    "path": { "type": "string", "description": "远程路径，默认 /" }
-                },
-                "required": ["asset_id"]
-            })
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
-        ),
-        Tool::new(
             "resource_monitor_snapshot",
-            "获取指定资产的资源监控快照（CPU/内存/网络/磁盘，M3 桩，M4 接入完整轮询）",
+            "获取指定资产的资源监控快照（CPU负载、内存占用、磁盘空间概览）。",
             schema_with_required_session(),
         ),
-        // ─── 高危工具（M4，经 Layer 6 审批）───
+        // ─── 高危 Shell 执行工具（经 Layer 6 审批）───
         Tool::new(
             "ssh_exec",
-            "在指定资产上执行任意 Shell 命令。命令按当前拦截等级判定：超高危命令需确认，其余按配置放行（等级可在 myshelltool GUI 的 MCP 面板调整）。调用时必须如实声明 intent 意图。",
+            "在指定资产上执行任意 Shell 命令。返回结构化文本：首行 exit_code=<n>（无退出码时 exit_code=unknown），随后为 stdout（无输出时给出提示），stderr 非空时以 --- stderr --- 分隔行附后，超长自动头尾截断。拦截语义：毁灭性命令（mkfs/dd 写块设备/rm 根级删除等）直接拒绝；其余按当前拦截等级放行或需确认（等级可在 myshelltool GUI 的 MCP 面板调整）。调用时必须如实声明 intent 意图。",
             json!({
                 "type": "object",
                 "properties": {
@@ -201,23 +191,11 @@ pub fn list_all_tools() -> Vec<Tool> {
             .cloned()
             .unwrap_or_default(),
         ),
-        Tool::new(
-            "sftp_remove",
-            "删除指定资产上的远程文件或目录。高危：始终需要审批，v1.0 模式下默认拒绝（需 GUI 手动操作）。",
-            json!({
-                "type": "object",
-                "properties": {
-                    "asset_id": { "type": "string", "description": "资产 ID" },
-                    "path": { "type": "string", "description": "要删除的远程路径" },
-                    "intent": { "type": "string", "description": "AI 对此删除操作的真实意图说明" }
-                },
-                "required": ["asset_id", "path", "intent"]
-            })
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
-        ),
-    ]
+    ];
+
+    // ─── 文件传输类工具（Layer 3 + 4，详见 file_tools.rs）───
+    tools.extend(super::file_tools::list_file_tools());
+    tools
 }
 
 /// 分发工具调用。返回 CallToolResult（成功用 text content，失败用 is_error）。
@@ -232,7 +210,7 @@ pub async fn call_tool(
 
     match name {
         "list_assets" => tool_list_assets(ctx).await,
-        "list_sessions" => tool_list_sessions().await,
+        "list_sessions" => tool_list_sessions(ctx).await,
         "disk_usage" => exec_on_asset(ctx, &arguments, CMD_DISK_USAGE).await,
         "system_status" => exec_on_asset(ctx, &arguments, CMD_SYSTEM_STATUS).await,
         "service_status" => {
@@ -249,35 +227,53 @@ pub async fn call_tool(
             }
             exec_on_asset(ctx, &arguments, &service_status_command(service)).await
         }
-        "sftp_list" => Ok(error_result("sftp_list 在 M3 阶段为桩，将在 M4 完善")),
-        "resource_monitor_snapshot" => Ok(error_result("resource_monitor_snapshot 在 M3 阶段为桩，将在 M4 完善")),
+        "resource_monitor_snapshot" => {
+            exec_on_asset(
+                ctx,
+                &arguments,
+                "uptime; echo '--- Memory ---'; free -m; echo '--- Disk ---'; df -h",
+            )
+            .await
+        }
         // ─── 高危工具（审批在 server.rs call_tool 拦截层做）───
         "ssh_exec" => tool_ssh_exec(ctx, &arguments).await,
-        "sftp_remove" => {
-            // v1.1：审批已移至 server.rs（elicitation 确认）。
-            // 能走到这里说明用户已确认删除。实际删除执行待后续完善。
-            let path = arguments.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            Ok(error_result(&format!(
-                "用户已确认删除 {}，但 sftp_remove 的执行逻辑尚未实现（v1.1 专注 elicitation 审批 + 会话复用，删除执行留后续版本）",
-                path
-            )))
+        _ => {
+            // 尝试文件工具分发（sftp_list/sftp_read_file/sftp_write_file/sftp_upload/sftp_download/sftp_remove）
+            if let Some(res) = super::file_tools::dispatch_file_tool(ctx, name, &arguments).await? {
+                Ok(res)
+            } else {
+                Ok(error_result(&format!("未知工具: {}", name)))
+            }
         }
-        _ => Ok(error_result(&format!("未知工具: {}", name))),
     }
 }
 
-/// list_sessions：列出 GUI 已建立的 SSH 会话。
-///
-/// v1.4：删掉 v1.1 的 pipe 查询（内嵌后无独立 MCP 进程）。当前返回空桩 +
-/// 说明（与 v1.0 一致）—— AI 仍可用 headless 工具（disk_usage/system_status/ssh_exec）。
-///
-/// TODO(follow-up v1.4+)：注入 GUI 的 `Arc<AsyncMutex<SshSessionManager>>` 到
-/// McpToolContext，直接读会话池返回真实列表（同进程访问，无需 IPC）。
-async fn tool_list_sessions() -> Result<CallToolResult, String> {
+/// list_sessions：列出客户端活动的 SSH 会话。
+async fn tool_list_sessions(ctx: &McpToolContext) -> Result<CallToolResult, String> {
+    if let Some(app) = &ctx.app_handle {
+        use tauri::Manager;
+        if let Some(state) = app.try_state::<crate::AppState>() {
+            let sessions_lock = state.ssh_sessions.lock().await;
+            let ids = sessions_lock.list_session_ids();
+            if ids.is_empty() {
+                return Ok(text_result(
+                    "当前客户端暂无活动 SSH 会话（可在 GUI 中连接主机，或直接使用基于 asset_id 的各项远程工具）。",
+                ));
+            }
+            let list_str = ids
+                .iter()
+                .map(|id| format!("- session_id: {id}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Ok(text_result(&format!(
+                "当前活动 SSH 会话列表（共 {} 个）：\n{}",
+                ids.len(),
+                list_str
+            )));
+        }
+    }
     Ok(text_result(
-        "当前会话查询暂未接入 GUI 会话池（v1.4 重构中）。\
-         可先用 list_assets 查看可用资产，disk_usage/system_status/ssh_exec \
-         等工具会自动 headless 建连。",
+        "当前处于 Headless/独立运行模式。建议直接使用基于 asset_id 的远程工具执行操作。",
     ))
 }
 
@@ -314,9 +310,10 @@ async fn tool_list_assets(ctx: &McpToolContext) -> Result<CallToolResult, String
 
 /// ssh_exec：高危工具，经 approval.rs 审批后执行。
 ///
-/// 审批（D9 + v2 拦截等级）：
+/// 审批（D9 + v2.1 拦截等级 + catastrophic 硬拦）：
+/// - 毁灭性命令（detect_catastrophic_command）→ HardBlock 直接拒绝（两档同）
 /// - command 命中白名单（READONLY_WHITELIST）→ 自动执行（两档同）
-/// - command 命中黑名单（dangerous_commands 16 条）→ 需确认（两档同，超高危永远拦）
+/// - command 命中非毁灭黑名单（rm -rf 子路径等）→ Minimal 放行 / Strict 需确认
 /// - command 未知/黄名单 → Minimal 放行 / Strict 需确认（等级用户可配置）
 /// v2：审批已移至 server.rs call_tool 拦截层并记执行日志。
 async fn tool_ssh_exec(
@@ -348,10 +345,12 @@ async fn tool_ssh_exec(
     exec_on_asset(ctx, args, command).await
 }
 
-/// 在指定资产上执行一次性命令。
+/// 在指定资产上执行一次性命令（v2.1 返回结构化文本）。
 ///
 /// v1.4：删掉 v1.1 的 pipe 复用分支（内嵌后无独立 MCP 进程，不再需要 pipe 桥）。
-/// 当前直接走 headless 建连（connect_headless + exec_command_once）。
+/// 当前直接走 headless 建连（connect_headless + exec_command_once），并把
+/// ExecOnceOutput 组装为「exit_code 行 + stdout + stderr 段」结构化文本，
+/// 超长按 MAX_RETURN_CHARS 头尾截断（见下方常量注释）。
 ///
 /// TODO(follow-up v1.4+)：注入 GUI 的 `Arc<AsyncMutex<SshSessionManager>>` 到
 /// McpToolContext，命中 GUI 已建立会话时直接复用（避免重连 + 二次 host key 验证）。
@@ -409,7 +408,35 @@ async fn exec_on_asset(
         .await
         .map_err(|e| format!("命令执行失败: {e}"))?;
 
-    Ok(text_result(&output))
+    // v2.1 结构化返回：exit_code 行 + stdout + stderr 段，MCP 主代理可据此
+    // 判断执行情况（旧版丢弃退出码且无输出命令返回空串，无法判断）。
+    let exit_line = match output.exit_code {
+        Some(code) => format!("exit_code={code}"),
+        None => "exit_code=unknown".to_string(),
+    };
+
+    let mut body = if output.stdout.is_empty() {
+        "（命令无标准输出）".to_string()
+    } else {
+        output.stdout
+    };
+    if !output.stderr.is_empty() {
+        body.push_str("\n--- stderr ---\n");
+        body.push_str(&output.stderr);
+    }
+
+    // 截断保护：正文（不含 exit_code 行）超 MAX_RETURN_CHARS 时头尾保留，
+    // 头部插入截断提示（N 为截断前总字符数），引导收窄命令重取。
+    let total_chars = body.chars().count();
+    if total_chars > MAX_RETURN_CHARS {
+        let truncated =
+            super::execution_log::truncate_middle(&body, TRUNCATE_HEAD, TRUNCATE_TAIL);
+        body = format!(
+            "[输出已截断：完整 {total_chars} 字符，请用 grep / tail -n / head -n 收窄命令重取]\n{truncated}"
+        );
+    }
+
+    Ok(text_result(&format!("{exit_line}\n{body}")))
 }
 
 // ─── 辅助：schema / 结果构造 ───

@@ -14,10 +14,38 @@
 use serde::{Deserialize, Serialize};
 
 use crate::crypto::{self, EncryptedBlob};
+use crate::ConnectionAssetStore;
 
 /// 同步载荷格式版本（未来加密算法/结构变更时升版，便于向后兼容）。
 /// pub：src-tauri/sync.rs 在打包载荷时复用此常量，跨 crate 引用必须公开。
 pub const PAYLOAD_VERSION: u32 = 1;
+
+/// 存入加密载荷的凭据项（密码/私钥口令/托管私钥内容）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SyncCredentialItem {
+    pub id: String,
+    pub secret: String,
+}
+
+/// 完整的同步数据保管库（包含资产拓扑与关联凭据）。
+/// 序列化为 JSON 后被对称加密保存在 SyncPayload.blob 中。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SyncVaultData {
+    pub version: u32,
+    pub assets_store: ConnectionAssetStore,
+    #[serde(default)]
+    pub credentials: Vec<SyncCredentialItem>,
+}
+
+impl SyncVaultData {
+    pub fn new(assets_store: ConnectionAssetStore, credentials: Vec<SyncCredentialItem>) -> Self {
+        Self {
+            version: 1,
+            assets_store,
+            credentials,
+        }
+    }
+}
 
 /// 存入 Gist 的完整同步载荷。
 ///
@@ -40,7 +68,7 @@ pub struct SyncPayload {
 /// 本地同步状态（存在 app_data_dir/sync-state.json，DPAPI 不保护——它不含秘密）。
 ///
 /// `local_rev` = 上次成功同步时远端的 remote_rev。下次同步时比较它判断远端是否变过。
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncState {
     /// 上次同步时记录的远端 remote_rev（用于冲突检测）。None = 从未同步过。
     #[serde(default)]
@@ -55,6 +83,25 @@ pub struct SyncState {
     /// 会话密钥本身不在本结构（存 SecretStore，credential id = "sync-session-key"）。
     #[serde(default)]
     pub auto_sync_enabled: bool,
+    /// 是否同步凭据与私钥（默认 true）。
+    #[serde(default = "default_sync_credentials_true")]
+    pub sync_credentials: bool,
+}
+
+fn default_sync_credentials_true() -> bool {
+    true
+}
+
+impl Default for SyncState {
+    fn default() -> Self {
+        Self {
+            local_rev: None,
+            last_synced_at: None,
+            gist_id: None,
+            auto_sync_enabled: false,
+            sync_credentials: true,
+        }
+    }
 }
 
 /// 冲突检测结果（pull 时判定）。
@@ -70,7 +117,7 @@ pub enum SyncDecision {
     Conflict,
 }
 
-/// 打包：资产 JSON → 加密 → SyncPayload。
+/// 打包：纯资产 JSON → 加密 → SyncPayload。
 ///
 /// `remote_rev` 由调用方传入（通常是当前远端的 rev，push 后递增）。
 pub fn pack(json: &str, master_password: &str, remote_rev: u64) -> Result<SyncPayload, String> {
@@ -83,7 +130,88 @@ pub fn pack(json: &str, master_password: &str, remote_rev: u64) -> Result<SyncPa
     })
 }
 
-/// 解包：SyncPayload → 解密 → 资产 JSON 字符串。
+/// 打包全量保管库（资产 + 凭据）：SyncVaultData → 加密 → SyncPayload。
+pub fn pack_vault(
+    vault: &SyncVaultData,
+    master_password: &str,
+    remote_rev: u64,
+) -> Result<SyncPayload, String> {
+    let json = serde_json::to_string(vault).map_err(|e| format!("序列化同步保管库失败: {e}"))?;
+    let blob = crypto::encrypt(json.as_bytes(), master_password)?;
+    Ok(SyncPayload {
+        version: PAYLOAD_VERSION,
+        blob,
+        remote_rev,
+        updated_at: None,
+    })
+}
+
+/// 使用会话密钥（AES Key）打包全量保管库（v1.6 自动同步路径）。
+pub fn pack_vault_with_key(
+    vault: &SyncVaultData,
+    key: &[u8; 32],
+    remote_rev: u64,
+) -> Result<SyncPayload, String> {
+    let json = serde_json::to_string(vault).map_err(|e| format!("序列化同步保管库失败: {e}"))?;
+    let blob = crypto::encrypt_with_key(json.as_bytes(), key)?;
+    Ok(SyncPayload {
+        version: PAYLOAD_VERSION,
+        blob,
+        remote_rev,
+        updated_at: None,
+    })
+}
+
+/// 解包：SyncPayload → 解密 → 解析为 SyncVaultData（兼容老版本仅资产 JSON 格式）。
+pub fn unpack_vault(payload: &SyncPayload, master_password: &str) -> Result<SyncVaultData, String> {
+    if payload.version != PAYLOAD_VERSION {
+        return Err(format!(
+            "不支持的同步载荷版本 {}（当前支持 {}）",
+            payload.version, PAYLOAD_VERSION
+        ));
+    }
+    let plaintext = crypto::decrypt(&payload.blob, master_password)?;
+    parse_vault_plaintext(&plaintext)
+}
+
+/// 使用会话密钥（AES Key）解包全量保管库。
+pub fn unpack_vault_with_key(
+    payload: &SyncPayload,
+    key: &[u8; 32],
+) -> Result<SyncVaultData, String> {
+    if payload.version != PAYLOAD_VERSION {
+        return Err(format!(
+            "不支持的同步载荷版本 {}（当前支持 {}）",
+            payload.version, PAYLOAD_VERSION
+        ));
+    }
+    let plaintext = crypto::decrypt_with_key(&payload.blob, key)?;
+    parse_vault_plaintext(&plaintext)
+}
+
+/// 解析解密后的明文为 SyncVaultData（自动向下兼容老版纯 ConnectionAssetStore 格式）。
+fn parse_vault_plaintext(plaintext: &[u8]) -> Result<SyncVaultData, String> {
+    let json_str = String::from_utf8(plaintext.to_vec())
+        .map_err(|e| format!("解密后非合法 UTF-8: {e}"))?;
+
+    // 1. 优先解析为新版 SyncVaultData
+    if let Ok(vault) = serde_json::from_str::<SyncVaultData>(&json_str) {
+        return Ok(vault);
+    }
+
+    // 2. 兼容解析为老版纯 ConnectionAssetStore
+    if let Ok(assets_store) = serde_json::from_str::<ConnectionAssetStore>(&json_str) {
+        return Ok(SyncVaultData {
+            version: 1,
+            assets_store,
+            credentials: vec![],
+        });
+    }
+
+    Err("解密数据无法解析为有效的资产或保管库格式".to_string())
+}
+
+/// 解包：SyncPayload → 解密 → 资产 JSON 字符串（兼容旧调用方与测试）。
 pub fn unpack(payload: &SyncPayload, master_password: &str) -> Result<String, String> {
     if payload.version != PAYLOAD_VERSION {
         return Err(format!(
@@ -92,7 +220,17 @@ pub fn unpack(payload: &SyncPayload, master_password: &str) -> Result<String, St
         ));
     }
     let plaintext = crypto::decrypt(&payload.blob, master_password)?;
-    String::from_utf8(plaintext).map_err(|e| format!("解密后非合法 UTF-8: {e}"))
+    let json_str = String::from_utf8(plaintext)
+        .map_err(|e| format!("解密后非合法 UTF-8: {e}"))?;
+
+    // 如果解密出来的已经是新版 SyncVaultData，为了兼容只需要资产 JSON 的旧接口，提取 assets_store
+    if let Ok(vault) = serde_json::from_str::<SyncVaultData>(&json_str) {
+        return serde_json::to_string(&vault.assets_store)
+            .map_err(|e| format!("序列化资产失败: {e}"));
+    }
+
+    // 否则直接返回原始资产 JSON 字符串（完全保持原始格式一致性）
+    Ok(json_str)
 }
 
 /// 冲突检测：根据本地状态 + 远端载荷判定同步决策。
@@ -252,5 +390,60 @@ mod tests {
         assert_eq!(back.local_rev, None);
         assert_eq!(back.last_synced_at, None);
         assert_eq!(back.gist_id, None);
+        assert!(back.sync_credentials);
+    }
+
+    #[test]
+    fn pack_unpack_vault_roundtrip() {
+        let store: ConnectionAssetStore = serde_json::from_str(sample_assets_json()).unwrap();
+        let creds = vec![
+            SyncCredentialItem {
+                id: "a1:password".to_string(),
+                secret: "super-secret-pwd".to_string(),
+            },
+            SyncCredentialItem {
+                id: "a1:private_key".to_string(),
+                secret: "-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----".to_string(),
+            },
+        ];
+        let vault = SyncVaultData::new(store.clone(), creds.clone());
+
+        let payload = pack_vault(&vault, TEST_PW, 10).expect("pack_vault");
+        let unpacked = unpack_vault(&payload, TEST_PW).expect("unpack_vault");
+
+        assert_eq!(unpacked.assets_store.assets.len(), store.assets.len());
+        assert_eq!(unpacked.credentials, creds);
+    }
+
+    #[test]
+    fn unpack_vault_backward_compatible_with_legacy_payload() {
+        // 模拟旧版本：payload 中直接是 sample_assets_json()
+        let payload = pack(sample_assets_json(), TEST_PW, 2).expect("pack legacy");
+        let unpacked_vault = unpack_vault(&payload, TEST_PW).expect("unpack legacy as vault");
+
+        assert_eq!(unpacked_vault.assets_store.assets.len(), 1);
+        assert_eq!(unpacked_vault.assets_store.assets[0].name, "prod-db");
+        assert!(unpacked_vault.credentials.is_empty());
+
+        // 使用原有 unpack 依然正常解析出资产 JSON
+        let unpacked_json = unpack(&payload, TEST_PW).expect("legacy unpack");
+        assert!(unpacked_json.contains("prod-db"));
+    }
+
+    #[test]
+    fn key_based_pack_unpack_vault_roundtrip() {
+        let store: ConnectionAssetStore = serde_json::from_str(sample_assets_json()).unwrap();
+        let creds = vec![SyncCredentialItem {
+            id: "a1:passphrase".to_string(),
+            secret: "pass123".to_string(),
+        }];
+        let vault = SyncVaultData::new(store, creds.clone());
+
+        let key = [42u8; 32];
+        let payload = pack_vault_with_key(&vault, &key, 5).expect("pack_vault_with_key");
+        let unpacked = unpack_vault_with_key(&payload, &key).expect("unpack_vault_with_key");
+
+        assert_eq!(unpacked.credentials, creds);
     }
 }
+

@@ -123,11 +123,13 @@ myshelltool/
 │   │   ├── bin/mcp.rs          # 【v1.4 已删】原 myshelltool-mcp 独立 console bin，内嵌后取消双二进制
 │   │   └── mcp/                # MCP server 接入模块（v1.4 内嵌 GUI / Streamable HTTP transport）
 │   │       ├── http_server.rs  # 【v1.4】Streamable HTTP server：axum + rmcp，绑定 127.0.0.1:41235/mcp
-│   │       ├── server.rs       # rmcp ServerHandler 实现（transport 无关，9 工具/4 资源/3 prompts）
-│   │       ├── tools.rs        # MCP Tools 实现 + exec_on_asset（v1.4 直走 headless，会话复用记 follow-up）
-│   │       ├── approval.rs     # 审批判定：白名单放行 / elicitation / 进程内拒绝（v1.4 删 pipe 降级）
-│   │       ├── probe.rs        # 【v1.4】HTTP 健康检查：向自己的 endpoint 发 initialize 握手（不再 spawn 子进程）
-│   │       ├── pipe.rs         # 【v1.4 已删】原 named pipe 桥接（双进程时复用 GUI 会话），内嵌后无需
+│   │       ├── server.rs       # rmcp ServerHandler 实现（transport 无关，11 工具/4 资源/3 prompts）
+│   │       ├── tools.rs        # MCP Tools 核心分发与系统类工具
+│   │       ├── file_policy.rs  # 【v2.2】文件操作安全策略（路径防穿越、敏感凭据判定、操作分级）
+│   │       ├── file_tools.rs   # 【v2.2】文件工具集（sftp_list/read/write/upload/download/remove）
+│   │       ├── sftp_ops.rs     # 【v2.2】Headless SFTP 底层封装（流式传输、原子写、递归删）
+│   │       ├── approval.rs     # 审批判定：白名单放行 / elicitation / 进程内拒绝
+│   │       ├── probe.rs        # 【v1.4】HTTP 健康检查：向自己的 endpoint 发 initialize 握手
 │   │       ├── resources.rs    # 3 静态资源 + 1 template（assets/sessions/known-hosts/session-log）
 │   │       └── prompts.rs      # 3 诊断 prompt（diagnose_server/audit_security/cleanup_disk）
 │   ├── capabilities/default.json
@@ -252,7 +254,7 @@ cd src-tauri && cargo check       # 更快的类型检查
 **MCP 服务**（`lib.rs` 调 `mcp/http_server.rs` + `mcp/probe.rs`）
 - `mcp_status` → 【v1.4】HTTP 健康检查 + 聚合能力清单。返回 `McpStatus { serverName, serverVersion, endpoint, dataDir, probe: McpProbeResult, tools[], resources[], prompts[] }`。`probe.ok` 是状态灯唯一信号源（向自己的 HTTP endpoint 发 initialize 握手，不再 spawn 子进程）。`endpoint` 是 MCP HTTP URL（如 `http://127.0.0.1:41235/mcp`），供用户配置 MCP host。
 - `mcp_get_config` → 【v2】读 MCP 危险命令拦截等级（内存共享配置，不动盘）。
-- `mcp_set_config({ level })` → 【v2】切换拦截等级（`minimal` 仅拦黑名单超高危 / `strict` 非白名单一律确认）→ 更新共享 Arc（已建 MCP 会话下次调用即生效）→ 落盘 mcp-config.json；无效 level 返 Err。
+- `mcp_set_config({ level })` → 【v2】切换拦截等级（`minimal` 仅硬拦毁灭性命令、其余直接执行 / `strict` 非白名单一律确认；毁灭性命令两档恒拦）→ 更新共享 Arc（已建 MCP 会话下次调用即生效）→ 落盘 mcp-config.json；无效 level 返 Err。
 - `mcp_list_execution_logs({ limit? })` → 【v2】读 MCP 工具执行日志最近条目（timestampMs 倒序，limit 缺省 200）。
 - `mcp_clear_execution_logs` → 【v2】清空 MCP 执行日志。
 - 【v1.4 已删】`mcp_approval_resolve`（原 v1.1 pipe 审批回传，内嵌后无 pipe）
@@ -314,8 +316,9 @@ credential_id(Option), passphrase_credential_id(Option)
 - **【v1.4】MCP 内嵌 GUI（Streamable HTTP）**：MCP server 跑在 GUI 进程内，绑定 `127.0.0.1:41235/mcp`（占用则 +1，写 `<data_dir>/mcp-endpoint.json`）。取消双二进制（删 `bin/mcp.rs` + `pipe.rs`），根治 v1.2 的僵尸进程 + os error 32 + NSIS 打包缺口。MCP server 随 GUI 启停（`CancellationToken` 控制 graceful shutdown）。
 - **【v1.4】MCP 端口策略**：默认 41235，被占用则 +1 重试最多 10 次，**只监听 localhost**（§8 安全红线）。实际端口写 mcp-endpoint.json，前端 `mcp_status.endpoint` 返回。
 - **【v1.4 follow-up】会话复用**：`tools.rs::exec_on_asset` 当前直走 headless 建连（删了 v1.1 pipe 复用分支）。后续可注入 GUI 的 `Arc<AsyncMutex<SshSessionManager>>` 到 McpToolContext，命中已建立会话时直接复用（同进程访问，比 pipe 更简单）。
-- **【v2】MCP 审批三级降级 + 拦截等级可配置**：v1.5 已实现三级降级（elicitation → AppHandle emit `mcp-tool-approval` GUI 弹窗 + 60s oneshot 超时 → headless/emit 失败才 fail-secure 拒），不再是「不支持 elicitation 直接拒」。v2 起拦截等级用户可配置（`mcp-config.json`，GUI 经 `mcp_get_config`/`mcp_set_config` 读写）：默认 **Minimal** 仅拦黑名单/超高危（Unknown/黄名单放行，是用户明确选择的低摩擦默认，放行记执行日志 `minimal_allowed` 供审计）；**Strict** 非白名单一律确认（保留原 fail-secure 语义）。黑名单与 sftp_remove（危险文件操作红线）两档恒拦。等级存共享 `Arc<RwLock<McpConfig>>`，改档后已建 MCP 会话下次调用即生效。
+- **【v2】MCP 审批三级降级 + 拦截等级可配置**：v1.5 已实现三级降级（elicitation → AppHandle emit `mcp-tool-approval` GUI 弹窗 + 60s oneshot 超时 → headless/emit 失败才 fail-secure 拒），不再是「不支持 elicitation 直接拒」。v2 起拦截等级用户可配置（`mcp-config.json`，GUI 经 `mcp_get_config`/`mcp_set_config` 读写）：默认 **Minimal** 仅硬拦毁灭性命令（机器报废级：rm 根级删除如 `rm -rf /`、mkfs、dd 写块设备、fork 炸弹、chmod -R 系统目录），其余命令（含 reboot、`rm -rf 目录`、`curl|bash` 等黑名单级）不经确认直接执行（用户明确选择的低摩擦默认，放行记执行日志 `minimal_allowed` 供审计）；**Strict** 非白名单一律人工确认（保留原 fail-secure 语义）。毁灭性命令两档下均直接拒绝、不弹审批（decision 记 `hard_blocked`，命令未执行）；sftp_remove（危险文件操作红线）两档恒拦。等级存共享 `Arc<RwLock<McpConfig>>`，改档后已建 MCP 会话下次调用即生效。`ssh_exec` 等工具返回结构化文本（exit_code + stdout + stderr；超 16000 字符自动截断保留头/尾各 8000，提示用 grep/tail 收窄）。
 - **【v2】MCP 执行日志**：`server.rs::call_tool` 为真实触发远程执行的工具（ssh_exec/disk_usage/system_status/service_status/sftp_remove）记一条 `mcp-execution-log.json`（哪台服务器/什么命令/什么决策/什么结果），前端 MCP 面板经 `mcp_list_execution_logs`/`mcp_clear_execution_logs` 查看/清空。30 天惰性清理 + 上限 1000 条（append 时触发，无常驻定时任务）；tokio Mutex 串行化 append/clear，`.tmp`+rename 原子写，落盘失败 best-effort 不阻断工具调用。Entry 不含任何凭据字段（§8 红线）。
+- **【v2.2】MCP 文件传输全能力与全工具无桩化**：新增 `file_policy.rs`、`file_tools.rs`、`sftp_ops.rs`，提供 `sftp_list`、`sftp_read_file`、`sftp_write_file`、`sftp_upload`、`sftp_download`、`sftp_remove` 全套文件操作通道。`list_sessions` 接入活跃 GUI 会话池，`resource_monitor_snapshot` 接入真实系统资源快照，实现 MCP 工具 100% 无桩化。严格践行安全红线：读敏感文件/写/覆盖/删除恒需审批；根级毁灭性删除与本机核心系统目录写操作 HardBlock 硬拦截；`sftp_read_file` 执行日志强制脱敏，凭据决不落盘。
 
 ---
 

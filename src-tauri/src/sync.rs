@@ -331,6 +331,8 @@ pub struct SyncStatusResult {
     pub pat_configured: bool,
     /// v1.6：是否启用自动同步（会话密钥已派生）。
     pub auto_sync_enabled: bool,
+    /// 是否启用凭据与私钥同步。
+    pub sync_credentials: bool,
 }
 
 #[tauri::command]
@@ -356,7 +358,20 @@ pub async fn sync_status(state: State<'_, AppState>) -> Result<SyncStatusResult,
         gist_id_masked,
         pat_configured,
         auto_sync_enabled: sync_state.auto_sync_enabled,
+        sync_credentials: sync_state.sync_credentials,
     })
+}
+
+/// 切换是否同步凭据与托管私钥。
+#[tauri::command]
+pub async fn sync_set_credentials_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<bool, String> {
+    let mut sync_state = load_sync_state(&state)?;
+    sync_state.sync_credentials = enabled;
+    save_sync_state(&state, &sync_state)?;
+    Ok(enabled)
 }
 
 /// sync_setup 返回结果（前端据此决定下一步）。
@@ -401,9 +416,18 @@ pub async fn sync_setup(
         let (content, updated_at) = remote;
         let payload: SyncPayload = serde_json::from_str(&content)
             .map_err(|e| format!("Gist 内容非合法同步载荷: {e}"))?;
-        let assets_json = sync::unpack(&payload, &master_password)?;
+        let vault = myshelltool_core::sync::unpack_vault(&payload, &master_password)?;
+        let assets_json = serde_json::to_string_pretty(&vault.assets_store)
+            .map_err(|e| format!("序列化资产失败: {e}"))?;
 
-        // 记录 sync state（不导入资产，让前端确认后再 import）
+        // 换机拉取：自动将远端解密出的密码与私钥通过本机 DPAPI 写入本地 SecretStore
+        if !vault.credentials.is_empty() {
+            let _ = crate::sync_credentials::restore_sync_credentials(&state, &vault.credentials);
+        }
+        // 资产文件直接就绪
+        let _ = std::fs::write(&state.asset_store_path, &assets_json);
+
+        // 记录 sync state
         sync_state.gist_id = Some(existing_gist_id.clone());
         sync_state.local_rev = Some(payload.remote_rev);
         sync_state.last_synced_at = updated_at;
@@ -411,9 +435,8 @@ pub async fn sync_setup(
 
         Ok(SyncSetupResult::PulledRemote { assets_json })
     } else {
-        // 首次推送：加密当前本地资产 → 创建 Gist
-        let local_json = read_local_assets(&state)?;
-        let payload = sync::pack(&local_json, &master_password, 1)?;
+        // 首次推送：全量打包当前本地资产与凭据 → 创建 Gist
+        let payload = pack_local_vault(&state, &sync_state, &master_password, 1)?;
         let payload_json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
         let (new_gist_id, updated_at) = gist_create(&pat, &payload_json).await?;
 
@@ -436,7 +459,52 @@ pub struct SyncPushResult {
     pub new_rev: Option<u64>,
 }
 
-/// 推送本地资产到 Gist（加密）。
+/// 辅助函数：根据当前本地资产及关联凭据打包加密载荷（优先会话密钥路径，否则走主密码）。
+fn pack_local_vault(
+    state: &AppState,
+    sync_state: &SyncState,
+    master_password: &str,
+    new_rev: u64,
+) -> Result<SyncPayload, String> {
+    let local_json = read_local_assets(state)?;
+    let store: myshelltool_core::ConnectionAssetStore = serde_json::from_str(&local_json)
+        .unwrap_or_else(|_| myshelltool_core::ConnectionAssetStore { assets: vec![], groups: vec![] });
+
+    let credentials = if sync_state.sync_credentials {
+        crate::sync_credentials::collect_sync_credentials(state, &store.assets).unwrap_or_default()
+    } else {
+        vec![]
+    };
+
+    let vault = myshelltool_core::sync::SyncVaultData::new(store, credentials);
+
+    if master_password.trim().is_empty() {
+        let key = read_session_key(state)?
+            .ok_or_else(|| "未启用自动同步，需提供主密码".to_string())?;
+        myshelltool_core::sync::pack_vault_with_key(&vault, &key, new_rev)
+    } else {
+        myshelltool_core::sync::pack_vault(&vault, master_password, new_rev)
+    }
+}
+
+/// v1.6+ 统一解密 helper：优先会话密钥（master_password 为空时），回退主密码，解析为 SyncVaultData。
+fn decrypt_vault(
+    state: &AppState,
+    master_password: &str,
+    payload: &SyncPayload,
+) -> Result<myshelltool_core::sync::SyncVaultData, String> {
+    if payload.blob.salt.is_empty() {
+        let key = read_session_key(state)?
+            .ok_or_else(|| "此 Gist 载荷由会话密钥加密，但本机未启用自动同步".to_string())?;
+        myshelltool_core::sync::unpack_vault_with_key(payload, &key)
+    } else if master_password.trim().is_empty() {
+        Err("此 Gist 载荷需主密码解密（旧版或他机加密），请输入主密码".to_string())
+    } else {
+        myshelltool_core::sync::unpack_vault(payload, master_password)
+    }
+}
+
+/// 推送本地资产及关联凭据到 Gist（端到端加密）。
 ///
 /// **v1.6 自动同步**：`master_password` 为空时尝试用会话密钥（key-based 路径）；
 /// 非空时走传统主密码路径（向后兼容）。
@@ -452,24 +520,8 @@ pub async fn sync_push(
         .ok_or_else(|| "未配置同步（请先 sync_setup）".to_string())?;
     let pat = read_github_pat(&state)?;
 
-    let local_json = read_local_assets(&state)?;
     let new_rev = sync_state.local_rev.unwrap_or(0) + 1;
-
-    // v1.6：优先会话密钥路径（master_password 为空时），否则走主密码派生
-    let payload = if master_password.trim().is_empty() {
-        // 会话密钥路径：自动同步 / 手动但已启用自动同步
-        let key = read_session_key(&state)?
-            .ok_or_else(|| "未启用自动同步，需提供主密码".to_string())?;
-        let blob = myshelltool_core::crypto::encrypt_with_key(local_json.as_bytes(), &key)?;
-        myshelltool_core::sync::SyncPayload {
-            version: myshelltool_core::sync::PAYLOAD_VERSION,
-            blob,
-            remote_rev: new_rev,
-            updated_at: None,
-        }
-    } else {
-        sync::pack(&local_json, &master_password, new_rev)?
-    };
+    let payload = pack_local_vault(&state, &sync_state, &master_password, new_rev)?;
     let payload_json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
 
     let updated_at = gist_update(&pat, &gist_id, &payload_json).await?;
@@ -504,10 +556,6 @@ pub enum SyncPullResult {
 }
 
 /// 拉取 Gist + 冲突检测。
-///
-/// **v1.6 自动同步**：`master_password` 为空时尝试用会话密钥解密（key-based 路径）。
-/// 注意：会话密钥只能解 key-based 加密的载荷；若 Gist 上是旧的主密码加密载荷，
-/// 会话密钥解密失败 → 返回明确错误引导用户手动输入主密码。
 #[tauri::command]
 pub async fn sync_pull(
     state: State<'_, AppState>,
@@ -529,7 +577,6 @@ pub async fn sync_pull(
         .map_err(|e| format!("Gist 内容非合法同步载荷: {e}"))?;
 
     // 2. 本地是否有变更：比较本地资产 mtime vs 上次同步时间
-    //    （粗略判定：本地文件 mtime > last_synced_at 则视为有变更）
     let local_has_changes = has_local_changes_since_last_sync(&state, &sync_state);
 
     // 3. 冲突判定
@@ -538,10 +585,17 @@ pub async fn sync_pull(
     match decision {
         SyncDecision::NoChange => Ok(SyncPullResult::NoChange),
         SyncDecision::PullRemote => {
-            // 安全拉取：解密远端，直接覆盖本地
-            let remote_json = decrypt_payload(&state, &master_password, &remote_payload)?;
+            // 安全拉取：解密远端 vault，覆盖本地资产并恢复凭据到 SecretStore
+            let vault = decrypt_vault(&state, &master_password, &remote_payload)?;
+            let remote_json = serde_json::to_string_pretty(&vault.assets_store)
+                .map_err(|e| format!("序列化资产失败: {e}"))?;
             std::fs::write(&state.asset_store_path, &remote_json)
                 .map_err(|e| format!("写回 connection-assets.json: {e}"))?;
+
+            // 自动将远端解密的密码与托管私钥存入本地 SecretStore（DPAPI 重新加密）
+            if !vault.credentials.is_empty() {
+                let _ = crate::sync_credentials::restore_sync_credentials(&state, &vault.credentials);
+            }
 
             let mut new_state = sync_state;
             new_state.local_rev = Some(remote_payload.remote_rev);
@@ -557,7 +611,9 @@ pub async fn sync_pull(
         SyncDecision::Conflict => {
             // 冲突：返回双方 JSON，前端弹窗让用户选
             let local_json = read_local_assets(&state)?;
-            let remote_json = decrypt_payload(&state, &master_password, &remote_payload)?;
+            let vault = decrypt_vault(&state, &master_password, &remote_payload)?;
+            let remote_json = serde_json::to_string_pretty(&vault.assets_store)
+                .map_err(|e| format!("序列化远端资产失败: {e}"))?;
             Ok(SyncPullResult::Conflict {
                 local_json,
                 remote_json,
@@ -567,34 +623,11 @@ pub async fn sync_pull(
     }
 }
 
-/// v1.6 统一解密 helper：优先会话密钥（master_password 为空时），回退主密码。
-///
-/// - 远端载荷 salt 为空（key-based 加密）→ 必须用会话密钥
-/// - 远端载荷 salt 非空（主密码加密）→ 必须用主密码（会话密钥解不开，见单测 key_based_and_password_based_are_incompatible）
-fn decrypt_payload(
-    state: &AppState,
-    master_password: &str,
-    payload: &SyncPayload,
-) -> Result<String, String> {
-    if payload.blob.salt.is_empty() {
-        // key-based 载荷：必须会话密钥
-        let key = read_session_key(state)?
-            .ok_or_else(|| "此 Gist 载荷由会话密钥加密，但本机未启用自动同步".to_string())?;
-        let plaintext = myshelltool_core::crypto::decrypt_with_key(&payload.blob, &key)?;
-        String::from_utf8(plaintext).map_err(|e| format!("解密后非合法 UTF-8: {e}"))
-    } else if master_password.trim().is_empty() {
-        // 主密码载荷但未提供密码 → 引导用户输入
-        Err("此 Gist 载荷需主密码解密（旧版或他机加密），请输入主密码".to_string())
-    } else {
-        sync::unpack(payload, master_password)
-    }
-}
-
 /// 用户在冲突对话框选择后，强制用某一方的数据覆盖。
 ///
 /// `choice`: "local" | "remote"
-/// - local：加密本地数据推送（覆盖远端）
-/// - remote：用 remote_json 覆盖本地
+/// - local：加密本地数据与凭据推送（覆盖远端）
+/// - remote：用 remote_json 覆盖本地，并拉取凭据恢复
 #[tauri::command]
 pub async fn sync_resolve_conflict(
     state: State<'_, AppState>,
@@ -612,22 +645,9 @@ pub async fn sync_resolve_conflict(
 
     match choice.as_str() {
         "local" => {
-            // 用本地覆盖远端：推送本地（v1.6：优先会话密钥）
-            let local_json = read_local_assets(&state)?;
+            // 用本地覆盖远端：打包全量本地资产及凭据推送
             let new_rev = remote_rev + 1;
-            let payload = if master_password.trim().is_empty() {
-                let key = read_session_key(&state)?
-                    .ok_or_else(|| "未启用自动同步，需提供主密码".to_string())?;
-                let blob = myshelltool_core::crypto::encrypt_with_key(local_json.as_bytes(), &key)?;
-                myshelltool_core::sync::SyncPayload {
-                    version: myshelltool_core::sync::PAYLOAD_VERSION,
-                    blob,
-                    remote_rev: new_rev,
-                    updated_at: None,
-                }
-            } else {
-                sync::pack(&local_json, &master_password, new_rev)?
-            };
+            let payload = pack_local_vault(&state, &sync_state, &master_password, new_rev)?;
             let payload_json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
             let updated_at = gist_update(&pat, &gist_id, &payload_json).await?;
 
@@ -637,9 +657,20 @@ pub async fn sync_resolve_conflict(
             save_sync_state(&state, &new_state)?;
         }
         "remote" => {
-            // 用远端覆盖本地
+            // 用远端覆盖本地：写入资产文件，并尝试解密远端凭据恢复
             std::fs::write(&state.asset_store_path, &remote_json)
                 .map_err(|e| format!("写回 connection-assets.json: {e}"))?;
+
+            if let Ok(Some((content, _))) = gist_get(&pat, &gist_id).await {
+                if let Ok(payload) = serde_json::from_str::<SyncPayload>(&content) {
+                    if let Ok(vault) = decrypt_vault(&state, &master_password, &payload) {
+                        if !vault.credentials.is_empty() {
+                            let _ = crate::sync_credentials::restore_sync_credentials(&state, &vault.credentials);
+                        }
+                    }
+                }
+            }
+
             let mut new_state = sync_state;
             new_state.local_rev = Some(remote_rev);
             new_state.last_synced_at = Some(chrono::Utc::now().to_rfc3339());

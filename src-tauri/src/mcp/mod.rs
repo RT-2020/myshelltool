@@ -19,9 +19,12 @@
 pub mod approval;
 pub mod config;
 pub mod execution_log;
+pub mod file_policy;
+pub mod file_tools;
 pub mod http_server;
 pub mod probe;
 pub mod prompts;
 pub mod resources;
 pub mod server;
+pub mod sftp_ops;
 pub mod tools;

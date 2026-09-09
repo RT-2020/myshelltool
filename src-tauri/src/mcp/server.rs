@@ -14,6 +14,9 @@
 //! v2：① 审批按用户可配置的拦截等级判定（Minimal 默认仅拦黑名单/超高危，
 //! Strict 非白名单一律确认，配置见 config.rs，每次 call_tool 现读快照）；
 //! ② call_tool 为真实触发远程执行的工具调用记执行日志（execution_log.rs）。
+//! v2.1：Minimal 语义重构为零审批交互——毁灭性（catastrophic）命令
+//! HardBlock 直接拒绝（不进审批链，见下方 call_tool），非毁灭黑名单放行
+//! 记 minimal_allowed 日志；Strict 审批语义不变，毁灭性命令同样硬拦。
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,7 +34,7 @@ use rmcp::{
 };
 use tauri::Emitter;
 
-use super::approval::{self, ApprovalDecision, ElicitationInfo, McpApprovalEvent};
+use super::approval::{self, ApprovalDecision, AutoApproveReason, ElicitationInfo, McpApprovalEvent};
 use super::execution_log::{self, decision, outcome, ExecutionLogEntry};
 use super::tools::{self, McpToolContext};
 
@@ -136,8 +139,63 @@ fn log_scope_for(
         }
         "sftp_remove" => Some(LogScope {
             tool: "sftp_remove",
-            // 日志的 command 填目标路径本身（审批三段式里才是 sftp_remove path=…）
-            command: args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            command: format!(
+                "remove {}",
+                args.get("path").and_then(|v| v.as_str()).unwrap_or("")
+            ),
+            asset_id,
+            intent,
+        }),
+        "sftp_list" => Some(LogScope {
+            tool: "sftp_list",
+            command: format!(
+                "list {}",
+                args.get("path").and_then(|v| v.as_str()).unwrap_or(".")
+            ),
+            asset_id,
+            intent,
+        }),
+        "sftp_read_file" => Some(LogScope {
+            tool: "sftp_read_file",
+            command: format!(
+                "read {}",
+                args.get("path").and_then(|v| v.as_str()).unwrap_or("")
+            ),
+            asset_id,
+            intent,
+        }),
+        "sftp_write_file" => Some(LogScope {
+            tool: "sftp_write_file",
+            command: format!(
+                "write {}",
+                args.get("path").and_then(|v| v.as_str()).unwrap_or("")
+            ),
+            asset_id,
+            intent,
+        }),
+        "sftp_upload" => Some(LogScope {
+            tool: "sftp_upload",
+            command: format!(
+                "upload {} -> {}",
+                args.get("local_path").and_then(|v| v.as_str()).unwrap_or(""),
+                args.get("remote_path").and_then(|v| v.as_str()).unwrap_or("")
+            ),
+            asset_id,
+            intent,
+        }),
+        "sftp_download" => Some(LogScope {
+            tool: "sftp_download",
+            command: format!(
+                "download {} -> {}",
+                args.get("remote_path").and_then(|v| v.as_str()).unwrap_or(""),
+                args.get("local_path").and_then(|v| v.as_str()).unwrap_or("")
+            ),
+            asset_id,
+            intent,
+        }),
+        "resource_monitor_snapshot" => Some(LogScope {
+            tool: "resource_monitor_snapshot",
+            command: "snapshot".to_string(),
             asset_id,
             intent,
         }),
@@ -175,10 +233,74 @@ async fn check_approval_needed(
         "sftp_remove" => {
             let intent = args.get("intent").and_then(|v| v.as_str()).unwrap_or("");
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if super::file_policy::is_catastrophic_remote_removal(path) {
+                return Some(ApprovalDecision::HardBlock {
+                    reason: format!("拒绝执行：目标路径 '{path}' 属于系统根目录或顶级核心目录，禁止删除。"),
+                });
+            }
+            let recursive = args.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
+            let mode_warning = if recursive {
+                "【危险】将递归删除整个目录及其内部所有子文件与子目录！"
+            } else {
+                "将删除远程单文件或空目录。"
+            };
             Some(ApprovalDecision::RequestElicitation(ElicitationInfo {
                 intent: intent.to_string(),
-                command: format!("sftp_remove path={}", path),
-                consequence: "将删除远程文件/目录，可能不可恢复。".to_string(),
+                command: format!("sftp_remove path={} recursive={}", path, recursive),
+                consequence: format!("{mode_warning}此操作不可撤销。"),
+            }))
+        }
+        "sftp_read_file" => {
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if super::file_policy::is_sensitive_remote_path(path) {
+                Some(ApprovalDecision::RequestElicitation(ElicitationInfo {
+                    intent: args.get("intent").and_then(|v| v.as_str()).unwrap_or("读取敏感系统凭据/配置").to_string(),
+                    command: format!("sftp_read_file path={}", path),
+                    consequence: "检测到目标路径属于系统敏感文件、SSH 私钥或应用环境凭据，请核对是否授权读取。".to_string(),
+                }))
+            } else {
+                Some(ApprovalDecision::AutoExecute(AutoApproveReason::Whitelist))
+            }
+        }
+        "sftp_write_file" => {
+            let intent = args.get("intent").and_then(|v| v.as_str()).unwrap_or("");
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            Some(ApprovalDecision::RequestElicitation(ElicitationInfo {
+                intent: intent.to_string(),
+                command: format!("sftp_write_file path={}", path),
+                consequence: "将向远程目标路径原子写入文件。若文件已存在将被完全覆盖，请核验路径与内容。".to_string(),
+            }))
+        }
+        "sftp_upload" => {
+            let intent = args.get("intent").and_then(|v| v.as_str()).unwrap_or("");
+            let local = args.get("local_path").and_then(|v| v.as_str()).unwrap_or("");
+            let remote = args.get("remote_path").and_then(|v| v.as_str()).unwrap_or("");
+            Some(ApprovalDecision::RequestElicitation(ElicitationInfo {
+                intent: intent.to_string(),
+                command: format!("sftp_upload {} -> {}", local, remote),
+                consequence: "将上传本机文件并覆盖远程已有文件，请核对源路径与目标路径。".to_string(),
+            }))
+        }
+        "sftp_download" => {
+            let intent = args.get("intent").and_then(|v| v.as_str()).unwrap_or("");
+            let remote = args.get("remote_path").and_then(|v| v.as_str()).unwrap_or("");
+            let local_str = args.get("local_path").and_then(|v| v.as_str()).unwrap_or("");
+            let local_path = std::path::Path::new(local_str);
+            if super::file_policy::is_protected_local_write_path(local_path) {
+                return Some(ApprovalDecision::HardBlock {
+                    reason: format!("拒绝执行：本机下载路径 '{local_str}' 属于系统受保护核心目录。"),
+                });
+            }
+            let is_overwrite = local_path.exists();
+            let warn = if is_overwrite {
+                "【注意】本机目标文件已存在，下载将覆盖本机旧文件！"
+            } else {
+                "将在本机保存远程下载的文件。"
+            };
+            Some(ApprovalDecision::RequestElicitation(ElicitationInfo {
+                intent: intent.to_string(),
+                command: format!("sftp_download {} -> {}", remote, local_str),
+                consequence: warn.to_string(),
             }))
         }
         _ => None,
@@ -455,6 +577,8 @@ impl ServerHandler for MyshellToolMcpServer {
     /// v2：① 审批按当前拦截等级判定（Minimal 仅拦黑名单/超高危，Strict 非白名单
     /// 一律确认，见 config.rs）；② 每次真实触发远程执行的工具调用记执行日志
     /// （execution_log.rs）：决策路径 decision + 执行结果 outcome + 输出摘要。
+    /// v2.1：Minimal 档毁灭性命令 HardBlock 直接拒绝（不弹窗不等超时），
+    /// 非毁灭黑名单放行记 minimal_allowed。
     fn call_tool(
         &self,
         request: CallToolRequestParams,
@@ -477,6 +601,7 @@ impl ServerHandler for MyshellToolMcpServer {
                 match approval_needed {
                     super::approval::ApprovalDecision::AutoExecute(reason) => {
                         // 放行：白名单命中 → auto_approved；Minimal 档放行 → minimal_allowed
+                        // （v2.1 起非毁灭黑名单在 Minimal 下也走 MinimalFallback 放行）
                         log_decision = match reason {
                             super::approval::AutoApproveReason::Whitelist => {
                                 decision::AUTO_APPROVED
@@ -485,6 +610,26 @@ impl ServerHandler for MyshellToolMcpServer {
                                 decision::MINIMAL_ALLOWED
                             }
                         };
+                    }
+                    super::approval::ApprovalDecision::HardBlock { reason } => {
+                        // v2.1：毁灭性命令硬拦——不进审批链（不发 elicitation /
+                        // 不弹 GUI 窗，避免不支持 elicitation 的 host 下白等 60s），
+                        // 两档等级一致直接拒绝，记 hard_blocked 日志后返回。
+                        log::warn!(
+                            "approval: catastrophic command hard-blocked, refusing without approval chain"
+                        );
+                        if let Some(scope) = &log_scope {
+                            append_execution_log(
+                                &ctx,
+                                scope,
+                                level_str,
+                                decision::HARD_BLOCKED,
+                                outcome::SKIPPED,
+                                "",
+                            )
+                            .await;
+                        }
+                        return Ok(error_result(&reason));
                     }
                     super::approval::ApprovalDecision::RequestElicitation(info) => {
                         // v1.5：elicitation 优先，不支持时降级 GUI 弹窗（ctx 透传）
@@ -560,7 +705,13 @@ impl ServerHandler for MyshellToolMcpServer {
                 } else {
                     outcome::OK
                 };
-                let output_text = extract_result_text(&result);
+                let raw_output = extract_result_text(&result);
+                // D4 脱敏红线：针对 sftp_read_file 成功读取的输出，绝对不把文件本体写入审计日志，仅记元信息
+                let output_text = if scope.tool == "sftp_read_file" && result.is_error != Some(true) {
+                    format!("[文件内容已脱敏：读取成功，共 {} 字符]", raw_output.len())
+                } else {
+                    raw_output
+                };
                 append_execution_log(&ctx, scope, level_str, log_decision, outcome_str, &output_text)
                     .await;
             }
