@@ -13,6 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
+        "label": "main",
         "title": "myshelltool — SSH 运维客户端",
         "width": 1366,
         "height": 800,
@@ -20,7 +21,9 @@
         "minHeight": 720,
         "decorations": false,
         "resizable": true,
-        "center": true
+        "center": true,
+        "visible": true,
+        "focus": true
       }
     ]
   },
