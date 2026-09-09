@@ -64,7 +64,7 @@
 | 前端框架 | **Vue 3**（`<script setup>` + Composition API） | `vue ^3.5.38` |
 | 状态管理 | **Pinia 3**（setup store 风格） | `pinia ^3.0.4` |
 | 图标 | **lucide-vue-next** | `^0.460.0` |
-| 终端 | **xterm.js 6** + addon-fit/search/web-links/webgl | `@xterm/xterm ^6` |
+| 终端 | **xterm.js 6** + addon-fit/search/serialize/web-links/webgl | `@xterm/xterm ^6` |
 | 远程编辑 | Monaco Editor 0.52（CDN 加载） | — |
 | 样式 | **SCSS + 设计 token 系统**（无 Tailwind） | `sass ^1.101`，自定义 `_tokens.scss` |
 | 构建 | **Vite 7** | `vite ^7.2.7`，root=`src/` |
@@ -81,11 +81,12 @@ myshelltool/
 ├── src/                        # 前端（Vite root）
 │   ├── index.html              # 主页面（Vite 入口 HTML）
 │   ├── main.js                 # 应用入口：createApp(App).use(createPinia()).mount('#app')
-│   ├── App.vue                 # 根组件：5 区域布局 + onMounted 调 store.initialize() 启动加载
+│   ├── App.vue                 # 根组件：按 query 分支（?win=asset&assetId= → AssetWindowShell，否则 WorkbenchShell）+ initialize 启动加载
 │   ├── components/
 │   │   ├── shell/              # 外壳：ConnectionSidebar / AssetGroupNode(递归) /
 │   │   │                       #        GlobalModals(弹窗中枢) / OpsSummaryPanel / RightSidebar
-│   │   ├── workbench/          # 实际运行的外壳：WorkbenchShell（标题栏/状态栏/拖拽条）
+│   │   ├── workbench/          # 实际运行的外壳：WorkbenchShell（标题栏/状态栏/拖拽条）/
+│   │   │                       # AssetWindowShell（资产独立窗口壳，复用 Terminal/File/RightSidebar）
 │   │   ├── terminal/           # 终端：TerminalSurface / TerminalTabs / TerminalToolbar
 │   │   ├── files/              # 文件：FileSurface / FileColumn / ...
 │   │   ├── resource-monitor/   # 资源监控：Cpu/Memory/Network/Disk 图表 + chart-utils
@@ -105,7 +106,7 @@ myshelltool/
 │   ├── composables/            # useTheme / useClipboard / useTerminalConfig /
 │   │                           # useAutoReconnect / usePanelResize / useAutoUpdate
 │   ├── lib/                    # terminalThemes / dangerousCommands / terminalGuards /
-│   │                           # transferUtils（S2/S3 新增的纯函数模块）
+│   │                           # transferUtils / assetWindows+assetWindowBoot（资产独立窗口纯函数模块）
 │   ├── services/
 │   │   └── backend.js          # Tauri IPC 桥：invokeBackend / listenBackendEvent /
 │   │                           #                 normalizeAsset / slugify
@@ -316,9 +317,11 @@ credential_id(Option), passphrase_credential_id(Option)
 - **【v1.4】MCP 内嵌 GUI（Streamable HTTP）**：MCP server 跑在 GUI 进程内，绑定 `127.0.0.1:41235/mcp`（占用则 +1，写 `<data_dir>/mcp-endpoint.json`）。取消双二进制（删 `bin/mcp.rs` + `pipe.rs`），根治 v1.2 的僵尸进程 + os error 32 + NSIS 打包缺口。MCP server 随 GUI 启停（`CancellationToken` 控制 graceful shutdown）。
 - **【v1.4】MCP 端口策略**：默认 41235，被占用则 +1 重试最多 10 次，**只监听 localhost**（§8 安全红线）。实际端口写 mcp-endpoint.json，前端 `mcp_status.endpoint` 返回。
 - **【v1.4 follow-up】会话复用**：`tools.rs::exec_on_asset` 当前直走 headless 建连（删了 v1.1 pipe 复用分支）。后续可注入 GUI 的 `Arc<AsyncMutex<SshSessionManager>>` 到 McpToolContext，命中已建立会话时直接复用（同进程访问，比 pipe 更简单）。
-- **【v2】MCP 审批三级降级 + 拦截等级可配置**：v1.5 已实现三级降级（elicitation → AppHandle emit `mcp-tool-approval` GUI 弹窗 + 60s oneshot 超时 → headless/emit 失败才 fail-secure 拒），不再是「不支持 elicitation 直接拒」。v2 起拦截等级用户可配置（`mcp-config.json`，GUI 经 `mcp_get_config`/`mcp_set_config` 读写）：默认 **Minimal** 仅硬拦毁灭性命令（机器报废级：rm 根级删除如 `rm -rf /`、mkfs、dd 写块设备、fork 炸弹、chmod -R 系统目录），其余命令（含 reboot、`rm -rf 目录`、`curl|bash` 等黑名单级）不经确认直接执行（用户明确选择的低摩擦默认，放行记执行日志 `minimal_allowed` 供审计）；**Strict** 非白名单一律人工确认（保留原 fail-secure 语义）。毁灭性命令两档下均直接拒绝、不弹审批（decision 记 `hard_blocked`，命令未执行）；sftp_remove（危险文件操作红线）两档恒拦。等级存共享 `Arc<RwLock<McpConfig>>`，改档后已建 MCP 会话下次调用即生效。`ssh_exec` 等工具返回结构化文本（exit_code + stdout + stderr；超 16000 字符自动截断保留头/尾各 8000，提示用 grep/tail 收窄）。
+- **【v2】MCP 审批三级降级 + 拦截等级可配置**：v1.5 已实现三级降级（elicitation → AppHandle emit `mcp-tool-approval` GUI 弹窗 + 60s oneshot 超时 → headless/emit 失败才 fail-secure 拒），不再是「不支持 elicitation 直接拒」。v2 起拦截等级用户可配置（`mcp-config.json`，GUI 经 `mcp_get_config`/`mcp_set_config` 读写）：默认 **Minimal** 仅硬拦毁灭性命令（机器报废级：rm 根级删除如 `rm -rf /`、mkfs、dd 写块设备、fork 炸弹、chmod -R 系统目录），其余命令（含 reboot、`rm -rf 目录`、`curl|bash` 等黑名单级）不经确认直接执行（用户明确选择的低摩擦默认，放行记执行日志 `minimal_allowed` 供审计）；**Strict** 非白名单一律人工确认（保留原 fail-secure 语义）。毁灭性命令两档下均直接拒绝、不弹审批（decision 记 `hard_blocked`，命令未执行）；sftp_remove 已于 v2.3 纳入等级体系，仅根级/核心目录删除恒拦。等级存共享 `Arc<RwLock<McpConfig>>`，改档后已建 MCP 会话下次调用即生效。`ssh_exec` 等工具返回结构化文本（exit_code + stdout + stderr；超 16000 字符自动截断保留头/尾各 8000，提示用 grep/tail 收窄）。
 - **【v2】MCP 执行日志**：`server.rs::call_tool` 为真实触发远程执行的工具（ssh_exec/disk_usage/system_status/service_status/sftp_remove）记一条 `mcp-execution-log.json`（哪台服务器/什么命令/什么决策/什么结果），前端 MCP 面板经 `mcp_list_execution_logs`/`mcp_clear_execution_logs` 查看/清空。30 天惰性清理 + 上限 1000 条（append 时触发，无常驻定时任务）；tokio Mutex 串行化 append/clear，`.tmp`+rename 原子写，落盘失败 best-effort 不阻断工具调用。Entry 不含任何凭据字段（§8 红线）。
-- **【v2.2】MCP 文件传输全能力与全工具无桩化**：新增 `file_policy.rs`、`file_tools.rs`、`sftp_ops.rs`，提供 `sftp_list`、`sftp_read_file`、`sftp_write_file`、`sftp_upload`、`sftp_download`、`sftp_remove` 全套文件操作通道。`list_sessions` 接入活跃 GUI 会话池，`resource_monitor_snapshot` 接入真实系统资源快照，实现 MCP 工具 100% 无桩化。严格践行安全红线：读敏感文件/写/覆盖/删除恒需审批；根级毁灭性删除与本机核心系统目录写操作 HardBlock 硬拦截；`sftp_read_file` 执行日志强制脱敏，凭据决不落盘。
+- **【v2.2】MCP 文件传输全能力与全工具无桩化**：新增 `file_policy.rs`、`file_tools.rs`、`sftp_ops.rs`，提供 `sftp_list`、`sftp_read_file`、`sftp_write_file`、`sftp_upload`、`sftp_download`、`sftp_remove` 全套文件操作通道。`list_sessions` 接入活跃 GUI 会话池，`resource_monitor_snapshot` 接入真实系统资源快照，实现 MCP 工具 100% 无桩化。严格践行安全红线：文件工具（sftp_write_file/sftp_upload/sftp_download/sftp_remove）的审批已纳入拦截等级体系（v2.3）——Minimal 放行记 minimal_allowed 日志 / Strict 人工确认；例外：根级毁灭性删除与本机核心系统目录写恒 HardBlock，敏感凭据文件读取恒审批（凭据红线）；`sftp_read_file` 执行日志强制脱敏，凭据决不落盘。
+- **【多窗口】资产独立工作台窗口（Tauri 2 多 WebviewWindow）**：侧栏资产**拖出主窗口边界**释放或右键「在独立窗口打开」→ 创建独立 OS 窗口（label=`asset-<sanitized assetId>`，重复开聚焦已有窗口），加载 `/index.html?win=asset&assetId=`，App.vue 按 query 分支渲染 `AssetWindowShell`（标题栏 + 上终端/下文件 + 完整可收起右栏监控，无左栏）。**每窗口独立 webview/Pinia 实例、共享 Rust 后端**（Rust 零改动）；侧栏拖出/右键入口新建自己的会话。关键约束：① `resourceMonitor.applySnapshot` 按 sessionId 过滤（全局广播事件防双窗口串流）；② sessions 的 host-key/keyboard handler 有 `ownsConnectingSession` 守卫（防跨窗口弹错资产名的确认框）；③ asset 模式 `initialize({mode:'asset'})` 跳过 MCP/sync 初始化（MCP 审批弹窗只在主窗口）；④ 关窗走 onCloseRequested 确认（connecting 会话先等 settle ≤10s）→ 断开本窗口会话 → destroy；⑤ asset 窗口布局用独立 storageKey（`myshelltool:layout-asset:v1`）、右栏折叠不写共享 localStorage。capabilities windows 含 `asset-*` glob。已知限制：窗口不持久化恢复、资产删除不跨窗口同步、主题跨窗口不实时同步、Esc 取消的窗外拖拽可能误开窗（待实测）。
+- **【多窗口·tab 迁移】终端 tab 跨窗口拖出/合并（会话所有权迁移）**：主窗口 connected 终端 tab 拖出窗外释放 → **迁移会话**（不重连）到该资产独立窗口：`src/lib/sessionHandoff.js` 导出 scrollback（**@xterm/addon-serialize 序列化，带 SGR 颜色/样式**——`exportTerminalScrollback`，末 2000 行、1M 字符预算，超预算头部截断后 prepend `\x1b[0m` 防 delta 式 SGR 断链错色；addon 不可用时回退 `exportTerminalText` 纯文本。曾长期纯文本导出，迁移后历史整体褪成默认前景色、蓝色 prompt 变白，v2.4 修复）经 **Rust 内存中转**（`session_handoff_put`/`session_handoff_take` 命令，AppState `Mutex<HashMap>` + TTL 60s，take 即原子删除——曾用 localStorage 中转但 WebView2 跨窗口不实时共享导致 adopt 恒失败，已废弃）→ `await session.unlisten()`（先解绑防双写）→ `removeSessionEntry`（仅移 UI，不 ssh_disconnect，会话在后端存活）→ 新窗口 URL 带 `&adopt=<sessionId>`，boot 经 `sessionsStore.adoptSession` 重建 xterm（`createTerminalForAsset` 与 connectSelected 共用 helper，每 session 挂 SerializeAddon）+ `registerSessionStream` + 100 行分块 rAF 回放。**独立窗口无 tab 条**（TerminalSurface `showTabs` prop，窗口即会话），回迁主窗口走**标题栏「移回主窗口」按钮**（`pushSessionToMainWindow` push 协议：迁移 + MERGE_PUSH 事件 + 主窗口 adopt，迁移后空窗自动关窗；主窗口已关则拒绝迁移防会话无主）。协议剩两事件（`session-handoff-tearoff`/`-merge-push`，`sourceWindowId` 防自吞，TEAROFF 仅 asset 窗口且 assetId 匹配、MERGE_PUSH 仅主窗口监听）；跨窗口 drop 合并（pull 协议）已随 tab 条删除而移除（WebView2 跨窗口自定义 MIME 不可靠，按钮替代）。已知限制：回放不含 alt 屏与软换行（vim/less 中拖出只还原进 alt 前内容、超宽行拆行）、颜色状态在极端截断时回落默认色；迁移瞬间输出丢失；Esc 取消的窗外拖拽会误触发拆出；溢出折叠 tab 不可拖。
 - **【v2.3】文件面板与终端会话生命周期联动**：sessions store 断开/关闭/连接成功时经 workbench bridge 通知 files store（`handleSessionClosed` 清空面板 / `handleSessionConnected` 延迟 600ms 静默自动加载——SFTP 通道就绪前抢跑会报错）。终端 cd 跟随：连接后注入 bash 专属 OSC 7 上报（stty -echo 两段式包裹、BASH_VERSION 门控、case 幂等守卫），`createOscParser` 解析 OSC 7 → `syncTerminalCwd` 跟随切换（400ms 节流、仅面板当前绑定资产生效）。局限：依赖 shell 发 OSC 7——bash 已由注入覆盖；zsh 安全跳过不同步；fish 等语法不兼容 shell 有一次 stderr 噪音。
 
 ---
