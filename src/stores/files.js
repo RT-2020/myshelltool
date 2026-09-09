@@ -357,7 +357,7 @@ export const useFilesStore = defineStore('files', () => {
   // ============================================================
   // Remote SFTP 浏览 / 操作
   // ============================================================
-  async function refreshRemoteFiles(path = null) {
+  async function refreshRemoteFiles(path = null, { silent = false } = {}) {
     try {
       await withFileOperation('remote', '正在读取远程目录...', async () => {
         const asset = wb().selectedAsset;
@@ -386,9 +386,12 @@ export const useFilesStore = defineStore('files', () => {
       });
       remoteError.value = '';
     } catch (error) {
-      // 失败：写入 remoteError（列表空态显示「加载失败 + 重试」），announce 升级 error
+      // 失败：写入 remoteError（列表空态显示「加载失败 + 重试」），announce 升级 error；
+      // silent 模式（连接成功后的自动加载）仅清空态，不弹错误打扰
       remoteError.value = error.message || String(error);
-      announce('远程目录加载失败：' + error.message, { level: 'error' });
+      if (!silent) {
+        announce('远程目录加载失败：' + (error.message || '未知错误'), { level: 'error' });
+      }
     }
   }
 
@@ -399,6 +402,48 @@ export const useFilesStore = defineStore('files', () => {
     remotePath.value = path;
     remoteEntries.value = entries;
     remoteLoaded.value = true;
+  }
+
+  // ------------------------------------------------------------
+  // 与终端会话生命周期联动（sessions store 经 workbench bridge 调用）：
+  //   断开/关闭 → 清空面板（不再停留旧资产的目录）；
+  //   连接成功 → 自动加载远程目录（无需手动刷新）；
+  //   终端 cd（OSC 7）→ 跟随切换远程目录。
+  // 均只对「文件面板当前绑定的资产」（selectedAsset）生效。
+  // ------------------------------------------------------------
+  function handleSessionClosed(assetId) {
+    const current = wb().selectedAsset;
+    if (!current || current.id !== assetId) return;
+    remoteEntries.value = [];
+    remoteLoaded.value = false;
+    remoteError.value = '';
+    selectedRemotePaths.value = new Set();
+  }
+
+  async function handleSessionConnected(assetId) {
+    const current = wb().selectedAsset;
+    if (!current || current.id !== assetId) return;
+    // 已有列表（如切换回旧面板）不打扰；空态时自动加载，省一次手动刷新
+    if (remoteLoaded.value || remoteEntries.value.length) return;
+    // 延迟触发：连接完成时后端 SFTP 通道可能尚未就绪，立即刷会抢跑失败
+    setTimeout(async () => {
+      const now = wb().selectedAsset;
+      if (!now || now.id !== assetId) return;
+      if (remoteLoaded.value || remoteEntries.value.length) return;
+      await refreshRemoteFiles(null, { silent: true }).catch(() => null);
+    }, 600);
+  }
+
+  let lastCwdSyncAt = 0;
+  async function syncTerminalCwd(assetId, path) {
+    const current = wb().selectedAsset;
+    if (!current || current.id !== assetId) return;
+    if (!path || path === remotePath.value) return;
+    // 提示符每刷一次就发一次 OSC 7，简单节流防连续 cd 时并发刷新
+    const now = Date.now();
+    if (now - lastCwdSyncAt < 400) return;
+    lastCwdSyncAt = now;
+    await refreshRemoteFiles(path).catch(() => null);
   }
 
   async function navigateRemotePath(target) {
@@ -1119,6 +1164,9 @@ export const useFilesStore = defineStore('files', () => {
     applyRemoteListing,
     navigateRemotePath,
     navigateRemoteUp,
+    handleSessionClosed,
+    handleSessionConnected,
+    syncTerminalCwd,
     uploadFiles,
     uploadLocalEntry,
     downloadEntry,

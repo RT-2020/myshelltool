@@ -115,6 +115,46 @@ export const useSessionsStore = defineStore('sessions', () => {
   // ============================================================
   // Listeners — 三个 unlisten 句柄（CRITICAL Critic 改进 2/4）
   // ============================================================
+  // 跨窗口事件路由守卫（多 WebviewWindow / 每窗口独立 Pinia 实例）：
+  // Rust 侧 app.emit 是全局广播，所有窗口都会收到同一份 host key /
+  // keyboard 事件。只有「本窗口存在 status==='connecting' 的会话」时
+  // 该事件才可能属于本窗口——否则静默忽略（有意路由守卫，非可忽略错误）。
+  // 守卫对本窗口 connecting 会话恒通过，单窗口使用路径行为不变。
+  function ownsConnectingSession(hostPort) {
+    const connecting = sessions.value.filter(s => s.status === 'connecting');
+    if (!connecting.length) return false;
+    if (!hostPort) {
+      // keyboard 事件 payload 无 host 字段，无法精确路由：本窗口有
+      // connecting 会话即认领。残留边界：两窗口同时 connecting（尤其同
+      // 一 host）时无法区分归属，可能双弹框——已知边界，暂不修。
+      return true;
+    }
+    // host key 事件按主机路由：payload.host_port 形如 "host:port"（Rust
+    // HostKeyVerifyEvent 无 rename_all，序列化字段名即 host_port）。优先
+    // host:port 全等（asset.port 经 normalizeAsset 默认 22），回退去端口
+    // 等值比较。
+    return connecting.some(s => {
+      const a = s.asset;
+      if (!a?.host) return false;
+      if (a.port && hostPort === `${a.host}:${a.port}`) return true;
+      return String(hostPort).replace(/:\d+$/, '') === a.host;
+    });
+  }
+
+  // host key / keyboard 共用 handler：ensureHostKeyListeners 与
+  // setupEventListeners 两个注册点引用同一份，路由守卫只写一处。
+  function onHostKeyVerifyEvent(event) {
+    if (!ownsConnectingSession(event?.payload?.host_port)) return;
+    hostKeyPrompt.value = event.payload;
+    wb().modal = { type: 'hostKeyVerify', asset: wb().selectedAsset };
+  }
+
+  function onKeyboardInteractiveEvent(event) {
+    if (!ownsConnectingSession()) return;
+    keyboardPrompt.value = event.payload;
+    wb().modal = { type: 'keyboardInteractive', asset: wb().selectedAsset };
+  }
+
   // 用 detached effect scope 注册 hostKeyPrompt watcher + 立即触发的
   // ensureHostKeyListeners 调用。当 sessions store 被嵌套实例化（如
   // workbench setup 期间调用 useSessionsStore()）时，外层 effect scope
@@ -132,16 +172,10 @@ export const useSessionsStore = defineStore('sessions', () => {
       if (typeof window === 'undefined') return;
       try {
         if (!hostKeyUnlisten) {
-          hostKeyUnlisten = await listenBackendEvent(HOST_KEY_VERIFY_EVENT, event => {
-            hostKeyPrompt.value = event.payload;
-            wb().modal = { type: 'hostKeyVerify', asset: wb().selectedAsset };
-          });
+          hostKeyUnlisten = await listenBackendEvent(HOST_KEY_VERIFY_EVENT, onHostKeyVerifyEvent);
         }
         if (!keyboardUnlisten) {
-          keyboardUnlisten = await listenBackendEvent(KEYBOARD_INTERACTIVE_EVENT, event => {
-            keyboardPrompt.value = event.payload;
-            wb().modal = { type: 'keyboardInteractive', asset: wb().selectedAsset };
-          });
+          keyboardUnlisten = await listenBackendEvent(KEYBOARD_INTERACTIVE_EVENT, onKeyboardInteractiveEvent);
         }
       } catch (error) {
         // eslint-disable-next-line no-console
@@ -186,16 +220,10 @@ export const useSessionsStore = defineStore('sessions', () => {
       });
     }
     if (!hostKeyUnlisten) {
-      hostKeyUnlisten = await listenBackendEvent(HOST_KEY_VERIFY_EVENT, event => {
-        hostKeyPrompt.value = event.payload;
-        wb().modal = { type: 'hostKeyVerify', asset: wb().selectedAsset };
-      });
+      hostKeyUnlisten = await listenBackendEvent(HOST_KEY_VERIFY_EVENT, onHostKeyVerifyEvent);
     }
     if (!keyboardUnlisten) {
-      keyboardUnlisten = await listenBackendEvent(KEYBOARD_INTERACTIVE_EVENT, event => {
-        keyboardPrompt.value = event.payload;
-        wb().modal = { type: 'keyboardInteractive', asset: wb().selectedAsset };
-      });
+      keyboardUnlisten = await listenBackendEvent(KEYBOARD_INTERACTIVE_EVENT, onKeyboardInteractiveEvent);
     }
     // 统一会话状态监听：Rust emit 后更新 session.status（权威源，乐观更新外
     // 的确认/补充；disconnected 让侧栏圆点等派生 UI 即时变灰）。
@@ -222,9 +250,25 @@ export const useSessionsStore = defineStore('sessions', () => {
   // ============================================================
   // OSC parser（CRITICAL Critic 改进 1 — 必须迁移）
   // ============================================================
-  // OSC 0/1/2 标题序列解析（用于更新 Tab 标签）
-  function createOscParser(onTitle) {
+  // OSC 0/1/2 标题序列解析（更新 Tab 标签）+ OSC 7（cwd 上报，文件面板跟随终端目录）
+  function createOscParser(onTitle, onCwd) {
     let buffer = '';
+    // OSC 7 payload 形如 file://host/path 或 file:///path（路径可能带 %XX 编码）
+    function cwdFromPayload(payload) {
+      let raw = String(payload || '');
+      if (raw.startsWith('file://')) {
+        raw = raw.slice(7);
+        const slash = raw.indexOf('/');
+        if (slash < 0) return null;
+        raw = raw.slice(slash);
+      }
+      if (!raw.startsWith('/')) return null;
+      try {
+        return decodeURIComponent(raw);
+      } catch {
+        return raw;
+      }
+    }
     return {
       feed(text) {
         // 拆分：寻找 OSC 序列起始 (\x1b])，匹配到 ST (\x07 或 \x1b\\)
@@ -239,6 +283,9 @@ export const useSessionsStore = defineStore('sessions', () => {
           const title = match[2] || match[4];
           if ((code === 0 || code === 1 || code === 2) && title) {
             onTitle(title.slice(0, 200));
+          } else if (code === 7 && onCwd) {
+            const cwd = cwdFromPayload(title);
+            if (cwd) onCwd(cwd);
           }
           lastIndex = regex.lastIndex;
         }
@@ -606,7 +653,36 @@ export const useSessionsStore = defineStore('sessions', () => {
     sessions.value = sessions.value.filter(item => item.sessionId !== sessionId);
     activeSessionId.value = sessions.value.at(-1)?.sessionId || null;
     showOnlyActiveTerminal();
+    // 通知文件面板清空该资产的目录（不再停留已关闭资产的旧列表）
+    try {
+      workbenchBridge?.onSessionClosed?.(session.asset?.id);
+    } catch (_) { /* noop */ }
     announce('已断开：' + session.asset.name);
+  }
+
+  // 连接成功后注入 bash 专属的 cwd 上报钩子（OSC 7）：文件面板跟随终端 cd。
+  // 分两段写入以压低视觉噪音：先发 `stty -echo`（这一行本身会回显一次，之后输入
+  // 不可见），短暂延迟后再发主命令与恢复回显的行。主命令前导空格配合 Debian
+  // 默认 HISTCONTROL=ignoreboth 不进历史；BASH_VERSION 门控使非 bash shell
+  // 整体跳过；case 守卫保证重连多次注入幂等。zsh（BASH_VERSION 为空）安全跳过；
+  // fish 等语法不兼容的 shell 仅产生一行 stderr 噪音。
+  function injectShellCwdIntegration(session) {
+    const encoder = new TextEncoder();
+    const write = data => invokeBackend('ssh_write', {
+      sessionId: session.sessionId,
+      data: Array.from(encoder.encode(data))
+    }).catch(() => null);
+    const mainLine =
+      ' if [ -n "$BASH_VERSION" ]; then' +
+      ' __mt_cwd(){ printf \'\\033]7;file://%s\\007\' "${PWD// /%20}"; };' +
+      ' case ";$PROMPT_COMMAND;" in *"__mt_cwd"*) ;; *) PROMPT_COMMAND="__mt_cwd;$PROMPT_COMMAND";; esac;' +
+      ' __mt_cwd; fi';
+    // 第一段：关闭回显（仅这一行可见）；300ms 覆盖本地与常规公网 RTT
+    write(' stty -echo\n');
+    // 第二段：回显已关 → 主命令与恢复回显的行均不可见
+    setTimeout(() => {
+      write(mainLine + '\n stty echo\n');
+    }, 300);
   }
 
   // 重连：复用同一 session/termDiv 重走 ssh_connect（不销毁）；手动/自动重连共用
@@ -850,6 +926,12 @@ export const useSessionsStore = defineStore('sessions', () => {
       session.status = 'connected';
       await registerSessionStream(session);
       showOnlyActiveTerminal();
+      // 通知文件面板：该资产已连接，空态时自动加载远程目录
+      try {
+        workbenchBridge?.onSessionConnected?.(session.asset?.id);
+      } catch (_) { /* noop */ }
+      // 注入 bash cwd 上报（OSC 7），使文件面板跟随终端 cd
+      injectShellCwdIntegration(session);
       // 更新对应 asset 的 last_connected（纯显示元数据，无竞态——不写 status，
       // 运行时连接态一律从 session.status 派生）。workbench bridge 暴露
       // assets() 返回 assetsStore.assets 数组。
@@ -879,7 +961,15 @@ export const useSessionsStore = defineStore('sessions', () => {
     const realSessionId = session.sessionId;
     const decoder = new TextDecoder('utf-8', { stream: true });
     session.decoder = decoder;
-    const oscParser = createOscParser(title => { session.oscTitle = title; });
+    const oscParser = createOscParser(
+      title => { session.oscTitle = title; },
+      cwd => {
+        // 终端 cd → 文件面板跟随（仅当面板展示的就是本会话资产时生效）
+        try {
+          workbenchBridge?.syncTerminalCwd?.(session.asset?.id, cwd);
+        } catch (_) { /* noop */ }
+      }
+    );
     const outputUnlisten = await listenBackendEvent('ssh-output-' + realSessionId, event => {
       if (event.payload && event.payload.length > 0) {
         const text = decoder.decode(new Uint8Array(event.payload));
@@ -892,6 +982,10 @@ export const useSessionsStore = defineStore('sessions', () => {
       session.status = 'disconnected';
       term.writeln('\r\n\x1b[31m[myshelltool] 远程连接已关闭 (' + reason + ')。\x1b[0m');
       announce('远程连接已关闭：' + asset.name + '（' + reason + '）', { level: 'warn' });
+      // 通知文件面板清空该资产的目录（自动重连成功后会自动重新加载）
+      try {
+        workbenchBridge?.onSessionClosed?.(asset.id);
+      } catch (_) { /* noop */ }
       scheduleSessionReconnect(session, reason);
     });
     session.unlisten = () => {
@@ -987,6 +1081,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     // host key / keyboard
     resolveHostKeyPrompt,
     resolveKeyboardPrompt,
+    ownsConnectingSession,
     // exposed helpers（部分 internal 供 workbench 复用）
     createOscParser,
     applyTerminalFontSizeAll,

@@ -59,7 +59,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   // ============================================================
   // Initialize — orchestrate all 5 sub-stores
   // ============================================================
-  async function initialize() {
+  async function initialize(options = {}) {
     // 1. UI 主题初始化（applyTheme + systemThemeListener + dataset.assets）
     uiStore.initializeTheme();
 
@@ -107,7 +107,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     }
 
     // 4. 事件监听编排 — sessions + files 各管各的；ui 在 initializeTheme 内已注册 systemThemeListener
-    setupEventListeners().catch(error => {
+    setupEventListeners(options.mode === 'asset').catch(error => {
       announce('后端事件监听初始化失败：' + error.message);
     });
 
@@ -130,19 +130,19 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   // - files store 处理 sftp-transfer-progress 监听
   // - ui store 处理 system theme 监听（在 initializeTheme 中初始化）
   // - mcp store 处理 mcp-tool-approval 监听（v1.5 GUI 弹窗审批）
-  async function setupEventListeners() {
+  async function setupEventListeners(assetMode = false) {
     if (!isTauriRuntime()) return;
-    // v1.2：MCP 探测是无状态按需调用，启动时主动探测一次，
-    // 让状态灯打开程序即可见结果。
-    mcpStore.refresh();
-    // v1.3：启动时刷新同步状态（供状态栏展示真实同步配置状态）
-    syncStore.refreshStatus();
-    // v1.6：启动时后台探测远端是否有更新（轻量，失败静默不阻塞启动）
-    syncStore.checkRemoteUpdates().catch(() => null);
+    // v1.2 启动即探测 MCP / v1.3 刷新同步状态 / v1.6 探测远端更新；asset 模式（独立
+    // 资产窗口）跳过以上与 mcp 审批监听——避免双窗口审批弹窗竞争，sessions/files 照常。
+    if (!assetMode) {
+      mcpStore.refresh();
+      syncStore.refreshStatus();
+      syncStore.checkRemoteUpdates().catch(() => null);
+    }
     await Promise.all([
       sessionsStore.setupEventListeners(),
       filesStore.setupEventListeners(),
-      mcpStore.setupEventListeners()
+      ...(assetMode ? [] : [mcpStore.setupEventListeners()])
     ]);
   }
 
@@ -158,7 +158,9 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   // ============================================================
   // Bridge 注入：所有 workbench state/actions 都已声明完毕。
   // sessions store 需要 selectedAsset / effectiveTheme / modal / selectedAssetId /
-  // selectAsset（切标签联动资产树选中）/ announce / setTab / updateTransferProgress（转发到 files）。
+  // selectAsset（切标签联动资产树选中）/ onSessionClosed + onSessionConnected +
+  // syncTerminalCwd（终端生命周期联动文件面板：断开清空/连接自动加载/cd 跟随）/
+  // announce / setTab / updateTransferProgress（转发到 files）。
   // files store 需要 announce / selectedAsset / setTab / modal + sessionsStore 引用。
   // tunnels store 需要 announce / modal + sessionsStore 引用。
   // assets store 需要 announce / modal + clearFileSelection（转发到 files）。
@@ -173,6 +175,9 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     get selectedAssetId() { return assetsStore.selectedAssetId; },
     set selectedAssetId(v) { assetsStore.selectedAssetId = v; },
     selectAsset,
+    onSessionClosed: filesStore.handleSessionClosed,
+    onSessionConnected: filesStore.handleSessionConnected,
+    syncTerminalCwd: filesStore.syncTerminalCwd,
     announce,
     setTab: uiStore.setTab,
     updateTransferProgress: filesStore.updateTransferProgress
