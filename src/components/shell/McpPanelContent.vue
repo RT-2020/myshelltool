@@ -77,9 +77,10 @@ onMounted(() => {
   if (!hasStatus.value) {
     store.refreshMcpStatus();
   }
-  // v2：拦截等级 + 执行日志（面板打开时拉初始值）
+  // v2：拦截等级 + 执行日志（面板打开时拉初始值）；
+  // 日志上限 1000 条，这里拉 500 条做展示窗口，列表侧有分页渲染兜底
   mcpStore.loadMcpConfig();
-  mcpStore.loadExecLogs();
+  mcpStore.loadExecLogs(500);
 });
 </script>
 
@@ -411,4 +412,5 @@ onMounted(() => {
   font-size: 11px;
 }
 </style>
+
 
