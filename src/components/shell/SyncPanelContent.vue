@@ -31,6 +31,7 @@ import AppInput from '@/components/ui/AppInput.vue';
 import SyncPatGuide from '@/components/shell/SyncPatGuide.vue';
 import SyncAutoSyncControl from '@/components/shell/SyncAutoSyncControl.vue';
 import SyncConflictResolver from '@/components/shell/SyncConflictResolver.vue';
+import SyncSecurityOptionsCard from '@/components/shell/SyncSecurityOptionsCard.vue';
 import PatConfigCard from '@/components/shell/PatConfigCard.vue';
 
 const store = useWorkbenchStore();
@@ -215,6 +216,9 @@ function fmtTime(iso) {
       <!-- v1.6 自动同步开关：委托 SyncAutoSyncControl 子组件（资产变更后自动推送） -->
       <SyncAutoSyncControl />
 
+      <!-- 凭据与私钥同步配置 -->
+      <SyncSecurityOptionsCard />
+
       <section class="block">
         <header class="block-head"><CloudDownload :size="12" />推送 / 拉取</header>
         <label class="field">
@@ -284,9 +288,7 @@ function fmtTime(iso) {
   flex-direction: column;
   gap: var(--space-3);
   font-size: var(--text-sm);
-  max-height: 62vh;
-  overflow-y: auto;
-  padding-right: 2px;
+  // 不自带滚动：渲染在 AppModal body（唯一滚动容器）内，避免滚动条嵌套
 }
 
 // ─── ① Hero 状态条（照 McpPanelContent 范式）───
@@ -472,3 +474,4 @@ function fmtTime(iso) {
 .muted { color: var(--app-muted); font-size: var(--text-xs); line-height: 1.5; margin: 0; }
 .muted strong { color: var(--app-strong); }
 </style>
+
