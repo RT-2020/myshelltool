@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="favBgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#101726"/>
+      <stop offset="45%" stop-color="#0B101D"/>
+      <stop offset="100%" stop-color="#040711"/>
+    </linearGradient>
+    <linearGradient id="favBorderGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8" stop-opacity="0.85"/>
+      <stop offset="30%" stop-color="#60A5FA" stop-opacity="0.45"/>
+      <stop offset="70%" stop-color="#1E293B" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#2563EB" stop-opacity="0.5"/>
+    </linearGradient>
+    <linearGradient id="favBrightCyan" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#BAE6FD"/>
+      <stop offset="25%" stop-color="#38BDF8"/>
+      <stop offset="75%" stop-color="#0284C7"/>
+      <stop offset="100%" stop-color="#0369A1"/>
+    </linearGradient>
+    <linearGradient id="favNodeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7DD3FC"/>
+      <stop offset="100%" stop-color="#0284C7"/>
+    </linearGradient>
+    <linearGradient id="favGatewayGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="40%" stop-color="#38BDF8"/>
+      <stop offset="100%" stop-color="#0284C7"/>
+    </linearGradient>
+    <radialGradient id="favAmbientGlow" cx="50%" cy="48%" r="48%">
+      <stop offset="0%" stop-color="#0284C7" stop-opacity="0.32"/>
+      <stop offset="50%" stop-color="#2563EB" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#030712" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="92" y="92" width="840" height="840" rx="210" ry="210" fill="url(#favBgGrad)"/>
+  <rect x="92" y="92" width="840" height="840" rx="210" ry="210" fill="url(#favAmbientGlow)"/>
+  <rect x="92" y="92" width="840" height="840" rx="210" ry="210" fill="none" stroke="url(#favBorderGrad)" stroke-width="6"/>
+  <g opacity="0.05" stroke="#FFFFFF" stroke-width="2">
+    <line x1="92" y1="302" x2="932" y2="302"/>
+    <line x1="92" y1="512" x2="932" y2="512"/>
+    <line x1="92" y1="722" x2="932" y2="722"/>
+    <line x1="302" y1="92" x2="302" y2="932"/>
+    <line x1="512" y1="92" x2="512" y2="932"/>
+    <line x1="722" y1="92" x2="722" y2="932"/>
+  </g>
+  <path d="M 270 326 L 474 512 L 270 698" fill="none" stroke="url(#favBrightCyan)" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/>
+  <g fill="none" stroke="url(#favNodeGrad)" stroke-width="28" stroke-linecap="round" opacity="0.95">
+    <line x1="596" y1="360" x2="712" y2="446"/>
+    <line x1="712" y1="446" x2="634" y2="596"/>
+    <line x1="712" y1="446" x2="806" y2="606"/>
+  </g>
+  <circle cx="596" cy="360" r="36" fill="#0A0F1D" stroke="url(#favNodeGrad)" stroke-width="20"/>
+  <circle cx="596" cy="360" r="14" fill="#38BDF8"/>
+  <circle cx="712" cy="446" r="54" fill="url(#favGatewayGrad)" stroke="#FFFFFF" stroke-width="10"/>
+  <circle cx="712" cy="446" r="22" fill="#0369A1"/>
+  <circle cx="634" cy="596" r="32" fill="#0A0F1D" stroke="url(#favNodeGrad)" stroke-width="18"/>
+  <circle cx="634" cy="596" r="12" fill="#38BDF8"/>
+  <circle cx="806" cy="606" r="36" fill="#0A0F1D" stroke="url(#favNodeGrad)" stroke-width="20"/>
+  <circle cx="806" cy="606" r="14" fill="#38BDF8"/>
+  <rect x="500" y="718" width="240" height="60" rx="30" ry="30" fill="url(#favBrightCyan)"/>
+</svg>
