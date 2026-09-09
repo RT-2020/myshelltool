@@ -4,9 +4,11 @@
  *
  * 在 McpPanelContent 的「能力清单」之前渲染（section.block 结构与父面板一致）。
  * 两档：
- *   - minimal（默认）：仅硬拦毁灭性命令（rm -rf /、mkfs 等机器报废级，两档
- *     恒拒不弹审批），其余命令不经确认直接执行（记执行日志）
- *   - strict：非白名单命令一律需确认（原 fail-secure 语义）；毁灭性命令两档恒拦
+ *   - minimal（默认）：仅硬拦毁灭性操作（rm -rf /、mkfs 等机器报废级与
+ *     根级删除，两档恒拒不弹审批），其余命令与文件操作（上传/写入/下载/
+ *     删除）不经确认直接执行（记执行日志）
+ *   - strict：非白名单命令与文件操作（上传/写入/下载/删除）一律需确认
+ *     （原 fail-secure 语义）；毁灭性操作两档恒拦
  * 切换即 setMcpInterceptLevel（后端更新共享配置 + 落盘，已建 MCP 会话下次
  * 调用即生效）。
  *
@@ -42,7 +44,7 @@ function onLevelChange(value) {
     <div class="setting-row">
       <div class="setting-meta">
         <span class="setting-label">拦截等级</span>
-        <span class="setting-desc muted">仅硬拦毁灭性命令（rm -rf /、mkfs 等），其余命令直接执行</span>
+        <span class="setting-desc muted">仅硬拦毁灭性操作（rm -rf /、mkfs、根级删除等），其余命令与文件操作（上传/写入/下载/删除）直接执行</span>
       </div>
       <div class="setting-control">
         <AppSelect
@@ -55,10 +57,10 @@ function onLevelChange(value) {
     <!-- 固定风险提示：Minimal 档下展示（低拦截风险陈述），warn 色语义 -->
     <p v-if="isMinimal" class="level-warn">
       <ShieldAlert :size="12" class="warn-icon" />
-      除毁灭性命令（rm 根级删除、mkfs、写块设备等）恒拒外，其余命令（含 reboot、rm -rf 目录、curl|bash 等黑名单级命令）均不经确认直接执行，执行记录可在下方日志查看
+      除毁灭性操作恒拒外，其余命令与文件操作（含 reboot、rm -rf 目录、curl|bash、文件上传/写入/删除）均不经确认直接执行，执行记录可在下方日志查看；敏感凭据文件读取仍需确认
     </p>
     <p v-else class="level-note muted">
-      所有不在只读白名单中的命令均需人工确认；毁灭性命令两档下均直接拦截。
+      所有不在只读白名单中的命令与文件操作（上传/写入/下载/删除）均需人工确认；毁灭性操作与根级/本机系统目录删除两档下均直接拦截。
     </p>
   </section>
 </template>
