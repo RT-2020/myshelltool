@@ -1,83 +1,73 @@
 <script setup>
 /**
- * McpExecutionLogList — v2 MCP 工具执行日志区块。
+ * McpExecutionLogList — v2.3 MCP 工具执行日志区块。
  *
  * 在 McpPanelContent 的「能力清单」之前渲染。数据直接 useMcpStore()
  *（execLogs / loadExecLogs / clearExecLogs），不经 workbench re-export。
  *
- * 布局：紧凑双行列表（非表格）。设置面板 / mcpPanel 弹窗容器只有 ~370-500px 宽，
- * 6 列横排表格会被挤到折行 + 横向滚动（实测「磁盘情况」折两行、命令列只剩 2 字符），
- * 故改为：第一行 结果 + 工具 + 主机 + 决策徽章 + 时间，第二行整宽命令（ellipsis）。
- * 行点击在该条目内原位展开 outputSummary 详情；决策显示短标签，title 悬浮全称。
+ * 布局：紧凑双行卡片列表（非表格）。设置面板 / mcpPanel 弹窗容器只有 ~370-500px 宽，
+ * 6 列横排表格会被挤到折行 + 横向滚动，故改为：第一行 结果 + 工具 + 主机 + 决策徽章
+ * + 时间，第二行整宽命令（ellipsis）。点击条目原位展开 outputSummary 详情。
+ *
+ * 过滤：关键字（命令/主机/资产/意图）+ 工具/资产/结果 三下拉（McpLogFilterBar）。
+ * 性能：日志保留 30 天、上限 1000 条，DOM 只渲染 filtered 的前 PAGE_SIZE 条，
+ * 「加载更多」递增加载；过滤条件变化时重置页大小。
  * 清空走内联二次确认（照 SyncPanelContent.vue 的模式，不用 window.confirm）。
  */
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { ScrollText, RefreshCw, Trash2 } from 'lucide-vue-next';
 import { useMcpStore } from '@/stores/mcp.js';
 import AppButton from '@/components/ui/AppButton.vue';
+import McpLogFilterBar from '@/components/shell/McpLogFilterBar.vue';
+import {
+  TOOL_LABELS,
+  DECISION_LABELS,
+  DECISION_SHORT,
+  OUTCOME_LABELS,
+  outcomeClass
+} from '@/lib/mcpLogLabels.js';
 
 const mcpStore = useMcpStore();
 // setup store 解构必须走 storeToRefs（直接解构丢响应性，AGENTS.md Pinia 约定）
 const { execLogs, execLogsLoading } = storeToRefs(mcpStore);
 
-// 决策中文映射（Rust execution_log.rs::decision 常量的镜像）。全称用于 title 悬浮
-const DECISION_LABELS = {
-  not_required: '无需审批',
-  auto_approved: '自动放行',
-  minimal_allowed: '低拦截放行',
-  elicitation_accepted: '客户端确认执行',
-  elicitation_declined: '客户端拒绝',
-  gui_accepted: 'GUI 确认执行',
-  gui_declined: 'GUI 拒绝',
-  rejected: '已拒绝',
-  hard_blocked: '毁灭性拦截',
-  timeout: '审批超时'
-};
-// 行内短标签（窄容器扫描用），语义分组：放行 / 已确认 / 已拒绝 / 硬拦截 / 超时
-const DECISION_SHORT = {
-  not_required: '放行',
-  auto_approved: '放行',
-  minimal_allowed: '放行',
-  elicitation_accepted: '已确认',
-  gui_accepted: '已确认',
-  elicitation_declined: '已拒绝',
-  gui_declined: '已拒绝',
-  rejected: '已拒绝',
-  hard_blocked: '硬拦截',
-  timeout: '超时'
-};
-const OUTCOME_LABELS = {
-  ok: '成功',
-  error: '失败',
-  skipped: '未执行'
-};
-
-const TOOL_LABELS = {
-  ssh_exec: '远程命令',
-  disk_usage: '磁盘情况',
-  system_status: '系统状态',
-  service_status: '服务状态',
-  sftp_list: '列出目录',
-  sftp_read_file: '读取文件',
-  sftp_write_file: '写入文件',
-  sftp_upload: '上传文件',
-  sftp_download: '下载文件',
-  sftp_remove: '删除文件',
-  resource_monitor_snapshot: '资源快照'
-};
-
-// 结果 tone：成功/失败/未执行
-function outcomeClass(outcome) {
-  if (outcome === 'ok') return 'tone-ok';
-  if (outcome === 'error') return 'tone-err';
-  return 'tone-muted';
-}
-
 const rows = computed(() => execLogs.value ?? []);
 
-// 点击条目在其内部展开详情（再点收起）
-const expandedId = ref('');
+// —— 过滤状态（条件收集在 McpLogFilterBar，执行在此）——
+const searchText = ref('');
+const toolFilter = ref('');
+const assetFilter = ref('');
+const outcomeFilter = ref('');
+
+const filtered = computed(() => {
+  const q = searchText.value.trim().toLowerCase();
+  if (!q && !toolFilter.value && !assetFilter.value && !outcomeFilter.value) return rows.value;
+  return rows.value.filter((row) => {
+    if (toolFilter.value && row.tool !== toolFilter.value) return false;
+    if (assetFilter.value && (row.assetId || '') !== assetFilter.value) return false;
+    if (outcomeFilter.value && row.outcome !== outcomeFilter.value) return false;
+    if (q) {
+      const hay = [row.command, row.host, row.assetName, row.assetId, row.intent, TOOL_LABELS[row.tool]]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+});
+
+// —— 分页渲染：1000 条上限下 DOM 恒定 ≤ PAGE_SIZE，滚动/过滤不掉帧 ——
+const PAGE_SIZE = 50;
+const visibleCount = ref(PAGE_SIZE);
+const pagedRows = computed(() => filtered.value.slice(0, visibleCount.value));
+const filteredCount = computed(() => filtered.value.length);
+const hasMore = computed(() => filteredCount.value > pagedRows.value.length);
+watch([searchText, toolFilter, assetFilter, outcomeFilter], () => {
+  visibleCount.value = PAGE_SIZE;
+});
+
 function onRowClick(row) {
   expandedId.value = expandedId.value === row.id ? '' : row.id;
 }
@@ -152,46 +142,66 @@ function hostTitle(row) {
     </header>
 
     <div v-if="execLogsLoading && !rows.length" class="loading muted">正在加载执行记录…</div>
-    <ul v-else-if="rows.length" class="log-list">
-      <li
-        v-for="row in rows"
-        :key="row.id"
-        :class="['log-item', { open: expandedId === row.id }]"
-      >
-        <button
-          type="button"
-          class="log-row"
-          :title="row.command ? `查看输出：${row.command}` : '查看输出'"
-          @click="onRowClick(row)"
-        >
-          <span class="line1">
-            <span :class="['outcome', outcomeClass(row.outcome)]" :title="outcomeLabel(row.outcome)">
-              <span class="outcome-dot" />{{ outcomeLabel(row.outcome) }}
-            </span>
-            <span class="tool-tag" :title="row.tool">{{ TOOL_LABELS[row.tool] || row.tool }}</span>
-            <span class="host" :title="hostTitle(row)">{{ row.host || row.assetName || row.assetId || '—' }}</span>
-            <span class="spacer" />
-            <span :class="['decision', `decision-${row.decision}`]" :title="decisionLabel(row.decision)">
-              {{ decisionShort(row.decision) }}
-            </span>
-            <span class="time mono" :title="fmtTime(row.timestampMs)">{{ fmtShortTime(row.timestampMs) }}</span>
-          </span>
-          <code class="cmd">{{ row.command || '（无命令）' }}</code>
-        </button>
+    <template v-else-if="rows.length">
+      <McpLogFilterBar
+        v-model:search="searchText"
+        v-model:tool="toolFilter"
+        v-model:asset="assetFilter"
+        v-model:outcome="outcomeFilter"
+        :logs="rows"
+      />
 
-        <!-- 条目内原位展开：完整时间 / 意图 / 资产 / 输出摘要 -->
-        <div v-if="expandedId === row.id" class="detail">
-          <div class="detail-meta muted">
-            <span class="mono">{{ fmtTime(row.timestampMs) }}</span>
-            · 意图：{{ row.intent || '（未声明）' }}
-            <template v-if="row.assetName || row.assetId">
-              · {{ row.username || '—' }}@{{ row.host || '—' }}:{{ row.port || '—' }}
-            </template>
+      <ul v-if="filteredCount" class="log-list">
+        <li
+          v-for="row in pagedRows"
+          :key="row.id"
+          :class="['log-item', { open: expandedId === row.id }]"
+        >
+          <button
+            type="button"
+            class="log-row"
+            :title="row.command ? `查看输出：${row.command}` : '查看输出'"
+            @click="onRowClick(row)"
+          >
+            <span class="line1">
+              <span :class="['outcome', outcomeClass(row.outcome)]" :title="outcomeLabel(row.outcome)">
+                <span class="outcome-dot" />{{ outcomeLabel(row.outcome) }}
+              </span>
+              <span class="tool-tag" :title="row.tool">{{ TOOL_LABELS[row.tool] || row.tool }}</span>
+              <span class="host" :title="hostTitle(row)">{{ row.host || row.assetName || row.assetId || '—' }}</span>
+              <span class="spacer" />
+              <span :class="['decision', `decision-${row.decision}`]" :title="decisionLabel(row.decision)">
+                {{ decisionShort(row.decision) }}
+              </span>
+              <span class="time mono" :title="fmtTime(row.timestampMs)">{{ fmtShortTime(row.timestampMs) }}</span>
+            </span>
+            <code class="cmd">{{ row.command || '（无命令）' }}</code>
+          </button>
+
+          <!-- 条目内原位展开：完整时间 / 意图 / 资产 / 输出摘要 -->
+          <div v-if="expandedId === row.id" class="detail">
+            <div class="detail-meta muted">
+              <span class="mono">{{ fmtTime(row.timestampMs) }}</span>
+              · 意图：{{ row.intent || '（未声明）' }}
+              <template v-if="row.assetName || row.assetId">
+                · {{ row.username || '—' }}@{{ row.host || '—' }}:{{ row.port || '—' }}
+              </template>
+            </div>
+            <pre class="detail-output"><code>{{ row.outputSummary || '（无输出）' }}</code></pre>
           </div>
-          <pre class="detail-output"><code>{{ row.outputSummary || '（无输出）' }}</code></pre>
-        </div>
-      </li>
-    </ul>
+        </li>
+      </ul>
+
+      <!-- 分页脚注：有剩余 → 加载更多；加载完 → 条数收尾 -->
+      <div v-if="hasMore" class="load-more-row">
+        <button type="button" class="load-more" @click="visibleCount += PAGE_SIZE">
+          加载更多（已显示 {{ pagedRows.length }} / {{ filteredCount }} 条）
+        </button>
+      </div>
+      <p v-else class="muted list-end">共 {{ filteredCount }} 条记录</p>
+
+      <p v-if="!filteredCount" class="muted empty">没有匹配的记录，试试调整搜索或筛选条件</p>
+    </template>
     <p v-else class="muted empty">暂无执行记录</p>
   </section>
 </template>
@@ -376,6 +386,34 @@ function hostTitle(row) {
 
 .mono {
   font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+// —— 分页脚注 ——
+.load-more-row {
+  display: flex;
+  justify-content: center;
+}
+.load-more {
+  padding: 4px 14px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-pill);
+  background: var(--app-panel);
+  color: var(--app-muted);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition:
+    color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard);
+
+  &:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+}
+.list-end {
+  margin: 0;
+  text-align: center;
   font-size: 11px;
 }
 
