@@ -361,6 +361,15 @@ export const useAssetsStore = defineStore('assets', () => {
     announce('已清除本地安全存储中的 token');
   }
 
+  /**
+   * 刷新 github-pat 配置状态（Device Flow 登录成功后由 useGithubDeviceLogin 调用；
+   * 写法同 saveToken：get_credential_status → exists 布尔）。
+   */
+  async function refreshGithubPatStatus() {
+    const status = await invokeBackend('get_credential_status', { id: 'github-pat' });
+    githubPatConfigured.value = Boolean(status.exists);
+  }
+
   return {
     // state
     assetSource,
@@ -388,6 +397,7 @@ export const useAssetsStore = defineStore('assets', () => {
     createGroup,
     reorderGroups,
     saveToken,
-    deleteToken
+    deleteToken,
+    refreshGithubPatStatus
   };
 });

@@ -6,6 +6,7 @@ mod resource_monitor;
 mod ssh;
 mod sync;
 mod sync_credentials;
+mod sync_oauth;
 
 use serde::Serialize;
 use std::fs::OpenOptions;
@@ -31,6 +32,20 @@ pub struct AppState {
     pub mcp_config: Arc<tokio::sync::RwLock<mcp::config::McpConfig>>,
     /// v2：MCP 数据目录（config / 执行日志 / endpoint 同源，mcp_data_dir() 解析）。
     pub mcp_data_dir: PathBuf,
+    /// 跨窗口会话迁移数据中转（tab 拆出独立窗口 / 移回主窗口的 scrollback 等，
+    /// TTL 60s，put 时惰性清理）。同进程内存强一致——取代 localStorage 中转
+    /// （WebView2 跨窗口 localStorage 非实时共享，新窗口 boot 时读不到源窗口
+    /// 刚写入的数据，导致 adopt 误判失败走兜底重连）。
+    pub session_handoff: Mutex<std::collections::HashMap<String, HandoffEntry>>,
+    /// GitHub Device Flow 登录的进行中会话（单槽：新 start 覆盖旧 start）。
+    /// 纯内存，重启即失；见 sync_oauth.rs。
+    pub sync_oauth_pending: Mutex<Option<sync_oauth::OAuthSession>>,
+}
+
+/// 会话迁移条目：at 用于 TTL 判定（60s），payload 为前端协议数据原样透传。
+pub struct HandoffEntry {
+    at: std::time::Instant,
+    payload: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -254,6 +269,56 @@ async fn mcp_clear_execution_logs(state: State<'_, AppState>) -> Result<(), Stri
     mcp::execution_log::clear_entries(&state.mcp_data_dir).await
 }
 
+// ─── 跨窗口会话迁移内存中转（TTL 60s）───
+
+/// 会话迁移 TTL（秒）：迁移数据超过此时长未 take 即作废。
+const SESSION_HANDOFF_TTL_SECS: u64 = 60;
+
+/// 写入迁移数据（源窗口调用）。从 payload.sessionId 取键；写入前清理过期条目。
+#[tauri::command]
+fn session_handoff_put(
+    state: State<'_, AppState>,
+    payload: serde_json::Value,
+) -> Result<(), String> {
+    let session_id = payload
+        .get("sessionId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "session_handoff_put: payload 缺少 sessionId".to_string())?
+        .to_string();
+    let mut map = state
+        .session_handoff
+        .lock()
+        .map_err(|_| "session_handoff 锁中毒".to_string())?;
+    map.retain(|_, entry| entry.at.elapsed().as_secs() < SESSION_HANDOFF_TTL_SECS);
+    map.insert(
+        session_id,
+        HandoffEntry {
+            at: std::time::Instant::now(),
+            payload,
+        },
+    );
+    Ok(())
+}
+
+/// 原子取出迁移数据（目标窗口调用）：take 即删，防多窗口重复 adopt；过期返 None。
+#[tauri::command]
+fn session_handoff_take(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Option<serde_json::Value>, String> {
+    let mut map = state
+        .session_handoff
+        .lock()
+        .map_err(|_| "session_handoff 锁中毒".to_string())?;
+    match map.remove(&session_id) {
+        Some(entry) if entry.at.elapsed().as_secs() < SESSION_HANDOFF_TTL_SECS => {
+            Ok(Some(entry.payload))
+        }
+        _ => Ok(None),
+    }
+}
+
 #[tauri::command]
 fn list_connection_assets(state: State<'_, AppState>) -> Result<ConnectionAssetList, String> {
     let store = myshelltool_core::load_connection_asset_store(&state.asset_store_path)?;
@@ -466,6 +531,8 @@ pub fn run() {
                 mcp_approval_pending: mcp_approval_pending.clone(),
                 mcp_config: mcp_config.clone(),
                 mcp_data_dir: mcp_dir.clone(),
+                session_handoff: Mutex::new(std::collections::HashMap::new()),
+                sync_oauth_pending: Mutex::new(None),
             });
 
             // v1.4：启动 MCP Streamable HTTP server（内嵌 GUI 进程）。
@@ -516,6 +583,9 @@ pub fn run() {
             mcp_set_config,
             mcp_list_execution_logs,
             mcp_clear_execution_logs,
+            // 跨窗口会话迁移内存中转（TTL 60s）
+            session_handoff_put,
+            session_handoff_take,
             list_connection_assets,
             save_connection_asset,
             delete_connection_asset,
@@ -536,6 +606,10 @@ pub fn run() {
             sync::sync_disable_auto_sync,
             sync::sync_check_remote_updates,
             sync::sync_set_credentials_enabled,
+            // GitHub Device Flow 登录（替代手动粘贴 PAT；provider 参数预留多服务）
+            sync_oauth::sync_oauth_start,
+            sync_oauth::sync_oauth_poll,
+            sync_oauth::sync_oauth_cancel,
             save_credential,
             get_credential_status,
             delete_credential,
