@@ -187,3 +187,52 @@ MCP server 原先仅具备单一 exec shell 通道，导致 AI 宿主无法浏�
 - `cargo check --tests`: OK
 - `cargo test (core 51 tests)`: 51 passed, 0 failed
 - `npm run build`: Vite build 成功
+
+---
+
+## 2026-09-09 — 资产独立工作台窗口（Tauri 2 多 WebviewWindow v1）
+
+### 1. 架构决策
+主窗口侧栏资产拖出窗口边界释放 / 右键「在独立窗口打开」→ 为该资产生成独立 WebviewWindow（`?win=asset&assetId=` query 路由）。**每窗口独立 webview + 独立 Pinia 实例，共享同一 Rust 后端进程**——会话/SFTP/资源监控全在后端（HashMap 键控天然多开），Rust 侧仅改 capabilities。独立窗口 = 该资产专注工作台：精简标题栏 + 上终端/下文件 + 完整可收起右栏监控；总是新建自己的会话（不跨窗口接管终端回放）。事前经 multi-role-review 五角色评审（10 问题全采纳：含 2 个 Critical——host-key 事件跨窗口串扰弹错资产名确认框、connecting 态关窗泄漏孤儿 SSH 连接）。
+
+### 2. 关键实现与防串流设计
+- `src/lib/assetWindows.js`（58 行）：label 确定性 sanitize（Tauri label 仅 `[a-zA-Z0-9-/:_]`）、openAssetWindow（已存在则 setFocus+unminimize）、isPointOutsideViewport（**client 坐标 vs viewport，规避 DPI 缩放下 screen 坐标歧义**——评审 Issue 6）。
+- `src/components/workbench/AssetWindowShell.vue`（374 行）：复用无 props 的 TerminalSurface/FileSurface/RightSidebar；关窗 onCloseRequested → 确认 modal → connecting 会话轮询 settle（250ms/10s 上限，防 pending 占位 sessionId 断不开致 Rust 孤儿连接）→ allSettled 断开 → destroy。
+- 跨窗口事件防串流：`resourceMonitor.applySnapshot` 按 sessionId 过滤（activeSessionId 为 null 拦截全部）；sessions 新增 `ownsConnectingSession(hostPort)` 守卫（payload 为 snake_case `host_port`，IPv6 用 `host:port` 全等分支安全覆盖）。
+- 布局隔离：usePanelResize 支持实例 storageKey（asset 窗口用 `myshelltool:layout-asset:v1`）；ui.js asset 模式右栏折叠不写共享 localStorage；App.vue **单实例条件创建** panelResize（双实例会互相覆盖 CSS 变量）。
+- 防呆：`assetWindowBoot.bootAssetWindowConnect` 找不到资产绝不 fallback 到 selectedAsset（防静默连错主机）；workbench.initialize({mode:'asset'}) 跳过 MCP/sync（MCP 审批弹窗只在主窗口，避免双弹窗竞争）。
+- capabilities/default.json：windows 加 `asset-*` glob + create-webview-window/set-focus/unminimize/destroy 四权限（官方 ACL 文档核实拼写）。
+
+### 3. 验收验证
+- `npm run build`: exit 0（三轮独立复核）
+- `node tests/ui-smoke.mjs`: exit 0（主窗口无 query 路径零行为变化）
+- `node tests/ui-host-key.mjs`: exit 0（**已适配守卫**：测试先注入 connecting 会话再触发事件——守卫引入时的测试回归已修复）
+- 手工走查（tauri:dev，待用户执行）：拖出/右键开窗、自动连接、右栏收起独立、关窗确认、双窗口监控不串流、重复开聚焦
+- 行数债务备注：ConnectionSidebar.vue 936 / GlobalModals.vue 1091 / sessions.js 1095 均为既有超标 + 本功能最小接线，列入后续拆分清单（ConnectionSidebar 的 useAssetDnd 拆分预案见上文 Baseline）
+
+---
+
+## 2026-09-09 — 终端 tab 跨窗口拖出/合并（会话所有权迁移，Windows Terminal 式）
+
+### 1. 架构决策
+在多窗口基建上实现终端 tab 拖出成独立窗口 / 拖回 drop 合并。核心是**跨 webview 会话所有权迁移**：xterm 实例无法跨窗口搬运，采用「源窗口导出 scrollback（buffer.normal 纯文本，末 2000 行）→ localStorage 中转（`myshelltool:session-handoff:<sessionId>`，TTL 60s、1.5MB 字符预算 500 行步进截断）→ `await unlisten`（先解绑防双写）→ `removeSessionEntry`（仅移 UI，**不 ssh_disconnect**，会话在 Rust 后端存活）→ 目标窗口 `adoptSession` 重建 xterm + `registerSessionStream` + 100 行分块 rAF 回放」。Rust 依旧零改动。事前五角色评审发现 4 Critical（drop/dragend 双路径竞争丢会话、主窗菜单自吞、asset 窗口拖出行为未定义、registerSessionStream 契约错误），全部以「drop 仲裁 + 窗口角色门控 + 单一互斥迁移原语」修正后实施。
+
+### 2. 关键实现
+- `src/lib/sessionHandoff.js`（372 行新模块）：五事件协议（`session-handoff-tearoff/drop-claimed/merge-request/merge-ready/merge-push`，Tauri event 全局广播 + `sourceWindowId` 防自吞）；**仲裁**：目标 drop 先发 DROP_CLAIMED，源 tearoff 延迟 250ms 执行，窗口期内可取消；**角色门控矩阵**：TEAROFF 仅 asset 窗口且 assetId 匹配、MERGE_PUSH 仅主窗口、DROP_CLAIMED/MERGE_REQUEST 全窗口；`migrateSessionOut` inFlight 互斥；merge pull 协议 5s 超时先试 adoptFromStorage 再报错；asset 窗口迁移后空会话自动关窗。
+- `src/stores/sessions.js`：**提炼 `createTerminalForAsset` 私有 helper**（connectSelected 与 adoptSession 共用——消除「同一概念两份实现」漂移风险，危险粘贴守卫 attachCustomKeyEventHandler 随 helper 天然保留）；`adoptSession`（幂等、资产重解析、分块回放、onSessionConnected 在 setActiveSession 后、不重注入 OSC 7）；`session.unlisten` 组合句柄 async 化。净增 69 行（1164 行，超标债务已注释）。
+- `src/composables/useDragOutsideViewport.js`：从 ConnectionSidebar 提炼「document dragenter/dragleave(relatedTarget===null) 标记 + 坐标判定取或」composable，ConnectionSidebar 复用净减 21 行。
+- `TerminalTabs.vue`（499 行）：connected tab 拖拽源（HANDOFF_MIME）+ tab 栏 drop 合并目标（仅认自定义 MIME）+ 右键「移回主窗口」（仅 asset 窗口且 main 存活，防自吞丢会话）；`TerminalSurface.vue` 按 getWindowRole 分流（main 拖出=scheduleTearOff / asset 拖出=pushSessionToMainWindow）。
+- 顺手修复 GlobalModals 存量缺陷：hostKeyVerify accept/deny 后 closeModal 补发错误路由（ui-host-key 测试阻断项）。
+
+### 3. 验收验证
+- `npm run build` / `node tests/ui-smoke.mjs` / `node tests/ui-host-key.mjs` 全 exit 0（A、B 两轮 review-guard 各自独立复跑一致）。
+- review-guard 五场景端到端推演全部闭环无丢会话：主窗拖出空白/拖出已开窗、asset→主窗 drop（三重防护收敛：inFlight 互斥+幂等+5s 超时兜底）、主窗→asset 窗 drop、asset 拖出窗外 push 回主窗、快速拖出再拖回。
+- 手工走查（tauri:dev，待用户执行）：见下方清单。
+- 已知限制：回放仅纯文本（alt 屏/颜色/软换行不保留）；迁移瞬间 1-2s 输出丢失；跨 WebView2 自定义 MIME 若丢失 drop 合并失效（菜单兜底）；溢出折叠 tab 不可拖；adoptSession 并发 in-flight 互斥待加（当前路径不可达）。
+- 手动走查清单：①主窗 connected tab 拖出窗外→独立窗接管+文本回放；②拖回主窗 tab 栏 drop 合并；③asset 窗 tab 拖出窗外→回主窗+空窗自动关；④tab 右键「移回主窗口」（主窗 tab 上应无此项）；⑤同资产窗已开时拖出=投递已有窗口；⑥迁移后 Ctrl+V 危险粘贴仍弹确认；⑦vim 中拖出的 alt 屏表现（已知限制验证）。
+
+### 4. 用户实测返修（同日第二轮）
+- **「会话迁移失败，已尝试重新连接」高频出现**：根因为迁移数据走 localStorage 跨窗口中转——此前「跨窗口共享」的证据只证明同分区持久化（重启可见），WebView2 多窗口间 localStorage 并不保证实时互通，新窗口 boot adopt 读到空 → 兜底重连。**修复：中转通道改 Rust 侧内存**（lib.rs AppState 新增 `session_handoff: Mutex<HashMap>` + `session_handoff_put`/`session_handoff_take` 两命令，TTL 60s 惰性清理，take 即原子删除）——同进程强一致，彻底消除 renderer storage 语义依赖。附带防呆：boot adopt 包 try/catch（防 App 层 .catch 吞错后无提示也不重连）、take 返 null 先查本窗口 sessions（防误杀已接管会话）。
+- **独立窗口删除顶部 tab 条**（用户需求：窗口即会话，标题栏已标识资产）：TerminalSurface 新增 `showTabs` prop（默认 true，主窗口零变化）+ `.no-tabs` grid 收行；pull 协议（跨窗口 drop 合并：HANDOFF_MIME/DROP_CLAIMED/MERGE_REQUEST/MERGE_READY/250ms 仲裁）因失去全部触发路径整体移除（WebView2 跨窗口自定义 MIME 本就不可靠）。
+- **回迁入口改标题栏按钮**：「移回主窗口」（Undo2）置于 AssetWindowShell 标题栏（mainAlive 探测、非 connected disabled、push 后空窗自动关），主窗口已关时拒绝迁移防会话无主。
+- 验证：cargo check / npm run build / ui-smoke / ui-host-key 全 exit 0；六个死符号 grep 0 残留。
