@@ -296,9 +296,12 @@ const emptyDesc = computed(() => {
   align-items: center;
   justify-content: center;
   gap: 8px;
+  // 占满列表剩余空间并允许收缩（不设 min-height 下限）：
+  // 固定分栏等矮容器里空态不再把列表撑出滚动条
+  flex: 1 1 auto;
+  min-height: 0;
   padding: var(--space-6);
   margin: var(--space-3);
-  min-height: 180px;
   text-align: center;
   border: 1px dashed var(--app-border);
   border-radius: var(--radius-sm);
