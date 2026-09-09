@@ -35,6 +35,7 @@ use rmcp::{
 use tauri::Emitter;
 
 use super::approval::{self, ApprovalDecision, AutoApproveReason, ElicitationInfo, McpApprovalEvent};
+use super::config::McpInterceptLevel;
 use super::execution_log::{self, decision, outcome, ExecutionLogEntry};
 use super::tools::{self, McpToolContext};
 
@@ -203,10 +204,20 @@ fn log_scope_for(
     }
 }
 
-/// 对高危工具（ssh_exec）做审批判定。
+/// 对高危工具（ssh_exec / 文件写入删除类）做审批判定。
 ///
 /// 返回 None 表示该工具不需要审批（只读工具），Some 表示需要审批决策。
 /// v2：读 ctx 共享配置的当前拦截等级（每次调用现读快照，改档即生效）。
+/// v2.3：文件工具（sftp_write_file / sftp_upload / sftp_download /
+/// sftp_remove）纳入拦截等级体系——Minimal 直接放行（AutoExecute →
+/// 执行日志 decision=minimal_allowed，由 call_tool 统一记日志），Strict
+/// 维持人工确认。恒定例外（不受等级影响，判定先于/独立于等级分支）：
+/// - sftp_remove 根级/核心目录删除（is_catastrophic_remote_removal）→
+///   HardBlock，两档恒拒；
+/// - sftp_download 本机系统受保护目录（is_protected_local_write_path）→
+///   HardBlock，两档恒拒；
+/// - sftp_read_file 敏感凭据路径读取（is_sensitive_remote_path）→ 恒审批
+///   （凭据红线，不纳入等级体系）。
 async fn check_approval_needed(
     ctx: &McpToolContext,
     tool_name: &str,
@@ -229,7 +240,8 @@ async fn check_approval_needed(
                 level,
             ))
         }
-        // sftp_remove 始终需要确认（删除不可逆，安全红线，不受等级配置影响）
+        // sftp_remove：根级/核心目录删除两档恒 HardBlock（先于等级判定）；
+        // 其余删除 v2.3 纳入等级体系——Minimal 放行记日志 / Strict 人工确认
         "sftp_remove" => {
             let intent = args.get("intent").and_then(|v| v.as_str()).unwrap_or("");
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
@@ -238,17 +250,25 @@ async fn check_approval_needed(
                     reason: format!("拒绝执行：目标路径 '{path}' 属于系统根目录或顶级核心目录，禁止删除。"),
                 });
             }
+            let level = ctx.config.read().await.level;
             let recursive = args.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
             let mode_warning = if recursive {
                 "【危险】将递归删除整个目录及其内部所有子文件与子目录！"
             } else {
                 "将删除远程单文件或空目录。"
             };
-            Some(ApprovalDecision::RequestElicitation(ElicitationInfo {
-                intent: intent.to_string(),
-                command: format!("sftp_remove path={} recursive={}", path, recursive),
-                consequence: format!("{mode_warning}此操作不可撤销。"),
-            }))
+            match level {
+                McpInterceptLevel::Minimal => {
+                    Some(ApprovalDecision::AutoExecute(AutoApproveReason::MinimalFallback))
+                }
+                McpInterceptLevel::Strict => {
+                    Some(ApprovalDecision::RequestElicitation(ElicitationInfo {
+                        intent: intent.to_string(),
+                        command: format!("sftp_remove path={} recursive={}", path, recursive),
+                        consequence: format!("{mode_warning}此操作不可撤销。"),
+                    }))
+                }
+            }
         }
         "sftp_read_file" => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
@@ -262,25 +282,45 @@ async fn check_approval_needed(
                 Some(ApprovalDecision::AutoExecute(AutoApproveReason::Whitelist))
             }
         }
+        // v2.3 纳入等级体系：Minimal 放行记日志 / Strict 人工确认
         "sftp_write_file" => {
             let intent = args.get("intent").and_then(|v| v.as_str()).unwrap_or("");
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            Some(ApprovalDecision::RequestElicitation(ElicitationInfo {
-                intent: intent.to_string(),
-                command: format!("sftp_write_file path={}", path),
-                consequence: "将向远程目标路径原子写入文件。若文件已存在将被完全覆盖，请核验路径与内容。".to_string(),
-            }))
+            let level = ctx.config.read().await.level;
+            match level {
+                McpInterceptLevel::Minimal => {
+                    Some(ApprovalDecision::AutoExecute(AutoApproveReason::MinimalFallback))
+                }
+                McpInterceptLevel::Strict => {
+                    Some(ApprovalDecision::RequestElicitation(ElicitationInfo {
+                        intent: intent.to_string(),
+                        command: format!("sftp_write_file path={}", path),
+                        consequence: "将向远程目标路径原子写入文件。若文件已存在将被完全覆盖，请核验路径与内容。".to_string(),
+                    }))
+                }
+            }
         }
+        // v2.3 纳入等级体系：Minimal 放行记日志 / Strict 人工确认
         "sftp_upload" => {
             let intent = args.get("intent").and_then(|v| v.as_str()).unwrap_or("");
             let local = args.get("local_path").and_then(|v| v.as_str()).unwrap_or("");
             let remote = args.get("remote_path").and_then(|v| v.as_str()).unwrap_or("");
-            Some(ApprovalDecision::RequestElicitation(ElicitationInfo {
-                intent: intent.to_string(),
-                command: format!("sftp_upload {} -> {}", local, remote),
-                consequence: "将上传本机文件并覆盖远程已有文件，请核对源路径与目标路径。".to_string(),
-            }))
+            let level = ctx.config.read().await.level;
+            match level {
+                McpInterceptLevel::Minimal => {
+                    Some(ApprovalDecision::AutoExecute(AutoApproveReason::MinimalFallback))
+                }
+                McpInterceptLevel::Strict => {
+                    Some(ApprovalDecision::RequestElicitation(ElicitationInfo {
+                        intent: intent.to_string(),
+                        command: format!("sftp_upload {} -> {}", local, remote),
+                        consequence: "将上传本机文件并覆盖远程已有文件，请核对源路径与目标路径。".to_string(),
+                    }))
+                }
+            }
         }
+        // 本机系统受保护目录两档恒 HardBlock（先于等级判定）；
+        // 其余 v2.3 纳入等级体系：Minimal 放行记日志 / Strict 人工确认
         "sftp_download" => {
             let intent = args.get("intent").and_then(|v| v.as_str()).unwrap_or("");
             let remote = args.get("remote_path").and_then(|v| v.as_str()).unwrap_or("");
@@ -291,17 +331,25 @@ async fn check_approval_needed(
                     reason: format!("拒绝执行：本机下载路径 '{local_str}' 属于系统受保护核心目录。"),
                 });
             }
+            let level = ctx.config.read().await.level;
             let is_overwrite = local_path.exists();
             let warn = if is_overwrite {
                 "【注意】本机目标文件已存在，下载将覆盖本机旧文件！"
             } else {
                 "将在本机保存远程下载的文件。"
             };
-            Some(ApprovalDecision::RequestElicitation(ElicitationInfo {
-                intent: intent.to_string(),
-                command: format!("sftp_download {} -> {}", remote, local_str),
-                consequence: warn.to_string(),
-            }))
+            match level {
+                McpInterceptLevel::Minimal => {
+                    Some(ApprovalDecision::AutoExecute(AutoApproveReason::MinimalFallback))
+                }
+                McpInterceptLevel::Strict => {
+                    Some(ApprovalDecision::RequestElicitation(ElicitationInfo {
+                        intent: intent.to_string(),
+                        command: format!("sftp_download {} -> {}", remote, local_str),
+                        consequence: warn.to_string(),
+                    }))
+                }
+            }
         }
         _ => None,
     }

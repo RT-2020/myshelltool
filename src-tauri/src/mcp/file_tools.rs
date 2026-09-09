@@ -2,11 +2,11 @@
 //!
 //! 包含 6 个工具：
 //! - sftp_list：浏览远程目录（结构化返回）
-//! - sftp_read_file：读取远程文本小文件（1MB 上限，带二进制嗅探）
-//! - sftp_write_file：写入远程文件（原子写，恒审批）
-//! - sftp_upload：本机文件流式上传到远程（SHA256 校验，恒审批）
-//! - sftp_download：远程文件流式下载到本机（SHA256 校验，覆盖本机需审批）
-//! - sftp_remove：删除远程文件或目录（受控递归删除，恒审批）
+//! - sftp_read_file：读取远程文本小文件（1MB 上限，带二进制嗅探；敏感凭据路径恒审批）
+//! - sftp_write_file：写入远程文件（原子写，按拦截等级判定：Minimal 放行记日志 / Strict 审批）
+//! - sftp_upload：本机文件流式上传到远程（SHA256 校验，按拦截等级判定）
+//! - sftp_download：远程文件流式下载到本机（SHA256 校验，按拦截等级判定；本机系统目录恒拒）
+//! - sftp_remove：删除远程文件或目录（受控递归删除，按拦截等级判定；根级/核心目录恒拒）
 
 use std::path::PathBuf;
 
@@ -72,7 +72,7 @@ pub fn list_file_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "sftp_write_file",
-            "向指定资产写入远程文本文件。采用原子临时文件替换机制，单次上限 1MB。此操作涉及远程文件创建或覆盖，始终需要在客户端确认。调用时必须如实声明 intent 意图。",
+            "向指定资产写入远程文本文件。采用原子临时文件替换机制，单次上限 1MB。此操作涉及远程文件创建或覆盖，按拦截等级判定：Minimal 档直接执行并记执行日志，Strict 档需在客户端确认。调用时必须如实声明 intent 意图。",
             schema_obj(json!({
                 "type": "object",
                 "properties": {
@@ -98,7 +98,7 @@ pub fn list_file_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "sftp_upload",
-            "将本机文件流式上传至远程服务器。采用分块传输、临时文件落地原子替换与 SHA256 完整性校验。适用于大文件与二进制包传输。覆盖远程已有文件需在客户端确认。调用时必须声明 intent 意图。",
+            "将本机文件流式上传至远程服务器。采用分块传输、临时文件落地原子替换与 SHA256 完整性校验。适用于大文件与二进制包传输。此操作涉及远程文件覆盖，按拦截等级判定：Minimal 档直接执行并记执行日志，Strict 档需在客户端确认。调用时必须声明 intent 意图。",
             schema_obj(json!({
                 "type": "object",
                 "properties": {
@@ -124,7 +124,7 @@ pub fn list_file_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "sftp_download",
-            "将远程服务器上的文件流式下载至本机。采用分块传输与 SHA256 完整性校验。若本机目标路径已存在文件，覆盖前需在客户端确认。调用时必须声明 intent 意图。",
+            "将远程服务器上的文件流式下载至本机。采用分块传输与 SHA256 完整性校验。本机系统受保护核心目录恒拒；其余路径按拦截等级判定：Minimal 档直接执行并记执行日志，Strict 档需在客户端确认。调用时必须声明 intent 意图。",
             schema_obj(json!({
                 "type": "object",
                 "properties": {
@@ -150,7 +150,7 @@ pub fn list_file_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "sftp_remove",
-            "删除指定资产上的远程文件或目录。高危破坏性操作，始终需要在客户端二次确认。若删除非空目录，必须显式声明 recursive=true。调用时必须如实声明 intent 意图。",
+            "删除指定资产上的远程文件或目录。高危破坏性操作：系统根目录与顶级核心目录删除恒拒；其余路径按拦截等级判定——Minimal 档直接执行并记执行日志，Strict 档需在客户端确认。若删除非空目录，必须显式声明 recursive=true。调用时必须如实声明 intent 意图。",
             schema_obj(json!({
                 "type": "object",
                 "properties": {
