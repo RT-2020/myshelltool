@@ -35,6 +35,8 @@ export const useSyncStore = defineStore('sync', () => {
   const gistIdMasked = computed(() => status.value?.gist_id_masked ?? null);
   // v1.6：是否启用自动同步（会话密钥已派生）
   const autoSyncEnabled = computed(() => Boolean(status.value?.auto_sync_enabled));
+  // 是否同步凭据与私钥（默认 true）
+  const syncCredentialsEnabled = computed(() => status.value?.sync_credentials ?? true);
   // 状态栏同步文案：优先真实同步状态，回退 PAT 配置状态
   const syncText = computed(() => {
     if (loading.value) return '同步中…';
@@ -323,17 +325,34 @@ export const useSyncStore = defineStore('sync', () => {
     if (!isError) setTimeout(() => { if (lastMessage.value === msg) lastMessage.value = ''; }, 4000);
   }
 
+  /**
+   * 切换是否同步凭据与托管私钥。
+   * @param {boolean} enabled 是否开启
+   */
+  async function setSyncCredentialsEnabled(enabled) {
+    if (!isTauriRuntime()) return;
+    try {
+      await invokeBackend('sync_set_credentials_enabled', { enabled });
+      await refreshStatus();
+      flashMessage(enabled ? '✓ 已开启凭据与私钥同步' : '已关闭凭据与私钥同步（仅同步资产元数据）');
+    } catch (error) {
+      flashMessage(`✗ 操作失败：${error?.message || error}`, true);
+    }
+  }
+
   return {
     // state
     status, loading, lastMessage, conflict, remoteHasUpdates,
     // computed
-    configured, patConfigured, lastSyncedAt, gistIdMasked, autoSyncEnabled, syncText,
+    configured, patConfigured, lastSyncedAt, gistIdMasked, autoSyncEnabled, syncCredentialsEnabled, syncText,
     // bridge
     attachWorkbench,
     // actions
     refreshStatus, setup, push, pull, resolveConflict,
     resetMasterPassword, clearSync, dismissConflict,
     // v1.6 自动同步
-    enableAutoSync, disableAutoSync, checkRemoteUpdates, autoPushIfEnabled
+    enableAutoSync, disableAutoSync, checkRemoteUpdates, autoPushIfEnabled,
+    // 凭据同步开关
+    setSyncCredentialsEnabled
   };
 });
