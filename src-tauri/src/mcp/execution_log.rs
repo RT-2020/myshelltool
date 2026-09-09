@@ -61,8 +61,11 @@ pub mod decision {
     pub const NOT_REQUIRED: &str = "not_required";
     /// 白名单命中放行。
     pub const AUTO_APPROVED: &str = "auto_approved";
-    /// Minimal 档对 Unknown/黄名单命令放行。
+    /// Minimal 档对未知/黄名单及**非毁灭黑名单**命令的放行（v2.1 起非毁灭
+    /// 黑名单不再恒拦，一并走此口径记日志供事后审计）。
     pub const MINIMAL_ALLOWED: &str = "minimal_allowed";
+    /// 毁灭性（catastrophic）命令恒拦，未执行（v2.1：两档等级一致，不进审批链）。
+    pub const HARD_BLOCKED: &str = "hard_blocked";
     /// elicitation 确认框中用户接受。
     pub const ELICITATION_ACCEPTED: &str = "elicitation_accepted";
     /// elicitation 确认框中用户拒绝。
@@ -79,7 +82,8 @@ pub mod decision {
 
 /// outcome 字段取值（执行结果）。
 pub mod outcome {
-    /// SSH 通道执行成功。注意语义是通道成功，非命令退出码 0（本期不记 exit code）。
+    /// SSH 通道执行成功。注意语义是通道成功，非命令退出码 0（退出码已随
+    /// exec 返回文本结构化给出，本字段不重复记录）。
     pub const OK: &str = "ok";
     /// 执行出错（CallToolResult.is_error）。
     pub const ERROR: &str = "error";
@@ -209,18 +213,26 @@ pub fn now_ms() -> u64 {
     chrono::Utc::now().timestamp_millis().max(0) as u64
 }
 
+/// 通用头尾截断：保留头 `head` + 尾 `tail` 个字符，中间用 `…[截断]…` 标记，
+/// 按 char 边界切（不破坏 UTF-8）。总字符数不超 `head + tail` 时原样返回。
+/// v2.1 起泛化为 pub：tools.rs 的 ssh_exec 返回组装（8000+8000）与本模块
+/// 的输出摘要（250+250）共用同一实现。
+pub fn truncate_middle(text: &str, head: usize, tail: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= head + tail {
+        return text.to_string();
+    }
+    let head_s: String = chars[..head].iter().collect();
+    let tail_s: String = chars[chars.len() - tail..].iter().collect();
+    format!("{head_s}…[截断]…{tail_s}")
+}
+
 /// 输出摘要：头 250 字符 + 尾 250 字符，中间用 `…[截断]…` 标记，
 /// 保证尾部 stderr（命令错误通常在末尾）不丢。按 char 切避免 UTF-8 边界。
 pub fn summarize_output(text: &str) -> String {
     const HEAD: usize = 250;
     const TAIL: usize = 250;
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= HEAD + TAIL {
-        return text.to_string();
-    }
-    let head: String = chars[..HEAD].iter().collect();
-    let tail: String = chars[chars.len() - TAIL..].iter().collect();
-    format!("{head}…[截断]…{tail}")
+    truncate_middle(text, HEAD, TAIL)
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@ mod mcp;
 mod resource_monitor;
 mod ssh;
 mod sync;
+mod sync_credentials;
 
 use serde::Serialize;
 use std::fs::OpenOptions;
@@ -493,6 +494,10 @@ pub fn run() {
                 mcp_dir,
                 mcp_shutdown,
             ));
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
             Ok(())
         })
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -530,6 +535,7 @@ pub fn run() {
             sync::sync_enable_auto_sync,
             sync::sync_disable_auto_sync,
             sync::sync_check_remote_updates,
+            sync::sync_set_credentials_enabled,
             save_credential,
             get_credential_status,
             delete_credential,

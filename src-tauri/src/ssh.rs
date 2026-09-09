@@ -392,6 +392,7 @@ async fn connect_authenticated(
     private_key_path: Option<String>,
     passphrase: Option<String>,
     passphrase_credential_id: Option<String>,
+    private_key_credential_id: Option<String>,
 ) -> Result<client::Handle<SshClient>, String> {
     let config = Arc::new(client::Config::default());
 
@@ -436,8 +437,6 @@ async fn connect_authenticated(
     };
 
     let auth_ok = if auth_method.as_deref() == Some("PrivateKey") {
-        let key_path = private_key_path.as_deref().unwrap_or("~/.ssh/id_ed25519");
-        let expanded = expand_home_path(key_path);
         let resolved_passphrase = if let Some(ref cred_id) = passphrase_credential_id {
             myshelltool_core::SecretStore::new(&secret_store_dir, Box::new(crate::dpapi_codec::DpapiCodec))
                 .read(cred_id)
@@ -451,9 +450,28 @@ async fn connect_authenticated(
                 }
             })
         };
-        let key_data = std::fs::read(&expanded)
-            .map_err(|e| format!("Failed to read key file '{}': {e}", expanded))?;
-        let key_str = String::from_utf8_lossy(&key_data);
+
+        // 优先从 SecretStore 读取托管在本地安全保管箱中的私钥内容
+        let key_str = if let Some(ref cred_id) = private_key_credential_id {
+            let store = myshelltool_core::SecretStore::new(&secret_store_dir, Box::new(crate::dpapi_codec::DpapiCodec));
+            match store.read(cred_id) {
+                Ok(Some(content)) if !content.trim().is_empty() => content,
+                _ => {
+                    let key_path = private_key_path.as_deref().unwrap_or("~/.ssh/id_ed25519");
+                    let expanded = expand_home_path(key_path);
+                    let key_data = std::fs::read(&expanded)
+                        .map_err(|e| format!("Failed to read key file '{}': {e}", expanded))?;
+                    String::from_utf8_lossy(&key_data).to_string()
+                }
+            }
+        } else {
+            let key_path = private_key_path.as_deref().unwrap_or("~/.ssh/id_ed25519");
+            let expanded = expand_home_path(key_path);
+            let key_data = std::fs::read(&expanded)
+                .map_err(|e| format!("Failed to read key file '{}': {e}", expanded))?;
+            String::from_utf8_lossy(&key_data).to_string()
+        };
+
         let key_pair = russh::keys::decode_secret_key(&key_str, resolved_passphrase.as_deref())
             .map_err(|e| format!("Failed to load private key: {e}"))?;
         let key_with_hash = wrap_key_with_preferred_hash(key_pair)?;
@@ -594,6 +612,7 @@ pub async fn ssh_connect(
     private_key_path: Option<String>,
     passphrase: Option<String>,
     passphrase_credential_id: Option<String>,
+    private_key_credential_id: Option<String>,
     cols: u32,
     rows: u32,
 ) -> Result<SshConnectResult, String> {
@@ -608,6 +627,7 @@ pub async fn ssh_connect(
         private_key_path,
         passphrase,
         passphrase_credential_id,
+        private_key_credential_id,
     )
     .await
     {
@@ -869,6 +889,7 @@ pub async fn ssh_list_directory(
     private_key_path: Option<String>,
     passphrase: Option<String>,
     passphrase_credential_id: Option<String>,
+    private_key_credential_id: Option<String>,
     path: String,
 ) -> Result<RemoteDirectoryList, String> {
     let requested_path = if path.trim().is_empty() {
@@ -887,6 +908,7 @@ pub async fn ssh_list_directory(
         private_key_path,
         passphrase,
         passphrase_credential_id,
+        private_key_credential_id,
     )
     .await?;
 
@@ -1888,8 +1910,9 @@ fn save_known_hosts(path: &PathBuf, hosts: &HashMap<String, KnownHostEntry>) -> 
 // - HeadlessSshClient 不持 AppHandle（无法弹窗），check_server_key 对
 //   known_hosts 未记录/变更的主机直接返回 Ok(false) 拒绝连接。
 // - connect_headless 接收裸参数（不依赖 State/AppState）。
-// - exec_command_once 走 channel_open_session + exec，一次性返回输出，
-//   不建立持久 PTY，符合只读工具（df/uptime/...）的语义。
+// - exec_command_once 走 channel_open_session + exec，一次性返回结构化输出
+//   （exit_code/stdout/stderr，见 ExecOnceOutput），不建立持久 PTY，
+//   符合只读工具（df/uptime/...）的语义。
 
 /// Headless SSH Handler（MCP 进程用）。
 pub struct HeadlessSshClient {
@@ -2073,14 +2096,33 @@ pub async fn connect_headless(
     Ok(handle)
 }
 
-/// 在已认证的会话上执行一次性命令，返回 stdout（+ stderr 合并）。
+/// exec_command_once 的结构化输出（v2.1）。
+///
+/// exit_code 修复现行时序 bug：旧实现 `ChannelMsg::Eof | ExitStatus { .. } => break`
+/// 使 Eof（几乎总先于 ExitStatus 到达）提前退出循环，exit_status 分支不可达，
+/// 调用方永远拿不到退出码。现拆开处理（见 exec_command_once）。
+#[derive(Debug, Clone)]
+pub struct ExecOnceOutput {
+    /// 远端命令退出码（SSH 协议 ExitStatus；通道异常关闭/连接断开时为 None）。
+    pub exit_code: Option<u32>,
+    /// stdout（UTF-8 lossy 解码，原始字节不做拼接加工）。
+    pub stdout: String,
+    /// stderr（同上；拼接展示逻辑由调用方（tools.rs）负责）。
+    pub stderr: String,
+}
+
+/// 在已认证的会话上执行一次性命令，返回结构化输出（exit_code/stdout/stderr）。
 ///
 /// 走 channel_open_session + exec，命令执行完通道即关闭。
 /// 适用于只读查询（df/uptime/systemctl status 等），不适合交互式程序。
+///
+/// 消息时序（v2.1 修复）：`Eof` 只表示数据流结束，退出码可能还在后面，
+/// **不再 break**；`ExitStatus` 记录退出码后 break（此后一般跟 Close）；
+/// `Close` 或循环自然结束（wait 返回 None，通道关闭/连接断开）也结束。
 pub async fn exec_command_once(
     handle: &client::Handle<HeadlessSshClient>,
     command: &str,
-) -> Result<String, String> {
+) -> Result<ExecOnceOutput, String> {
     let mut channel = handle
         .channel_open_session()
         .await
@@ -2090,25 +2132,27 @@ pub async fn exec_command_once(
         .await
         .map_err(|e| format!("Command exec failed: {e}"))?;
 
-    let mut output = Vec::new();
-    let mut errors = Vec::new();
+    let mut stdout_buf = Vec::new();
+    let mut stderr_buf = Vec::new();
+    let mut exit_code: Option<u32> = None;
     while let Some(msg) = channel.wait().await {
         match msg {
-            ChannelMsg::Data { data } => output.extend_from_slice(&data),
-            ChannelMsg::ExtendedData { data, ext: _ } => errors.extend_from_slice(&data),
-            ChannelMsg::Eof | ChannelMsg::ExitStatus { .. } => break,
+            ChannelMsg::Data { data } => stdout_buf.extend_from_slice(&data),
+            ChannelMsg::ExtendedData { data, ext: _ } => stderr_buf.extend_from_slice(&data),
+            // Eof 仅标志数据流结束，ExitStatus/Close 可能还在后面，继续等。
+            ChannelMsg::Eof => {}
+            ChannelMsg::ExitStatus { exit_status } => {
+                exit_code = Some(exit_status);
+                break;
+            }
+            ChannelMsg::Close => break,
             _ => {}
         }
     }
 
-    let mut result = String::from_utf8_lossy(&output).to_string();
-    if !errors.is_empty() {
-        let err_str = String::from_utf8_lossy(&errors).trim().to_string();
-        if !err_str.is_empty() {
-            result.push('\n');
-            result.push_str("[stderr] ");
-            result.push_str(&err_str);
-        }
-    }
-    Ok(result)
+    Ok(ExecOnceOutput {
+        exit_code,
+        stdout: String::from_utf8_lossy(&stdout_buf).to_string(),
+        stderr: String::from_utf8_lossy(&stderr_buf).to_string(),
+    })
 }

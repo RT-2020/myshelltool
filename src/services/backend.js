@@ -113,7 +113,8 @@ export function normalizeAsset(item) {
     status: item?.status || 'Idle',
     last_connected: String(item?.last_connected || item?.lastConnected || '从未'),
     credential_id: item?.credential_id || item?.credentialId || null,
-    passphrase_credential_id: item?.passphrase_credential_id || item?.passphraseCredentialId || null
+    passphrase_credential_id: item?.passphrase_credential_id || item?.passphraseCredentialId || null,
+    private_key_credential_id: item?.private_key_credential_id || item?.privateKeyCredentialId || null
   };
 }
 

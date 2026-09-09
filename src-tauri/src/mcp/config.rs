@@ -5,13 +5,15 @@
 //! mcp_set_config 更新后已建立的 HTTP 会话**下次工具调用即生效**（每次 call_tool
 //! 现读快照，不在会话建立时固化）。
 //!
-//! 等级语义（用户可配置的产品决策，不是安全兜底）：
-//! - `Minimal`（默认）：仅黑名单（超高危，dangerous_commands.rs 16 条正则）
-//!   需要用户确认；Unknown / 黄名单命令直接放行。**这是用户明确选择的低摩擦
-//!   默认档**——不做 fail-secure 默认拒，放行行为记入执行日志（minimal_allowed）
-//!   供事后审计。
-//! - `Strict`：非白名单一律确认（Unknown / 黄名单也走 elicitation / GUI 弹窗），
-//!   即 v1.x 的原 fail-secure 语义。黑名单在两档下均恒拦截。
+//! 等级语义（用户可配置的产品决策，不是安全兜底；v2.1 语义重构）：
+//! - `Minimal`（默认）：仅硬拦毁灭性（catastrophic，dangerous_commands.rs
+//!   的 detect_catastrophic_command：mkfs / dd 写块设备 / rm 根级删除等）
+//!   命令；其余（含**非毁灭黑名单**如 rm -rf 子路径、reboot）直接放行，
+//!   记执行日志（minimal_allowed）供事后审计。**这是用户明确选择的零审批
+//!   交互默认档**——不做 fail-secure 默认拒。
+//! - `Strict`：非白名单一律审批（Unknown / 黄名单 / 非毁灭黑名单均走
+//!   elicitation / GUI 弹窗），即 v1.x 的原 fail-secure 语义。
+//! 毁灭性命令在两档下均 HardBlock 直接拒绝（不弹窗不等超时）。
 
 use std::path::{Path, PathBuf};
 
@@ -21,9 +23,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum McpInterceptLevel {
-    /// 仅拦截超高危（黑名单需确认，Unknown/黄名单放行）。默认档。
+    /// 仅硬拦毁灭性（catastrophic）命令，其余（含非毁灭黑名单）直接放行记
+    /// minimal_allowed 日志。默认档，零审批交互。
     Minimal,
-    /// 全部需确认（非白名单一律 elicitation/GUI 审批，原 fail-secure 语义）。
+    /// 非白名单一律审批（elicitation/GUI 弹窗），毁灭性命令同样硬拦。
     Strict,
 }
 

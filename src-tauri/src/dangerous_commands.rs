@@ -9,6 +9,19 @@
 //! - `Allowed`：命中黄名单（用户按资产配置）→ 自动执行 + 日志
 //! - `Dangerous`：命中黑名单（16 条正则）→ 拦截/弹窗
 //! - `Unknown`：不在任何名单 → 当作危险处理（默认拒）
+//!
+//! catastrophic 毁灭层（v2.1，MCP 侧专用，`detect_catastrophic_command`）：
+//! - 覆盖「机器报废级」命令：mkfs / dd 写块设备 / fork bomb / 重定向块设备 /
+//!   chmod 系统目录 / rm 根级删除。MCP 侧 `approval::evaluate` **必须先于**
+//!   `classify_command` 跑本函数，命中即 HardBlock 直接拒绝（不弹窗不等
+//!   超时）——**此顺序是安全前提，不可调换**。
+//! - 本层是 16 条黑名单的**近似超集**：黑名单 pattern 1 要求 r/f 在同一短
+//!   选项 token 内，`rm -fr /`、`rm -r -f /` 等分离/逆序形态连黑名单都
+//!   MISS（Minimal 档下曾以 Unknown 零审批直接执行的活洞），仅由本层的
+//!   rm 根级正则覆盖；目标带子路径的 rm（如 `rm -rf /var/log`）不属本层，
+//!   仍走 classify 审批链。
+//! - GUI 前端 JS 版（src/lib/dangerousCommands.js）保持 16 条全量弹窗语义
+//!   不变，与 MCP 侧分层是刻意分叉（GUI 有真人盯着弹窗，MCP 面向无人值守）。
 
 use regex::Regex;
 use std::sync::OnceLock;
@@ -37,60 +50,100 @@ pub enum CommandRisk {
 
 /// 编译后的危险模式集合（线程安全单例，避免每次调用重编译）。
 struct CompiledPatterns {
-    /// 16 条主正则（第 11 条 chmod 除外，单独处理）。
-    patterns: Vec<(&'static str, Regex)>,
+    /// 15 条主正则（第 11 条 chmod 除外，单独处理）。bool 标记是否属
+    /// catastrophic 毁灭层（v2.1：mkfs / dd 写块设备 / fork bomb ×2 /
+    /// 重定向块设备，共 5 条）。
+    patterns: Vec<(&'static str, Regex, bool)>,
     /// 第 11 条：chmod -R 递归授权 + 目标路径捕获（lookahead 改写方案）。
     /// 捕获组 1 = 目标绝对路径（如 /etc、/usr）。
     chmod_recursive: Regex,
+    /// rm 根级删除（catastrophic 专属）：覆盖黑名单 pattern 1 MISS 的
+    /// 分离/逆序短选项形态（`rm -f -r /`），目标限根/家/当前目录。
+    rm_root: Regex,
 }
 
 impl CompiledPatterns {
     const CHMOD_RECURSIVE_SRC: &'static str =
         r"(?i)\bchmod\s+-R\s+[0-7]{3,4}\s+(/\S*)";
 
+    /// rm 根级删除正则（catastrophic 专属，规格见模块注释）：
+    /// - 标志：短选项合并（-rf/-fr）、分离（-r -f 任意顺序）、长选项
+    ///   （--recursive --force 任意顺序）均可；标志与目标间允许其他选项
+    ///   （含 --no-preserve-root 等长选项）。
+    /// - 目标：`/`、`/*`、`~`、`~/*`、裸 `*`、`./*`、`./`（长形态在前，
+    ///   防短分支抢先消费导致边界校验误失败）。
+    /// - 目标后必须跟边界（行尾/空白/;|&)），防误拦 `rm -rf *.log`、
+    ///   `rm -rf ~/build`、`rm -rf /etc/yum.repos.d/*` 等子路径/文件形态。
+    /// - 不锚定行首（覆盖 `echo hi; rm -rf /` 组合命令）。
+    const RM_ROOT_SRC: &'static str = concat!(
+        r"(?i)\brm\s+(?:-[^\s]+\s+)*",
+        r"(?:",
+        // A：r 型标志在前、f 型在后（含 --recursive ... --force 与混搭）
+        r"(?:-[a-z]*r[a-z]*|--recursive)(?:\s+-[^\s]+)*\s+",
+        r"(?:-[a-z]*f[a-z]*|--force)(?:\s+-[^\s]+)*\s+",
+        r"|",
+        // B：f 型标志在前、r 型在后（rm -f -r / 封堵现行黑名单 MISS 的活洞）
+        r"(?:-[a-z]*f[a-z]*|--force)(?:\s+-[^\s]+)*\s+",
+        r"(?:-[a-z]*r[a-z]*|--recursive)(?:\s+-[^\s]+)*\s+",
+        r"|",
+        // C：单短选项 token 兼含 r 与 f（-rf / -fr / -Rf ...）
+        r"(?:-[a-z]*r[a-z]*f[a-z]*|-[a-z]*f[a-z]*r[a-z]*)(?:\s+-[^\s]+)*\s+",
+        r")",
+        r"(?:/\*|/|~/\*|~|\*|\./\*|\./)",
+        r"(?:[\s;|&)]|$)",
+    );
+
     fn compile() -> Self {
-        // 16 条主模式（第 11 条 chmod 移出，单独用捕获组方案）。
-        // 顺序与 JS 源一致，便于核对。
-        let raw: &[&str] = &[
-            // 1. rm -rf / rm --recursive ... --force
-            r"(?i)rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|--recursive\b.*--force\b)",
-            // 2. mkfs
-            r"(?i)\bmkfs\b",
-            // 3. dd of=/dev/
-            r"(?i)\bdd\b[^|]*\bof=/dev/",
-            // 4. fork bomb 变体 1（带空格与中间体）
-            r":\s*\(\)\s*\{[^}]*:\|:\s*&\s*\}\s*;",
-            // 5. 重定向到块设备 >/dev/sdX
-            r"(?i)>\s*/dev/sd[a-z]",
-            // 6-10. 关机/重启类
-            r"(?i)\bshutdown\b",
-            r"(?i)\breboot\b",
-            r"(?i)\bhalt\b",
-            r"(?i)\bpoweroff\b",
-            r"(?i)\binit\s+0\b",
+        // 15 条主模式（第 11 条 chmod 移出，单独用捕获组方案）。
+        // 顺序与 JS 源一致，便于核对。元组第二位 = catastrophic 标记。
+        let raw: &[(&str, bool)] = &[
+            // 1. rm -rf / rm --recursive ... --force（子路径删除，非毁灭）
+            (r"(?i)rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|--recursive\b.*--force\b)", false),
+            // 2. mkfs（毁灭：格式化磁盘）
+            (r"(?i)\bmkfs\b", true),
+            // 3. dd of=/dev/（毁灭：直写块设备）
+            (r"(?i)\bdd\b[^|]*\bof=/dev/", true),
+            // 4. fork bomb 变体 1（毁灭：耗尽进程资源）
+            (r":\s*\(\)\s*\{[^}]*:\|:\s*&\s*\}\s*;", true),
+            // 5. 重定向到块设备 >/dev/sdX（毁灭：覆盖磁盘）
+            (r"(?i)>\s*/dev/sd[a-z]", true),
+            // 6-10. 关机/重启类（非毁灭：可人工恢复）
+            (r"(?i)\bshutdown\b", false),
+            (r"(?i)\breboot\b", false),
+            (r"(?i)\bhalt\b", false),
+            (r"(?i)\bpoweroff\b", false),
+            (r"(?i)\binit\s+0\b", false),
             // （第 11 条 chmod -R 见下方单独处理）
-            // 12. chown -R
-            r"(?i)\bchown\s+-R\b",
-            // 13. iptables -F
-            r"(?i)\biptables\s+-F\b",
-            // 14. fork bomb 变体 2（紧凑形式，JS 的 :() 字面量转义）
-            r":\(\)\s*\{\s*:\|:&\s*\};:",
-            // 15-16. curl/wget 管道执行 shell
-            r"(?i)\bcurl\b[^|]*\|\s*(bash|sh|zsh)\b",
-            r"(?i)\bwget\b[^|]*\|\s*(bash|sh|zsh)\b",
+            // 12. chown -R（非毁灭）
+            (r"(?i)\bchown\s+-R\b", false),
+            // 13. iptables -F（非毁灭）
+            (r"(?i)\biptables\s+-F\b", false),
+            // 14. fork bomb 变体 2（毁灭，JS 的 :() 字面量转义）
+            (r":\(\)\s*\{\s*:\|:&\s*\};:", true),
+            // 15-16. curl/wget 管道执行 shell（非毁灭）
+            (r"(?i)\bcurl\b[^|]*\|\s*(bash|sh|zsh)\b", false),
+            (r"(?i)\bwget\b[^|]*\|\s*(bash|sh|zsh)\b", false),
         ];
 
         let patterns = raw
             .iter()
-            .map(|src| (*src, Regex::new(src).expect("危险命令正则编译失败")))
+            .map(|(src, catastrophic)| {
+                (
+                    *src,
+                    Regex::new(src).expect("危险命令正则编译失败"),
+                    *catastrophic,
+                )
+            })
             .collect();
 
         let chmod_recursive = Regex::new(Self::CHMOD_RECURSIVE_SRC)
             .expect("chmod 递归正则编译失败");
+        let rm_root = Regex::new(Self::RM_ROOT_SRC).expect("rm 根级正则编译失败");
 
         Self {
             patterns,
             chmod_recursive,
+            rm_root,
         }
     }
 }
@@ -105,6 +158,22 @@ fn patterns() -> &'static CompiledPatterns {
 /// chmod -R 到这些前缀视为可接受（与 JS 行为对齐）。
 const SAFE_CHMOD_PREFIXES: &[&str] = &["/tmp", "/var/tmp", "/home", "/Users"];
 
+/// chmod -R 递归授权是否命中系统目录（captures 目标 + 排除安全前缀）。
+///
+/// `detect_dangerous_command`（黑名单第 11 条）与 `detect_catastrophic_command`
+/// （毁灭层）共用同一判定，行为不变。
+fn chmod_recursive_hits_system(text: &str) -> bool {
+    let compiled = patterns();
+    if let Some(caps) = compiled.chmod_recursive.captures(text) {
+        if let Some(target) = caps.get(1).map(|m| m.as_str()) {
+            return !SAFE_CHMOD_PREFIXES
+                .iter()
+                .any(|safe| target.starts_with(safe));
+        }
+    }
+    false
+}
+
 /// 检测文本是否命中危险模式（对齐 JS `detectDangerousCommand`）。
 ///
 /// - 空/过短文本（<4 字符）返回 `None`，与 JS 一致。
@@ -117,7 +186,7 @@ pub fn detect_dangerous_command(text: &str) -> Option<DangerousMatch> {
     let compiled = patterns();
 
     // 先跑 14 条主正则（除 chmod）。
-    for (src, re) in &compiled.patterns {
+    for (src, re, _catastrophic) in &compiled.patterns {
         if re.is_match(text) {
             return Some(DangerousMatch {
                 pattern: (*src).to_string(),
@@ -126,19 +195,50 @@ pub fn detect_dangerous_command(text: &str) -> Option<DangerousMatch> {
         }
     }
 
-    // 第 11 条 chmod -R：先匹配，再排除安全前缀（lookahead 改写方案）。
-    if let Some(caps) = compiled.chmod_recursive.captures(text) {
-        if let Some(target) = caps.get(1).map(|m| m.as_str()) {
-            let is_safe = SAFE_CHMOD_PREFIXES
-                .iter()
-                .any(|safe| target.starts_with(safe));
-            if !is_safe {
-                return Some(DangerousMatch {
-                    pattern: CompiledPatterns::CHMOD_RECURSIVE_SRC.to_string(),
-                    sample: sample(text),
-                });
-            }
+    // 第 11 条 chmod -R：命中系统目录（排除安全前缀）。
+    if chmod_recursive_hits_system(text) {
+        return Some(DangerousMatch {
+            pattern: CompiledPatterns::CHMOD_RECURSIVE_SRC.to_string(),
+            sample: sample(text),
+        });
+    }
+
+    None
+}
+
+/// 检测「机器报废级」毁灭性命令（v2.1 catastrophic 层，MCP 侧专用）。
+///
+/// 覆盖：主正则中标记 catastrophic 的 5 条（mkfs / dd 写块设备 / fork
+/// bomb ×2 / 重定向块设备）+ rm 根级删除（含黑名单 MISS 的分离/逆序短选项
+/// 形态）+ chmod 系统目录。
+///
+/// 注意：**不做 `len < 4` 早退**——那是 JS 对齐产物，毁灭层宁多拦不早退。
+/// MCP 审批（approval::evaluate）必须先于 classify_command 调用本函数
+/// （顺序是安全前提，见模块注释）。
+pub fn detect_catastrophic_command(text: &str) -> Option<DangerousMatch> {
+    let compiled = patterns();
+
+    for (src, re, catastrophic) in &compiled.patterns {
+        if *catastrophic && re.is_match(text) {
+            return Some(DangerousMatch {
+                pattern: (*src).to_string(),
+                sample: sample(text),
+            });
         }
+    }
+
+    if compiled.rm_root.is_match(text) {
+        return Some(DangerousMatch {
+            pattern: CompiledPatterns::RM_ROOT_SRC.to_string(),
+            sample: sample(text),
+        });
+    }
+
+    if chmod_recursive_hits_system(text) {
+        return Some(DangerousMatch {
+            pattern: CompiledPatterns::CHMOD_RECURSIVE_SRC.to_string(),
+            sample: sample(text),
+        });
     }
 
     None
@@ -398,5 +498,71 @@ mod tests {
             classify_command("systemctl status nginx", &whitelist, &[]),
             CommandRisk::Safe
         );
+    }
+
+    // ─── detect_catastrophic_command：毁灭层（v2.1）───
+
+    #[test]
+    fn cat_rm_root_all_flag_forms_hit() {
+        // rm 根级删除：合并/分离/逆序短选项、长选项、根/家/当前目录目标。
+        // 其中 rm -fr /、rm -f -r /、rm -r -f / 是现行黑名单 pattern 1 的
+        // MISS 活洞（要求 r/f 在同一短选项 token 内），仅由本层封堵。
+        for cmd in [
+            "rm -rf /",
+            "rm -fr /",
+            "rm -f -r /",
+            "rm -r -f /",
+            "rm -rf /*",
+            "rm -rf ~",
+            "rm -rf ~/*",
+            "rm -rf *",
+            "rm -rf ./*",
+            "rm -rf ./",
+            "rm --recursive --force /",
+            "rm -rf --no-preserve-root /",
+        ] {
+            assert!(
+                detect_catastrophic_command(cmd).is_some(),
+                "应命中毁灭层: {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn cat_rm_root_in_compound_command_hits() {
+        // 不锚定行首 + 目标后边界（; 消费）
+        assert!(detect_catastrophic_command("echo hi; rm -rf /").is_some());
+        assert!(detect_catastrophic_command("rm -rf /;reboot").is_some());
+    }
+
+    #[test]
+    fn cat_rm_subpath_or_file_targets_no_hit() {
+        // 子路径/文件形态不属毁灭层（仍走 classify 黑名单审批链）
+        for cmd in [
+            "rm -rf /var/log",
+            "rm -rf /tmp/*",
+            "rm -rf ./build",
+            "rm -rf *.log",
+            "rm -rf ~/build",
+            "rm -rf /etc/yum.repos.d/*",
+            "rm single.txt",
+        ] {
+            assert!(
+                detect_catastrophic_command(cmd).is_none(),
+                "不应命中毁灭层: {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn cat_mkfs_dd_chmod_system_hits() {
+        assert!(detect_catastrophic_command("mkfs.ext4 /dev/sda1").is_some());
+        assert!(detect_catastrophic_command("dd if=x of=/dev/sdb").is_some());
+        assert!(detect_catastrophic_command("chmod -R 777 /etc").is_some());
+        // chmod 安全前缀 / fork bomb 关机类边界
+        assert!(detect_catastrophic_command("chmod -R 755 /tmp/x").is_none());
+        assert!(detect_catastrophic_command(":(){ :|:& };:").is_some());
+        // 非毁灭黑名单：reboot 属审批链不属毁灭层
+        assert!(detect_catastrophic_command("reboot").is_none());
     }
 }

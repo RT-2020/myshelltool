@@ -27,19 +27,28 @@ pub struct ConnectionAsset {
     /// PrivateKey 模式下，passphrase 的本地安全存储引用 ID
     #[serde(default, alias = "passphraseCredentialId")]
     pub passphrase_credential_id: Option<String>,
+    /// PrivateKey 模式下，托管在 SecretStore 中的私钥内容引用 ID（如 "<asset_id>:private_key"）
+    #[serde(default, alias = "privateKeyCredentialId")]
+    pub private_key_credential_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthMethod {
+    #[serde(alias = "password")]
     Password,
+    #[serde(alias = "private_key", alias = "privateKey")]
     PrivateKey,
+    #[serde(alias = "token")]
     Token,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConnectionStatus {
+    #[serde(alias = "connected")]
     Connected,
+    #[serde(alias = "warning")]
     Warning,
+    #[serde(alias = "idle")]
     Idle,
 }
 
@@ -584,6 +593,7 @@ fn asset(
         status,
         credential_id: None,
         passphrase_credential_id: None,
+        private_key_credential_id: None,
         last_connected: last_connected.to_string(),
     }
 }
@@ -609,6 +619,7 @@ mod tests {
             last_connected: "从未".to_string(),
             credential_id: None,
             passphrase_credential_id: None,
+            private_key_credential_id: None,
         };
 
         let json = serde_json::to_string(&asset).expect("asset serializes");
@@ -709,6 +720,7 @@ mod tests {
             last_connected: "从未".to_string(),
             credential_id: None,
             passphrase_credential_id: None,
+            private_key_credential_id: None,
         }
     }
 

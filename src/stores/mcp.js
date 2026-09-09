@@ -192,8 +192,9 @@ export const useMcpStore = defineStore('mcp', () => {
   // Actions：v2 拦截等级 + 执行日志
   // ============================================================
   //
-  // 拦截等级：minimal = 仅拦黑名单/超高危（默认，低摩擦）；strict = 非白名单
-  // 一律确认。setMcpInterceptLevel 更新后端共享配置，已建 MCP 会话下次调用
+  // 拦截等级：minimal = 仅硬拦毁灭性命令（rm -rf /、mkfs 等，默认低摩擦，
+  // 其余命令直接执行记日志）；strict = 非白名单一律确认；毁灭性命令两档恒拦。
+  // setMcpInterceptLevel 更新后端共享配置，已建 MCP 会话下次调用
   // 即生效。执行日志：MCP 面板查看/清空（server.rs call_tool 终态落盘）。
 
   /** 拉取拦截等级（mcp_get_config）。浏览器预览模式静默跳过。 */
@@ -214,7 +215,7 @@ export const useMcpStore = defineStore('mcp', () => {
    * @param {string} level  'minimal' | 'strict'
    */
   async function setMcpInterceptLevel(level) {
-    const label = level === 'strict' ? '全部需确认' : '仅拦截超高危';
+    const label = level === 'strict' ? '全部需确认' : '仅拦截毁灭性命令';
     try {
       const config = await invokeBackend('mcp_set_config', { level });
       interceptLevel.value = config?.level ?? level;
