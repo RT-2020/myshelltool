@@ -49,11 +49,11 @@ export const useSessionsStore = defineStore('sessions', () => {
   const activeSessionId = ref(null);
   const hostKeyPrompt = ref(null);
   const keyboardPrompt = ref(null);
-  const terminalFontSize = ref(Number(readStored(TERMINAL_FONT_KEY)) || 13);
-  // 行高（xterm lineHeight）：1.0 紧凑 ~ 2.0 宽松，默认 1.2；设置面板可调。
+  const terminalFontSize = ref(Number(readStored(TERMINAL_FONT_KEY)) || 12);
+  // 行高（xterm lineHeight）：1.0 紧凑 ~ 2.0 宽松，默认 1.0；设置面板可调。
   const clampLineHeight = v => Math.min(2, Math.max(1, Math.round(v * 10) / 10));
   const storedLineHeight = Number(readStored(TERMINAL_LINEHEIGHT_KEY));
-  const terminalLineHeight = ref(Number.isFinite(storedLineHeight) && storedLineHeight >= 1 ? clampLineHeight(storedLineHeight) : 1.2);
+  const terminalLineHeight = ref(Number.isFinite(storedLineHeight) && storedLineHeight >= 1 ? clampLineHeight(storedLineHeight) : 1);
   const terminalSearch = ref({ open: false, query: '', direction: 'next', result: null });
 
   // 用于驱动终端主题更新（原 workbench.js:24，仅保留与终端主题相关的部分）
@@ -287,9 +287,25 @@ export const useSessionsStore = defineStore('sessions', () => {
     }
   }
 
+  // 激活会话变化（点击/键盘切换标签、关闭后自动落到相邻会话）时，
+  // 资产树同步选中对应资产（静默，不 announce）。
+  // 已选中则跳过，避免重复触发 clearFileSelection 打断文件区选择。
+  function syncAssetSelection(sessionId) {
+    const target = sessions.value.find(session => session.sessionId === sessionId);
+    if (
+      target?.asset?.id &&
+      workbenchBridge &&
+      workbenchBridge.selectedAssetId !== target.asset.id &&
+      typeof workbenchBridge.selectAsset === 'function'
+    ) {
+      workbenchBridge.selectAsset(target.asset.id, false);
+    }
+  }
+
   function setActiveSession(sessionId) {
     if (!sessions.value.some(session => session.sessionId === sessionId)) return;
     activeSessionId.value = sessionId;
+    syncAssetSelection(sessionId);
     showOnlyActiveTerminal();
   }
 
@@ -332,6 +348,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     if (idx >= 0) sessions.value.splice(idx, 1);
     if (activeSessionId.value === session.sessionId) {
       activeSessionId.value = sessions.value.at(-1)?.sessionId || null;
+      if (activeSessionId.value) syncAssetSelection(activeSessionId.value);
     }
     try { session.term.dispose(); } catch {}
     session.termDiv?.remove();
@@ -375,11 +392,11 @@ export const useSessionsStore = defineStore('sessions', () => {
   }
 
   function resetTerminalFontSize() {
-    if (terminalFontSize.value === 13) return;
-    terminalFontSize.value = 13;
-    localStorage.setItem(TERMINAL_FONT_KEY, '13');
+    if (terminalFontSize.value === 12) return;
+    terminalFontSize.value = 12;
+    localStorage.setItem(TERMINAL_FONT_KEY, '12');
     applyTerminalFontSizeAll();
-    announce('终端字号已重置：13px');
+    announce('终端字号已重置：12px');
   }
 
   // ============================================================
@@ -808,6 +825,7 @@ export const useSessionsStore = defineStore('sessions', () => {
         privateKeyPath: asset.private_key_path,
         passphrase: null,
         passphraseCredentialId: asset.passphrase_credential_id || null,
+        privateKeyCredentialId: asset.private_key_credential_id || null,
         cols,
         rows
       });

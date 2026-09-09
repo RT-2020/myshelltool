@@ -220,7 +220,9 @@ function dupSuffixFor(session) {
   height: 100%;
   overflow: hidden;
   background: var(--app-chrome);
-  border-bottom: 1px solid var(--app-border);
+  // 条底分隔线用 inset shadow 而非 border：激活标签的不透明背景会盖住它，
+  // 其下划线因此能直接衔接下方内容；inset shadow 也不会被自身 overflow:hidden 裁剪
+  box-shadow: inset 0 -1px 0 var(--app-border);
 }
 
 .term-tabs-spacer {
@@ -248,11 +250,11 @@ function dupSuffixFor(session) {
   border-right: 1px solid var(--app-border-soft);
   transition: background var(--motion-fast) var(--ease-standard),
     color var(--motion-fast) var(--ease-standard);
-}
 
-.terminal-tab-new:hover {
-  color: var(--accent);
-  background: var(--app-hover);
+  &:hover {
+    color: var(--accent);
+    background: var(--app-hover);
+  }
 }
 
 .session-tab {
@@ -262,25 +264,37 @@ function dupSuffixFor(session) {
   padding: 0 10px;
   border: none;
   background: transparent;
+  color: var(--app-muted);
   border-radius: 0;
   cursor: pointer;
   max-width: 220px;
   flex: 0 1 auto;
   min-width: 0;
   border-right: 1px solid var(--app-border-soft);
-  border-block-end: 2px solid transparent;
+  position: relative;
   transition: background var(--motion-fast) var(--ease-standard),
-    border-color var(--motion-fast) var(--ease-standard);
-}
+    color var(--motion-fast) var(--ease-standard);
 
-.session-tab:hover {
-  background: var(--app-hover);
-}
+  &:hover {
+    background: var(--app-hover);
+    color: var(--app-strong);
+  }
 
-.session-tab.active {
-  background: var(--app-panel);
-  border-block-end-color: var(--accent);
-  color: var(--app-strong);
+  // 激活下划线贴住标签底边（= 条底边），与下方内容无缝衔接
+  &.active {
+    background: var(--app-panel);
+    color: var(--app-strong);
+
+    &::after {
+      content: '';
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 2px;
+      background: var(--accent);
+    }
+  }
 }
 
 // 会话状态圆点已收敛为全局 .dot（_utilities.scss 单一权威实现）
@@ -419,3 +433,5 @@ function dupSuffixFor(session) {
   background: transparent;
 }
 </style>
+
+

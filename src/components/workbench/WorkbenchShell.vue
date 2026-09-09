@@ -7,6 +7,7 @@ import {
   PanelRight,
   Search,
   Settings,
+  Sparkles,
   Square,
   Sun,
   TerminalSquare,
@@ -16,6 +17,7 @@ import ConnectionSidebar from '@/components/shell/ConnectionSidebar.vue';
 import RightSidebar from '@/components/shell/RightSidebar.vue';
 import TerminalSurface from '@/components/terminal/TerminalSurface.vue';
 import FileSurface from '@/components/files/FileSurface.vue';
+import { AppBrandLogo } from '@/components/ui';
 import {
   closeTauriWindow,
   isTauriRuntime,
@@ -217,7 +219,7 @@ onMounted(() => {
     >
       <div class="tb-left" data-tauri-drag-region>
         <div class="tb-brand">
-          <TerminalSquare :size="16" />
+          <AppBrandLogo :size="16" />
           <span class="tb-name">myshelltool</span>
         </div>
       </div>
@@ -383,17 +385,17 @@ onMounted(() => {
 
     <footer class="statusbar app-status-bar" data-region="statusbar">
       <div class="sb-left">
-        <!-- 更新提示在 available/error 态渲染为可点击按钮（useAutoUpdate 的文案
-             引导用户「点击状态栏更新」，此前是纯 span 死链接）；其余状态纯文本 -->
+        <span class="sb-item muted status-text" aria-live="polite">{{ store.statusMessage || '就绪' }}</span>
         <button
-          v-if="updateClickable"
-          class="sb-item sb-update-btn"
-          :class="{ 'is-error': updateState === 'error' }"
+          v-if="updateState === 'available'"
+          class="sb-item sb-update-pill is-available"
           type="button"
-          :title="updateState === 'available' ? '下载并安装新版本' : '重试检查更新'"
-          @click="props.autoUpdate.onClick()"
-        >{{ store.statusMessage }}</button>
-        <span v-else class="sb-item muted" aria-live="polite">{{ store.statusMessage || '无新消息' }}</span>
+          title="点击下载并安装新版本"
+          @click="props.autoUpdate?.onClick()"
+        >
+          <Sparkles :size="12" aria-hidden="true" />
+          <span>新版本就绪</span>
+        </button>
       </div>
       <div class="sb-right">
         <button class="sb-item transfer-pill" type="button" aria-label="打开传输队列" @click="emit('toggle-transfer-drawer')">

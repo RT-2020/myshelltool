@@ -13,7 +13,7 @@
  */
 import { onBeforeUnmount, watch } from 'vue';
 import { storeToRefs } from 'pinia';
-import { Upload, Download, ChevronDown, AlertCircle, CheckCircle2, Loader2, XCircle, X, RotateCcw } from 'lucide-vue-next';
+import { Upload, Download, ChevronDown, AlertCircle, CheckCircle2, Loader2, XCircle, X, RotateCcw, ArrowUpDown } from 'lucide-vue-next';
 import { useFilesStore } from '@/stores/files.js';
 import { formatSpeed, formatEta } from '@/lib/transferUtils.js';
 
@@ -60,6 +60,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
 
 <template>
   <Teleport to="body">
+    <Transition name="transfer-backdrop">
+      <div
+        v-if="open"
+        class="transfer-backdrop"
+        aria-hidden="true"
+        @click="emit('toggle')"
+      ></div>
+    </Transition>
     <Transition name="transfer-sheet">
       <div v-if="open" class="transfer-sheet" role="dialog" aria-label="传输队列">
         <div class="transfer-sheet-head">
@@ -76,12 +84,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
             title="收起"
             @click="emit('toggle')"
           >
-            <ChevronDown :size="14" />
+            <ChevronDown :size="16" />
           </button>
         </div>
 
         <div class="transfer-sheet-body" aria-live="polite">
-          <p v-if="!transferQueue.length" class="transfer-empty">暂无传输任务</p>
+          <div v-if="!transferQueue.length" class="transfer-empty">
+            <ArrowUpDown :size="20" class="transfer-empty-icon" />
+            <span>暂无传输任务</span>
+          </div>
           <ul v-else class="transfer-list">
             <li
               v-for="item in transferQueue"
@@ -157,6 +168,23 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
 <style scoped lang="scss">
 @use '@/styles/_tokens' as *;
 
+// Backdrop overlay
+.transfer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-drawer) - 1);
+  background: var(--app-scrim);
+  backdrop-filter: blur(2px);
+}
+.transfer-backdrop-enter-active,
+.transfer-backdrop-leave-active {
+  transition: opacity var(--motion-base) var(--ease-standard);
+}
+.transfer-backdrop-enter-from,
+.transfer-backdrop-leave-to {
+  opacity: 0;
+}
+
 // Slide-up sheet (teleported to body). Fixed bottom dock; no nested card chrome.
 // trigger bar 已删除（触发入口在状态栏「传输」胶囊按钮）。
 .transfer-sheet {
@@ -170,7 +198,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
   max-height: 50vh;
   background: var(--app-panel);
   border-block-start: 1px solid var(--app-border);
-  box-shadow: var(--app-shadow);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  box-shadow: var(--shadow-sheet);
 }
 
 .transfer-sheet-head {
@@ -198,13 +227,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 26px;
+  height: 26px;
   background: transparent;
   border: none;
   color: var(--app-muted);
   cursor: pointer;
   border-radius: var(--radius-sm);
+  transition: background var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
 }
 .transfer-sheet-close:hover {
   background: var(--app-hover);
@@ -218,11 +248,19 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
 }
 
 .transfer-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
   margin: 0;
-  padding: var(--space-4);
+  padding: var(--space-8) var(--space-4);
   text-align: center;
-  color: var(--app-muted);
-  font-size: var(--text-sm);
+  color: var(--app-subtle);
+  font-size: var(--text-xs);
+}
+.transfer-empty-icon {
+  opacity: 0.6;
 }
 
 .transfer-list {
@@ -260,7 +298,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
 .transfer-row-main {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -284,13 +322,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
   font-size: var(--text-xs);
   color: var(--app-muted);
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   flex: 0 0 auto;
 }
 
 .transfer-row-bar {
   width: 100%;
-  height: 3px;
-  background: var(--app-panel-2);
+  height: 4px;
+  background: var(--app-border-soft);
   border-radius: var(--radius-pill);
   overflow: hidden;
 }

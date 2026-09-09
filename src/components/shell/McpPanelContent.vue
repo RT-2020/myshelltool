@@ -87,23 +87,25 @@ onMounted(() => {
   <div class="mcp-panel">
     <!-- ① Hero 状态条：全宽，探测结果决定整体色调，第一眼即知「MCP 能否工作」 -->
     <div class="hero" :class="mcpClientConnected ? 'is-connected' : 'is-offline'">
-      <div class="hero-main">
-        <Plug :size="20" class="hero-icon" />
-        <div class="hero-text">
-          <span class="hero-status">{{ mcpClientConnected ? 'MCP 可用' : 'MCP 不可用' }}</span>
-          <span class="hero-sub">
-            {{ mcpClientConnected
-              ? 'HTTP 健康检查通过，MCP server 正常响应协议'
-              : (mcpProbe?.detail || '探测失败，MCP 无法正常工作') }}
-          </span>
+      <div class="hero-header-row">
+        <div class="hero-main">
+          <Plug :size="18" class="hero-icon" />
+          <div class="hero-text">
+            <span class="hero-status">{{ mcpClientConnected ? 'MCP 服务可用' : 'MCP 服务不可用' }}</span>
+            <span class="hero-sub">
+              {{ mcpClientConnected
+                ? 'HTTP 健康检查通过，MCP server 正常响应协议'
+                : (mcpProbe?.detail || '探测失败，MCP 无法正常工作') }}
+            </span>
+          </div>
         </div>
-      </div>
-      <div class="hero-meta">
-        <span class="meta-item"><span class="meta-label">版本</span><span class="meta-val num">myshelltool {{ mcpServerVersion }}</span></span>
-        <span v-if="mcpProbe?.probedAt" class="meta-item"><span class="meta-label">探测时间</span><span class="meta-val num">{{ fmtTime(mcpProbe.probedAt) }}</span></span>
-        <AppButton variant="subtle" size="sm" :loading="mcpLoading" @click="onRefresh">
+        <AppButton variant="subtle" size="sm" :loading="mcpLoading" class="hero-refresh-btn" @click="onRefresh">
           <RefreshCw v-if="!mcpLoading" :size="12" />刷新
         </AppButton>
+      </div>
+      <div class="hero-meta-row">
+        <div class="meta-item"><span class="meta-label">版本</span><span class="meta-val num">myshelltool {{ mcpServerVersion }}</span></div>
+        <div v-if="mcpProbe?.probedAt" class="meta-item"><span class="meta-label">探测时间</span><span class="meta-val num">{{ fmtTime(mcpProbe.probedAt) }}</span></div>
       </div>
     </div>
 
@@ -169,18 +171,15 @@ onMounted(() => {
   flex-direction: column;
   gap: var(--space-3);
   font-size: var(--text-sm);
-  max-height: 62vh;
-  overflow-y: auto;
-  padding-right: 2px;
+  // 不自带滚动：渲染在 AppModal body（唯一滚动容器）内，避免滚动条嵌套
 }
 
 // ─── ① Hero 状态条 ───
 // 全宽横幅，连接态用 success 边框/底色，断开用 muted。第一眼信息优先级最高。
 .hero {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
+  flex-direction: column;
+  gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
   border-radius: var(--radius-md);
   border: 1px solid var(--app-border);
@@ -195,13 +194,23 @@ onMounted(() => {
 .hero.is-offline {
   border-style: dashed;
 }
-.hero-main {
-  display: inline-flex;
-  align-items: center;
+.hero-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
   gap: var(--space-3);
+  width: 100%;
+}
+.hero-main {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  flex: 1 1 0;
+  min-width: 0;
 }
 .hero-icon {
   flex-shrink: 0;
+  margin-top: 2px;
   color: var(--app-muted);
 }
 .hero.is-connected .hero-icon { color: var(--success); }
@@ -209,6 +218,8 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 .hero-status {
   font-size: var(--text-sm);
@@ -219,23 +230,28 @@ onMounted(() => {
 .hero-sub {
   font-size: var(--text-xs);
   color: var(--app-muted);
+  line-height: 1.4;
+  word-break: break-word;
 }
-.hero-meta {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-4);
+.hero-refresh-btn {
   flex-shrink: 0;
 }
-.meta-item {
+.hero-meta-row {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 2px;
+  align-items: center;
+  gap: var(--space-4);
+  padding-top: var(--space-2);
+  border-top: 1px solid color-mix(in oklab, var(--app-border), transparent 40%);
+}
+.meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 .meta-label {
-  font-size: 10px;
+  font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
   color: var(--app-subtle);
 }
 .meta-val {
@@ -362,7 +378,8 @@ onMounted(() => {
   border-radius: var(--radius-sm);
   padding: var(--space-2) var(--space-3);
   margin: 0;
-  overflow-x: auto;
+  max-height: 180px;
+  overflow: auto;
 }
 .code-block code {
   font-family: var(--font-mono);
@@ -394,3 +411,4 @@ onMounted(() => {
   font-size: 11px;
 }
 </style>
+

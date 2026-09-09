@@ -35,6 +35,7 @@ import McpPanelContent from '@/components/shell/McpPanelContent.vue';
 import SyncPanelContent from '@/components/shell/SyncPanelContent.vue';
 import SettingsPanelContent from '@/components/shell/SettingsPanelContent.vue';
 import PatConfigCard from '@/components/shell/PatConfigCard.vue';
+import AssetPrivateKeyInput from '@/components/shell/AssetPrivateKeyInput.vue';
 import { openPrivateKeyFileDialog } from '@/services/backend.js';
 
 const store = useWorkbenchStore();
@@ -119,7 +120,12 @@ const modalTitle = computed(() => {
 });
 
 const assetCredentialHint = computed(() => {
-  if (!editingAsset.id) return '新连接，密码/passphrase 可在下方填入';
+  if (!editingAsset.id) return '新连接，凭据与密钥将在保存时加密存储到安全保管箱';
+  if (editingAsset.auth_method === 'PrivateKey') {
+    if (editingAsset.private_key_credential_id) return '私钥已在安全保管箱托管（支持跨设备端到端加密同步）';
+    if (editingAsset.private_key_path) return '当前使用物理文件路径，建议导入到保管箱以便换机同步';
+    return '尚未配置私钥';
+  }
   if (editingAsset.credential_id) return '密码已存储（重新输入会覆盖）';
   return '尚未存储密码';
 });
@@ -203,14 +209,22 @@ function emptyAsset() {
     tags: '',
     status: 'Idle',
     credential_id: null,
-    passphrase_credential_id: null
+    passphrase_credential_id: null,
+    private_key_credential_id: null
   };
 }
 
 function emptyCredential() {
-  // clearPassword / clearPassphrase：编辑器「清除」按钮的标记（保存时删除凭据）。
-  // 与重新输入互斥：password/passphrase 输入框有值会重置对应标记。
-  return { password: '', passphrase: '', clearPassword: false, clearPassphrase: false };
+  // clearPassword / clearPassphrase / clearPrivateKey：编辑器「清除」按钮的标记（保存时删除凭据）。
+  // 与重新输入互斥：输入框有值会重置对应标记。
+  return {
+    password: '',
+    passphrase: '',
+    privateKey: '',
+    clearPassword: false,
+    clearPassphrase: false,
+    clearPrivateKey: false
+  };
 }
 
 function emptyTunnelForm() {
@@ -287,8 +301,10 @@ async function submitModal() {
           {
             password: editingCredential.password,
             passphrase: editingCredential.passphrase,
+            privateKey: editingCredential.privateKey,
             clearPassword: editingCredential.clearPassword,
-            clearPassphrase: editingCredential.clearPassphrase
+            clearPassphrase: editingCredential.clearPassphrase,
+            clearPrivateKey: editingCredential.clearPrivateKey
           }
         )
       );
@@ -527,21 +543,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydownEsc));
               <AppSelect :model-value="editingAsset.auth_method" :options="authMethodOptions"
                 @update:model-value="v => editingAsset.auth_method = v" />
             </label>
-            <label class="stack"><span class="muted">私钥路径</span>
-              <div class="inline-field-row">
-                <AppInput :model-value="editingAsset.private_key_path" :disabled="editingAsset.auth_method !== 'PrivateKey'"
-                  placeholder="~/.ssh/id_ed25519 或点击浏览选择" @update:model-value="v => editingAsset.private_key_path = v" data-asset-field="private_key_path" />
-                <AppButton size="sm" :disabled="editingAsset.auth_method !== 'PrivateKey'" @click="browsePrivateKey">浏览…</AppButton>
-              </div>
-            </label>
           </div>
           <div class="callout">
-            <strong>凭据</strong>
+            <strong>凭据与密钥安全</strong>
             <p class="muted">{{ assetCredentialHint }}</p>
           </div>
           <p v-if="assetFormError" class="form-error">{{ assetFormError }}</p>
-          <div class="grid-2">
-            <label v-if="editingAsset.auth_method === 'Password'" class="stack">
+
+          <!-- Password 认证模式 -->
+          <div v-if="editingAsset.auth_method === 'Password'" class="grid-2">
+            <label class="stack">
               <span class="muted">密码（明文不会回显，仅保存到本地安全存储）
                 <span v-if="!editingAsset.credential_id" style="color:var(--danger)"> · 首次保存必填</span>
               </span>
@@ -553,8 +564,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydownEsc));
                 </AppButton>
               </div>
             </label>
-            <label v-if="editingAsset.auth_method === 'PrivateKey'" class="stack">
-              <span class="muted">Passphrase（可选）</span>
+          </div>
+
+          <!-- PrivateKey 认证模式（私钥托管箱 + 本地路径 + 口令） -->
+          <div v-else-if="editingAsset.auth_method === 'PrivateKey'" class="stack">
+            <AssetPrivateKeyInput
+              :asset="editingAsset"
+              :credential="editingCredential"
+              :disabled="submitting"
+            />
+            <label class="stack" style="max-width: 480px;">
+              <span class="muted">Passphrase（可选，无口令保护的私钥留空）</span>
               <div class="inline-field-row">
                 <AppInput :model-value="editingCredential.passphrase" type="password" placeholder="无加密私钥留空"
                   @update:model-value="v => { editingCredential.passphrase = v; editingCredential.clearPassphrase = false; }" data-asset-field="passphrase" />
@@ -819,11 +839,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydownEsc));
   to { opacity: 1; }
 }
 .modal {
-  background: var(--app-bg);
+  background: var(--app-panel);
   border: 1px solid var(--app-border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-pop);
   width: 100%;
-  max-width: 560px;
+  max-width: 580px;
   max-height: calc(100vh - 80px);
   display: flex;
   flex-direction: column;
@@ -848,15 +869,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydownEsc));
 }
 .modal-head h2 {
   margin: 0;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
+  color: var(--app-text);
 }
 .modal-body {
   padding: 16px;
-  overflow: auto;
+  overflow-y: auto;
+  flex: 1;
 }
 .modal-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
   padding: 12px 16px;
@@ -871,7 +895,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydownEsc));
   cursor: pointer;
   font-size: 18px;
   padding: 4px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
+  transition: background var(--motion-fast), color var(--motion-fast);
 }
 .icon-btn:hover { background: var(--app-hover); color: var(--app-strong); }
 
@@ -882,14 +907,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydownEsc));
 .btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  padding: 6px 12px;
+  height: 32px;
+  padding: 0 16px;
   background: var(--app-control);
   color: var(--app-text);
   border: 1px solid var(--app-border);
-  border-radius: 4px;
-  font-size: 13px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: 500;
   cursor: pointer;
+  transition: background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast), box-shadow var(--motion-fast);
 }
 .btn:hover { background: var(--app-hover); }
 .btn.primary {
@@ -897,10 +926,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydownEsc));
   color: var(--accent-on);
   border-color: var(--accent);
 }
+.btn.primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
 .btn.danger {
   background: var(--danger);
   color: var(--accent-on);
   border-color: var(--danger);
+}
+.btn.danger:hover {
+  background: color-mix(in oklab, var(--danger), black 10%);
+  border-color: color-mix(in oklab, var(--danger), black 10%);
 }
 
 .stack {

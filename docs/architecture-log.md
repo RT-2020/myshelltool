@@ -1,4 +1,4 @@
-﻿# Architecture Log
+# Architecture Log
 
 > Cross-session memory for architectural drift. AI has no memory across sessions 鈥?this file is the sole persistent carrier.
 > Read at session start to detect accumulated drift; append one row per session that touched code.
@@ -166,3 +166,24 @@ Mechanical refactor: move code, adjust `pub`, re-export from `ssh/mod.rs`. Zero 
 > 鈿狅笍 FileColumn.vue 鍦?v1.4銆岀簿绠€閲嶆瀯銆峜ommit 鍚庝粠 768 鏆存定鍒?1123锛屾槸褰撳墠鏈€鍗遍櫓鐨勫爢鍙犵偣銆傛媶鍒嗗墠闇€ vibe-guard Gate A/B 鍒ゅ畾锛堢‘璁ゆ槸鍗曠粍浠惰亴璐ｈ繃杞斤紝鑰岄潪璇ユ湁鐙珛灞傦級銆?
 
 **Secondary target (after ssh.rs lands)**: `src/stores/sessions.js` (839, 1.68脳) 鈥?split terminal lifecycle from session management.
+
+---
+
+## 2026-09-08 — MCP v2.2 文件传输全链路能力落地与无桩化
+
+### 1. 架构目标与背景
+MCP server 原先仅具备单一 exec shell 通道，导致 AI 宿主无法浏览目录、无法读写与传输文件，且 `sftp_remove` 在审批后报未实现造成负信任。本次迭代将 MCP 扩展为具备完整 SFTP 能力的安全文件通道，并消除全部工具桩。
+
+### 2. 模块划分与行数控制（严格遵守 800 行硬上限）
+- **`src-tauri/src/mcp/file_policy.rs` (186 行)**：纯安全策略模块。远程/本地路径规整防穿越；敏感文件判定（D2：/etc/shadow、SSH 私钥、.env 等）；根级毁灭性删除 HardBlock 判定；本机受保护系统目录防写入（D3）。
+- **`src-tauri/src/mcp/sftp_ops.rs` (377 行)**：底层 Headless SFTP 封装。基于 `connect_headless` 的 handle 创建 SFTP session，提供目录遍历、1MB 上限小文件带 512B 二进制嗅探读取、临时文件原子写入、受控递归删除（最大深度 16 层）、大文件流式上传/下载与 SHA256 校验。
+- **`src-tauri/src/mcp/file_tools.rs` (342 行)**：6 个文件传输工具的 Schema 定义与分发（`sftp_list` / `sftp_read_file` / `sftp_write_file` / `sftp_upload` / `sftp_download` / `sftp_remove`）。
+- **`src-tauri/src/mcp/tools.rs` (433 行)**：消除所有桩；将文件工具委托给 `file_tools.rs`，自身行数从 486 行下降至 433 行；`list_sessions` 接入真实 GUI 会话池，`resource_monitor_snapshot` 接入真实系统资源快照。
+- **`src-tauri/src/mcp/server.rs` (760 行)**：将审批逻辑与日志记录覆盖新增工具；执行 **D4 审计日志硬红线**（`sftp_read_file` 成功内容脱敏，绝不写入凭据与文件正文）。
+- **`src/components/shell/McpExecutionLogList.vue` (295 行)**：前端日志表支持新增文件传输工具的中文名称映射与标签渲染。
+
+### 3. 验收验证
+- `cargo check`: OK
+- `cargo check --tests`: OK
+- `cargo test (core 51 tests)`: 51 passed, 0 failed
+- `npm run build`: Vite build 成功

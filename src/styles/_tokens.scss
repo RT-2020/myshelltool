@@ -106,6 +106,7 @@ $z-indexes: (base: 1, dropdown: 100, sticky: 200, drawer: 300, modal: 400, toast
   --app-scrim:  rgba(17, 17, 17, 0.45);
   --app-shadow: 0 8px 24px rgba(0, 0, 0, 0.10), 0 2px 6px rgba(0, 0, 0, 0.06);
   --shadow-pop: var(--app-shadow);
+  --shadow-sheet: 0 -8px 24px rgba(0, 0, 0, 0.10), 0 -1px 4px rgba(0, 0, 0, 0.04);
 
   // 终端 token（app.css --term-*，终端始终深色不跟随主题）
   --term-bg:      #0c0f17;
@@ -217,6 +218,7 @@ $z-indexes: (base: 1, dropdown: 100, sticky: 200, drawer: 300, modal: 400, toast
   --app-scrim:  rgba(0, 0, 0, 0.55);
   --app-shadow: 0 8px 24px rgba(0, 0, 0, 0.40), 0 2px 6px rgba(0, 0, 0, 0.24);
   --shadow-pop: var(--app-shadow);
+  --shadow-sheet: 0 -8px 28px rgba(0, 0, 0, 0.45), 0 -1px 4px rgba(0, 0, 0, 0.20);
 
   // 终端在深色下略浅一档，便于与面板区分
   --term-bg:      #07090f;
@@ -277,6 +279,7 @@ $z-indexes: (base: 1, dropdown: 100, sticky: 200, drawer: 300, modal: 400, toast
     --app-selected: var(--accent-soft);
     --app-scrim:    rgba(0, 0, 0, 0.55);
     --app-shadow:   0 8px 24px rgba(0, 0, 0, 0.40), 0 2px 6px rgba(0, 0, 0, 0.24);
+    --shadow-sheet: 0 -8px 28px rgba(0, 0, 0, 0.45), 0 -1px 4px rgba(0, 0, 0, 0.20);
     --term-bg:      #07090f;
     --term-panel:   #0c1018;
     --terminal-bg:  var(--term-bg);

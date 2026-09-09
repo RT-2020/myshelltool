@@ -69,8 +69,8 @@ async function onExport() {
           :disabled="!sessions.activeSessionId"
           @click="onPauseToggle"
         >
-          <Pause v-if="rm.enabled" />
-          <Play v-else />
+          <Pause v-if="rm.enabled" :size="14" />
+          <Play v-else :size="14" />
         </button>
         <button
           class="icon-btn"
@@ -80,10 +80,10 @@ async function onExport() {
           :disabled="!rm.snapshot"
           @click="onExport"
         >
-          <Download />
+          <Download :size="14" />
         </button>
         <button class="icon-btn" type="button" title="收起右侧栏" aria-label="收起右侧栏" @click="emit('collapse')">
-          <PanelRightClose />
+          <PanelRightClose :size="14" />
         </button>
       </div>
     </header>
@@ -115,7 +115,9 @@ async function onExport() {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  padding: var(--space-3);
+  // 高度与终端标签条（.region-terminal 38px）、左栏 sb-header 对齐，三列头部横线共线
+  height: 38px;
+  padding: 0 var(--space-3);
   border-bottom: 1px solid var(--app-border-soft);
   background: var(--app-panel);
 }
@@ -128,10 +130,10 @@ async function onExport() {
 }
 
 .rs-title {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-family: var(--font-display);
+  font-size: 11px;
   font-weight: 500;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.04em;
   color: var(--app-muted);
   white-space: nowrap;
 }
@@ -163,3 +165,4 @@ async function onExport() {
 }
 .rs-body::-webkit-scrollbar-thumb:hover { background: var(--app-border-strong); }
 </style>
+

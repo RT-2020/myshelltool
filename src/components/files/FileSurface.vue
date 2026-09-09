@@ -358,31 +358,37 @@ const contextMenuItems = computed(() => {
 // ============================================================
 // view-pills（app.css L703-727：视图胶囊 双栏/仅远程）
 // ============================================================
-.view-pills {
+.view-pills,
+.view-switch {
   display: inline-flex;
+  align-items: center;
   background: var(--app-panel-2);
   border: 1px solid var(--app-border);
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   padding: 2px;
-  gap: 0;
+  gap: 2px;
 }
 .view-pill {
-  padding: 4px 12px;
-  font-size: 11.5px;
+  padding: 3px 12px;
+  font-size: var(--text-xs);
   color: var(--app-muted);
   background: transparent;
   border: 0;
-  border-radius: 5px;
+  border-radius: 6px;
   cursor: pointer;
   font-family: var(--font-body);
-  transition: background var(--motion-fast), color var(--motion-fast);
+  transition: background var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard);
 }
-.view-pill:hover { color: var(--app-text); }
+.view-pill:hover {
+  color: var(--app-text);
+}
 .view-pill.active {
   background: var(--app-panel);
-  color: var(--app-text);
-  font-weight: 500;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: var(--shadow-xs);
 }
 
 // ============================================================

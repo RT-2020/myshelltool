@@ -226,12 +226,26 @@ function assetIndicatorClasses(asset) {
   min-height: 32px;
   padding: 4px 8px 4px 10px;
   margin-block-end: 1px;
-  border-radius: 10px;
-  border-inline-start: 2px solid transparent;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   position: relative;
   transition: background var(--motion-fast) var(--ease-standard),
-    border-color var(--motion-fast) var(--ease-standard);
+    color var(--motion-fast) var(--ease-standard);
+
+  &::before {
+    content: '';
+    position: absolute;
+    left: 2px;
+    top: 50%;
+    transform: translateY(-50%) scaleY(0);
+    width: 3px;
+    height: 16px;
+    border-radius: 2px;
+    background: var(--accent);
+    transition: transform var(--motion-fast) var(--ease-standard),
+      opacity var(--motion-fast) var(--ease-standard);
+    opacity: 0;
+  }
 }
 
 .asset-node:hover {
@@ -241,12 +255,18 @@ function assetIndicatorClasses(asset) {
 .asset-node:focus-visible {
   outline: none;
   background: var(--app-hover);
-  border-inline-start-color: var(--accent);
+  &::before {
+    transform: translateY(-50%) scaleY(0.7);
+    opacity: 0.6;
+  }
 }
 
 .asset-node.is-active {
   background: var(--app-selected);
-  border-inline-start-color: var(--accent);
+  &::before {
+    transform: translateY(-50%) scaleY(1);
+    opacity: 1;
+  }
 }
 
 .asset-name {

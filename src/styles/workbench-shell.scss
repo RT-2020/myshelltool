@@ -512,8 +512,35 @@
   text-overflow: ellipsis;
 }
 
-// 状态栏更新消息按钮（available/error 态替代纯文本 span）：
-// useAutoUpdate 文案引导「点击状态栏更新」，此处补上真正的点击接线与视觉可供性。
+.sb-item.status-text {
+  max-width: 480px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+// 状态栏发现新版本独立胶囊按钮
+.sb-update-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid var(--accent-soft-strong);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast);
+
+  &:hover {
+    background: var(--accent);
+    color: var(--accent-on);
+    border-color: var(--accent);
+  }
+}
+
 .sb-update-btn {
   padding: 0;
   background: none;
