@@ -107,7 +107,11 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
   });
 
   function applySnapshot(s) {
-    if (!s) return;
+    // 跨窗口路由守卫：Rust emit 是全局广播（每个 WebviewWindow 都收到），
+    // 只接受本窗口正在监控的会话快照（sessionId 为 ResourceSnapshot 经
+    // rename_all=camelCase 后的字段名）；activeSessionId 为 null（stop 后
+    // 残留事件）时一并拦截，防污染下一次 start 的历史。
+    if (!s || !s.sessionId || s.sessionId !== activeSessionId.value) return;
     if (prevTimestamp.value) {
       prevNetRx.value = snapshot.value?.netRxBytes ?? 0;
       prevNetTx.value = snapshot.value?.netTxBytes ?? 0;
@@ -146,7 +150,20 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
     try {
       await invokeBackend('resource_monitor_start', { sessionId, intervalMs });
     } catch (e) {
-      error.value = e?.message || String(e);
+      const msg = e?.message || String(e);
+      if (msg.includes('already monitored')) {
+        // 跨窗口迁移竞态：Rust 侧仍有旧窗口（asset 独立窗口）的监控任务，
+        // 先 stop 再重试（静默）。asset 窗口 onBeforeUnmount 的 stop 可能晚于主窗口 adopt。
+        try {
+          await invokeBackend('resource_monitor_stop', { sessionId });
+          await invokeBackend('resource_monitor_start', { sessionId, intervalMs });
+        } catch (e2) {
+          error.value = e2?.message || String(e2);
+          enabled.value = false;
+        }
+        return;
+      }
+      error.value = msg;
       enabled.value = false;
       return;
     }

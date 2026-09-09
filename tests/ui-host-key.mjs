@@ -2,6 +2,7 @@
 //
 // 通过 Playwright + mock window.__TAURI__ 验证：
 // 1. App 启动后 host key listener 被注册
+// 1.5 向 sessions store 注入 connecting 会话（ownsConnectingSession 跨窗口路由守卫的前提）
 // 2. backend emit 'ssh-host-key-verify' 事件 → handler 触发 → modal 显示
 // 3. 用户点"确认" → invoke('ssh_confirm_host_key', {requestId, accepted:true}) 被调用
 // 4. 用户点"拒绝" → invoke('ssh_confirm_host_key', {requestId, accepted:false}) 被调用
@@ -67,6 +68,48 @@ try {
     }));
     throw new Error(`listener NOT registered after 6s. State: ${JSON.stringify(state)}`);
   }
+
+  // 1.5 注入 connecting 会话：sessions.js 的 ownsConnectingSession 守卫要求
+  // 本窗口存在 status==='connecting' 且 asset 主机与事件 payload.host_port 匹配
+  // 的会话，否则静默忽略事件（多窗口防串扰）。测试环境无真实 ssh_connect，
+  // 直接经 pinia 向 sessions store push 一条最小形状会话（host/port 与下方
+  // 事件 payload 的 host_port '192.168.2.2:22' 一致）。不设 activeSessionId，
+  // 避免 TerminalPane 走 session.term 渲染路径。
+  await page.evaluate(() => {
+    const app = document.querySelector('#app').__vue_app__;
+    const pinia = app.config.globalProperties.$pinia;
+    const store = pinia._s.get('sessions');
+    store.sessions.push({
+      sessionId: 'pending-test-1',
+      asset: {
+        id: 'test-asset-1',
+        name: 'test-host',
+        host: '192.168.2.2',
+        port: 22,
+        username: 'root',
+        auth_method: 'Password',
+        group: '未分组',
+        tags: [],
+        status: 'Idle'
+      },
+      status: 'connecting',
+      oscTitle: '',
+      connectError: null,
+      manualDisconnect: false,
+      reconnectAttempt: 0,
+      reconnectTotal: 0,
+      searchOpts: { caseSensitive: false, regex: false, wholeWord: false },
+      searchMatch: { index: 0, total: 0 }
+    });
+  });
+  await page.waitForFunction(() => {
+    const app = document.querySelector('#app').__vue_app__;
+    const pinia = app.config.globalProperties.$pinia;
+    const store = pinia._s.get('sessions');
+    return store?.sessions?.some(
+      s => s.status === 'connecting' && s.asset?.host === '192.168.2.2'
+    );
+  }, { timeout: 5000 });
 
   // 2. 触发 host key 事件
   await page.evaluate(() => {

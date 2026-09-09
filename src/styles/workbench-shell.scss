@@ -52,13 +52,18 @@
 .tb-brand {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   padding-left: 8px;
   font-size: 13px;
+  user-select: none;
 }
 
-.tb-brand svg { color: var(--accent); stroke-width: 1.7; }
-.tb-name { font-weight: 600; color: var(--app-text); }
+.tb-brand svg { stroke-width: 1.7; }
+.tb-name {
+  font-weight: 600;
+  color: var(--app-text);
+  letter-spacing: -0.01em;
+}
 
 .tb-search {
   position: relative;

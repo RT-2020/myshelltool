@@ -67,7 +67,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     // 注意：Pinia store 解构后 effectiveTheme 会被解包成普通值，必须用 getter
     // 函数包裹才能被 watch 正确监听（否则警告 "Invalid watch source"）。
     watch(() => uiStore.effectiveTheme, next => { applyTheme(next); });
-    watch(() => uiStore.effectiveTheme, () => { sessionsStore.updateAllTerminalThemes(); });
+    // 终端主题已与 app 主题解耦（pickTerminalTheme 恒返回 darkTheme），无需 watch。
     watch(() => uiStore.systemPrefersDark, v => { sessionsStore.systemPrefersDark = v; });
     sessionsStore.systemPrefersDark = uiStore.systemPrefersDark;
 
@@ -169,6 +169,9 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   // ============================================================
   sessionsStore.attachWorkbench({
     get selectedAsset() { return assetsStore.selectedAsset; },
+    // 资产数组引用：adoptSession / attachSessionStream 重解析资产用
+    // （跨窗口会话迁移协议依赖；漏注曾致 adoptSession 恒失败走兜底重连）
+    assets: () => assetsStore.assets,
     get effectiveTheme() { return uiStore.effectiveTheme; },
     get modal() { return uiStore.modal; },
     set modal(v) { uiStore.modal = v; },
@@ -387,6 +390,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     toggleTransferDrawer: filesStore.toggleTransferDrawer,
     toggleLocalPane: filesStore.toggleLocalPane,
     setLocalPaneVisible: filesStore.setLocalPaneVisible,
+    onSessionClosed: filesStore.handleSessionClosed,
+    onSessionConnected: filesStore.handleSessionConnected,
     // --- tunnels re-export actions ---
     refreshTunnels: tunnelsStore.refreshTunnels,
     createTunnel: tunnelsStore.createTunnel,
@@ -495,3 +500,6 @@ export function parentLocalPath(path) {
   if (/^[a-zA-Z]:$/.test(parent)) return parent + '\\';
   return parent || path;
 }
+
+
+

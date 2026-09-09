@@ -24,14 +24,3 @@ export function buildTerminalOptions({ fontSize, lineHeight, themeMode }) {
   };
 }
 
-// 主题切换时同步所有活跃终端
-export function applyThemeToAll(sessions, themeMode) {
-  const theme = pickTerminalTheme(themeMode);
-  sessions.value.forEach(session => {
-    if (session.controller) {
-      session.controller.applyTheme(theme);
-    } else if (session.term) {
-      try { session.term.options.theme = theme; } catch (_) { /* noop */ }
-    }
-  });
-}
