@@ -40,10 +40,12 @@ const DEFAULTS = {
   centerTopH: null // 兼容旧存储：null = 按 terminalRatio 计算
 };
 
-function readStoredLayout() {
+function readStoredLayout(storageKey = LAYOUT_STORAGE_KEY) {
   try {
-    const raw = localStorage.getItem(LAYOUT_STORAGE_KEY);
-    const legacyRaw = raw || localStorage.getItem(LEGACY_LAYOUT_STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey);
+    // legacy key 仅默认实例（主窗口）读取——独立资产窗口实例用专属 key，
+    // 不迁移主窗口的旧布局数据
+    const legacyRaw = raw || (storageKey === LAYOUT_STORAGE_KEY ? localStorage.getItem(LEGACY_LAYOUT_STORAGE_KEY) : null);
     if (!legacyRaw) return null;
     const parsed = JSON.parse(legacyRaw);
     return parsed && typeof parsed === 'object' ? parsed : null;
@@ -67,12 +69,18 @@ function isRegionCollapsed(which) {
   return false;
 }
 
+// 布局契约：标题栏 52px / 状态栏 28px。WorkbenchShell 与 AssetWindowShell 的
+// chrome 高度必须与此保持一致，--terminal-h 的可视高度按此扣减。
 function getMainHeight() {
   if (typeof window === 'undefined') return 720;
   return Math.max(CENTER_TOP_MIN + CENTER_BOTTOM_MIN, window.innerHeight - 52 - 28);
 }
 
-export function usePanelResize() {
+export function usePanelResize(options = {}) {
+  // 实例 storageKey：缺省为主窗口 key（行为与旧版完全一致）；独立资产窗口传
+  // 专属 key，避免多窗口（同 origin 共享 localStorage）布局互相覆盖。
+  const storageKey = options.storageKey || LAYOUT_STORAGE_KEY;
+  const isDefaultKey = storageKey === LAYOUT_STORAGE_KEY;
   // 响应式值（供模板绑定 title/aria，也供 reset）
   const sidebarW = ref(DEFAULTS.sidebarW);
   const rightW = ref(DEFAULTS.rightW);
@@ -82,7 +90,7 @@ export function usePanelResize() {
   const resizing = ref(null); // 'sidebar' | 'right' | 'center-row' | null
 
   // 从 localStorage 恢复 + 应用内联变量
-  const stored = readStoredLayout();
+  const stored = readStoredLayout(storageKey);
   if (stored) {
     if (typeof stored.sidebarW === 'number') sidebarW.value = stored.sidebarW;
     if (typeof stored.rightW === 'number') rightW.value = stored.rightW;
@@ -237,7 +245,7 @@ export function usePanelResize() {
 
   function persist() {
     try {
-      localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify({
+      localStorage.setItem(storageKey, JSON.stringify({
         sidebarW: sidebarW.value,
         rightW: rightW.value,
         terminalRatio: terminalRatio.value
@@ -263,8 +271,9 @@ export function usePanelResize() {
       document.documentElement.style.removeProperty('--terminal-h');
     }
     try {
-      localStorage.removeItem(LAYOUT_STORAGE_KEY);
-      localStorage.removeItem(LEGACY_LAYOUT_STORAGE_KEY);
+      localStorage.removeItem(storageKey);
+      // legacy key 仅默认实例清除（与 readStoredLayout 的读取范围对称）
+      if (isDefaultKey) localStorage.removeItem(LEGACY_LAYOUT_STORAGE_KEY);
     } catch { /* ignore */ }
     // 折叠态不覆盖：折叠列保持折叠（reset 不展开折叠态，用户可单独点展开）。
     applyCssVars();

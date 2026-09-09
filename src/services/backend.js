@@ -24,6 +24,16 @@ export async function listenBackendEvent(eventName, handler) {
   throw new Error(`Event "${eventName}" requires the Tauri desktop runtime.`);
 }
 
+// 广播事件到所有 webview 窗口与 Rust（Tauri 2 event.emit 全局广播）。
+// 跨窗口会话迁移协议（sessionHandoff）用；非 Tauri runtime 抛错，与 invokeBackend 一致。
+export async function emitBackendEvent(eventName, payload) {
+  const tauriEventEmit = window.__TAURI__?.event?.emit;
+  if (typeof tauriEventEmit !== 'function') {
+    throw new Error(`Emitting event "${eventName}" requires the Tauri desktop runtime.`);
+  }
+  return tauriEventEmit(eventName, payload);
+}
+
 // 打开系统文件选择对话框选择私钥文件（tauri-plugin-dialog 的 open 命令）。
 // 返回所选文件的绝对路径字符串；用户取消时返回 null。
 // 非 Tauri runtime（浏览器预览）下抛错，与 invokeBackend 行为一致。
@@ -92,6 +102,32 @@ export async function startTauriWindowDragging() {
     return true;
   }
   return false;
+}
+
+// 创建新的 Tauri WebviewWindow（独立资产窗口等）。非 Tauri runtime 抛错，与 invokeBackend 行为一致。
+// 命名空间依据：withGlobalTauri 全局注入中 WebviewWindow 类在 __TAURI__.webviewWindow 子命名空间
+// （__TAURI__.webview 下只有 Webview 类），与上方 getTauriWindow 的取法一致。
+export async function createTauriWebviewWindow(label, options) {
+  const WebviewWindowClass = window.__TAURI__?.webviewWindow?.WebviewWindow;
+  if (typeof WebviewWindowClass !== 'function') {
+    throw new Error('Creating a webview window requires the Tauri desktop runtime.');
+  }
+  return new WebviewWindowClass(label, options);
+}
+
+// 按 label 查找已存在的 WebviewWindow。注意 Tauri 2 的 WebviewWindow.getByLabel 是
+// **async** 的（内部 await getAllWebviewWindows 再按 label 匹配，返回 Promise<WebviewWindow|null>），
+// 必须 await——直接当同步用拿到的是恒 truthy 的 Promise，调用其方法即 "not a function"。
+// 非 Tauri runtime、窗口不存在或查询失败时返回 null。
+export async function getExistingTauriWebviewWindow(label) {
+  // 同 createTauriWebviewWindow：WebviewWindow 类在 __TAURI__.webviewWindow 子命名空间
+  const WebviewWindowClass = window.__TAURI__?.webviewWindow?.WebviewWindow;
+  if (typeof WebviewWindowClass?.getByLabel !== 'function') return null;
+  try {
+    return (await WebviewWindowClass.getByLabel(label)) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function getTauriInvoke() {

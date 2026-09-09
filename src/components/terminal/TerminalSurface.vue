@@ -12,10 +12,12 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { AlertTriangle, RotateCw } from 'lucide-vue-next';
 import { useSessionsStore } from '@/stores/sessions.js';
+import { useWorkbenchStore } from '@/stores/workbench.js';
 import { useUiStore } from '@/stores/ui.js';
 import { useAssetsStore } from '@/stores/assets.js';
 import { useClipboard } from '@/composables/useClipboard.js';
 import { isTauriRuntime } from '@/services/backend.js';
+import { tearOffSession } from '@/lib/sessionHandoff.js';
 import TerminalTabs from './TerminalTabs.vue';
 import TerminalSearchBar from './TerminalSearchBar.vue';
 import TerminalPane from './TerminalPane.vue';
@@ -27,7 +29,12 @@ import { AppContextMenu } from '@/components/ui/index.js';
 // ============================================================
 // Stores (store-bound wiring — no prop drilling)
 // ============================================================
+const props = defineProps({
+  // 独立资产窗口（单会话窗）不渲染顶部 tab 条；主窗口默认渲染
+  showTabs: { type: Boolean, default: true }
+});
 const sessionsStore = useSessionsStore();
+const workbenchStore = useWorkbenchStore();
 const uiStore = useUiStore();
 const assetsStore = useAssetsStore();
 const { sessions, activeSession, activeSessionId, terminalSearch } =
@@ -153,6 +160,14 @@ async function handleCopyHost(sessionId) {
   uiStore.statusMessage = '已复制主机地址：' + text;
 }
 
+// ============================================================
+// Tab 拖出（sessionHandoff tearoff 接线，错误由协议层内部 announce）
+// tab 只存在于主窗口（asset 窗口单会话无 tab 条）：拖出窗外 = 拆出独立窗口
+// ============================================================
+function handleTabDragOut(sessionId) {
+  tearOffSession({ sessionsStore, workbenchStore, sessionId });
+}
+
 function handleCommandPaletteAction(action) {
   if (action === 'cheatsheet') { shortcutCheatsheetOpen.value = true; return; }
   sessionsStore.runTerminalAction(action);
@@ -171,9 +186,10 @@ function isAuthFailure(connectError) {
 </script>
 
 <template>
-  <div class="region-terminal">
-    <!-- Row 1: session tab strip（term-tabs 32px）-->
+  <div class="region-terminal" :class="{ 'no-tabs': !props.showTabs }">
+    <!-- Row 1: session tab strip（term-tabs 32px，独立资产窗口隐藏）-->
     <TerminalTabs
+      v-if="props.showTabs"
       :sessions="sessions"
       :active-session-id="activeSession?.sessionId || ''"
       @select="handleTabSelect"
@@ -182,6 +198,7 @@ function isAuthFailure(connectError) {
       @close-right="handleCloseRight"
       @copy-host="handleCopyHost"
       @new-terminal="sessionsStore.connectSelected"
+      @drag-out="handleTabDragOut"
     />
 
     <!-- Row 2: term-canvas-wrap（终端 canvas 区，含错误横幅 + 搜索浮层 + watermark + xterm pane + ready 光标）-->
@@ -284,6 +301,11 @@ function isAuthFailure(connectError) {
   color: var(--term-text);
   font-family: var(--font-body);
   overflow: hidden;
+}
+
+// 独立资产窗口（单会话、无 tab 条）：收掉 tab 行，画布占满
+.region-terminal.no-tabs {
+  grid-template-rows: 1fr;
 }
 
 // Row 1: tab strip（由 TerminalTabs 子组件渲染，固定 32px 高）

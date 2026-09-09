@@ -7,7 +7,8 @@
  *
  * 本组件是 store-agnostic 展示组件：仅消费 props + emit 事件，父级 App.vue 接 store。
  *
- * 操作入口（资产）：悬停显示「编辑/删除」快捷按钮 + 右键菜单（编辑/复制/移动/删除）。
+ * 操作入口（资产）：悬停显示「编辑/删除」快捷按钮 + 右键菜单（编辑/复制/移动/独立窗口/删除）；
+ * 拖出主窗口边界释放也开独立资产窗口（Phase 2，开窗/判定逻辑在 lib/assetWindows.js）。
  * 操作入口（分组）：分组头右键菜单（重命名/解散）。「未分组」是保留节点，无分组菜单。
  *
  * 通过 provide('connectionSidebar', ...) 把 handler/state 注入给 AssetGroupNode，
@@ -28,6 +29,9 @@ import AssetGroupNode from './AssetGroupNode.vue';
 import { useSessionsStore } from '@/stores/sessions.js';
 import { useWorkbenchStore } from '@/stores/workbench.js';
 import { normalizeStatus } from '@/stores/workbench.js';
+import { openAssetWindow } from '@/lib/assetWindows.js';
+import { useDragOutsideViewport } from '@/composables/useDragOutsideViewport.js';
+import { isTauriRuntime } from '@/services/backend.js';
 
 const props = defineProps({
   assets: { type: Array, default: () => [] },
@@ -179,6 +183,19 @@ const DRAG_MIME = 'application/x-myshelltool-drag';
 // 拖拽态：当前被拖对象 / 当前悬停目标分组 / 上半还是下半区
 const dragSource = ref(null);   // { kind:'asset', id } | { kind:'group', path, parent } | null
 const dropTarget = ref(null);   // { path, position:'in'|'before'|'after' } | null
+// 内部 drop 消费标记：分组移动 / 分组排序 drop 命中（onGroupDrop 的 emit 处）置 true，
+// dragend 据此跳过「拖出主窗口开独立窗口」判定；每次 dragend 结束时复位，不残留
+let internalDropHandled = false;
+// 拖拽期间指针是否离开过 webview 视口（窗外释放判定，见 composable 头注释）
+const dragOutside = useDragOutsideViewport();
+
+// 开独立资产窗口（拖出判定 / 右键菜单共用入口）：失败 console.error + toast 提示，不阻断
+function openAssetDetached(asset) {
+  openAssetWindow(asset).catch(error => {
+    console.error('[ConnectionSidebar] open asset window failed:', error);
+    workbench.announce('打开独立窗口失败：' + (error?.message || error), { level: 'error' });
+  });
+}
 
 function readDragData(event) {
   const raw = event.dataTransfer?.getData(DRAG_MIME);
@@ -196,10 +213,28 @@ function writeDragData(event, payload) {
 function onAssetDragStart(event, asset) {
   dragSource.value = { kind: 'asset', id: asset.id };
   writeDragData(event, { kind: 'asset', id: asset.id });
+  // 挂 document 级视口跟踪（仅资产拖拽需要，分组拖拽不开独立窗口）
+  dragOutside.attach();
 }
-function onAssetDragEnd() {
+function onAssetDragEnd(event) {
+  // 拖出主窗口边界释放 → 开独立资产窗口（Phase 2）。
+  // 判定 = 坐标在视口外 ∥ 拖拽期间离开过视口（dragend 坐标在窗外释放时不可靠，
+  // dragleave 标记是可靠信号，两者取或，详见 useDragOutsideViewport）。
+  // 已知边界：Esc 取消的「窗外拖拽」也会置标记、可能误开窗（v1 接受，待实测）；
+  // 拖到主窗口内其他无效区域释放时坐标在视口内且未离开过视口，不会触发。
+  const src = dragSource.value; // 内部 drop 路径（onGroupDrop）会先清 dragSource，故判定前快照语义等价
+  const openDetached =
+    !internalDropHandled &&
+    src?.kind === 'asset' &&
+    isTauriRuntime() &&
+    dragOutside.isOutside(event);
   dragSource.value = null;
   dropTarget.value = null;
+  internalDropHandled = false;
+  dragOutside.detach();
+  if (!openDetached) return;
+  const asset = props.assets.find(a => a.id === src.id);
+  if (asset) openAssetDetached(asset);
 }
 function isDraggingAsset(id) {
   return dragSource.value?.kind === 'asset' && dragSource.value.id === id;
@@ -214,6 +249,7 @@ function onGroupDragStart(event, path, parent) {
 function onGroupDragEnd() {
   dragSource.value = null;
   dropTarget.value = null;
+  internalDropHandled = false; // 分组拖拽同样复位，避免残留毒化下一次资产拖出判定
 }
 
 // —— 分组头作为 drop target（同时收资产拖入与分组排序）——
@@ -260,13 +296,15 @@ function onGroupDrop(event, targetPath, targetParent) {
   dragSource.value = null;
   if (!src) return;
   if (src.kind === 'asset') {
-    // 资产拖入分组 → 直接移动
+    // 资产拖入分组 → 直接移动（内部消费：dragend 不再判「拖出开窗」）
+    internalDropHandled = true;
     emit('move-asset-direct', { id: src.id, group: targetPath });
     return;
   }
   if (src.kind === 'group') {
     // 同级排序：把 src.path 插到 targetPath 的 before/after
     if (targetPath === '未分组' || src.path === targetPath || src.parent !== targetParent) return;
+    internalDropHandled = true;
     const rect = event.currentTarget.getBoundingClientRect();
     const placeAfter = event.clientY >= rect.top + rect.height / 2;
     emit('reorder-groups', buildReorderedPaths(src.path, targetPath, placeAfter));
@@ -417,6 +455,10 @@ const assetMenuItems = computed(() => {
     make('复制', () => emit('duplicate-asset', a)),
     { separator: true },
     make('移动到分组…', () => emit('move-asset', a)),
+    // 独立窗口入口：仅 Tauri runtime 显示（浏览器预览无多窗口能力）
+    ...(isTauriRuntime()
+      ? [{ separator: true }, make('在独立窗口打开', () => openAssetDetached(a))]
+      : []),
     { separator: true },
     make('删除', () => emit('delete-asset', a), { danger: true })
   ];

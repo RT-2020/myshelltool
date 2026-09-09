@@ -34,6 +34,7 @@ import AppSelect from '@/components/ui/AppSelect.vue';
 import McpPanelContent from '@/components/shell/McpPanelContent.vue';
 import SyncPanelContent from '@/components/shell/SyncPanelContent.vue';
 import SettingsPanelContent from '@/components/shell/SettingsPanelContent.vue';
+import ConfirmCloseAssetWindowContent from '@/components/shell/ConfirmCloseAssetWindowContent.vue';
 import PatConfigCard from '@/components/shell/PatConfigCard.vue';
 import AssetPrivateKeyInput from '@/components/shell/AssetPrivateKeyInput.vue';
 import { openPrivateKeyFileDialog } from '@/services/backend.js';
@@ -115,6 +116,7 @@ const modalTitle = computed(() => {
     case 'renameGroup': return '重命名分组';
     case 'createGroup': return '新建分组';
     case 'moveAsset': return '移动到分组';
+    case 'confirmCloseAssetWindow': return '关闭独立窗口';
     default: return '提示';
   }
 });
@@ -193,6 +195,9 @@ watch(() => modal.value.type, type => {
   }
   if (type === 'keyboardInteractive') {
     Object.keys(keyboardResponses).forEach(key => delete keyboardResponses[key]);
+  }
+  if (type === 'confirmCloseAssetWindow') {
+    // 纯确认弹窗（无表单状态）：count/onConfirm 直接读 modal payload
   }
 });
 
@@ -279,6 +284,10 @@ function closeModal() {
   const type = modal.value.type;
   if (type === 'confirmFileOverwrite') { store.cancelFileOverwrite(); return; }
   if (type === 'confirmFileDelete') { store.cancelFileDelete(); return; }
+  // 安全审批类弹窗：× 关闭等价于拒绝——立即 resolve(false) 回传后端，
+  // 不能裸关弹窗（后端 oneshot 无人响应会挂到 60s 超时才拒绝）
+  if (type === 'hostKeyVerify') { denyHostKey(); return; }
+  if (type === 'mcpApproval') { denyMcpApproval(); return; }
   store.modal = { type: null, asset: null };
 }
 
@@ -374,11 +383,19 @@ async function submitModal() {
       return;
     case 'hostKeyVerify':
       store.resolveHostKeyPrompt(hostKeyPrompt.value.request_id, true);
-      closeModal();
+      // 不走 closeModal()：它对 hostKeyVerify 路由到 denyHostKey()，会在 accept
+      // 之后又补发一次 accepted:false（denyHostKey → closeModal 还会递归）
+      store.modal = { type: null, asset: null };
+      return;
+    case 'confirmCloseAssetWindow':
+      // onConfirm 自管理断开与窗口 destroy，不 await——立即关 modal 让流程接管
+      modal.value.onConfirm?.();
+      store.modal = { type: null, asset: null };
       return;
     case 'mcpApproval':
       store.resolveMcpApproval(mcpApprovalPrompt.value.request_id, true);
-      closeModal();
+      // 同 hostKeyVerify：closeModal 会路由 denyMcpApproval 补发 accepted:false
+      store.modal = { type: null, asset: null };
       return;
     case 'keyboardInteractive':
       store.resolveKeyboardPrompt(keyboardPrompt.value.request_id, Object.values(keyboardResponses));
@@ -454,22 +471,34 @@ async function runFileDeleteConfirm() {
 
 function denyHostKey() {
   store.resolveHostKeyPrompt(hostKeyPrompt.value.request_id, false);
-  closeModal();
+  // 直接清 modal 而非 closeModal()：本函数就是 closeModal 的 hostKeyVerify 路由
+  // 目标，再走 closeModal 会无限递归（× / Esc / danger 按钮三条路径共用此处）
+  store.modal = { type: null, asset: null };
 }
 
 function denyMcpApproval() {
   store.resolveMcpApproval(mcpApprovalPrompt.value.request_id, false);
-  closeModal();
+  // 同 denyHostKey：防 closeModal → denyMcpApproval 递归
+  store.modal = { type: null, asset: null };
 }
 
 // ============================================================
-// Esc / 遮罩关闭映射（S2）：
-//   - hostKeyVerify / mcpApproval → 对应的 deny（安全语义：Esc=拒绝）
-//   - 其余（含 confirmFileOverwrite / confirmFileDelete）→ closeModal，
-//     closeModal 内已把这两个文件确认类型路由到对应 cancel（resolve(false)/清 pending）
+// Esc / 遮罩关闭映射（S2，v2.3 拆分 Esc 与遮罩点击）：
+//   - Esc：hostKeyVerify / mcpApproval → 对应的 deny（安全语义：Esc=拒绝，
+//     键盘操作明确无误触风险，保留 fail-secure）；其余 → closeModal
+//   - 遮罩空白点击：hostKeyVerify / mcpApproval → 完全不响应（防误触点空白
+//     即拒绝审批/断开连接，只能通过弹窗内按钮操作）；其余 → closeModal
 // 注册时机 watch(modal.type)：弹窗打开注册、关闭移除，避免全局常驻监听。
 // ============================================================
-function dismissByEscOrBackdrop() {
+function onBackdropClick() {
+  const type = modal.value.type;
+  if (!type) return;
+  // 安全审批类弹窗：遮罩点击不产生任何效果（防误操作）
+  if (type === 'hostKeyVerify' || type === 'mcpApproval') return;
+  closeModal();
+}
+
+function dismissByEsc() {
   const type = modal.value.type;
   if (!type) return;
   if (type === 'hostKeyVerify') { denyHostKey(); return; }
@@ -480,7 +509,7 @@ function dismissByEscOrBackdrop() {
 function onKeydownEsc(event) {
   if (event.key !== 'Escape') return;
   event.preventDefault();
-  dismissByEscOrBackdrop();
+  dismissByEsc();
 }
 
 watch(() => modal.value.type, type => {
@@ -499,7 +528,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydownEsc));
       - #modalPrimary      (host-key test step 4)
       - .modal-actions .btn.danger  (host-key test step reject)
   -->
-  <div class="modal-layer" id="modalLayer" :class="{ open: modal.type }" :aria-hidden="String(!modal.type)" @click.self="dismissByEscOrBackdrop">
+  <div class="modal-layer" id="modalLayer" :class="{ open: modal.type }" :aria-hidden="String(!modal.type)" @click.self="onBackdropClick">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
       <div class="modal-head">
         <h2 id="modalTitle">{{ modalTitle }}</h2>
@@ -774,6 +803,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydownEsc));
           <p v-if="groupFormError" class="form-error">{{ groupFormError }}</p>
         </div>
 
+        <!-- confirmCloseAssetWindow（Phase 1-A：独立资产窗口关闭确认，body 在子组件） -->
+        <ConfirmCloseAssetWindowContent
+          v-else-if="modal.type === 'confirmCloseAssetWindow'"
+          :count="modal.count || 0"
+        />
+
         <!-- default: tokenConfig（PAT 表单已抽到 PatConfigCard，供此处与 settings 同步 tab 复用） -->
         <PatConfigCard v-else />
       </div>
@@ -789,6 +824,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydownEsc));
           :disabled="submitting"
           @click="submitModal"
         >删除</button>
+        <button
+          v-else-if="modal.type === 'confirmCloseAssetWindow'"
+          class="btn danger"
+          data-modal-primary-danger
+          :disabled="submitting"
+          @click="submitModal"
+        >断开并关闭</button>
         <button
           v-else-if="modal.type === 'confirmFileDelete'"
           class="btn danger"

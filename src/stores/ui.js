@@ -17,6 +17,12 @@ const THEME_STORAGE_KEY = 'myshelltool-theme';
 const ASSETS_COLLAPSED_KEY = 'myshelltool-assets';
 const RIGHT_COLLAPSED_KEY = 'myshelltool-right';
 
+// 独立资产窗口（?win=asset）：模块加载即定（无响应性需求）。asset 窗口的右栏
+// 折叠不得写共享 localStorage——否则会泄漏到主窗口下次启动；dataset 照写
+// （每个 webview 独立 document，天然隔离）。
+const isAssetWindow = typeof location !== 'undefined'
+  && new URLSearchParams(location.search).get('win') === 'asset';
+
 function readStored(key) {
   try {
     return localStorage.getItem(key);
@@ -54,7 +60,8 @@ function applyRightState(collapsed, persist) {
   if (typeof document !== 'undefined' && document.documentElement) {
     document.documentElement.dataset.right = collapsed ? 'collapsed' : 'expanded';
   }
-  if (persist) {
+  // asset 模式不写共享 key（见文件头 isAssetWindow 说明）
+  if (persist && !isAssetWindow) {
     try {
       localStorage.setItem(RIGHT_COLLAPSED_KEY, collapsed ? 'collapsed' : 'expanded');
     } catch {

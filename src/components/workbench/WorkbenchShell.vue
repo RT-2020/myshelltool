@@ -219,7 +219,7 @@ onMounted(() => {
     >
       <div class="tb-left" data-tauri-drag-region>
         <div class="tb-brand">
-          <AppBrandLogo :size="16" />
+          <AppBrandLogo :size="22" />
           <span class="tb-name">myshelltool</span>
         </div>
       </div>

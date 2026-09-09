@@ -40,6 +40,10 @@ function readStored(key) {
  * 65s 超时 watcher + hostKeyTimeout 闭包随 sshConfirmHostKey 迁移；localStorage
  * key 禁重命名；progress/hostKey/keyboard 三个 unlisten handle 必须迁移。
  * 跨 store 依赖（assets/ui）通过 lazy getter（attachWorkbench）注入。
+ *
+ * 行数债务：本文件早已超出 Pinia store 500 行硬上限（见 docs/architecture-log.md
+ * Baseline snapshot），v2.4 跨窗口会话迁移（createTerminalForAsset + adoptSession）
+ * 以共用工厂控制增量；拆分仍是重构候选，勿继续堆叠无关功能。
  */
 export const useSessionsStore = defineStore('sessions', () => {
   // ============================================================
@@ -308,12 +312,13 @@ export const useSessionsStore = defineStore('sessions', () => {
 
   async function ensureTerminalModules() {
     if (terminalModules) return terminalModules;
-    const [{ Terminal }, { FitAddon }, { SearchAddon }] = await Promise.all([
+    const [{ Terminal }, { FitAddon }, { SearchAddon }, { SerializeAddon }] = await Promise.all([
       import('@xterm/xterm'),
       import('@xterm/addon-fit'),
-      import('@xterm/addon-search')
+      import('@xterm/addon-search'),
+      import('@xterm/addon-serialize')
     ]);
-    terminalModules = { Terminal, FitAddon, SearchAddon };
+    terminalModules = { Terminal, FitAddon, SearchAddon, SerializeAddon };
     return terminalModules;
   }
 
@@ -396,6 +401,8 @@ export const useSessionsStore = defineStore('sessions', () => {
     if (activeSessionId.value === session.sessionId) {
       activeSessionId.value = sessions.value.at(-1)?.sessionId || null;
       if (activeSessionId.value) syncAssetSelection(activeSessionId.value);
+      // tearoff / disconnect 后补刷 DOM 可见性，与 setActiveSession 行为对齐
+      showOnlyActiveTerminal();
     }
     try { session.term.dispose(); } catch {}
     session.termDiv?.remove();
@@ -645,7 +652,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     session.manualDisconnect = true;
     session.autoReconnect?.cancel();
     await invokeBackend('ssh_disconnect', { sessionId }).catch(() => null);
-    if (typeof session.unlisten === 'function') session.unlisten();
+    if (typeof session.unlisten === 'function') session.unlisten().catch(() => null);
     if (session.resizeObserver) session.resizeObserver.disconnect();
     try { session.searchResultsDisposable?.dispose(); } catch (_) { /* noop */ }
     try { session.term.dispose(); } catch {}
@@ -741,6 +748,23 @@ export const useSessionsStore = defineStore('sessions', () => {
       throw new Error('terminal container is not mounted');
     }
 
+    const session = await createTerminalForAsset(asset);
+    session.term.writeln('\x1b[36mmyshelltool SSH\x1b[0m - connecting to ' + asset.host + '...\r\n');
+
+    try {
+      const ok = await attachSessionStream(session);
+      if (!ok) return; // 失败已置 status='error' + connectError，错误卡片展示
+    } finally {
+      connectingAssetIds.delete(asset.id);
+    }
+  }
+
+  // 创建终端 + session 的共用工厂（connectSelected 新建连接与 adoptSession 跨窗口
+  // 接管共用，消除两份实现漂移风险）：termDiv + Terminal + addons（fit/search/
+  // serialize/webLinks/webgl）+ 危险粘贴守卫 + resize observer + autoReconnect 实例 +
+  // 搜索结果订阅，最后挂入 sessions 并激活。overrides 覆盖 session 初始字段（adopt
+  // 路径传真实 sessionId / status='connected' / oscTitle）。
+  async function createTerminalForAsset(asset, overrides = {}) {
     const termDiv = document.createElement('div');
     // 关键修复：termDiv 一开始就可见、占满容器。绝不能在 display:none 上调
     // term.open()（WebGL canvas 会 0×0 初始化，fit 后也不重建，终端空白）。
@@ -748,14 +772,18 @@ export const useSessionsStore = defineStore('sessions', () => {
     terminalContainer.appendChild(termDiv);
 
     const term = markRaw(new terminalModules.Terminal(buildTerminalOptions({
-      fontSize: terminalFontSize.value,
-      lineHeight: terminalLineHeight.value,
-      themeMode: effectiveTheme().value
+      // overrides 可携带跨窗口迁移的样式快照（adoptSession）；缺省读本窗口设置
+      fontSize: overrides.fontSize ?? terminalFontSize.value,
+      lineHeight: overrides.lineHeight ?? terminalLineHeight.value,
+      themeMode: overrides.themeMode || effectiveTheme().value
     })));
     const fit = markRaw(new terminalModules.FitAddon());
     const search = markRaw(new terminalModules.SearchAddon());
+    // serialize：跨窗口迁移导出带 SGR 颜色/样式的 scrollback（sessionHandoff 消费）
+    const serialize = markRaw(new terminalModules.SerializeAddon());
     term.loadAddon(fit);
     term.loadAddon(search);
+    term.loadAddon(serialize);
     // 可选 addon：URL 可点击。失败静默回退
     try {
       const { WebLinksAddon } = await import('@xterm/addon-web-links');
@@ -779,13 +807,12 @@ export const useSessionsStore = defineStore('sessions', () => {
     // 等一帧让浏览器完成布局后立即 fit，拿到准确的 cols/rows。
     await new Promise(resolve => requestAnimationFrame(resolve));
     try { fit.fit(); } catch {}
-    term.writeln('\x1b[36mmyshelltool SSH\x1b[0m - connecting to ' + asset.host + '...\r\n');
 
-    // 用 reactive() 包裹 session 对象：connectSelected 后续会通过本地 session
-    // 变量多次修改其属性（status / sessionId / oscTitle / unlisten 等）。若 push
-    // 的是普通对象，本地引用指向【原始对象】，对其属性的赋值不经过代理 set trap，
-    // 不触发响应式更新——这曾导致终端区域 status 永远停在 'connecting'（侧栏圆点
-    // 靠 computed 重算碰巧更新，但终端组件的细粒度依赖收不到通知）。
+    // 用 reactive() 包裹 session 对象：创建方后续会通过本地 session 变量多次
+    // 修改其属性（status / sessionId / oscTitle / unlisten 等）。若 push 的是普通
+    // 对象，本地引用指向【原始对象】，对其属性的赋值不经过代理 set trap，不触发
+    // 响应式更新——这曾导致终端区域 status 永远停在 'connecting'（侧栏圆点靠
+    // computed 重算碰巧更新，但终端组件的细粒度依赖收不到通知）。
     // reactive() 让本地 session 引用本身成为代理，所有属性变更都可靠触发更新。
     // term/fit/search 已 markRaw，reactive 不会再深代理它们。
     const session = reactive({
@@ -794,6 +821,7 @@ export const useSessionsStore = defineStore('sessions', () => {
       term,
       fit,
       search,
+      serialize,
       termDiv,
       unlisten: null,
       resizeObserver: null,
@@ -806,7 +834,8 @@ export const useSessionsStore = defineStore('sessions', () => {
       searchOpts: reactive({ caseSensitive: false, regex: false, wholeWord: false }),
       searchMatch: { index: 0, total: 0 },
       allowedPastePatterns: new Set(),
-      decoder: new TextDecoder('utf-8', { stream: true })
+      decoder: new TextDecoder('utf-8', { stream: true }),
+      ...overrides
     });
     // 每个 session 一个自动重连实例（退避 1s/2s/5s/15s 共 4 次）
     session.autoReconnect = useAutoReconnect({
@@ -821,8 +850,9 @@ export const useSessionsStore = defineStore('sessions', () => {
         announce('自动重连失败：' + session.asset.name + '，请手动重连', { level: 'error' });
       }
     });
-    // 原生 Ctrl+V 粘贴守卫：markRaw(term) 之后挂 handler；闭包经 getSessionId
-    // 取 session 当前 sessionId（重连期间 sessionId 会切换，不能写死初始值）。
+    // 原生 Ctrl+V 粘贴守卫（安全红线，两条创建路径都必须有）：markRaw(term) 之后挂
+    // handler；闭包经 getSessionId 取 session 当前 sessionId（重连期间 sessionId
+    // 会切换，不能写死初始值）。
     term.attachCustomKeyEventHandler(createNativePasteGuard({
       getSessionId: () => session.sessionId,
       requestDangerousPaste,
@@ -851,13 +881,81 @@ export const useSessionsStore = defineStore('sessions', () => {
       invokeBackend('ssh_resize', { sessionId: session.sessionId, cols, rows }).catch(() => null);
     });
     attachResizeObserver(session);
+    return session;
+  }
 
-    try {
-      const ok = await attachSessionStream(session);
-      if (!ok) return; // 失败已置 status='error' + connectError，错误卡片展示
-    } finally {
-      connectingAssetIds.delete(asset.id);
+  // 跨窗口会话接管（sessionHandoff 迁移协议的目标侧）：以真实 sessionId 重建终端
+  // 并回放 scrollback，不重连（Rust 侧 SSH 连接从未断开，直接复用）。
+  // 注意：不调 injectShellCwdIntegration——远端 PROMPT_COMMAND 仍在（注入只发生
+  // 在最初连接时），重注入会产生 stty -echo 噪音。
+  async function adoptSession({ sessionId, assetId, scrollback, oscTitle, style }) {
+    if (!sessionId) return false;
+    // 幂等守卫：已接管（或本就是本窗口会话）直接视为成功
+    if (sessions.value.some(item => item.sessionId === sessionId)) return true;
+    // 资产重解析（与 attachSessionStream 同源逻辑）：迁移期间资产可能被编辑
+    const latestAssets = workbenchBridge && typeof workbenchBridge.assets === 'function'
+      ? workbenchBridge.assets()
+      : null;
+    const asset = Array.isArray(latestAssets)
+      ? latestAssets.find(item => item && item.id === assetId)
+      : null;
+    if (!asset) {
+      // 跨窗口迁移诊断关键日志：asset 列表未加载完 / bridge 未注入都能在此分辨
+      console.warn('[sessions] adoptSession 失败：资产未找到', {
+        assetId,
+        bridgeAttached: Boolean(workbenchBridge),
+        assetCount: latestAssets?.length ?? null
+      });
+      return false;
     }
+    try {
+      await ensureTerminalModules();
+    } catch (error) {
+      announce('终端模块加载失败：' + error.message);
+      return false;
+    }
+    if (!terminalContainer) {
+      console.warn('[sessions] adoptSession 失败：终端容器未就绪（TerminalPane 未挂载）');
+      return false;
+    }
+
+    // 样式快照（v2.4）：每个窗口独立 webview + 独立 localStorage 缓存（跨窗口
+    // 非实时），目标窗口全局设置可能陈旧。快照【只作用于被迁移的终端实例】
+    // （createTerminalForAsset overrides），保证会话视觉与源窗口一致；
+    // 绝不回写目标窗口的全局字号/行距/主题——那是窗口级用户偏好，迁移不应改写。
+    const styleSnapshot = style && typeof style === 'object' ? style : null;
+
+    const session = await createTerminalForAsset(asset, {
+      sessionId,
+      status: 'connected',
+      oscTitle: oscTitle || '',
+      fontSize: styleSnapshot?.fontSize,
+      lineHeight: styleSnapshot?.lineHeight
+      // themeMode 不传：pickTerminalTheme 恒返回 darkTheme，终端主题与 app 主题解耦
+    });
+    // scrollback 回放：分块 write（每 100 行间隔一帧 rAF），防大文本一次性写入卡顿
+    const text = String(scrollback || '');
+    if (text) {
+      const lines = text.split('\r\n');
+      for (let i = 0; i < lines.length; i += 100) {
+        if (i > 0) await new Promise(resolve => requestAnimationFrame(resolve));
+        const end = Math.min(i + 100, lines.length);
+        session.term.write(lines.slice(i, end).join('\r\n') + (end < lines.length ? '\r\n' : ''));
+      }
+    }
+    // 重建 ssh-output/closed 事件接线（闭包私有，直接调）
+    await registerSessionStream(session);
+    setActiveSession(sessionId);
+    // bridge.onSessionConnected 必须在 setActiveSession 之后：files handler 只对
+    // 面板当前 selectedAsset 生效，setActiveSession 先经 syncAssetSelection 切过去
+    try {
+      workbenchBridge?.onSessionConnected?.(asset.id);
+    } catch (_) { /* noop */ }
+    // merge 回主窗口后切到 terminal tab，让用户立即看到回迁的终端
+    try {
+      workbenchBridge?.setTab?.('terminal');
+    } catch (_) { /* noop */ }
+    return true;
   }
 
   // 对已有 session 建立 SSH 连接 + 事件接线（首次连接 / 自动重连 / 手动重连共用）。
@@ -874,9 +972,10 @@ export const useSessionsStore = defineStore('sessions', () => {
       : null;
     if (freshAsset) session.asset = freshAsset;
     const asset = session.asset;
-    // 清理上一次连接的监听（重连时旧 ssh-output-/ssh-closed- 监听必须先解绑）
+    // 清理上一次连接的监听（重连时旧 ssh-output-/ssh-closed- 监听必须先解绑）。
+    // unlisten 已 async 化：await 完成，rejection 吞掉不阻断重连。
     if (typeof session.unlisten === 'function') {
-      try { session.unlisten(); } catch (_) { /* noop */ }
+      try { await session.unlisten().catch(() => null); } catch (_) { /* noop */ }
       session.unlisten = null;
     }
     const prevRealId = String(session.sessionId).startsWith('pending-') ? null : session.sessionId;
@@ -988,9 +1087,10 @@ export const useSessionsStore = defineStore('sessions', () => {
       } catch (_) { /* noop */ }
       scheduleSessionReconnect(session, reason);
     });
-    session.unlisten = () => {
-      try { outputUnlisten(); } catch (_) { /* noop */ }
-      try { closedUnlisten(); } catch (_) { /* noop */ }
+    // 组合句柄 async 化：跨窗口迁移路径需 await 两个 unlisten 完成后再移除
+    // session（防旧窗口残留监听造成双写）；现有调用方不 await 也不破坏。
+    session.unlisten = async () => {
+      await Promise.all([outputUnlisten(), closedUnlisten()]);
     };
   }
 
@@ -1059,6 +1159,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     disconnectSession,
     reconnectSession,
     connectSelected,
+    adoptSession,
     cancelConnect,
     dismissSessionError,
     removeSessionEntry,
@@ -1093,3 +1194,6 @@ export const useSessionsStore = defineStore('sessions', () => {
     pasteToTerminal
   };
 });
+
+
+

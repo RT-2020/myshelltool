@@ -1,12 +1,13 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, nextTick, computed } from 'vue';
 import { Plus, MoreHorizontal, X, Copy, FolderX, SquareX } from 'lucide-vue-next';
+import { useDragOutsideViewport } from '@/composables/useDragOutsideViewport.js';
 
 const props = defineProps({
   sessions: { type: Array, default: () => [] },
   activeSessionId: { type: String, default: '' }
 });
-const emit = defineEmits(['select', 'close', 'close-others', 'close-right', 'copy-host', 'new-terminal']);
+const emit = defineEmits(['select', 'close', 'close-others', 'close-right', 'copy-host', 'new-terminal', 'drag-out']);
 
 const barRef = ref(null);
 const overflowTriggerRef = ref(null);
@@ -14,6 +15,24 @@ const overflowed = ref([]);
 const overflowMenuOpen = ref(false);
 const overflowMenuStyle = ref({ left: 0, top: 0 });
 const contextMenu = ref({ open: false, x: 0, y: 0, sessionId: '' });
+
+// Tab 拖出（sessionHandoff tearoff 的 UI 侧）
+const dragOutside = useDragOutsideViewport();
+
+// 仅 connected tab 可拖（connecting/error/disconnected 无迁移价值）
+function onTabDragStart(e, session) {
+  const dt = e.dataTransfer;
+  if (!dt) return;
+  dt.setData('text/plain', session.sessionId);
+  dt.effectAllowed = 'move';
+  dragOutside.attach();
+}
+
+function onTabDragEnd(e, session) {
+  const outside = dragOutside.isOutside(e); // 先取判定（取值后自动复位）再 detach
+  dragOutside.detach();
+  if (outside && session.status === 'connected') emit('drag-out', session.sessionId); // Esc 窗外取消会误触发（沿用 v1 已知边界）
+}
 
 // 浮动菜单 clamp 到视口内（x 超界则翻转），菜单宽/高取近似值
 function clampMenu(x, y, width = 200, height = 180) {
@@ -140,10 +159,16 @@ function dupSuffixFor(session) {
 
 <template>
   <div class="terminal-tabs-host">
-    <div class="term-tabs terminal-tabs" ref="barRef" role="tablist" aria-label="SSH 会话标签">
+    <div
+      class="term-tabs terminal-tabs"
+      ref="barRef"
+      role="tablist"
+      aria-label="SSH 会话标签"
+    >
       <button class="tab workspace-tab terminal-tab-new" role="tab" @click="emit('new-terminal')" title="新建会话" aria-label="新建会话">
         <Plus :size="14" />
       </button>
+      <!-- 已知限制：溢出折叠进菜单的 tab 不可拖 -->
       <div
         v-for="session in visibleSessions"
         :key="session.sessionId"
@@ -154,15 +179,18 @@ function dupSuffixFor(session) {
         :data-session-id="session.sessionId"
         data-session-tab
         :title="tooltipFor(session)"
+        :draggable="session.status === 'connected'"
         @click="onTabClick(session.sessionId)"
         @keydown="onTabKeydown($event, session.sessionId)"
         @focus="onTabFocus(session.sessionId)"
         @contextmenu="onContextMenu($event, session.sessionId)"
         @mousedown.middle.prevent="emit('close', session.sessionId)"
+        @dragstart="onTabDragStart($event, session)"
+        @dragend="onTabDragEnd($event, session)"
       >
         <span :class="['dot', statusFor(session)]"></span>
         <span class="tab-name session-tab-name">{{ session.asset?.name }}{{ dupSuffixFor(session) }}</span>
-        <button class="tab-close" aria-label="关闭会话" @click="onTabClose($event, session.sessionId)"><X :size="12" /></button>
+        <button class="tab-close" aria-label="关闭会话" @click="onTabClose($event, session.sessionId)" @mousedown.stop><X :size="12" /></button>
       </div>
       <div class="term-tabs-spacer"></div>
       <button
@@ -433,5 +461,3 @@ function dupSuffixFor(session) {
   background: transparent;
 }
 </style>
-
-

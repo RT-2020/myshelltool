@@ -36,9 +36,9 @@ export const darkTheme = {
   brightWhite: '#f0f6fc'        // 设计稿未定义，保留
 };
 
-// 浅色主题色板（用于浅色主题下的终端；保留浅底供用户选择）。
-// 注意：open-design 设计稿的契约是「终端始终深色」，但现有行为是浅色主题用浅色终端。
-// 若后续要严格执行「终端始终深色」契约，让 pickTerminalTheme 无条件返回 darkTheme 即可。
+// 浅色主题色板（保留导出，仅供未来「用户显式选择终端主题」功能使用）。
+// ⚠️ 不再随 app 主题自动切换——open-design 设计契约：终端始终深色。
+// 参见 _tokens.scss：浅/深/system 三种主题下 --term-bg 均为深色 (#0c0f17 / #07090f)。
 export const lightTheme = {
   background: '#fbfbfc',
   foreground: '#1b1f27',
@@ -62,7 +62,8 @@ export const lightTheme = {
   brightWhite: '#1b1f27'
 };
 
-export function pickTerminalTheme(mode) {
-  if (mode === 'light') return lightTheme;
+// 无条件返回 darkTheme，落实「终端始终深色」契约。
+// mode 参数保留签名兼容性，忽略其值——终端主题与 app 主题解耦。
+export function pickTerminalTheme(_mode) {
   return darkTheme;
 }
