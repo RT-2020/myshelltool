@@ -115,8 +115,8 @@ async function onExport() {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  // 高度与终端标签条（.region-terminal 38px）、左栏 sb-header 对齐，三列头部横线共线
-  height: 38px;
+  // 高度与终端标签条（.region-terminal 32px）、左栏 sb-header 对齐，三列头部横线共线
+  height: 32px;
   padding: 0 var(--space-3);
   border-bottom: 1px solid var(--app-border-soft);
   background: var(--app-panel);

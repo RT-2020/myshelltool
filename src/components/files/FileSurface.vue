@@ -321,12 +321,12 @@ const contextMenuItems = computed(() => {
 @use '@/styles/_tokens' as *;
 
 // ============================================================
-// region-files（app.css L688-693：grid 38px 1fr）
+// region-files：grid 32px 1fr（与三列头部高度统一）
 // ============================================================
 .region-files {
   position: relative;
   display: grid;
-  grid-template-rows: 38px 1fr;
+  grid-template-rows: 32px 1fr;
   width: 100%;
   height: 100%;
   min-height: 0;

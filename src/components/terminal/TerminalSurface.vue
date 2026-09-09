@@ -172,7 +172,7 @@ function isAuthFailure(connectError) {
 
 <template>
   <div class="region-terminal">
-    <!-- Row 1: session tab strip（term-tabs 38px）-->
+    <!-- Row 1: session tab strip（term-tabs 32px）-->
     <TerminalTabs
       :sessions="sessions"
       :active-session-id="activeSession?.sessionId || ''"
@@ -272,11 +272,11 @@ function isAuthFailure(connectError) {
 
 // ============================================================
 // region-terminal
-// grid 38px(term-tabs) 1fr(term-canvas-wrap)——工具栏已删，搜索条为画布内浮层
+// grid 32px(term-tabs) 1fr(term-canvas-wrap)——工具栏已删，搜索条为画布内浮层
 // ============================================================
 .region-terminal {
   display: grid;
-  grid-template-rows: 38px 1fr;
+  grid-template-rows: 32px 1fr;
   width: 100%;
   height: 100%;
   min-height: 0;
@@ -286,7 +286,7 @@ function isAuthFailure(connectError) {
   overflow: hidden;
 }
 
-// Row 1: tab strip（由 TerminalTabs 子组件渲染，固定 38px 高）
+// Row 1: tab strip（由 TerminalTabs 子组件渲染，固定 32px 高）
 .region-terminal :deep(.terminal-tabs) {
   flex: 0 0 auto;
 }
