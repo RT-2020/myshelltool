@@ -789,7 +789,12 @@ impl ServerHandler for MyshellToolMcpServer {
         _context: RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ReadResourceResult, McpError>> + Send + '_ {
         let asset_path = self.ctx.asset_store_path.clone();
-        std::future::ready(match super::resources::read_resource(&request, &asset_path) {
+        let known_hosts_path = self.ctx.known_hosts_path.clone();
+        std::future::ready(match super::resources::read_resource(
+            &request,
+            &asset_path,
+            &known_hosts_path,
+        ) {
             Ok(result) => Ok(result),
             Err(e) => {
                 log::warn!("MCP read_resource error: {}", e);

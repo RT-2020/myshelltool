@@ -249,6 +249,37 @@ fn sample(text: &str) -> String {
     text.chars().take(80).collect()
 }
 
+/// find 带 `-delete` / `-exec`（含 `-execdir`）action 时不进白名单。
+///
+/// 白名单前缀含 `"find"`（approval.rs READONLY_WHITELIST），但这两个 action
+/// 是写操作：`find / -type f -delete` 删除全部匹配项、`-exec` 对每条匹配
+/// 执行任意命令，曾整体被判 Safe 免审批。检测按命令段（`;` / `|` / `&` /
+/// 换行边界切分）进行：任一段以 find 开头（词边界确认，排除 findx 之类）
+/// 且含 `-delete` 或 `-exec` 前缀 token 即命中。命中后落入黄名单/Unknown
+/// 层（Minimal 放行记日志 / Strict 人工确认），不进 HardBlock，纯检索的
+/// find（如 `find /var/log -name '*.log'`）保持白名单放行。
+fn contains_destructive_find(text: &str) -> bool {
+    for segment in text.split(|c: char| c == ';' || c == '|' || c == '&' || c == '\n') {
+        let seg = segment.trim();
+        if !seg.starts_with("find") {
+            continue;
+        }
+        // 词边界：find 后必须是空白或段尾（排除 findmnt / findx）。
+        let rest = &seg["find".len()..];
+        if !(rest.is_empty() || rest.starts_with(char::is_whitespace)) {
+            continue;
+        }
+        // token 级匹配：-delete 精确、-exec 前缀（覆盖 -execdir）。
+        if seg
+            .split_whitespace()
+            .any(|tok| tok == "-delete" || tok.starts_with("-exec"))
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// 三层风险分类（D9 决策）。
 ///
 /// 判定顺序：先黑名单（`detect_dangerous_command`），命中即 `Dangerous`；
@@ -269,10 +300,13 @@ pub fn classify_command(
 
     let trimmed = text.trim();
 
-    // 2. 白名单：前缀匹配。
-    for allowed in whitelist {
-        if command_matches_prefix(trimmed, allowed) {
-            return CommandRisk::Safe;
+    // 2. 白名单：前缀匹配。例外：find 带 -delete/-exec（含组合命令中的
+    //    find 段）是写操作，不进白名单，落入黄名单/Unknown 层审批。
+    if !contains_destructive_find(trimmed) {
+        for allowed in whitelist {
+            if command_matches_prefix(trimmed, allowed) {
+                return CommandRisk::Safe;
+            }
         }
     }
 
@@ -497,6 +531,72 @@ mod tests {
         assert_eq!(
             classify_command("systemctl status nginx", &whitelist, &[]),
             CommandRisk::Safe
+        );
+    }
+
+    // ─── find -delete / -exec 不进白名单（写操作伪装成只读检索）───
+
+    #[test]
+    fn classify_find_delete_not_whitelisted() {
+        // 曾被判 Safe 免审批的活洞：find -delete 删除全部匹配项
+        let whitelist = vec!["find".to_string()];
+        assert_eq!(
+            classify_command("find / -type f -delete", &whitelist, &[]),
+            CommandRisk::Unknown
+        );
+    }
+
+    #[test]
+    fn classify_find_exec_not_whitelisted() {
+        // -exec 对每条匹配执行任意命令，同属写操作
+        let whitelist = vec!["find".to_string()];
+        assert_eq!(
+            classify_command(
+                "find /var/log -name '*.log' -exec rm {} \\;",
+                &whitelist,
+                &[]
+            ),
+            CommandRisk::Unknown
+        );
+        // -execdir 变体同样拉出白名单
+        assert_eq!(
+            classify_command("find /tmp -execdir ls {} +", &whitelist, &[]),
+            CommandRisk::Unknown
+        );
+    }
+
+    #[test]
+    fn classify_find_delete_in_compound_segment_not_whitelisted() {
+        // 组合命令：分号/管道边界后的 find 段也检测，整条不进白名单
+        let whitelist = vec!["df".to_string(), "find".to_string()];
+        assert_eq!(
+            classify_command(
+                "df -h; find /tmp -name '*.tmp' -delete",
+                &whitelist,
+                &[]
+            ),
+            CommandRisk::Unknown
+        );
+    }
+
+    #[test]
+    fn classify_find_readonly_still_whitelisted() {
+        // 纯检索 find 保持白名单放行（行为不回归）
+        let whitelist = vec!["find".to_string()];
+        assert_eq!(
+            classify_command("find /var/log -name '*.log'", &whitelist, &[]),
+            CommandRisk::Safe
+        );
+    }
+
+    #[test]
+    fn classify_find_lookalike_prefix_still_whitelisted() {
+        // 词边界确认：findmnt 等以 find 开头的其他命令不受 find 段规则影响，
+        // 按白名单前缀 "find" 的既有边界语义匹配（前缀后是字母 → 不命中）
+        let whitelist = vec!["find".to_string()];
+        assert_eq!(
+            classify_command("findmnt /tmp", &whitelist, &[]),
+            CommandRisk::Unknown
         );
     }
 

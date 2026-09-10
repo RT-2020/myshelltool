@@ -215,8 +215,16 @@ pub fn parse_proc_net_dev(content: &str) -> Result<(u64, u64), String> {
 }
 
 /// Parse /proc/diskstats: sum read_sectors * 512 and write_sectors * 512
-/// across all real block devices (skip loop*, ram*, sr*).
+/// across all real block devices (skip loop*, ram*, sr*, fd*).
 /// Returns `(read_bytes, write_bytes)` cumulative since boot.
+///
+/// 分区去重：内核把 IO 在父设备与分区上各记一份（sda 与 sda1、nvme0n1 与
+/// nvme0n1p1），全部累加会让磁盘 IO 近双倍虚高。因此「分区」在同一样本中
+/// 存在**有活动的父设备**时跳过、只计父设备：
+/// - 父设备 B 以非数字结尾：分区 P == B + 纯数字后缀（sda→sda1 ✓，sda→sdab ✗）
+/// - 父设备 B 以数字结尾：分区 P == B + "p" + 纯数字（nvme0n1→nvme0n1p1 ✓；
+///   nvme0n1→nvme0n10 ✗——后者是独立盘）
+/// - 父设备不在样本或零活动时，分区照常计入（不静默丢数据）
 ///
 /// /proc/diskstats line format (17 fields):
 /// `major minor name reads_completed reads_merged sectors_read ms_reading
@@ -227,8 +235,9 @@ pub fn parse_proc_net_dev(content: &str) -> Result<(u64, u64), String> {
 /// We use sectors_read (field 5) and sectors_written (field 9); each sector = 512 bytes
 /// per Linux kernel docs regardless of actual hardware block size.
 pub fn parse_proc_diskstats(content: &str) -> Result<(u64, u64), String> {
-    let mut read_bytes: u64 = 0;
-    let mut write_bytes: u64 = 0;
+    // 第一遍：收集本样本全部候选设备（已过滤 loop/ram/sr/fd）。
+    // 元组：(name, reads_completed, writes_completed, sectors_read, sectors_written)
+    let mut devices: Vec<(&str, u64, u64, u64, u64)> = Vec::new();
 
     for line in content.lines() {
         let fields: Vec<&str> = line.split_whitespace().collect();
@@ -250,16 +259,33 @@ pub fn parse_proc_diskstats(content: &str) -> Result<(u64, u64), String> {
             continue;
         }
 
-        // Skip partitions that have no reads *and* no writes — typically virtual / idle
+        devices.push((
+            name,
+            fields[3].parse().unwrap_or(0),
+            fields[7].parse().unwrap_or(0),
+            fields[5].parse().unwrap_or(0),
+            fields[9].parse().unwrap_or(0),
+        ));
+    }
+
+    // 第二遍：零活动设备跳过；分区在同样本有活动父设备时跳过（只计父）。
+    let mut read_bytes: u64 = 0;
+    let mut write_bytes: u64 = 0;
+    for (name, reads_completed, writes_completed, sectors_read, sectors_written) in &devices {
+        // Skip devices that have no reads *and* no writes — typically virtual / idle
         // sub-devices that would double-count against their parent.
-        let reads_completed: u64 = fields[3].parse().unwrap_or(0);
-        let writes_completed: u64 = fields[7].parse().unwrap_or(0);
-        if reads_completed == 0 && writes_completed == 0 {
+        if *reads_completed == 0 && *writes_completed == 0 {
             continue;
         }
 
-        let sectors_read: u64 = fields[5].parse().unwrap_or(0);
-        let sectors_written: u64 = fields[9].parse().unwrap_or(0);
+        // 分区判定：存在同名父设备（有活动）且本设备是其分区 → 跳过
+        let parent_active = devices.iter().any(|(base, b_reads, b_writes, _, _)| {
+            (*b_reads != 0 || *b_writes != 0) && is_partition_suffix(base, name)
+        });
+        if parent_active {
+            continue;
+        }
+
         read_bytes += sectors_read.saturating_mul(512);
         write_bytes += sectors_written.saturating_mul(512);
     }
@@ -267,20 +293,39 @@ pub fn parse_proc_diskstats(content: &str) -> Result<(u64, u64), String> {
     Ok((read_bytes, write_bytes))
 }
 
-/// Parse `df -P -B1 /` output to extract root filesystem capacity.
+/// `part` 是否是 `base` 的分区名（仅名字规则判断，规则见 parse_proc_diskstats 文档）。
+fn is_partition_suffix(base: &str, part: &str) -> bool {
+    if !part.starts_with(base) {
+        return false;
+    }
+    let suffix = &part[base.len()..];
+    if base.as_bytes()[base.len() - 1].is_ascii_digit() {
+        // base 以数字结尾（nvme0n1、mmcblk0）：后缀须为 "p" + 至少一位数字
+        suffix.len() >= 2
+            && suffix.starts_with('p')
+            && suffix[1..].bytes().all(|b| b.is_ascii_digit())
+    } else {
+        // base 以非数字结尾（sda、vdab）：后缀须为纯数字（sdab 不是 sda 的分区）
+        !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
+    }
+}
+
+/// Parse `LC_ALL=C df -P -k /` output to extract root filesystem capacity.
 ///
-/// `-P` = POSIX format (one line per FS, no wrapping); `-B1` = byte units
-/// (1-byte blocks, so the "1K-blocks" column is actually total bytes).
+/// `-P` = POSIX format (one line per FS, no wrapping); `-k` = 1024-byte blocks
+/// （POSIX 通用，BusyBox 亦支持；`-B1` 是 GNU 扩展，BusyBox 下整条 df 会失败）。
+/// `LC_ALL=C` 强制英文表头，保证 split_proc_output 的 "Filesystem" 锚点在
+/// 任何远端 locale 下都能命中（否则磁盘段静默切分失败 → 容量显示 0）。
 ///
 /// Output shape:
 /// ```text
-/// Filesystem     1B-blocks      Used Available Use% Mounted on
-/// /dev/sda1    52710350080 30366834688 19626848256  61% /
+/// Filesystem     1024-blocks      Used  Available Use% Mounted on
+/// /dev/sda1        51475040  29655014   21820026  58% /
 /// ```
 ///
-/// Returns `(disk_total_bytes, disk_used_bytes)` from the line whose last
-/// field is `/` (the root mount). Falls back to the first data row if no
-/// root line is found.
+/// 数值列单位为 1K 块，×1024 换算成字节。Returns `(disk_total_bytes,
+/// disk_used_bytes)` from the line whose last field is `/` (the root mount).
+/// Falls back to the first data row if no root line is found.
 pub fn parse_df(content: &str) -> Result<(u64, u64), String> {
     let mut total: u64 = 0;
     let mut used: u64 = 0;
@@ -289,18 +334,22 @@ pub fn parse_df(content: &str) -> Result<(u64, u64), String> {
 
     for line in content.lines() {
         let line = line.trim();
-        // 跳过表头与空行
-        if line.is_empty() || line.starts_with("Filesystem") {
+        // 跳过空行
+        if line.is_empty() {
             continue;
         }
         let fields: Vec<&str> = line.split_whitespace().collect();
-        // 至少 6 列：Filesystem 1B-blocks Used Available Use% Mounted-on
+        // 至少 6 列：Filesystem 1024-blocks Used Available Use% Mounted-on
         if fields.len() < 6 {
             continue;
         }
-        // -B1 下第二列是 total bytes，第三列是 used bytes
-        let total_b: u64 = fields[1].parse().unwrap_or(0);
-        let used_b: u64 = fields[2].parse().unwrap_or(0);
+        // 数值列解析失败 → 表头行（"1024-blocks"）或畸形行，跳过
+        let (total_kb, used_kb): (u64, u64) = match (fields[1].parse(), fields[2].parse()) {
+            (Ok(t), Ok(u)) => (t, u),
+            _ => continue,
+        };
+        // -k 输出单位是 1K 块，换算成字节
+        let (total_b, used_b) = (total_kb.saturating_mul(1024), used_kb.saturating_mul(1024));
         if first_data.is_none() {
             first_data = Some((total_b, used_b));
         }
@@ -329,7 +378,7 @@ pub fn parse_df(content: &str) -> Result<(u64, u64), String> {
 // ---------------------------------------------------------------------------
 
 /// Build a ResourceSnapshot from the combined stdout of:
-///   cat /proc/stat; cat /proc/meminfo; cat /proc/net/dev; cat /proc/diskstats; df -P -B1 /
+///   cat /proc/stat; cat /proc/meminfo; cat /proc/net/dev; cat /proc/diskstats; LC_ALL=C df -P -k /
 ///
 /// We split the combined output by looking for known section anchors
 /// ("cpu " for stat, "MemTotal:" for meminfo, "Inter-|" for net/dev,
@@ -384,7 +433,7 @@ fn compute_cpu_usage(prev: Option<(u64, u64)>, idle: u64, total: u64) -> f32 {
 }
 
 /// Split the combined `cat /proc/stat; cat /proc/meminfo; cat /proc/net/dev;
-/// cat /proc/diskstats; df -P -B1 /` output into 5 sections. Parsers tolerate
+/// cat /proc/diskstats; LC_ALL=C df -P -k /` output into 5 sections. Parsers tolerate
 /// sections that contain unrelated lines, so we use generous anchor-based splitting.
 fn split_proc_output(combined: &str) -> (String, String, String, String, String) {
     // Find anchor byte offsets
@@ -539,7 +588,9 @@ fn spawn_monitor_task(
     app: AppHandle,
     mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
 ) {
-    let cmd = "cat /proc/stat; cat /proc/meminfo; cat /proc/net/dev; cat /proc/diskstats; df -P -B1 /";
+    // LC_ALL=C：强制英文表头，"Filesystem" 锚点在任何 locale 下都能命中；
+    // -P -k：POSIX 格式 + 1K 块（-B1 是 GNU 扩展，BusyBox 不支持）。
+    let cmd = "cat /proc/stat; cat /proc/meminfo; cat /proc/net/dev; cat /proc/diskstats; LC_ALL=C df -P -k /";
 
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
@@ -699,10 +750,10 @@ Inter-|   Receive                                                |  Transmit
 ";
 
     const DF_SAMPLE: &str = "\
-Filesystem     1B-blocks       Used  Available Use% Mounted on
-/dev/sda1   52710350080 30366834688 19626848256  61% /
-tmpfs         1677721600     1234567 1676487033   1% /dev/shm
-/dev/sda2   104857600    52428800    52428800  50% /boot
+Filesystem     1024-blocks      Used  Available Use% Mounted on
+/dev/sda1        51475040  29655014   21820026  58% /
+tmpfs             1638400      1205   1637195   1% /dev/shm
+/dev/sda2          102400     51200     51200  50% /boot
 ";
 
     #[test]
@@ -749,13 +800,62 @@ tmpfs         1677721600     1234567 1676487033   1% /dev/shm
     fn test_parse_proc_diskstats_typical() {
         let (read_bytes, write_bytes) =
             parse_proc_diskstats(PROC_DISKSTATS_SAMPLE).expect("diskstats parse");
-        // sda sectors_read=9234567 * 512; sda1 sectors_read=500000 * 512
-        // nvme0n1 sectors_read=8888888 * 512
-        let expected_read = (9234567 + 500000 + 8888888) * 512;
-        // sda sectors_written=7654321 * 512; sda1=100000 * 512; nvme0n1=5555555 * 512
-        let expected_write = (7654321 + 100000 + 5555555) * 512;
+        // sda1 是 sda 的分区且 sda 有活动 → 跳过，只计父 sda；nvme0n1 独立计入
+        // sda sectors_read=9234567 * 512; nvme0n1 sectors_read=8888888 * 512
+        let expected_read = (9234567 + 8888888) * 512;
+        // sda sectors_written=7654321 * 512; nvme0n1=5555555 * 512
+        let expected_write = (7654321 + 5555555) * 512;
         assert_eq!(read_bytes, expected_read);
         assert_eq!(write_bytes, expected_write);
+    }
+
+    #[test]
+    fn test_parse_proc_diskstats_nvme_p_suffix_vs_independent_disk() {
+        // nvme0n1p1 是 nvme0n1 的分区（"p"+数字后缀）→ 跳过防双计数；
+        // nvme0n10 不是 nvme0n1 的分区（数字结尾的父设备必须有 "p" 分隔）→ 独立盘照常计入
+        let sample = "\
+ 259       0 nvme0n1 99999 8888 8888888 77777 66666 5555 5555555 44444 0 333333 111110
+ 259       1 nvme0n1p1 100 10 50000 100 200 20 100000 5000 0 1500 1500
+ 259      10 nvme0n10 111 11 11111 111 222 22 22222 2222 0 3300 3300
+";
+        let (read_bytes, write_bytes) = parse_proc_diskstats(sample).expect("diskstats parse");
+        assert_eq!(read_bytes, (8888888 + 11111) * 512);
+        assert_eq!(write_bytes, (5555555 + 22222) * 512);
+    }
+
+    #[test]
+    fn test_parse_proc_diskstats_partition_without_parent_counted() {
+        // 父设备 sda 不在样本（内核某些配置只上报分区）→ sda1 照常计入，不静默丢数据
+        let sample = "\
+   8       1 sda1 1000 100 500000 1000 200 200 100000 5000 0 1500 1500
+";
+        let (read_bytes, write_bytes) = parse_proc_diskstats(sample).expect("diskstats parse");
+        assert_eq!(read_bytes, 500000 * 512);
+        assert_eq!(write_bytes, 100000 * 512);
+    }
+
+    #[test]
+    fn test_parse_proc_diskstats_active_partition_idle_parent_counted() {
+        // 父设备在样本但零活动（自身被跳过）→ 分区照常计入
+        let sample = "\
+   8       0 sda 0 0 0 0 0 0 0 0 0 0
+   8       1 sda1 1000 100 500000 1000 200 200 100000 5000 0 1500 1500
+";
+        let (read_bytes, write_bytes) = parse_proc_diskstats(sample).expect("diskstats parse");
+        assert_eq!(read_bytes, 500000 * 512);
+        assert_eq!(write_bytes, 100000 * 512);
+    }
+
+    #[test]
+    fn test_parse_proc_diskstats_sdab_is_not_sda_partition() {
+        // sdab 是独立盘（"b" 非数字后缀，不满足 sda+数字 分区规则）→ 两个都计
+        let sample = "\
+   8      16 sdab 500 50 500000 500 600 60 600000 600 0 1100 1100
+   8       0 sda 100 10 100000 100 200 20 200000 200 0 300 300
+";
+        let (read_bytes, write_bytes) = parse_proc_diskstats(sample).expect("diskstats parse");
+        assert_eq!(read_bytes, (500000 + 100000) * 512);
+        assert_eq!(write_bytes, (600000 + 200000) * 512);
     }
 
     #[test]
@@ -808,29 +908,30 @@ tmpfs         1677721600     1234567 1676487033   1% /dev/shm
     #[test]
     fn test_parse_df_picks_root_mount() {
         let (total, used) = parse_df(DF_SAMPLE).expect("df parse");
-        // 必须取挂载点 / 的行：52710350080 / 30366834688，而非 tmpfs 或 /boot
-        assert_eq!(total, 52710350080);
-        assert_eq!(used, 30366834688);
+        // 必须取挂载点 / 的行（KB × 1024 换算字节），而非 tmpfs 或 /boot
+        assert_eq!(total, 51475040 * 1024);
+        assert_eq!(used, 29655014 * 1024);
         // 不应是 /boot 的值
-        assert_ne!(total, 104857600);
+        assert_ne!(total, 102400 * 1024);
     }
 
     #[test]
     fn test_parse_df_falls_back_to_first_row_without_root() {
         // 无 / 挂载点时，取第一行数据
         let df = "\
-Filesystem     1B-blocks       Used  Available Use% Mounted on
-/dev/xvda1   1000000       400000       600000  40% /mnt/data
+Filesystem     1024-blocks      Used  Available Use% Mounted on
+/dev/xvda1        100000     400000       600000  40% /mnt/data
 ";
         let (total, used) = parse_df(df).expect("df fallback");
-        assert_eq!(total, 1000000);
-        assert_eq!(used, 400000);
+        assert_eq!(total, 100000 * 1024);
+        assert_eq!(used, 400000 * 1024);
     }
 
     #[test]
     fn test_parse_df_rejects_empty() {
         assert!(parse_df("").is_err());
-        assert!(parse_df("Filesystem     1B-blocks\n").is_err()); // 只有表头
+        // 只有表头（数值列 "1024-blocks" 解析失败 → 无数据行）
+        assert!(parse_df("Filesystem     1024-blocks      Used  Available Use% Mounted on\n").is_err());
     }
 
     #[test]
@@ -840,9 +941,9 @@ Filesystem     1B-blocks       Used  Available Use% Mounted on
             PROC_STAT_SAMPLE, PROC_MEMINFO_SAMPLE, PROC_NET_DEV_SAMPLE, PROC_DISKSTATS_SAMPLE, DF_SAMPLE
         );
         let snap = build_snapshot("test-session", &combined, None);
-        // disk_total/used 必须来自 df 根分区，而非写死 0
-        assert_eq!(snap.disk_total, 52710350080);
-        assert_eq!(snap.disk_used, 30366834688);
+        // disk_total/used 必须来自 df 根分区（KB×1024），而非写死 0
+        assert_eq!(snap.disk_total, 51475040 * 1024);
+        assert_eq!(snap.disk_used, 29655014 * 1024);
         // 其余字段也应正常填充（serde 字段名是 camelCase，但 struct 字段名仍是 snake）
         assert_eq!(snap.mem_total, 16266984 * 1024);
         assert!(snap.disk_read_bytes > 0);

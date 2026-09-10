@@ -151,12 +151,12 @@ pub fn list_all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "system_status",
-            "查询指定资产的系统状态：uptime / 内存 / 负载 / top 进程",
+            "查询指定资产的系统状态：uptime / 内存 / 负载 / top 进程。仅支持 Linux（依赖 /proc 与 systemd）主机，其他平台命令会失败",
             schema_with_required_session(),
         ),
         Tool::new(
             "service_status",
-            "查询指定资产上某 systemd 服务的状态（systemctl status <service>）",
+            "查询指定资产上某 systemd 服务的状态（systemctl status <service>）。仅支持 Linux（依赖 /proc 与 systemd）主机，其他平台命令会失败",
             json!({
                 "type": "object",
                 "properties": {
@@ -171,7 +171,7 @@ pub fn list_all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "resource_monitor_snapshot",
-            "获取指定资产的资源监控快照（CPU负载、内存占用、磁盘空间概览）。",
+            "获取指定资产的资源监控快照（CPU负载、内存占用、磁盘空间概览）。仅支持 Linux（依赖 /proc 与 systemd）主机，其他平台命令会失败",
             schema_with_required_session(),
         ),
         // ─── 高危 Shell 执行工具（经 Layer 6 审批）───

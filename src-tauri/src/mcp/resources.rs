@@ -34,9 +34,14 @@ pub fn list_resource_templates() -> Vec<rmcp::model::ResourceTemplate> {
 }
 
 /// 读取资源。匹配 URI 返回内容，不匹配返回错误。
+///
+/// `known_hosts_path` 由调用方从 McpToolContext 透传（lib.rs setup 统一
+/// 解析），不在本模块重新从 asset_store_path.parent() 推导，避免两处
+/// 路径来源漂移。
 pub fn read_resource(
     request: &ReadResourceRequestParams,
     asset_store_path: &Path,
+    known_hosts_path: &Path,
 ) -> Result<ReadResourceResult, String> {
     let uri = request.uri.as_ref();
     match uri {
@@ -45,7 +50,7 @@ pub fn read_resource(
             "v1.0 独立会话模式：无持久会话池。使用 list_assets 工具查看可用资产后直接用 disk_usage/system_status 查询。",
             uri,
         )])),
-        "myshelltool://known-hosts" => read_known_hosts(asset_store_path),
+        "myshelltool://known-hosts" => read_known_hosts(known_hosts_path),
         other if other.starts_with("myshelltool://sessions/") && other.ends_with("/log") => {
             Ok(ReadResourceResult::new(vec![ResourceContents::text(
                 "v1.0 模式下会话日志暂不可用。如需查看远程日志，请使用 ssh_exec 工具执行 tail/journalctl 命令。",
@@ -86,11 +91,7 @@ fn read_assets(asset_store_path: &Path) -> Result<ReadResourceResult, String> {
     )]))
 }
 
-fn read_known_hosts(asset_store_path: &Path) -> Result<ReadResourceResult, String> {
-    let known_hosts_path = asset_store_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("known_hosts.json");
+fn read_known_hosts(known_hosts_path: &Path) -> Result<ReadResourceResult, String> {
     if !known_hosts_path.exists() {
         return Ok(ReadResourceResult::new(vec![ResourceContents::text(
             "{\"hosts\": []}".to_string(),
