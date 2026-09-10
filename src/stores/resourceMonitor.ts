@@ -6,6 +6,12 @@ import { invokeBackend, isTauriRuntime, listenBackendEvent } from '../services/b
 const MAX_HISTORY = 60;
 const INTERVAL_MS = 2000;
 
+/** 后端 resource-monitor-error 事件 payload（契约：与快照同机制按 sessionId 路由）。 */
+interface MonitorErrorPayload {
+  sessionId: string;
+  reason: string;
+}
+
 // 供 UI（ResourceMonitorPanel 头部 meta）派生展示，避免硬编码「2秒 · 60点」
 export const RESOURCE_MONITOR_INTERVAL_MS = INTERVAL_MS;
 export const RESOURCE_MONITOR_MAX_HISTORY = MAX_HISTORY;
@@ -16,8 +22,14 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
   const history = ref<ResourceSnapshot[]>([]);
   const enabled = ref(false);
   const error = ref<string | null>(null);
+  // 后端推送的采样失败（resource-monitor-error 事件）：与 error（前端调用
+  // 失败）区分，非空时面板展示错误态而非全 0 曲线
+  const monitorError = ref<string | null>(null);
+  // 快照降级提示（degraded 字段，如磁盘数据不可用）：非错误，数据继续展示
+  const degradedNotice = ref<string | null>(null);
 
   let unlisten: TauriUnlistenFn | null = null;
+  let errorUnlisten: TauriUnlistenFn | null = null;
   // 最近一次尝试采样的 sessionId：stop() 清空 activeSessionId 后 retry() 仍可重连
   let lastSessionId: string | null = null;
   const prevNetRx = ref(0);
@@ -126,6 +138,8 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
     }
     prevTimestamp.value = s.timestamp;
     snapshot.value = s;
+    // 降级提示（非错误）：随最新快照更新/清除，数据继续正常展示
+    degradedNotice.value = s.degraded || null;
     history.value.push(s);
     if (history.value.length > MAX_HISTORY) history.value.shift();
   }
@@ -148,6 +162,8 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
     activeSessionId.value = sessionId;
     enabled.value = true;
     error.value = null;
+    monitorError.value = null;
+    degradedNotice.value = null;
     try {
       await invokeBackend('resource_monitor_start', { sessionId, intervalMs });
     } catch (e) {
@@ -179,6 +195,24 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
         error.value = (e as Error | undefined)?.message || String(e);
       }
     }
+    if (!errorUnlisten) {
+      try {
+        // 后端采样失败事件（与快照同机制按 sessionId 路由）：置错误态并停止
+        // 该会话的数据展示（清残留快照/历史，防图表渲染全 0 假曲线）。后端
+        // 任务失败即终止，前端不再补发 resource_monitor_stop（retry 会走
+        // stop→start 完整重启）。
+        errorUnlisten = await listenBackendEvent('resource-monitor-error', payload => {
+          const next = (payload?.payload || payload) as MonitorErrorPayload | null | undefined;
+          if (!next?.sessionId || next.sessionId !== activeSessionId.value) return;
+          monitorError.value = next.reason || '未知原因';
+          snapshot.value = null;
+          history.value = [];
+          enabled.value = false;
+        });
+      } catch (e) {
+        error.value = (e as Error | undefined)?.message || String(e);
+      }
+    }
   }
 
   async function stop() {
@@ -190,10 +224,16 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
       try { unlisten(); } catch { /* noop */ }
       unlisten = null;
     }
+    if (errorUnlisten) {
+      try { errorUnlisten(); } catch { /* noop */ }
+      errorUnlisten = null;
+    }
     activeSessionId.value = null;
     snapshot.value = null;
     history.value = [];
     enabled.value = false;
+    monitorError.value = null;
+    degradedNotice.value = null;
     prevNetRx.value = 0;
     prevNetTx.value = 0;
     prevDiskRead.value = 0;
@@ -226,6 +266,8 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
     history,
     enabled,
     error,
+    monitorError,
+    degradedNotice,
     isDesktopRuntime,
     netRxRate,
     netTxRate,

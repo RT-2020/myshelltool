@@ -154,24 +154,56 @@ fn patterns() -> &'static CompiledPatterns {
     PATTERNS.get_or_init(CompiledPatterns::compile)
 }
 
-/// 安全路径前缀（对应 JS 第 11 条 negative lookahead 的排除项）。
-/// chmod -R 到这些前缀视为可接受（与 JS 行为对齐）。
-const SAFE_CHMOD_PREFIXES: &[&str] = &["/tmp", "/var/tmp", "/home", "/Users"];
-
-/// chmod -R 递归授权是否命中系统目录（captures 目标 + 排除安全前缀）。
+/// chmod -R 黑名单层的安全路径前缀（对应 JS 第 11 条 negative lookahead 的排除项）。
 ///
-/// `detect_dangerous_command`（黑名单第 11 条）与 `detect_catastrophic_command`
-/// （毁灭层）共用同一判定，行为不变。
+/// v2.5 变化：`/home`、`/Users` 从本名单移除——家目录递归 chmod 属破坏性操作
+/// （-R 波及全部用户文件），应走黑名单审批链（Strict 人工确认 / Minimal 放行记
+/// 日志），不再免拦截。仅保留临时目录。**JS 侧 negative lookahead 已同步移除
+/// `/home|/Users`**，两端保持同一判定口径（GUI 与 MCP 共享单点真相）。
+const SAFE_CHMOD_PREFIXES: &[&str] = &["/tmp", "/var/tmp"];
+
+/// chmod -R 毁灭层（catastrophic）的豁免前缀。
+///
+/// 比 SAFE_CHMOD_PREFIXES 多 `/home`、`/Users`：家目录递归 chmod 破坏的是
+/// 用户数据（通常可恢复/重装用户态即复原），够不上「机器报废级」硬拒，
+/// 归黑名单审批链即可；`/etc`、`/usr` 等系统目录 chmod 仍两档恒 HardBlock。
+const CHMOD_CATASTROPHIC_EXEMPT_PREFIXES: &[&str] = &["/tmp", "/var/tmp", "/home", "/Users"];
+
+/// 边界安全前缀判定：`target` 等于 `safe` 本身，或以 `"<safe>/"` 开头。
+///
+/// v2.5：裸 `starts_with` 会把 `/home2`、`/tmp2`、`/homework` 误判为安全
+/// 目标（Minimal 档零审批直接执行），必须补边界。
+fn under_safe_prefix(target: &str, safe: &str) -> bool {
+    target == safe || target.starts_with(&format!("{safe}/"))
+}
+
+/// 提取 chmod -R 的目标绝对路径（正则捕获组 1）。无匹配返回 None。
+fn chmod_recursive_target(text: &str) -> Option<String> {
+    patterns()
+        .chmod_recursive
+        .captures(text)
+        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string()))
+}
+
+/// chmod -R 递归授权是否命中系统目录（黑名单第 11 条：安全前缀之外一律 Dangerous）。
 fn chmod_recursive_hits_system(text: &str) -> bool {
-    let compiled = patterns();
-    if let Some(caps) = compiled.chmod_recursive.captures(text) {
-        if let Some(target) = caps.get(1).map(|m| m.as_str()) {
-            return !SAFE_CHMOD_PREFIXES
-                .iter()
-                .any(|safe| target.starts_with(safe));
-        }
-    }
-    false
+    chmod_recursive_target(text).is_some_and(|target| {
+        !SAFE_CHMOD_PREFIXES
+            .iter()
+            .any(|safe| under_safe_prefix(&target, safe))
+    })
+}
+
+/// chmod -R 递归授权是否命中毁灭层（系统目录 chmod = 机器报废级，HardBlock）。
+///
+/// 与黑名单层的差别：`/home`、`/Users` 在本层豁免（家目录数据可恢复，走
+/// 审批链），其余判定（含 `/home2` 边界封堵）与黑名单层一致。
+fn chmod_recursive_hits_catastrophic(text: &str) -> bool {
+    chmod_recursive_target(text).is_some_and(|target| {
+        !CHMOD_CATASTROPHIC_EXEMPT_PREFIXES
+            .iter()
+            .any(|safe| under_safe_prefix(&target, safe))
+    })
 }
 
 /// 检测文本是否命中危险模式（对齐 JS `detectDangerousCommand`）。
@@ -234,7 +266,7 @@ pub fn detect_catastrophic_command(text: &str) -> Option<DangerousMatch> {
         });
     }
 
-    if chmod_recursive_hits_system(text) {
+    if chmod_recursive_hits_catastrophic(text) {
         return Some(DangerousMatch {
             pattern: CompiledPatterns::CHMOD_RECURSIVE_SRC.to_string(),
             sample: sample(text),
@@ -414,8 +446,22 @@ mod tests {
         assert!(detect_dangerous_command("chmod -R 755 /var/tmp/cache").is_none());
     }
     #[test]
-    fn t11_chmod_recursive_safe_home_no_hit() {
-        assert!(detect_dangerous_command("chmod -R 755 /home/user").is_none());
+    fn t11_chmod_recursive_home_hits_blacklist_for_approval() {
+        // v2.5：/home 从黑名单安全前缀移除——家目录递归 chmod 属破坏性，
+        // 命中黑名单走审批链（Strict 人工确认 / Minimal 放行记日志）。
+        assert!(detect_dangerous_command("chmod -R 755 /home/user").is_some());
+        assert!(detect_dangerous_command("chmod -R 755 /Users/me").is_some());
+    }
+    #[test]
+    fn t11_chmod_recursive_prefix_boundary_no_sibling_escape() {
+        // v2.5 边界封堵：裸 starts_with 会把 /home2、/tmp2、/homework 误判
+        // 为安全目标（Minimal 档零审批直接执行的活洞）。
+        assert!(detect_dangerous_command("chmod -R 777 /home2").is_some());
+        assert!(detect_dangerous_command("chmod -R 777 /tmp2/x").is_some());
+        assert!(detect_dangerous_command("chmod -R 777 /homework").is_some());
+        // 对照：正主前缀仍安全
+        assert!(detect_dangerous_command("chmod -R 755 /tmp/x").is_none());
+        assert!(detect_dangerous_command("chmod -R 755 /tmp").is_none());
     }
     #[test]
     fn t11_chmod_recursive_dangerous_etc_hits() {
@@ -571,7 +617,7 @@ mod tests {
         let whitelist = vec!["df".to_string(), "find".to_string()];
         assert_eq!(
             classify_command(
-                "df -h; find /tmp -name '*.tmp' -delete",
+                "df -h; find /tmp -name '*.tmp' -delete", // fact-guard:allow locale-pinned-df 单测样例数据（非实际执行）
                 &whitelist,
                 &[]
             ),
@@ -664,5 +710,26 @@ mod tests {
         assert!(detect_catastrophic_command(":(){ :|:& };:").is_some());
         // 非毁灭黑名单：reboot 属审批链不属毁灭层
         assert!(detect_catastrophic_command("reboot").is_none());
+    }
+
+    // ─── v2.5 chmod 前缀边界 + /home 分层（黑名单审批 vs 毁灭硬拒）───
+
+    #[test]
+    fn cat_chmod_home_goes_approval_not_hardblock() {
+        // /home//Users 在毁灭层豁免（家目录数据可恢复，够不上机器报废级），
+        // 由黑名单层走审批链——两层的判定刻意不同。
+        assert!(detect_catastrophic_command("chmod -R 755 /home/user").is_none());
+        assert!(detect_catastrophic_command("chmod -R 777 /Users/me").is_none());
+        // 对照：黑名单层命中（t11_chmod_recursive_home_hits_blacklist_for_approval）
+        assert!(detect_dangerous_command("chmod -R 755 /home/user").is_some());
+    }
+
+    #[test]
+    fn cat_chmod_sibling_prefix_boundary_hardblock() {
+        // /home2 不是 /home 子路径 → 毁灭层不再豁免，HardBlock 封堵
+        assert!(detect_catastrophic_command("chmod -R 777 /home2/x").is_some());
+        assert!(detect_catastrophic_command("chmod -R 777 /homework").is_some());
+        // 正主前缀照旧豁免
+        assert!(detect_catastrophic_command("chmod -R 777 /home").is_none());
     }
 }

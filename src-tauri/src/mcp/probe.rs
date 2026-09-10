@@ -162,11 +162,15 @@ pub fn fail_no_endpoint(probed_at: &str) -> McpProbeResult {
 ///
 /// Streamable HTTP 的成功响应是 `text/event-stream`，每帧 `data: <json>\n\n`。
 /// 健康检查只关心第一帧（initialize 响应）。
+///
+/// SSE 规范（WHATWG）允许 `data:` 后无空格（`data:{...}`），只认 `data: `
+/// 带空格形式会把合规实现误判为 bad_protocol——按 `data:` 前缀 + trim_start
+/// 归一处理。
 fn extract_first_json_from_sse(body: &str) -> Option<&str> {
     for line in body.lines() {
         let trimmed = line.trim();
-        if let Some(json) = trimmed.strip_prefix("data: ") {
-            let json = json.trim();
+        if let Some(json) = trimmed.strip_prefix("data:") {
+            let json = json.trim_start();
             if json.starts_with('{') {
                 return Some(json);
             }
@@ -188,5 +192,33 @@ fn fail(exe_path: &str, detail: String, probed_at: String, reason: &str) -> McpP
         exe_path: exe_path.to_string(),
         server_info: None,
         probed_at,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_first_json_from_sse_forms() {
+        // 规范内两种帧形式都必须命中：`data: `（带空格）与 `data:`（无空格）
+        let with_space = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1}\n\n";
+        assert_eq!(
+            extract_first_json_from_sse(with_space),
+            Some("{\"jsonrpc\":\"2.0\",\"id\":1}")
+        );
+        let no_space = "data:{\"jsonrpc\":\"2.0\",\"id\":2}\n\n";
+        assert_eq!(
+            extract_first_json_from_sse(no_space),
+            Some("{\"jsonrpc\":\"2.0\",\"id\":2}")
+        );
+        // 非 data 行（event:/注释/空行）不误取；非 JSON 载荷跳过
+        let noise = ": keep-alive\nevent: message\ndata: ping\n\ndata: {\"ok\":true}\n";
+        assert_eq!(extract_first_json_from_sse(noise), Some("{\"ok\":true}"));
+        // 裸 JSON（非流式实现）兜底
+        assert_eq!(extract_first_json_from_sse("  {\"id\":1}  "), Some("{\"id\":1}"));
+        // 完全无 JSON
+        assert_eq!(extract_first_json_from_sse("data: not json\n"), None);
+        assert_eq!(extract_first_json_from_sse(""), None);
     }
 }

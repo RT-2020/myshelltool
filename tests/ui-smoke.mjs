@@ -8,7 +8,9 @@
 // 真正的 Tauri runtime E2E 需要 tauri-driver + 真实 SSH 服务器矩阵，
 // 是项目级后续工作（ADR v3 第 7 节 Follow-ups 已列入 P3）。
 // 本文件作为最小 smoke：验证 Vite dev server 启动 + desktop-only-banner
-// 在非 Tauri runtime 下显示，让 CI 至少能验证前端 bundle 不崩。
+// 在非 Tauri runtime 下显示。
+// 注意：CI 只跑 npm run build（编译门禁），不跑本测试——UI 测试仅本地手动跑
+// （先 npm run dev 起服务，再 npm run test:ui）。
 
 import { chromium } from 'playwright';
 

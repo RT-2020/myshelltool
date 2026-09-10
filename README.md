@@ -95,7 +95,7 @@ myshelltool 有**两种身份**：
 ### 环境要求
 
 - **Windows 10/11**（x64）
-- [Node.js](https://nodejs.org/) 18+（含 npm/pnpm）
+- [Node.js](https://nodejs.org/) 20.19+ 或 22.12+（推荐 22/24，使用 npm；Vite 7 的 engines 要求 `^20.19.0 || >=22.12.0`）
 - [Rust](https://rustup.rs/) stable（含 cargo）
 - [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)（Windows 11 自带）
 

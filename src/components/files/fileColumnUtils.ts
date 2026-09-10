@@ -39,7 +39,9 @@ export function formatFileEntrySize(bytes: number | null | undefined): string {
 
 export function formatFileEntryTime(entry: FileColumnEntry): string {
   if (!entry.modified) return '—';
-  if (/^\d+$/.test(entry.modified) && entry.modified.length >= 8) {
+  // entry.modified 全部由自家后端产出（恒为 epoch 秒串或空串，自身契约）：
+  // 纯数字即按秒解析（0 也正确显示 epoch 起点），非数字回退原串，不用位数猜。
+  if (/^\d+$/.test(entry.modified)) {
     const d = new Date(Number(entry.modified) * 1000);
     if (!Number.isNaN(d.getTime())) return d.toLocaleString();
   }

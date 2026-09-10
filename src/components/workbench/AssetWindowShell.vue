@@ -67,20 +67,17 @@ let unlistenClose: (() => void) | null = null;
 const sessionsStore = useSessionsStore();
 // 主窗口存活才显示回迁按钮。getExistingTauriWebviewWindow 是 async（getByLabel
 // 返回 Promise），不能进 computed 同步消费（Promise 恒 truthy 会恒显示）。
-// 挂载时探测 + 失败短重试（最多 3 次，间隔 2s）：getByLabel 在窗口刚创建的
-// 瞬间可能查不到（Tauri 窗口注册时序），一次性探测失败会让按钮永久消失。
+// 探测只在「挂载 + 窗口获得焦点/重新可见」时各做一次（事件驱动）：探测失败
+// 不再当作「主窗口不存在」的证明（此前 3 次重试门会让按钮永久消失，而点击
+// 时 pushSessionToMainWindow 本就做真实探测并 announce）——按钮显示态只影响
+// 可见性，成败判据以点击时刻的探测为准。
 const mainAlive = ref(false);
 const canPushToMain = computed(() => isTauriRuntime() && mainAlive.value);
-let mainProbeAttempts = 0;
 async function probeMainAlive() {
-  if (mainAlive.value) return;
-  const found = Boolean(await getExistingTauriWebviewWindow('main'));
-  if (found) {
-    mainAlive.value = true;
-    return;
-  }
-  mainProbeAttempts += 1;
-  if (mainProbeAttempts < 3) setTimeout(probeMainAlive, 2000);
+  mainAlive.value = Boolean(await getExistingTauriWebviewWindow('main'));
+}
+function onWindowFocusReprobe() {
+  if (document.visibilityState === 'visible') probeMainAlive();
 }
 // 仅 connected 会话有迁移价值（connecting 占位 id / error / disconnected 无）
 const canMigrateActive = computed(() => props.store.activeSession?.status === 'connected');
@@ -182,15 +179,22 @@ async function requestCloseAssetWindow() {
 }
 
 // 确认关闭：connecting 会话的 sessionId 还是 pending 占位（断不开，会留
-// Rust 侧孤儿连接），先轮询等 settle（250ms 间隔，10s 超时兜底）；再
-// allSettled 断开全部活跃会话；最后 destroy。
+// Rust 侧孤儿连接），先轮询等 settle（250ms 间隔）。等待上限 65s 与 sessions
+// store 的 hostkey 等待契约对齐（后端 60s 超时 + 5s 缓冲）；超时后【不销毁
+// 窗口】——此时 destroy 会销毁 JS 上下文、把孤儿 SSH 会话留在后端，改为
+// 提示用户稍候重试或先在终端取消连接，由用户决定。settle 后照常走断开+销毁。
+const CONNECT_SETTLE_TIMEOUT_MS = 65000;
 async function closeAfterConfirm() {
-  const deadline = Date.now() + 10000;
+  const deadline = Date.now() + CONNECT_SETTLE_TIMEOUT_MS;
   while (
     (props.store.sessions || []).some(s => s.status === 'connecting')
     && Date.now() < deadline
   ) {
     await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  if ((props.store.sessions || []).some(s => s.status === 'connecting')) {
+    props.store.announce?.('连接仍在进行中，请稍候重试，或先在终端取消连接', { level: 'warn' });
+    return;
   }
   const targets = (props.store.sessions || []).filter(
     s => s.status === 'connected' || s.status === 'connecting'
@@ -211,6 +215,11 @@ async function destroyWindow() {
 onMounted(async () => {
   syncWindowState();
   probeMainAlive();
+  // 主窗口存活性的事件驱动重探（替代旧的失败计数轮询）：窗口重新可见/获得
+  // 焦点时用户才可能点按钮，此刻的探测结果即按钮显示态；主窗口在期间被
+  // 关闭/重开也能双向刷新（mainAlive 如实置 false）。
+  window.addEventListener('focus', onWindowFocusReprobe);
+  document.addEventListener('visibilitychange', onWindowFocusReprobe);
   const currentWindow = getTauriWindow() as CloseableTauriWindow | null;
   if (typeof currentWindow?.onCloseRequested === 'function') {
     unlistenClose = await currentWindow.onCloseRequested(async event => {
@@ -221,6 +230,8 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener('focus', onWindowFocusReprobe);
+  document.removeEventListener('visibilitychange', onWindowFocusReprobe);
   if (typeof unlistenClose === 'function') unlistenClose();
 });
 </script>

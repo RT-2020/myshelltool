@@ -7,7 +7,7 @@ if (!fs.existsSync(outDir)) {
   fs.mkdirSync(outDir, { recursive: true });
 }
 
-const baseUrl = 'http://127.0.0.1:41234/';
+const baseUrl = process.env.MYSHELLTOOL_BASE_URL ?? 'http://127.0.0.1:41234/';
 const browser = await chromium.launch({ headless: true });
 
 try {
@@ -142,7 +142,8 @@ try {
     () => document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$pinia?._s?.has('workbench'),
     { timeout: 10000 }
   );
-  await page.waitForTimeout(1000);
+  // 状态等待：侧栏区域真实渲染后再截图（替代固定 1s 等待）
+  await page.waitForSelector('[data-region="sidebar"]', { timeout: 5000 });
 
   // 1. 浅色模式 - 默认工作台
   await page.screenshot({ path: path.join(outDir, '01_workbench_light.png') });
@@ -153,7 +154,8 @@ try {
     const ui = pinia._s.get('ui');
     ui.setTheme('dark');
   });
-  await page.waitForTimeout(500);
+  // 状态等待：主题属性真实落到 <html> 后再截图
+  await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark', { timeout: 5000 });
   await page.screenshot({ path: path.join(outDir, '02_workbench_dark.png') });
 
   // 3. 资产弹窗
@@ -174,7 +176,7 @@ try {
       }
     };
   });
-  await page.waitForTimeout(500);
+  await page.waitForSelector('#modalLayer.open', { timeout: 5000 });
   await page.screenshot({ path: path.join(outDir, '03_modal_asset_dark.png') });
 
   // 4. 设置弹窗
@@ -183,7 +185,11 @@ try {
     const workbench = pinia._s.get('workbench');
     workbench.modal = { type: 'settings', tab: 'appearance' };
   });
-  await page.waitForTimeout(500);
+  // modalLayer 已开（03），settings 弹窗用 store 状态区分等待
+  await page.waitForFunction(() => {
+    const wb = document.querySelector('#app').__vue_app__.config.globalProperties.$pinia._s.get('workbench');
+    return wb?.modal?.type === 'settings';
+  }, { timeout: 5000 });
   await page.screenshot({ path: path.join(outDir, '04_modal_settings_dark.png') });
 
   // 5. 设置弹窗 - MCP Tab
@@ -192,7 +198,10 @@ try {
     const workbench = pinia._s.get('workbench');
     workbench.modal = { type: 'settings', tab: 'mcp' };
   });
-  await page.waitForTimeout(500);
+  await page.waitForFunction(() => {
+    const wb = document.querySelector('#app').__vue_app__.config.globalProperties.$pinia._s.get('workbench');
+    return wb?.modal?.type === 'settings' && wb?.modal?.tab === 'mcp';
+  }, { timeout: 5000 });
   await page.screenshot({ path: path.join(outDir, '05_modal_settings_mcp_dark.png') });
 
   // 6. 新建分组弹窗
@@ -201,7 +210,10 @@ try {
     const workbench = pinia._s.get('workbench');
     workbench.modal = { type: 'createGroup' };
   });
-  await page.waitForTimeout(500);
+  await page.waitForFunction(() => {
+    const wb = document.querySelector('#app').__vue_app__.config.globalProperties.$pinia._s.get('workbench');
+    return wb?.modal?.type === 'createGroup';
+  }, { timeout: 5000 });
   await page.screenshot({ path: path.join(outDir, '06_modal_create_group_dark.png') });
 
   // 7. 关闭弹窗，切回浅色，查看文件面板
@@ -212,7 +224,11 @@ try {
     workbench.modal = { type: null, asset: null };
     ui.setTheme('light');
   });
-  await page.waitForTimeout(500);
+  // 状态等待：弹窗已关 + 主题已切回 light，两状态同时成立
+  await page.waitForFunction(() => {
+    const wb = document.querySelector('#app').__vue_app__.config.globalProperties.$pinia._s.get('workbench');
+    return wb?.modal?.type == null && document.documentElement.dataset.theme === 'light';
+  }, { timeout: 5000 });
   await page.screenshot({ path: path.join(outDir, '07_right_monitor_light.png') });
 
   // 8. 传输抽屉打开
@@ -226,7 +242,11 @@ try {
     ];
     files.transferDrawerOpen = true;
   });
-  await page.waitForTimeout(500);
+  // 状态等待：抽屉打开状态真实生效后再截图
+  await page.waitForFunction(() => {
+    const files = document.querySelector('#app').__vue_app__.config.globalProperties.$pinia._s.get('files');
+    return files?.transferDrawerOpen === true;
+  }, { timeout: 5000 });
   await page.screenshot({ path: path.join(outDir, '08_transfer_drawer_light.png') });
 
   console.log('All screenshots taken successfully');

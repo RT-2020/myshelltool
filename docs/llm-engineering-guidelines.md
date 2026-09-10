@@ -191,6 +191,33 @@ AI 协作开发若缺少语言级最佳实践约束，会持续产出以下 7 �
 💡 **区分「默认值」与「猜测」**：端口缺省 22、normalizeAsset 兜底是**应用自身契约**（我们定义的世界）；家目录/工具链/locale 是**外部世界**（我们无法定义，只能求证）。判断句式：「这个值，我是在定义它，还是在假设外部世界长这样？」——后者必须求证。
 💡 **换机自检**：写完任何与外部环境交互的代码，想象远端换成 root 用户 + Alpine + 中文 locale + 慢网络 + GitHub 时钟快 5 分钟，逐项推演还成立吗？
 
+### 机械门禁（文档之外的硬防线）
+
+> 文档是提醒（读到才生效、长会话会衰减），门禁才是约束。以下规则已脚本化并挂进构建链。
+
+`scripts/fact-guards.mjs`（`npm run lint:facts`，随 `npm run build` 执行；CI 在 push / PR 到 `master` 时跑 `npm run build` 会拦下违规，发版链 `tauri beforeBuildCommand` 同样经过它——但直接本地跑或绕过 CI 的路径不受约束）。扫描范围：`src/`、`src-tauri/src`、`crates/myshelltool-core/src`、`src-tauri/build.rs`、`tests/`、`scripts/`（`fact-guards.mjs` 自身除外，其正反样例由 `--self-test` 保障）；命中扩展名 `.ts/.tsx/.vue/.js/.jsx/.mjs/.mts/.cts/.rs`。任一扫描 root 扫到 0 个文件即 exit 1（防空集合上宣称「全部通过」的静默失效）：
+
+| 规则 id | 拦截 | 对应事故 |
+|---|---|---|
+| `no-guessed-home-path` | 前端拼接 `/home/...` 路径 | root 用户家目录猜测 → 目录加载失败 |
+| `no-drive-hardcoded-system-path` | 硬编码 `<盘符>:\windows` 等 | 系统目录保护只覆盖 C 盘 |
+| `no-gnu-only-flags` | `find -printf` / `df -B1` | BusyBox/Alpine 上目录列表整条失败 |
+| `no-blocking-sleep` | `thread::sleep` / `tokio::time::sleep` 充当就绪/重试等待 | 固定延迟 = 竞态温床 |
+| `locale-pinned-df` | 命令串里的 `df -` 必须带 `LC_ALL=C` | 中文 locale 磁盘统计静默归零 |
+| `no-host-only-identity` | `slugify(host)` 当实体 id | 同主机不同用户互相覆盖资产 |
+| `no-fixed-wait-in-tests` | UI 测试里的 `waitForTimeout(...)` | 快机器断言早于渲染、慢 CI 必 flaky |
+
+- **豁免**：行尾 `// fact-guard:allow <rule-id> <理由≥8字符>`（rule-id 须与命中规则一致，理由必填供 review 审阅；单测反例数据属合法用法）。
+- **自检防腐烂**：脚本内置每条规则的正反样例，规则失效（模式写坏/匹配不到）会先让自检失败。
+- **增长策略（规则先行）**：每发生一次新的「猜测/硬编码」事故，先在 `fact-guards.mjs` 加规则 + 正反样例，**再**改代码修复——保证同类错误第二次出现被机器拦下。
+- **覆盖边界**：门禁只能覆盖「可静态匹配」的形态（字符串/字面量）。时序猜测、缓存元数据误用、错误吞噬等不可 greppable 的形态靠下面的工作流卡点。
+
+### 工作流卡点（不可自动化的部分靠流程兜住）
+
+- **简报必须含「外部环境交互」一节**（派发实现任务的固定项）：逐条列出涉及的远端路径/命令输出解析/locale/时钟域/身份键/就绪信号，每条写明**求证方式**（协议 API/探测/显式失败策略）或标注「应用自身契约，可默认」。无此节的简报不合格，不得派发。
+- **review 验收按四种形态扫**：A 环境假设 / B 格式猜测 / C 静默兜底 / D 时序猜测——尤其 C 与 D（门禁覆盖不了）：错误路径是否把失败折叠成了默认值？等待是否用了巧合信号或固定延迟？
+- **新能力选型默认协议优先**：能用 SFTP/协议 API 的（canonicalize/stat/read_dir/pty 模式），不允许用「exec 拼命令 + 解析输出」替代；确需 exec 时在代码注释写明平台假设与降级策略。
+
 ---
 
 ## 8. 自检清单（AI 每次提交前过一遍）

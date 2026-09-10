@@ -143,8 +143,10 @@ fn tool_tag(name: &str) -> &'static str {
 }
 
 #[tauri::command]
-async fn mcp_status(_state: State<'_, AppState>) -> Result<McpStatus, String> {
-    let data_dir = mcp_data_dir();
+async fn mcp_status(state: State<'_, AppState>) -> Result<McpStatus, String> {
+    // v2.5：data_dir 用 setup 解析并托管在 AppState 的单一来源，不再独立
+    // 重建（避免与 Tauri app_data_dir 分叉 / APPDATA 缺失时落到相对 CWD）。
+    let data_dir = state.mcp_data_dir.clone();
 
     // v1.4：HTTP 健康检查。读 mcp-endpoint.json 拿实际监听地址，向它发 initialize。
     // 不再 spawn 子进程（v1.2 的 probe_mcp 已废弃）。
@@ -513,10 +515,10 @@ pub fn run() {
             // v1.5：GUI 弹窗审批的 pending 表。一份 Arc，McpToolContext 与 AppState 共享。
             let mcp_approval_pending: mcp::tools::ApprovalPending =
                 Arc::new(AsyncMutex::new(std::collections::HashMap::new()));
-            // v2：MCP 数据目录与拦截等级配置。data_dir 统一从 mcp_data_dir() 取
-            //（环境变量优先），让 endpoint / mcp-config.json / mcp-execution-log.json
+            // v2：MCP 数据目录与拦截等级配置。data_dir 统一从 mcp_data_dir(&app_data_dir)
+            // 取（环境变量优先），让 endpoint / mcp-config.json / mcp-execution-log.json
             // 与 mcp_status 命令读到的目录一致。配置 load 失败（损坏/不存在）→ 默认 Minimal。
-            let mcp_dir = mcp_data_dir();
+            let mcp_dir = mcp_data_dir(&app_data_dir);
             let mcp_config: Arc<tokio::sync::RwLock<mcp::config::McpConfig>> = Arc::new(
                 tokio::sync::RwLock::new(mcp::config::load_mcp_config(
                     &mcp::config::mcp_config_path(&mcp_dir),
@@ -651,25 +653,22 @@ pub fn run() {
         .expect("failed to run myshelltool");
 }
 
-// ─── MCP 数据目录解析（v1.4：MCP 内嵌 GUI，此函数供 mcp_status 命令用）───
+// ─── MCP 数据目录解析（v1.4：MCP 内嵌 GUI，此函数供 setup 解析用）───
 
 /// 解析 MCP 数据目录。
 ///
 /// 优先级：
 /// 1. 环境变量 `MYSHELLTOOL_DATA_DIR`（测试/自定义数据目录时可显式指定）
-/// 2. `%APPDATA%/com.redtei.myshelltool`（与 GUI 的 Tauri app_data_dir 一致，
-///    目录名取自 tauri.conf.json 的 identifier）
+/// 2. 调用方传入的 Tauri `app_data_dir`（setup 中经 `app.path().app_data_dir()`
+///    解析，与资产/凭据同源）
 ///
-/// 注意：Tauri 2 的 app_data_dir 用 **identifier**（com.redtei.myshelltool）
-/// 作目录名，不是 productName（myshelltool）——两者不能混。
-///
-/// v1.4 变化：v1.0-v1.3 此函数主要给独立 myshelltool-mcp.exe 用（解析自己的
-/// 数据目录）；v1.4 MCP 内嵌 GUI 后，MCP server 直接用 GUI 的 app_data_dir，
-/// 此函数仅保留给 mcp_status 命令读取 mcp-endpoint.json 用。
-fn mcp_data_dir() -> std::path::PathBuf {
+/// v2.5：删除 `%APPDATA%+硬编码 identifier` 重建分支——它与此处的 app_data_dir
+/// 是两套来源，APPDATA 缺失时会落到相对 CWD `"."` 写配置，identifier 改名时
+/// 两者分叉。单一来源：setup 解析一次，经 AppState.mcp_data_dir 全程复用
+/// （mcp_status 命令直接读 state，不再重复解析）。
+fn mcp_data_dir(app_data: &std::path::Path) -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("MYSHELLTOOL_DATA_DIR") {
         return std::path::PathBuf::from(dir);
     }
-    let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
-    std::path::PathBuf::from(appdata).join("com.redtei.myshelltool")
+    app_data.to_path_buf()
 }

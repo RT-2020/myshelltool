@@ -32,15 +32,23 @@ pub type ApprovalPending = Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>;
 //
 // v2：server.rs 执行日志需要记录「真实执行的命令文本」，抽成 pub 常量/函数
 // 避免两处硬编码漂移。tools.rs 分发与 server.rs 日志共用同一份。
+//
+// v2.5 逐段 rc 回声：复合命令的 shell 退出码只反映**最后一条**（echo/head
+// 恒 0），macOS 无 free、BSD top 无 -b 时前面的 `command not found` 会被
+// exit_code=0 掩盖成噪音。因此每个子命令后紧跟 `echo rc_<名>=$?`，AI 可
+// 按段定位真实失败。已知局限：`top | head` 管道段的 rc_top 反映管道末端
+// （head）的退出码，top 自身失败经 stderr 带出（POSIX shell 无可移植的
+// PIPESTATUS 用法，dash/zsh 对 `${PIPESTATUS[0]}` 报 Bad substitution）。
 
 /// disk_usage 工具实际执行的命令。
-pub const CMD_DISK_USAGE: &str = "df -h";
+/// MCP 命令统一锁 C locale：输出（含列头）不随服务器 locale 变化，
+/// 保证 AI 消费与执行日志稳定可解析（指南 §7 形态 B）。
+pub const CMD_DISK_USAGE: &str = "LC_ALL=C df -h; echo rc_df=$?";
 /// system_status 工具实际执行的命令。
-pub const CMD_SYSTEM_STATUS: &str =
-    "uptime; echo '---'; free -h; echo '---'; top -bn1 | head -20";
+pub const CMD_SYSTEM_STATUS: &str = "export LC_ALL=C; uptime; echo rc_uptime=$?; echo '---'; free -h; echo rc_free=$?; echo '---'; top -bn1 | head -20; echo rc_top=$?";
 /// service_status 工具实际执行的命令（按服务名拼接）。
 pub fn service_status_command(service: &str) -> String {
-    format!("systemctl status {service}")
+    format!("LC_ALL=C systemctl status {service}; echo rc_systemctl=$?")
 }
 
 // ─── v2.1 ssh_exec 返回截断保护（exec_on_asset 组装结构化返回时用）───
@@ -146,17 +154,17 @@ pub fn list_all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "disk_usage",
-            "查询指定资产的磁盘使用情况（执行 df -h）",
+            "查询指定资产的磁盘使用情况（执行 df -h）。stdout 含 rc_df=N 行标注 df 的真实退出码（复合命令回声，勿只看首行 exit_code）",
             schema_with_required_session(),
         ),
         Tool::new(
             "system_status",
-            "查询指定资产的系统状态：uptime / 内存 / 负载 / top 进程。仅支持 Linux（依赖 /proc 与 systemd）主机，其他平台命令会失败",
+            "查询指定资产的系统状态：uptime / 内存 / 负载 / top 进程。仅支持 Linux（依赖 /proc 与 systemd）主机，其他平台命令会失败。stdout 含 rc_uptime/rc_free/rc_top=N 行标注各子命令真实退出码（勿只看首行 exit_code，它只反映最后的 echo）",
             schema_with_required_session(),
         ),
         Tool::new(
             "service_status",
-            "查询指定资产上某 systemd 服务的状态（systemctl status <service>）。仅支持 Linux（依赖 /proc 与 systemd）主机，其他平台命令会失败",
+            "查询指定资产上某 systemd 服务的状态（systemctl status <service>）。仅支持 Linux（依赖 /proc 与 systemd）主机，其他平台命令会失败。stdout 含 rc_systemctl=N 行标注真实退出码",
             json!({
                 "type": "object",
                 "properties": {
@@ -171,7 +179,7 @@ pub fn list_all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "resource_monitor_snapshot",
-            "获取指定资产的资源监控快照（CPU负载、内存占用、磁盘空间概览）。仅支持 Linux（依赖 /proc 与 systemd）主机，其他平台命令会失败",
+            "获取指定资产的资源监控快照（CPU负载、内存占用、磁盘空间概览）。仅支持 Linux（依赖 /proc 与 systemd）主机，其他平台命令会失败。stdout 含 rc_uptime/rc_free/rc_df=N 行标注各子命令真实退出码",
             schema_with_required_session(),
         ),
         // ─── 高危 Shell 执行工具（经 Layer 6 审批）───
@@ -231,7 +239,7 @@ pub async fn call_tool(
             exec_on_asset(
                 ctx,
                 &arguments,
-                "uptime; echo '--- Memory ---'; free -m; echo '--- Disk ---'; df -h",
+                "export LC_ALL=C; uptime; echo rc_uptime=$?; echo '--- Memory ---'; free -m; echo rc_free=$?; echo '--- Disk ---'; df -h; echo rc_df=$?",
             )
             .await
         }

@@ -154,7 +154,12 @@ export const useSessionsStore = defineStore('sessions', () => {
   const activeSessionId = ref<string | null>(null);
   const hostKeyPrompt = ref<HostKeyVerifyPayload | null>(null);
   const keyboardPrompt = ref<KeyboardInteractivePayload | null>(null);
-  const terminalFontSize = ref(Number(readStored(TERMINAL_FONT_KEY)) || 12);
+  // 字号：写入路径（setTerminalFontSize）clamp 9–28，读取路径同款校验——
+  // 手改/外部写入的坏值（NaN/越界）不 clamp 会令 xterm 越界字号渲染异常。
+  // 非有限数或空值（Number('')===0）回落默认 12，与下行行高的读取风格一致。
+  const clampFontSize = (v: number) => Math.min(28, Math.max(9, v));
+  const storedFontSize = Number(readStored(TERMINAL_FONT_KEY));
+  const terminalFontSize = ref(Number.isFinite(storedFontSize) && storedFontSize > 0 ? clampFontSize(storedFontSize) : 12);
   // 行高（xterm lineHeight）：1.0 紧凑 ~ 2.0 宽松，默认 1.0；设置面板可调。
   const clampLineHeight = (v: number) => Math.min(2, Math.max(1, Math.round(v * 10) / 10));
   const storedLineHeight = Number(readStored(TERMINAL_LINEHEIGHT_KEY));

@@ -50,6 +50,10 @@ pub struct ResourceSnapshot {
     pub disk_total: u64,
     pub disk_used: u64,
     pub timestamp: u64,
+    /// 次要段（net/diskstats/df）解析失败时的降级说明（如 "df 解析失败"）。
+    /// None = 全部段正常。前端读 `degraded` 字段展示降级提示（事件契约 v2.5 冻结）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub degraded: Option<String>,
 }
 
 /// Per-session monitor handle. `cancel` is signaled on stop / drop.
@@ -134,9 +138,14 @@ pub fn parse_proc_stat(content: &str) -> Result<(u64, u64, u32), String> {
 /// Parse /proc/meminfo for MemTotal + MemAvailable.
 /// Returns `(total_bytes, used_bytes)`. `used = MemTotal - MemAvailable`.
 /// Values in meminfo are in kB; we multiply by 1024 to get bytes.
+///
+/// MemTotal 缺失 → Err（/proc/meminfo 不存在或不可读 = 非 Linux 远端，
+/// 不能再静默返回 (0,0) 假快照——前端图表恒 0% 看上去像「负载健康」）。
+/// MemAvailable 缺失（老内核）→ 退回 MemFree。
 pub fn parse_proc_meminfo(content: &str) -> Result<(u64, u64), String> {
     let mut mem_total_kb: Option<u64> = None;
     let mut mem_avail_kb: Option<u64> = None;
+    let mut mem_free_kb: Option<u64> = None;
 
     for line in content.lines() {
         let line = line.trim();
@@ -144,15 +153,19 @@ pub fn parse_proc_meminfo(content: &str) -> Result<(u64, u64), String> {
             mem_total_kb = parse_kb_value(rest);
         } else if let Some(rest) = line.strip_prefix("MemAvailable:") {
             mem_avail_kb = parse_kb_value(rest);
-        }
-        if mem_total_kb.is_some() && mem_avail_kb.is_some() {
-            break;
+        } else if let Some(rest) = line.strip_prefix("MemFree:") {
+            mem_free_kb = parse_kb_value(rest);
         }
     }
 
-    let total = mem_total_kb.unwrap_or(0).saturating_mul(1024);
-    let avail = mem_avail_kb.unwrap_or(0).saturating_mul(1024);
-    // Fallback to MemFree if MemAvailable missing (older kernels)
+    let total = mem_total_kb
+        .ok_or_else(|| "parse_proc_meminfo: no MemTotal line found".to_string())?
+        .saturating_mul(1024);
+    // MemAvailable 缺失（老内核）退回 MemFree；两者都缺则无法计算 used → Err。
+    let avail = mem_avail_kb
+        .or(mem_free_kb)
+        .ok_or_else(|| "parse_proc_meminfo: no MemAvailable/MemFree line found".to_string())?
+        .saturating_mul(1024);
     let used = total.saturating_sub(avail);
     Ok((total, used))
 }
@@ -382,24 +395,45 @@ pub fn parse_df(content: &str) -> Result<(u64, u64), String> {
 ///
 /// We split the combined output by looking for known section anchors
 /// ("cpu " for stat, "MemTotal:" for meminfo, "Inter-|" for net/dev,
-/// first diskstats line, and "Filesystem" for df). Parsers are tolerant of
-/// partial / missing sections — every field gracefully degrades to 0.
+/// first diskstats line, and "Filesystem" for df).
+///
+/// 分层失败语义（v2.5，杜绝全 0 假快照）：
+/// - `parse_proc_stat` / `parse_proc_meminfo` 失败 = 无 /proc（非 Linux 远端），
+///   快照主体数据全部不可信 → `Err`（调用侧停轮询 + emit 错误事件）。
+/// - 仅 net / diskstats / df 等次要段失败 → 快照照发（CPU/内存仍可信），
+///   `degraded` 字段标注失败段，前端展示降级提示。
 pub fn build_snapshot(
     session_id: &str,
     combined: &str,
     prev_cpu: Option<(u64, u64)>,
-) -> ResourceSnapshot {
+) -> Result<ResourceSnapshot, String> {
     let (stat_section, meminfo_section, net_section, disk_section, df_section) = split_proc_output(combined);
 
-    let (idle, total, cores) = parse_proc_stat(&stat_section).unwrap_or((0, 0, 0));
-    let (mem_total, mem_used) = parse_proc_meminfo(&meminfo_section).unwrap_or((0, 0));
-    let (net_rx, net_tx) = parse_proc_net_dev(&net_section).unwrap_or((0, 0));
-    let (disk_read, disk_write) = parse_proc_diskstats(&disk_section).unwrap_or((0, 0));
-    let (disk_total, disk_used) = parse_df(&df_section).unwrap_or((0, 0));
+    // 主要段（CPU/内存）：失败 = 无 /proc → 不可信，整份快照拒绝。
+    let (idle, total, cores) = parse_proc_stat(&stat_section)
+        .map_err(|_| "远端无 /proc，资源监控仅支持 Linux".to_string())?;
+    let (mem_total, mem_used) = parse_proc_meminfo(&meminfo_section)
+        .map_err(|_| "远端无 /proc，资源监控仅支持 Linux".to_string())?;
+
+    // 次要段：失败 → degraded 标注，数值置 0（该段本来就没有数据）。
+    let mut degraded_parts: Vec<&str> = Vec::new();
+    let (net_rx, net_tx) = parse_proc_net_dev(&net_section).unwrap_or_else(|_| {
+        degraded_parts.push("net");
+        (0, 0)
+    });
+    let (disk_read, disk_write) = parse_proc_diskstats(&disk_section).unwrap_or_else(|_| {
+        degraded_parts.push("diskstats");
+        (0, 0)
+    });
+    let (disk_total, disk_used) = parse_df(&df_section).unwrap_or_else(|_| {
+        degraded_parts.push("df");
+        (0, 0)
+    });
+    let degraded = (!degraded_parts.is_empty()).then(|| format!("{} 解析失败", degraded_parts.join("/")));
 
     let cpu_usage = compute_cpu_usage(prev_cpu, idle, total);
 
-    ResourceSnapshot {
+    Ok(ResourceSnapshot {
         session_id: session_id.to_string(),
         cpu_usage,
         cpu_cores: cores,
@@ -412,7 +446,8 @@ pub fn build_snapshot(
         disk_total,
         disk_used,
         timestamp: unix_millis(),
-    }
+        degraded,
+    })
 }
 
 fn compute_cpu_usage(prev: Option<(u64, u64)>, idle: u64, total: u64) -> f32 {
@@ -940,13 +975,52 @@ Filesystem     1024-blocks      Used  Available Use% Mounted on
             "{}\n{}\n{}\n{}\n{}\n",
             PROC_STAT_SAMPLE, PROC_MEMINFO_SAMPLE, PROC_NET_DEV_SAMPLE, PROC_DISKSTATS_SAMPLE, DF_SAMPLE
         );
-        let snap = build_snapshot("test-session", &combined, None);
+        let snap = build_snapshot("test-session", &combined, None).expect("完整样本应构建成功");
+        // 全段正常 → 无降级标注
+        assert!(snap.degraded.is_none(), "完整样本不应有 degraded: {:?}", snap.degraded);
         // disk_total/used 必须来自 df 根分区（KB×1024），而非写死 0
         assert_eq!(snap.disk_total, 51475040 * 1024);
         assert_eq!(snap.disk_used, 29655014 * 1024);
         // 其余字段也应正常填充（serde 字段名是 camelCase，但 struct 字段名仍是 snake）
         assert_eq!(snap.mem_total, 16266984 * 1024);
         assert!(snap.disk_read_bytes > 0);
+    }
+
+    #[test]
+    fn test_build_snapshot_rejects_non_proc_output() {
+        // 非 Linux 远端：cat /proc/* 失败（stderr），stdout 为空或只有 df 段。
+        // 必须返回 Err，不能发全 0 假快照（图表恒 0% 伪装成负载健康）。
+        let out = "Filesystem     1024-blocks      Used  Available Use% Mounted on\n/dev/sda1        51475040  29655014   21820026  58% /\n";
+        let err = build_snapshot("s", out, None).expect_err("无 /proc 输出应 Err");
+        assert_eq!(err, "远端无 /proc，资源监控仅支持 Linux");
+        // 完全空输出同理
+        assert!(build_snapshot("s", "", None).is_err());
+    }
+
+    #[test]
+    fn test_build_snapshot_df_failure_degrades_not_fakes() {
+        // df 段缺失（次要段）→ 快照照发 + degraded 标注，而不是静默 disk=0
+        let combined = format!(
+            "{}\n{}\n{}\n{}\n",
+            PROC_STAT_SAMPLE, PROC_MEMINFO_SAMPLE, PROC_NET_DEV_SAMPLE, PROC_DISKSTATS_SAMPLE
+        );
+        let snap = build_snapshot("s", &combined, None).expect("主要段正常应 Ok");
+        assert_eq!(snap.degraded.as_deref(), Some("df 解析失败"));
+        assert_eq!(snap.disk_total, 0);
+        // CPU/内存仍真实
+        assert_eq!(snap.mem_total, 16266984 * 1024);
+        assert_eq!(snap.cpu_cores, 8);
+    }
+
+    #[test]
+    fn test_parse_proc_meminfo_memfree_fallback() {
+        // 老内核无 MemAvailable → 退回 MemFree；两者都缺 → Err
+        let old_kernel = "MemTotal:       16266984 kB\nMemFree:          387952 kB\n";
+        let (total, used) = parse_proc_meminfo(old_kernel).expect("MemFree 兜底");
+        assert_eq!(total, 16266984 * 1024);
+        assert_eq!(used, (16266984 - 387952) * 1024);
+        assert!(parse_proc_meminfo("MemFree: 1 kB\n").is_err());
+        assert!(parse_proc_meminfo("").is_err());
     }
 
     #[test]
@@ -966,11 +1040,18 @@ Filesystem     1024-blocks      Used  Available Use% Mounted on
             disk_total: 1000,
             disk_used: 600,
             timestamp: 12345,
+            degraded: None,
         };
         let json = serde_json::to_string(&snap).expect("serialize");
         assert!(json.contains("\"cpuUsage\""), "json must use camelCase: {json}");
         assert!(json.contains("\"memTotal\""));
         assert!(json.contains("\"diskTotal\""));
         assert!(!json.contains("\"cpu_usage\""), "snake_case must not leak: {json}");
+        // degraded = None 时不出现（skip_serializing_if）
+        assert!(!json.contains("degraded"), "None 不应序列化: {json}");
+        // degraded = Some 时必须以 camelCase 字段名序列化（前端契约字段）
+        let snap_degraded = ResourceSnapshot { degraded: Some("df 解析失败".into()), ..snap };
+        let json = serde_json::to_string(&snap_degraded).expect("serialize");
+        assert!(json.contains("\"degraded\":\"df 解析失败\""), "degraded 应序列化: {json}");
     }
 }

@@ -75,6 +75,9 @@ try {
   // 直接经 pinia 向 sessions store push 一条最小形状会话（host/port 与下方
   // 事件 payload 的 host_port '192.168.2.2:22' 一致）。不设 activeSessionId，
   // 避免 TerminalPane 走 session.term 渲染路径。
+  // 注：sessions store 没有「仅注入会话条目」的公开 action——connectSelected 走
+  // 真实 ssh_connect（mock 返回失败，无法制造 connecting 态），createTerminalForAsset
+  // 需要真实 xterm 容器/模块加载。不为测试改产品代码，故保留裸对象注入。
   await page.evaluate(() => {
     const app = document.querySelector('#app').__vue_app__;
     const pinia = app.config.globalProperties.$pinia;
@@ -174,7 +177,12 @@ try {
   );
   const beforeReject = await page.evaluate(() => window.__MST_MOCK.invokeCalls.length);
   await page.click('.modal-actions .btn.danger');
-  await page.waitForTimeout(500);
+  // 状态等待：invoke 调用数实际增长即拒绝已生效（不赌固定毫秒）
+  await page.waitForFunction(
+    before => window.__MST_MOCK.invokeCalls.length > before,
+    beforeReject,
+    { timeout: 5000 }
+  );
   const afterReject = await page.evaluate(() => window.__MST_MOCK.invokeCalls.length);
   assert(afterReject > beforeReject, `reject click should trigger invoke (${beforeReject} → ${afterReject})`);
   const rejectCall = await page.evaluate(() => {

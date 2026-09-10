@@ -18,7 +18,10 @@ const DANGEROUS_PATTERNS: RegExp[] = [
   /\bhalt\b/i,
   /\bpoweroff\b/i,
   /\binit\s+0\b/i,
-  /\bchmod\s+-R\s+[0-7]{3,4}\s+\/(?!tmp|var\/tmp|home|Users)/i,
+  // 仅 /tmp、/var/tmp 视为「草稿区」；家目录（/home、/Users）与系统目录递归 chmod
+  // 一律告警（与 Rust 侧 dangerous_commands.rs 的 catastrophic 豁免表保持同一口径，
+  // 两端共享同一判定语义——「家目录安全」是环境臆断，已废弃）。
+  /\bchmod\s+-R\s+[0-7]{3,4}\s+\/(?!tmp|var\/tmp)/i,
   /\bchown\s+-R\b/i,
   /\biptables\s+-F\b/i,
   /\b:()\{\s*:\|:&\s*\};:/,

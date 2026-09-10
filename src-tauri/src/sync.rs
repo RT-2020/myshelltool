@@ -420,12 +420,23 @@ pub async fn sync_setup(
         let assets_json = serde_json::to_string_pretty(&vault.assets_store)
             .map_err(|e| format!("序列化资产失败: {e}"))?;
 
-        // 换机拉取：自动将远端解密出的密码与私钥通过本机 DPAPI 写入本地 SecretStore
+        // 换机拉取：自动将远端解密出的密码与私钥通过本机 DPAPI 写入本地 SecretStore。
+        // 恢复失败不阻断导入（资产 JSON 已就绪返回前端），但必须留日志痕迹。
         if !vault.credentials.is_empty() {
-            let _ = crate::sync_credentials::restore_sync_credentials(&state, &vault.credentials);
+            if let Err(e) =
+                crate::sync_credentials::restore_sync_credentials(&state, &vault.credentials)
+            {
+                log::warn!("sync_setup: 恢复同步凭据到本机 SecretStore 失败: {e}");
+            }
         }
-        // 资产文件直接就绪
-        let _ = std::fs::write(&state.asset_store_path, &assets_json);
+        // 资产文件写回失败必须中止（对照 sync_pull 的写法）：否则本地仍是旧内容，
+        // 而下方 last_synced_at 照常前移，此后 pull 会以「安全拉取」误判并覆盖。
+        std::fs::write(&state.asset_store_path, &assets_json).map_err(|e| {
+            format!(
+                "写回 connection-assets.json（{}）失败: {e}",
+                state.asset_store_path.display()
+            )
+        })?;
 
         // 记录 sync state。last_synced_at 记本地完成时刻（与刚落盘的资产文件
         // mtime 同钟域）；记 Gist 的 updated_at（远端历史时刻）会让此后每次
@@ -470,8 +481,18 @@ fn pack_local_vault(
     new_rev: u64,
 ) -> Result<SyncPayload, String> {
     let local_json = read_local_assets(state)?;
+    // 文件可读但 JSON 损坏 → 直接中止（push / setup 首推 / resolve_conflict(local)
+    // 都经此打包）。旧版静默折叠成空 vault 再加密推 Gist，会无声清空远端备份
+    // 且 last_synced_at 照常前移（用户看到「已推送」）。read_local_assets 已单独
+    // 放行 NotFound（首次使用合法为空），这里只拦「可读但损坏」。
     let store: myshelltool_core::ConnectionAssetStore = serde_json::from_str(&local_json)
-        .unwrap_or_else(|_| myshelltool_core::ConnectionAssetStore { assets: vec![], groups: vec![] });
+        .map_err(|e| {
+            format!(
+                "本地资产文件损坏，已中止同步以免覆盖远端备份（{}）：{e}。\
+                 请检查该文件内容，或改用 sync_pull 从 Gist 恢复。",
+                state.asset_store_path.display()
+            )
+        })?;
 
     let credentials = if sync_state.sync_credentials {
         crate::sync_credentials::collect_sync_credentials(state, &store.assets).unwrap_or_default()
@@ -597,9 +618,14 @@ pub async fn sync_pull(
             std::fs::write(&state.asset_store_path, &remote_json)
                 .map_err(|e| format!("写回 connection-assets.json: {e}"))?;
 
-            // 自动将远端解密的密码与托管私钥存入本地 SecretStore（DPAPI 重新加密）
+            // 自动将远端解密的密码与托管私钥存入本地 SecretStore（DPAPI 重新加密）。
+            // 恢复失败不阻断 pull 结果（资产已落盘），但留日志供排查。
             if !vault.credentials.is_empty() {
-                let _ = crate::sync_credentials::restore_sync_credentials(&state, &vault.credentials);
+                if let Err(e) =
+                    crate::sync_credentials::restore_sync_credentials(&state, &vault.credentials)
+                {
+                    log::warn!("sync_pull: 恢复同步凭据到本机 SecretStore 失败: {e}");
+                }
             }
 
             let mut new_state = sync_state;
@@ -670,13 +696,37 @@ pub async fn sync_resolve_conflict(
             std::fs::write(&state.asset_store_path, &remote_json)
                 .map_err(|e| format!("写回 connection-assets.json: {e}"))?;
 
-            if let Ok(Some((content, _))) = gist_get(&pat, &gist_id).await {
-                if let Ok(payload) = serde_json::from_str::<SyncPayload>(&content) {
-                    if let Ok(vault) = decrypt_vault(&state, &master_password, &payload) {
-                        if !vault.credentials.is_empty() {
-                            let _ = crate::sync_credentials::restore_sync_credentials(&state, &vault.credentials);
-                        }
+            // 尽力恢复远端凭据（remote_json 只含资产，凭据在 Gist 载荷里）。
+            // 任何一步失败都不阻断「用远端覆盖本地」的结果，但逐层留日志——
+            // 用户选了 remote 通常预期凭据也一并恢复，静默跳过会掩盖这一点。
+            match gist_get(&pat, &gist_id).await {
+                Ok(Some((content, _))) => {
+                    match serde_json::from_str::<SyncPayload>(&content) {
+                        Ok(payload) => match decrypt_vault(&state, &master_password, &payload) {
+                            Ok(vault) => {
+                                if !vault.credentials.is_empty() {
+                                    if let Err(e) = crate::sync_credentials::restore_sync_credentials(
+                                        &state,
+                                        &vault.credentials,
+                                    ) {
+                                        log::warn!("sync_resolve_conflict: 恢复同步凭据失败: {e}");
+                                    }
+                                }
+                            }
+                            Err(e) => log::warn!(
+                                "sync_resolve_conflict: 解密远端载荷以恢复凭据失败: {e}"
+                            ),
+                        },
+                        Err(e) => log::warn!(
+                            "sync_resolve_conflict: 解析 Gist 载荷以恢复凭据失败: {e}"
+                        ),
                     }
+                }
+                Ok(None) => {
+                    log::warn!("sync_resolve_conflict: Gist 不存在，跳过凭据恢复");
+                }
+                Err(e) => {
+                    log::warn!("sync_resolve_conflict: 重新拉取 Gist 以恢复凭据失败: {e}");
                 }
             }
 

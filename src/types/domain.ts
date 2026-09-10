@@ -166,6 +166,8 @@ export interface ResourceSnapshot {
   diskWriteBytes: number;
   diskTotal?: number;
   diskUsed?: number;
+  /** 次要段（net/diskstats/df）解析失败时的降级说明；Rust 侧 serde skip_serializing_if=None，全部正常时字段缺省。 */
+  degraded?: string;
 }
 
 // ============================================================

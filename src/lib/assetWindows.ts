@@ -28,9 +28,51 @@ export interface AssetLike {
   name: string;
 }
 
-// Tauri 窗口 label 仅允许 [a-zA-Z0-9-/:_]，其余字符替换为 '-'（确定性映射）
+// djb2 8 位十六进制短哈希（确定性、无依赖）：id 含 Tauri label 白名单外字符
+// 时追加，保证 sanitize 后不同 id 不碰撞（见 sanitizeWindowLabel 注释）。
+function idHash8(id: string): string {
+  let h = 5381;
+  for (let i = 0; i < id.length; i += 1) {
+    h = ((h << 5) + h + id.charCodeAt(i)) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+
+// Tauri 窗口 label 仅允许 [a-zA-Z0-9-/:_]。纯替换式映射非单射：外部来源 id
+// （normalizeAsset 原样接受）可携带任意字符，"web server" 与 "web-server" 会
+// 映射到同一 label，点资产 B 的「独立窗口」却聚焦到 A 的窗口。防碰撞策略：
+// 安全字符原样保留；【发生替换时】追加原 id 的短哈希后缀（哈希十六进制 +
+// '-' 均在白名单内）。注意：此策略下含特殊字符的 id 对应 label 会与旧版不同
+// ——已开的旧 label 窗口不会被新 label 命中，但窗口不持久化恢复（AGENTS.md
+// 已声明），重启后自愈，属可接受的一次性偏移。
 export function sanitizeWindowLabel(id: unknown): string {
-  return String(id ?? '').replace(/[^a-zA-Z0-9-/:_]/g, '-');
+  const raw = String(id ?? '');
+  const sanitized = raw.replace(/[^a-zA-Z0-9-/:_]/g, '-');
+  return sanitized === raw ? sanitized : `${sanitized}-${idHash8(raw)}`;
+}
+
+// 单元自检（无 JS 单测框架，按任务约定放同文件；仅 DEV 模式执行）：验证两组
+// 旧映射下会碰撞的 id 现在产生不同 label，且安全 id 保持原样不追加哈希。
+export function selfTestSanitizeWindowLabel(): string[] {
+  const failures: string[] = [];
+  const cases: Array<[string, string]> = [
+    ['web server', 'web-server'],
+    ['web?server', 'web-server']
+  ];
+  for (const [a, b] of cases) {
+    if (sanitizeWindowLabel(a) === sanitizeWindowLabel(b)) {
+      failures.push(`collision: "${a}" vs "${b}" -> ${sanitizeWindowLabel(a)}`);
+    }
+  }
+  if (sanitizeWindowLabel('web-server') !== 'web-server') {
+    failures.push('safe id should pass through unchanged');
+  }
+  return failures;
+}
+
+if (import.meta.env.DEV) {
+  const failures = selfTestSanitizeWindowLabel();
+  for (const f of failures) console.error('[assetWindows] label self-test failed:', f);
 }
 
 export function assetWindowLabel(asset?: { id?: unknown } | null): string {
