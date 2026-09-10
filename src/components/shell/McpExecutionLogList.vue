@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /**
  * McpExecutionLogList — v2.3 MCP 工具执行日志区块。
  *
@@ -17,7 +17,7 @@
 import { computed, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { ScrollText, RefreshCw, Trash2 } from 'lucide-vue-next';
-import { useMcpStore } from '@/stores/mcp.js';
+import { useMcpStore } from '@/stores/mcp';
 import AppButton from '@/components/ui/AppButton.vue';
 import McpLogFilterBar from '@/components/shell/McpLogFilterBar.vue';
 import {
@@ -26,7 +26,8 @@ import {
   DECISION_SHORT,
   OUTCOME_LABELS,
   outcomeClass
-} from '@/lib/mcpLogLabels.js';
+} from '@/lib/mcpLogLabels';
+import type { McpExecutionLogEntry } from '@/types/domain';
 
 const mcpStore = useMcpStore();
 // setup store 解构必须走 storeToRefs（直接解构丢响应性，AGENTS.md Pinia 约定）
@@ -39,6 +40,9 @@ const searchText = ref('');
 const toolFilter = ref('');
 const assetFilter = ref('');
 const outcomeFilter = ref('');
+// 当前展开详情的条目 id（'' = 全收起）。注：TS 迁移时补上缺失的声明
+//（原 JS 版 onRowClick/模板引用了 expandedId 但从未声明，属既有笔误）
+const expandedId = ref('');
 
 const filtered = computed(() => {
   const q = searchText.value.trim().toLowerCase();
@@ -68,7 +72,7 @@ watch([searchText, toolFilter, assetFilter, outcomeFilter], () => {
   visibleCount.value = PAGE_SIZE;
 });
 
-function onRowClick(row) {
+function onRowClick(row: McpExecutionLogEntry) {
   expandedId.value = expandedId.value === row.id ? '' : row.id;
 }
 
@@ -80,10 +84,10 @@ async function onClear() {
   expandedId.value = '';
 }
 
-function pad2(n) {
+function pad2(n: number) {
   return String(n).padStart(2, '0');
 }
-function fmtTime(ms) {
+function fmtTime(ms: number) {
   if (!ms) return '—';
   try {
     const d = new Date(ms);
@@ -95,7 +99,7 @@ function fmtTime(ms) {
   }
 }
 // 行内短时间：当天只显示时分秒，非当天补月-日（完整时间在详情与 title 中）
-function fmtShortTime(ms) {
+function fmtShortTime(ms: number) {
   if (!ms) return '—';
   const d = new Date(ms);
   if (Number.isNaN(d.getTime())) return String(ms);
@@ -106,16 +110,16 @@ function fmtShortTime(ms) {
   return sameDay ? hms : `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${hms}`;
 }
 
-function decisionLabel(value) {
+function decisionLabel(value: string) {
   return DECISION_LABELS[value] || value;
 }
-function decisionShort(value) {
+function decisionShort(value: string) {
   return DECISION_SHORT[value] || decisionLabel(value);
 }
-function outcomeLabel(value) {
+function outcomeLabel(value: string) {
   return OUTCOME_LABELS[value] || value;
 }
-function hostTitle(row) {
+function hostTitle(row: McpExecutionLogEntry) {
   return `${row.assetName || row.assetId || '—'}（${row.username || '—'}@${row.host || '—'}:${row.port || '—'}）`;
 }
 </script>

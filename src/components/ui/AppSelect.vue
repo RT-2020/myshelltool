@@ -1,20 +1,33 @@
-<script setup>
+<script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { ChevronDown, Check } from 'lucide-vue-next';
 
-const props = defineProps({
-  modelValue: { type: [String, Number], default: '' },
-  options: { type: Array, default: () => [] }, // [{ label, value }]
-  placeholder: { type: String, default: '' }
-});
-const emit = defineEmits(['update:modelValue']);
+/** 下拉选项契约（label 宽松可空：typeahead 有 || '' 兜底）。 */
+interface SelectOption {
+  label?: string;
+  value: string | number;
+}
+
+const props = withDefaults(
+  defineProps<{
+    modelValue?: string | number;
+    options?: SelectOption[];
+    placeholder?: string;
+  }>(),
+  {
+    modelValue: '',
+    options: () => [],
+    placeholder: ''
+  }
+);
+const emit = defineEmits<{ 'update:modelValue': [value: string | number] }>();
 
 const open = ref(false);
-const rootRef = ref(null);
-const menuRef = ref(null);
+const rootRef = ref<HTMLElement | null>(null);
+const menuRef = ref<HTMLElement | null>(null);
 const activeIndex = ref(-1);
 
-let typeaheadTimer = null;
+let typeaheadTimer: ReturnType<typeof setTimeout> | null = null;
 let typeaheadBuffer = '';
 
 const currentLabel = computed(() => {
@@ -42,7 +55,7 @@ function toggle() {
   }
 }
 
-function select(value) {
+function select(value: string | number) {
   emit('update:modelValue', value);
   closeMenu();
 }
@@ -53,7 +66,7 @@ function scrollActiveIntoView() {
   if (el) el.scrollIntoView({ block: 'nearest' });
 }
 
-function moveHighlight(dir) {
+function moveHighlight(dir: number) {
   const len = props.options.length;
   if (!len) return;
   let next = activeIndex.value + dir;
@@ -63,14 +76,14 @@ function moveHighlight(dir) {
   scrollActiveIntoView();
 }
 
-function jumpHighlight(index) {
+function jumpHighlight(index: number) {
   const len = props.options.length;
   if (!len) return;
   activeIndex.value = Math.max(0, Math.min(index, len - 1));
   scrollActiveIntoView();
 }
 
-function onTypeahead(char) {
+function onTypeahead(char: string) {
   const len = props.options.length;
   if (!len) return;
   typeaheadBuffer = (typeaheadBuffer + char).slice(-20);
@@ -89,13 +102,13 @@ function onTypeahead(char) {
   }
 }
 
-function onDocClick(e) {
-  if (rootRef.value && !rootRef.value.contains(e.target)) {
+function onDocClick(e: MouseEvent) {
+  if (rootRef.value && !rootRef.value.contains(e.target as Node)) {
     closeMenu();
   }
 }
 
-function onKeydown(e) {
+function onKeydown(e: KeyboardEvent) {
   if (!open.value) return;
   if (e.key === 'Escape') {
     e.preventDefault();
@@ -147,7 +160,7 @@ onBeforeUnmount(() => {
       class="app-select-trigger"
       :class="{ 'is-open': open }"
       aria-haspopup="listbox"
-      :aria-expanded="String(open)"
+      :aria-expanded="open"
       :aria-activedescendant="activeDescendant"
       @click="toggle"
     >
@@ -166,7 +179,7 @@ onBeforeUnmount(() => {
           :class="{ 'is-selected': opt.value === modelValue, 'is-active': activeIndex >= 0 && options[activeIndex] === opt }"
           role="option"
           tabindex="-1"
-          :aria-selected="String(opt.value === modelValue)"
+          :aria-selected="opt.value === modelValue"
           @click="select(opt.value)"
         >
           <span class="app-select-option-label">{{ opt.label }}</span>

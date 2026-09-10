@@ -1,16 +1,23 @@
-<script setup>
+<script setup lang="ts">
 import { computed, ref, watch, nextTick } from 'vue';
 import { AlertTriangle, X } from 'lucide-vue-next';
 
-const props = defineProps({
-  open: { type: Boolean, default: false },
-  command: { type: String, default: '' },
-  matchedPattern: { type: String, default: '' }
+const props = withDefaults(defineProps<{
+  open?: boolean;
+  command?: string;
+  matchedPattern?: string;
+}>(), {
+  open: false,
+  command: '',
+  matchedPattern: ''
 });
-const emit = defineEmits(['confirm', 'cancel']);
+const emit = defineEmits<{
+  confirm: [allowedPattern: string | null];
+  cancel: [];
+}>();
 
 const rememberRule = ref(false);
-const confirmRef = ref(null);
+const confirmRef = ref<HTMLButtonElement | null>(null);
 
 // 打开时聚焦「仍然粘贴」（Enter 即确认）；每次打开重置不再拦截勾选
 watch(() => props.open, async (v) => {
@@ -21,7 +28,7 @@ watch(() => props.open, async (v) => {
   }
 });
 
-function onKeydown(e) {
+function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter') { e.preventDefault(); confirm(); }
   else if (e.key === 'Escape') { e.preventDefault(); emit('cancel'); }
 }

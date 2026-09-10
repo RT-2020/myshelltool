@@ -1,17 +1,18 @@
-<script setup>
+<script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted } from 'vue';
-import { useWorkbenchStore } from './stores/workbench.js';
-import { isTauriRuntime } from './services/backend.js';
-import { usePanelResize } from './composables/usePanelResize.js';
-import { useAutoUpdate } from './composables/useAutoUpdate.js';
-import { bootAssetWindow } from './lib/assetWindowBoot.js';
-import { setupHandoffListeners } from './lib/sessionHandoff.js';
-import { useSessionsStore } from './stores/sessions.js';
+import { useWorkbenchStore } from './stores/workbench';
+import { isTauriRuntime } from './services/backend';
+import { usePanelResize } from './composables/usePanelResize';
+import { useAutoUpdate } from './composables/useAutoUpdate';
+import { bootAssetWindow } from './lib/assetWindowBoot';
+import { setupHandoffListeners } from './lib/sessionHandoff';
+import { useSessionsStore } from './stores/sessions';
 import WorkbenchShell from './components/workbench/WorkbenchShell.vue';
 import AssetWindowShell from './components/workbench/AssetWindowShell.vue';
 import GlobalModals from './components/shell/GlobalModals.vue';
 import TransferDrawer from './components/files/TransferDrawer.vue';
 import AppToastHost from './components/ui/AppToastHost.vue';
+import type { ModalState } from './types/domain';
 
 // 独立资产窗口（WebviewWindow url 带 ?win=asset&assetId=...）：模块加载即定
 const params = new URLSearchParams(window.location.search);
@@ -26,7 +27,7 @@ const desktopRuntimeAvailable = computed(() => isTauriRuntime());
 
 // 跨窗口会话迁移监听（sessionHandoff 协议）：主/asset 两分支都要注册
 // （角色门控在 setupHandoffListeners 内部：TEAROFF 仅 asset 窗口、MERGE_PUSH 仅主窗口）
-let handoffDispose = null;
+let handoffDispose: (() => Promise<void>) | null = null;
 
 onMounted(() => {
   if (isAssetWindow) {
@@ -35,8 +36,8 @@ onMounted(() => {
     store
       .initialize({ mode: 'asset' })
       .then(() => bootAssetWindow(store, {
-        assetId: params.get('assetId'),
-        adoptSessionId: params.get('adopt')
+        assetId: params.get('assetId') as string | undefined,
+        adoptSessionId: params.get('adopt') as string | undefined
       }))
       .catch(() => null);
   } else {
@@ -47,7 +48,7 @@ onMounted(() => {
   handoffDispose = setupHandoffListeners({
     sessionsStore: useSessionsStore(),
     workbenchStore: store,
-    assetId: params.get('assetId')
+    assetId: params.get('assetId') as string | undefined
   });
 });
 
@@ -57,7 +58,7 @@ onBeforeUnmount(() => {
   store.disposeEventListeners();
 });
 
-function handleGlobalKeydown(event) {
+function handleGlobalKeydown(event: KeyboardEvent) {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k' && !event.shiftKey) {
     event.preventDefault();
     store.openGlobalSearch();
@@ -65,7 +66,7 @@ function handleGlobalKeydown(event) {
   if (event.key === 'Escape' && store.searchState.open) store.closeGlobalSearch();
 }
 
-function openSettings(tab = 'about') {
+function openSettings(tab: string = 'about') {
   // resetLayout：恢复默认布局回调，供设置弹窗「外观」tab 的次要按钮调用
   // （原顶栏布局菜单入口删除后的补偿入口）
   store.modal = {
@@ -76,7 +77,7 @@ function openSettings(tab = 'about') {
       panelResize.resetLayout();
       store.announce('布局已恢复默认');
     }
-  };
+  } as ModalState;
 }
 
 function createAsset() {

@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /**
  * FileSurface — Wave 3 Step 3.4（v3 精简版）
  * Center-bottom container: 默认只渲染远程文件栏占满全宽，点「本地」按钮展开双栏。
@@ -13,11 +13,21 @@
 import { computed, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { PanelLeft, FolderOpen } from 'lucide-vue-next';
-import { useFilesStore } from '@/stores/files.js';
-import { useUiStore } from '@/stores/ui.js';
-import { isTauriRuntime } from '@/services/backend.js';
+import { useFilesStore } from '@/stores/files';
+import { useUiStore } from '@/stores/ui';
+import { isTauriRuntime } from '@/services/backend';
 import FileColumn from './FileColumn.vue';
 import AppContextMenu from '@/components/ui/AppContextMenu.vue';
+import type { ModalState, RemoteFileEntry } from '@/types/domain';
+
+/** 右键菜单条目（与 AppContextMenu 的 ContextMenuItem 同形状）。 */
+interface FileMenuItem {
+  label?: string;
+  action?: () => void;
+  danger?: boolean;
+  separator?: boolean;
+  disabled?: boolean;
+}
 
 const filesStore = useFilesStore();
 const uiStore = useUiStore();
@@ -26,32 +36,33 @@ const { remoteListMode, contextMenu, selectedRemotePaths, localPaneVisible, remo
 const isTauriCore = computed(() => isTauriRuntime());
 
 // Hidden file input for upload (triggered via context-menu or drag-drop).
-const fileInput = ref(null);
+const fileInput = ref<HTMLInputElement | null>(null);
 
 function triggerFileUpload() {
   if (remoteBusy.value) return;
   fileInput.value?.click();
 }
-function onFilePick(event) {
-  const files = event.target.files;
+function onFilePick(event: Event) {
+  const target = event.target as HTMLInputElement;
+  const files = target.files;
   if (files?.length && !remoteBusy.value) filesStore.uploadFiles(files);
-  if (event.target) event.target.value = '';
+  if (event.target) target.value = '';
 }
 
 // 拖拽上传：Windows 资源管理器拖文件进来即触发 uploadFiles。
 // dragover 时显示半透明 accent 边框 + 「松开上传」浮层（dragging=true）。
 // 仅认 'Files' 类型：栏间拖拽（自定义 MIME）走下方独立通道，两条互不干扰。
 const dragging = ref(false);
-let dragLeaveTimer = null;
+let dragLeaveTimer: ReturnType<typeof setTimeout> | null = null;
 
-function onDrop(event) {
+function onDrop(event: DragEvent) {
   event.preventDefault();
   dragging.value = false;
   if (dragLeaveTimer) { clearTimeout(dragLeaveTimer); dragLeaveTimer = null; }
   const files = event.dataTransfer?.files;
   if (files?.length && !remoteBusy.value) filesStore.uploadFiles(files);
 }
-function onDragOver(event) {
+function onDragOver(event: DragEvent) {
   // 必须 preventDefault 才能触发 drop；仅含 OS 文件时才整面放行并显提示。
   // 栏间拖拽的自定义 MIME 不在整面放行（远程栏 wrapper 单独判定），拖到非远程区域即浏览器默认禁止。
   if (!event.dataTransfer?.types?.includes('Files')) return;
@@ -75,20 +86,20 @@ function onDragLeave() {
 const FILE_DRAG_MIME = 'application/x-myshelltool-file';
 const columnDragging = ref(false);
 const dragEntryCount = ref(0);
-let columnDragLeaveTimer = null;
+let columnDragLeaveTimer: ReturnType<typeof setTimeout> | null = null;
 
-function hasInternalFileDrag(event) {
+function hasInternalFileDrag(event: DragEvent) {
   return Boolean(event.dataTransfer?.types?.includes(FILE_DRAG_MIME));
 }
 
-function onLocalDragStart(count) {
+function onLocalDragStart(count: number) {
   dragEntryCount.value = Number(count) || 1;
 }
 
-function onRemoteColumnDragOver(event) {
+function onRemoteColumnDragOver(event: DragEvent) {
   if (!hasInternalFileDrag(event)) return; // OS 文件拖拽走整面 dropzone
   event.preventDefault();
-  event.dataTransfer.dropEffect = 'copy';
+  event.dataTransfer!.dropEffect = 'copy';
   if (remoteBusy.value) return;
   columnDragging.value = true;
   if (columnDragLeaveTimer) { clearTimeout(columnDragLeaveTimer); columnDragLeaveTimer = null; }
@@ -100,16 +111,16 @@ function onRemoteColumnDragLeave() {
   columnDragLeaveTimer = setTimeout(() => { columnDragging.value = false; }, 80);
 }
 
-async function onRemoteColumnDrop(event) {
+async function onRemoteColumnDrop(event: DragEvent) {
   if (columnDragLeaveTimer) { clearTimeout(columnDragLeaveTimer); columnDragLeaveTimer = null; }
   columnDragging.value = false;
   if (!hasInternalFileDrag(event)) return;
   event.preventDefault();
   event.stopPropagation(); // 内部拖拽不冒泡到整面 onDrop
   if (remoteBusy.value) return;
-  let payload = null;
+  let payload: { entries?: RemoteFileEntry[] } | null = null;
   try {
-    payload = JSON.parse(event.dataTransfer.getData(FILE_DRAG_MIME) || 'null');
+    payload = JSON.parse(event.dataTransfer!.getData(FILE_DRAG_MIME) || 'null');
   } catch {
     payload = null;
   }
@@ -149,15 +160,15 @@ function toggleLocalPane() {
 // Context menu items — 吸收原 toolbar 下沉功能（刷新 / 新建目录 / 上传 /
 // 列表模式切换 / 显示本地列）。items: [{ label, action, danger, separator, disabled }]
 // ============================================================
-const contextMenuItems = computed(() => {
+const contextMenuItems = computed<FileMenuItem[]>(() => {
   if (!contextMenu.value.visible) return [];
   const side = contextMenu.value.side;
   const entry = contextMenu.value.entry;
   const isDir = entry?.kind === 'directory' || entry?.kind === 'symlink';
-  const make = (label, fn, opts = {}) => ({ label, action: fn, ...opts });
+  const make = (label: string, fn: () => void, opts: { danger?: boolean; disabled?: boolean } = {}): FileMenuItem => ({ label, action: fn, ...opts });
 
   if (side === 'remote') {
-    const items = [];
+    const items: FileMenuItem[] = [];
     // 多选批量操作优先。
     if (selectedRemotePaths.value.size > 1) {
       items.push(make(`批量下载 (${selectedRemotePaths.value.size})`, () => filesStore.batchRemoteDownload()));
@@ -171,7 +182,7 @@ const contextMenuItems = computed(() => {
         else filesStore.downloadEntry(entry);
       }));
       items.push({ separator: true });
-      items.push(make('重命名', () => { uiStore.modal = { type: 'rename', entry }; }));
+      items.push(make('重命名', () => { uiStore.modal = { type: 'rename', entry } as ModalState; }));
       items.push(make('删除', () => filesStore.removeRemote(entry), { danger: true }));
       items.push({ separator: true });
       items.push(make('复制路径', () => filesStore.copyRemotePath(entry)));
@@ -179,7 +190,7 @@ const contextMenuItems = computed(() => {
     }
     // 目录级操作（下沉自原 toolbar）。
     items.push(make('上传文件到当前目录', () => triggerFileUpload()));
-    items.push(make('新建远程目录', () => { uiStore.modal = { type: 'mkdir', entry: null }; }));
+    items.push(make('新建远程目录', () => { uiStore.modal = { type: 'mkdir', entry: null } as ModalState; }));
     items.push(make('刷新当前目录', () => filesStore.refreshRemoteFiles()));
     items.push(make(remoteListMode.value === 'detailed' ? '切换为紧凑列表' : '切换为详细列表', () =>
       filesStore.setRemoteListMode(remoteListMode.value === 'detailed' ? 'compact' : 'detailed')
@@ -189,14 +200,14 @@ const contextMenuItems = computed(() => {
     return items;
   }
   // Local menu
-  const items = [];
+  const items: FileMenuItem[] = [];
   if (entry) {
     items.push(make(isDir ? '进入目录' : '上传到远程', () => {
       if (isDir) filesStore.navigateLocalPath(entry.path);
       else filesStore.uploadLocalEntry(entry);
     }));
     items.push({ separator: true });
-    items.push(make('重命名', () => { uiStore.modal = { type: 'localRename', entry }; }));
+    items.push(make('重命名', () => { uiStore.modal = { type: 'localRename', entry } as ModalState; }));
     items.push(make('删除', () => filesStore.localDelete([entry.path]), { danger: true }));
     items.push({ separator: true });
     items.push(make('复制路径', () => {
@@ -205,7 +216,7 @@ const contextMenuItems = computed(() => {
     items.push({ separator: true });
   }
   // 目录级操作（下沉自原 toolbar）。本地浏览需桌面运行时。
-  items.push(make('新建本地目录', () => { uiStore.modal = { type: 'localMkdir', entry: null }; }, { disabled: !isTauriCore.value }));
+  items.push(make('新建本地目录', () => { uiStore.modal = { type: 'localMkdir', entry: null } as ModalState; }, { disabled: !isTauriCore.value }));
   items.push(make('刷新当前目录', () => filesStore.refreshLocalFiles(), { disabled: !isTauriCore.value }));
   items.push({ separator: true });
   items.push(make('隐藏本地面板', () => toggleLocalPane()));
@@ -239,7 +250,7 @@ const contextMenuItems = computed(() => {
           class="view-pill"
           :class="{ active: !localPaneVisible }"
           role="tab"
-          :aria-selected="String(!localPaneVisible)"
+          :aria-selected="!localPaneVisible ? 'true' : 'false'"
           title="仅远程"
           @click="localPaneVisible && toggleLocalPane()"
         >仅远程</button>
@@ -248,13 +259,13 @@ const contextMenuItems = computed(() => {
           class="view-pill"
           :class="{ active: localPaneVisible }"
           role="tab"
-          :aria-selected="String(localPaneVisible)"
+          :aria-selected="localPaneVisible ? 'true' : 'false'"
           title="本地 / 远程 双栏"
           @click="!localPaneVisible && toggleLocalPane()"
         >双栏</button>
       </div>
       <div class="file-actions">
-        <button class="icon-btn" type="button" title="新建目录" aria-label="新建目录" :disabled="remoteBusy" @click="uiStore.modal = { type: 'mkdir', entry: null }">
+        <button class="icon-btn" type="button" title="新建目录" aria-label="新建目录" :disabled="remoteBusy" @click="uiStore.modal = ({ type: 'mkdir', entry: null } as ModalState)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M3 7a2 2 0 012-2h3l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/><path d="M12 11v5M9.5 13.5h5" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
         <button class="icon-btn" type="button" title="上传文件" aria-label="上传文件到当前远程目录" :disabled="remoteBusy" @click="triggerFileUpload">

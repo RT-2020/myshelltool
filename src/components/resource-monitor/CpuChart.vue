@@ -1,11 +1,15 @@
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue';
-import { CHART_H, CHART_W, buildAreaPath, buildLinePath } from './chart-utils.js';
+import { CHART_H, CHART_W, buildAreaPath, buildLinePath } from './chart-utils';
 
-const props = defineProps({
-  points: { type: Array, default: () => [] },
-  current: { type: Number, default: 0 },
-  hasData: { type: Boolean, default: true }
+const props = withDefaults(defineProps<{
+  points?: number[];
+  current?: number;
+  hasData?: boolean;
+}>(), {
+  points: () => [],
+  current: 0,
+  hasData: true
 });
 
 const GRAD_ID = 'rm-cpu-grad';

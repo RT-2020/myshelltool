@@ -1,25 +1,39 @@
-<script setup>
+<script setup lang="ts">
 /**
  * AssetPrivateKeyInput — 资产私钥输入与安全托管组件。
  *
  * 位于 GlobalModals 资产编辑器中，当 auth_method === 'PrivateKey' 时渲染。
  * 允许用户：
  * 1. 【推荐】将私钥导入到安全保管箱（SecretStore），支持随资产端到端加密同步；
- * 2. 或指定本地文件绝对路径（传统方式，换机可能因路径不存在而失效）。
- */
+ * 2. 或指定本地文件绝对路径（传统方式，换机可能因路径不存在而失效） */
 import { ref } from 'vue';
 import { KeyRound, ShieldCheck, FolderOpen, FileText, AlertCircle, Trash2, Undo2 } from 'lucide-vue-next';
 import AppButton from '@/components/ui/AppButton.vue';
 import AppInput from '@/components/ui/AppInput.vue';
-import { openPrivateKeyFileDialog } from '@/services/backend.js';
+import { openPrivateKeyFileDialog } from '@/services/backend';
 
-const props = defineProps({
-  asset: { type: Object, required: true },
-  credential: { type: Object, required: true },
-  disabled: { type: Boolean, default: false }
-});
+/** 编辑器资产表单中被本组件读写的字段子集（父级 GlobalModals 的 editingForm 形状）。 */
+interface PrivateKeyAssetForm {
+  private_key_path: string | null;
+  private_key_credential_id: string | null;
+}
 
-const fileInputRef = ref(null);
+/** 编辑器凭据表单中被本组件读写的字段子集（含「清除标记」互斥逻辑）。 */
+interface PrivateKeyCredentialForm {
+  privateKey: string;
+  clearPrivateKey: boolean;
+}
+
+const props = withDefaults(
+  defineProps<{
+    asset: PrivateKeyAssetForm;
+    credential: PrivateKeyCredentialForm;
+    disabled?: boolean;
+  }>(),
+  { disabled: false }
+);
+
+const fileInputRef = ref<HTMLInputElement | null>(null);
 const showTextarea = ref(false);
 const showPathFallback = ref(Boolean(props.asset.private_key_path && !props.asset.private_key_credential_id));
 
@@ -30,8 +44,8 @@ function triggerFileInput() {
   }
 }
 
-async function onFileSelected(event) {
-  const file = event.target.files?.[0];
+async function onFileSelected(event: Event) {
+  const file = (event.target as HTMLInputElement).files?.[0];
   if (!file) return;
   try {
     const content = await file.text();

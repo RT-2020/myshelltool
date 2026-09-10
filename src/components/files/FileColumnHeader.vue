@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue';
 import {
   ArrowUp,
@@ -9,39 +9,51 @@ import {
   RefreshCw,
   X
 } from 'lucide-vue-next';
+import type { PathCrumb } from './fileColumnUtils';
 
-const props = defineProps({
-  kind: { type: String, required: true, validator: (value) => value === 'local' || value === 'remote' },
-  columnTitle: { type: String, required: true },
-  selectionCount: { type: Number, default: 0 },
-  entryCount: { type: Number, default: 0 },
-  crumbs: { type: Array, default: () => [] },
-  pathEditing: { type: Boolean, default: false },
-  manualPathInput: { type: String, default: '' },
-  filterValue: { type: String, default: '' },
-  showFilterClear: { type: Boolean, default: false },
-  isBusy: { type: Boolean, default: false },
-  disableUp: { type: Boolean, default: false },
-  disableRefresh: { type: Boolean, default: false }
+const props = withDefaults(defineProps<{
+  kind: 'local' | 'remote';
+  columnTitle: string;
+  selectionCount?: number;
+  entryCount?: number;
+  crumbs?: PathCrumb[];
+  pathEditing?: boolean;
+  manualPathInput?: string;
+  filterValue?: string;
+  showFilterClear?: boolean;
+  isBusy?: boolean;
+  disableUp?: boolean;
+  disableRefresh?: boolean;
+}>(), {
+  selectionCount: 0,
+  entryCount: 0,
+  crumbs: () => [],
+  pathEditing: false,
+  manualPathInput: '',
+  filterValue: '',
+  showFilterClear: false,
+  isBusy: false,
+  disableUp: false,
+  disableRefresh: false
 });
 
-const emit = defineEmits([
-  'enter-path-editing',
-  'manual-path-input',
-  'path-input-keydown',
-  'crumb-click',
-  'toggle-filter-input',
-  'clear-filter',
-  'go-up',
-  'refresh'
-]);
+const emit = defineEmits<{
+  'enter-path-editing': [];
+  'manual-path-input': [event: Event];
+  'path-input-keydown': [event: KeyboardEvent];
+  'crumb-click': [seg: PathCrumb];
+  'toggle-filter-input': [event: Event];
+  'clear-filter': [];
+  'go-up': [];
+  'refresh': [];
+}>();
 
 const filterOpen = ref(false);
-const filterPopoverRef = ref(null);
-const filterBtnRef = ref(null);
-const filterInputRef = ref(null);
+const filterPopoverRef = ref<HTMLElement | null>(null);
+const filterBtnRef = ref<HTMLButtonElement | null>(null);
+const filterInputRef = ref<HTMLInputElement | null>(null);
 
-function toggleFilter(event) {
+function toggleFilter(event: MouseEvent) {
   event.stopPropagation();
   filterOpen.value = !filterOpen.value;
   if (filterOpen.value) {
@@ -49,11 +61,12 @@ function toggleFilter(event) {
   }
 }
 
-function onWindowClick(event) {
+function onWindowClick(event: MouseEvent) {
   if (!filterOpen.value) return;
   const pop = filterPopoverRef.value;
   const btn = filterBtnRef.value;
-  if (pop && !pop.contains(event.target) && btn && !btn.contains(event.target)) {
+  const target = event.target as Node | null;
+  if (pop && !pop.contains(target) && btn && !btn.contains(target)) {
     filterOpen.value = false;
   }
 }

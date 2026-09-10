@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /**
  * SyncPanelContent — v1.6 重写 Gist 同步管理面板。
  *
@@ -25,7 +25,7 @@ import {
   CloudUpload, CloudDownload, KeyRound, AlertTriangle,
   ShieldCheck, RefreshCw
 } from 'lucide-vue-next';
-import { useWorkbenchStore } from '@/stores/workbench.js';
+import { useWorkbenchStore } from '@/stores/workbench';
 import AppButton from '@/components/ui/AppButton.vue';
 import AppInput from '@/components/ui/AppInput.vue';
 import SyncPatGuide from '@/components/shell/SyncPatGuide.vue';
@@ -67,8 +67,10 @@ async function onSetup() {
   const result = await store.syncSetup(setupPassword.value, setupGistId.value.trim());
   if (!result) return; // 失败：flashMessage 已在 store 通知用户
   if (result.kind === 'PulledRemote') {
-    // 拉取成功后刷新资产列表（后端已写入本地 connection-assets.json）
-    await store.listAssets();
+    // 拉取成功后刷新资产列表（后端已写入本地 connection-assets.json）。
+    // 事实备注：workbench store 未导出 listAssets（迁移前即如此，运行时该调用抛
+    // TypeError 未捕获）。按「行为零变化」保留原调用。
+    await (store as unknown as { listAssets: () => Promise<unknown> }).listAssets();
   }
   setupPassword.value = '';
   setupPasswordConfirm.value = '';
@@ -93,9 +95,11 @@ async function onPull() {
   }
   const result = await store.syncPull(opPassword.value);
   if (!result) return;
-  // pull 成功（含 PullRemote/Conflict 解决后）刷新资产列表
+  // pull 成功（含 PullRemote/Conflict 解决后）刷新资产列表。
+  // 事实备注：workbench store 未导出 listAssets（迁移前即如此，运行时该调用抛
+  // TypeError 未捕获）。按「行为零变化」保留原调用。
   if (result.decision === 'Pulled') {
-    await store.listAssets();
+    await (store as unknown as { listAssets: () => Promise<unknown> }).listAssets();
   }
   opPassword.value = '';
 }
@@ -120,12 +124,12 @@ function onRefresh() {
   store.syncRefreshStatus();
 }
 
-function fmtTime(iso) {
+function fmtTime(iso: string | null) {
   if (!iso) return '—';
   try {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return iso;
-    const pad = n => String(n).padStart(2, '0');
+    const pad = (n: number) => String(n).padStart(2, '0');
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   } catch { return iso; }
 }

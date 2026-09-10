@@ -1,11 +1,20 @@
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue';
 
-const props = defineProps({
-  percent: { type: Number, default: 0 },
-  variant: { type: String, default: 'linear' }, // linear | circular
-  status: { type: String, default: 'running' } // running | done | error
-});
+const props = withDefaults(
+  defineProps<{
+    percent?: number;
+    /** linear | circular。 */
+    variant?: string;
+    /** running | done | error。 */
+    status?: string;
+  }>(),
+  {
+    percent: 0,
+    variant: 'linear',
+    status: 'running'
+  }
+);
 
 const clamped = computed(() => Math.max(0, Math.min(100, props.percent)));
 

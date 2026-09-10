@@ -1,26 +1,41 @@
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch, nextTick, computed } from 'vue';
 import { Plus, MoreHorizontal, X, Copy, FolderX, SquareX } from 'lucide-vue-next';
-import { useDragOutsideViewport } from '@/composables/useDragOutsideViewport.js';
+import { useDragOutsideViewport } from '@/composables/useDragOutsideViewport';
+import type { useSessionsStore } from '@/stores/sessions';
 
-const props = defineProps({
-  sessions: { type: Array, default: () => [] },
-  activeSessionId: { type: String, default: '' }
+/** 会话 tab 数据项：sessions store 的数组元素（store 未导出 SessionEntry，按 store 类型推断）。 */
+type SessionTabItem = ReturnType<typeof useSessionsStore>['sessions'][number];
+
+const props = withDefaults(defineProps<{
+  sessions?: SessionTabItem[];
+  activeSessionId?: string;
+}>(), {
+  sessions: () => [],
+  activeSessionId: ''
 });
-const emit = defineEmits(['select', 'close', 'close-others', 'close-right', 'copy-host', 'new-terminal', 'drag-out']);
+const emit = defineEmits<{
+  select: [sessionId: string];
+  close: [sessionId: string];
+  'close-others': [sessionId: string];
+  'close-right': [sessionId: string];
+  'copy-host': [sessionId: string];
+  'new-terminal': [];
+  'drag-out': [sessionId: string];
+}>();
 
-const barRef = ref(null);
-const overflowTriggerRef = ref(null);
-const overflowed = ref([]);
+const barRef = ref<HTMLElement | null>(null);
+const overflowTriggerRef = ref<HTMLElement | null>(null);
+const overflowed = ref<string[]>([]);
 const overflowMenuOpen = ref(false);
-const overflowMenuStyle = ref({ left: 0, top: 0 });
+const overflowMenuStyle = ref<{ left: number | string; top: number | string }>({ left: 0, top: 0 });
 const contextMenu = ref({ open: false, x: 0, y: 0, sessionId: '' });
 
 // Tab 拖出（sessionHandoff tearoff 的 UI 侧）
 const dragOutside = useDragOutsideViewport();
 
 // 仅 connected tab 可拖（connecting/error/disconnected 无迁移价值）
-function onTabDragStart(e, session) {
+function onTabDragStart(e: DragEvent, session: SessionTabItem) {
   const dt = e.dataTransfer;
   if (!dt) return;
   dt.setData('text/plain', session.sessionId);
@@ -28,14 +43,14 @@ function onTabDragStart(e, session) {
   dragOutside.attach();
 }
 
-function onTabDragEnd(e, session) {
+function onTabDragEnd(e: DragEvent, session: SessionTabItem) {
   const outside = dragOutside.isOutside(e); // 先取判定（取值后自动复位）再 detach
   dragOutside.detach();
   if (outside && session.status === 'connected') emit('drag-out', session.sessionId); // Esc 窗外取消会误触发（沿用 v1 已知边界）
 }
 
 // 浮动菜单 clamp 到视口内（x 超界则翻转），菜单宽/高取近似值
-function clampMenu(x, y, width = 200, height = 180) {
+function clampMenu(x: number, y: number, width = 200, height = 180) {
   const pad = 8;
   let left = x;
   let top = y;
@@ -54,19 +69,19 @@ const contextMenuStyle = computed(() => {
 function updateOverflow() {
   const bar = barRef.value;
   if (!bar) return;
-  const tabs = Array.from(bar.querySelectorAll('[data-session-tab]'));
+  const tabs = Array.from(bar.querySelectorAll<HTMLElement>('[data-session-tab]'));
   const reserve = 90;
   const limit = bar.clientWidth - reserve;
-  const next = [];
+  const next: string[] = [];
   for (const t of tabs) {
     if (t.offsetLeft + t.offsetWidth > limit) {
-      next.push(t.dataset.sessionId);
+      next.push(t.dataset.sessionId ?? '');
     }
   }
   overflowed.value = next;
 }
 
-let ro = null;
+let ro: ResizeObserver | null = null;
 onMounted(() => {
   if (typeof ResizeObserver !== 'undefined' && barRef.value) {
     ro = new ResizeObserver(updateOverflow);
@@ -77,12 +92,12 @@ onMounted(() => {
 onBeforeUnmount(() => { if (ro) ro.disconnect(); });
 watch(() => props.sessions.length, () => nextTick(updateOverflow));
 
-function onTabClick(sessionId) { emit('select', sessionId); }
-function onTabClose(e, sessionId) {
+function onTabClick(sessionId: string) { emit('select', sessionId); }
+function onTabClose(e: MouseEvent, sessionId: string) {
   e.stopPropagation();
   emit('close', sessionId);
 }
-function onContextMenu(e, sessionId) {
+function onContextMenu(e: MouseEvent, sessionId: string) {
   e.preventDefault();
   contextMenu.value = { open: true, x: e.clientX, y: e.clientY, sessionId };
 }
@@ -92,7 +107,7 @@ function closeAllMenus() {
 }
 
 // tablist roving tabindex：方向键在可见 tab 间移动焦点，Enter/Space 触发选择
-function onTabKeydown(e, sessionId) {
+function onTabKeydown(e: KeyboardEvent, sessionId: string) {
   if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
     e.preventDefault();
     const list = visibleSessions.value;
@@ -100,7 +115,7 @@ function onTabKeydown(e, sessionId) {
     if (idx < 0) return;
     const dir = e.key === 'ArrowRight' ? 1 : -1;
     const next = list[(idx + dir + list.length) % list.length];
-    const el = barRef.value?.querySelector(`[data-session-id="${next.sessionId}"]`);
+    const el = barRef.value?.querySelector<HTMLElement>(`[data-session-id="${next.sessionId}"]`);
     el?.focus();
     return;
   }
@@ -110,10 +125,10 @@ function onTabKeydown(e, sessionId) {
   }
 }
 
-function onTabFocus(sessionId) {
+function onTabFocus(sessionId: string) {
   // 焦点所在 tab 置 tabindex=0，其余 -1（roving tabindex 约定）
   for (const s of visibleSessions.value) {
-    const el = barRef.value?.querySelector(`[data-session-id="${s.sessionId}"]`);
+    const el = barRef.value?.querySelector<HTMLElement>(`[data-session-id="${s.sessionId}"]`);
     if (el) el.tabIndex = s.sessionId === sessionId ? 0 : -1;
   }
 }
@@ -132,14 +147,14 @@ function toggleOverflowMenu() {
 const visibleSessions = computed(() => props.sessions.filter(s => !overflowed.value.includes(s.sessionId)));
 const hiddenSessions = computed(() => props.sessions.filter(s => overflowed.value.includes(s.sessionId)));
 
-function statusFor(s) {
+function statusFor(s: SessionTabItem) {
   if (s.status === 'connected') return 'connected';
   if (s.status === 'connecting') return 'connecting';
   if (s.status === 'disconnected') return 'disconnected';
   if (s.status === 'error') return 'error';
   return 'idle';
 }
-function tooltipFor(s) {
+function tooltipFor(s: SessionTabItem) {
   const parts = [s.asset?.name || '', s.asset?.host || ''];
   if (s.oscTitle) parts.push(s.oscTitle);
   return parts.filter(Boolean).join(' · ');
@@ -149,7 +164,7 @@ function tooltipFor(s) {
 // 取末位是因为连接中的占位 id 为 'pending-<assetId>-<时间戳>'，同资产前缀相同，
 // 末 4 位（时间戳尾 / UUID 尾）在任何阶段都唯一。连接成功后占位 id 被替换为
 // 真实 UUID，后缀会一次性变化，之后固定。
-function dupSuffixFor(session) {
+function dupSuffixFor(session: SessionTabItem) {
   const same = props.sessions.filter(s => s.asset?.id && s.asset?.id === session.asset?.id);
   if (same.length < 2) return '';
   const id = String(session.sessionId || '');
@@ -175,7 +190,7 @@ function dupSuffixFor(session) {
         :class="['tab', 'workspace-tab', 'session-tab', { active: session.sessionId === activeSessionId }]"
         role="tab"
         :tabindex="session.sessionId === activeSessionId ? 0 : -1"
-        :aria-selected="String(session.sessionId === activeSessionId)"
+        :aria-selected="session.sessionId === activeSessionId ? 'true' : 'false'"
         :data-session-id="session.sessionId"
         data-session-tab
         :title="tooltipFor(session)"

@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { computed, nextTick, onMounted, ref, unref, watch } from 'vue';
 import {
   ArrowUpDown,
@@ -25,32 +25,40 @@ import {
   minimizeTauriWindow,
   startTauriWindowDragging,
   toggleTauriWindowMaximize
-} from '@/services/backend.js';
+} from '@/services/backend';
+import type { useWorkbenchStore } from '@/stores/workbench';
+import type { usePanelResize, ResizeRegion } from '@/composables/usePanelResize';
+import type { useAutoUpdate } from '@/composables/useAutoUpdate';
+import type { NormalizedConnectionAsset, ModalState, SearchSuggestion } from '@/types/domain';
 
-const props = defineProps({
-  store: { type: Object, required: true },
-  desktopRuntimeAvailable: { type: Boolean, default: false },
-  panelResize: { type: Object, default: null },
+const props = withDefaults(defineProps<{
+  store: ReturnType<typeof useWorkbenchStore>;
+  desktopRuntimeAvailable?: boolean;
+  panelResize?: ReturnType<typeof usePanelResize> | null;
   // App.vue 的 useAutoUpdate 实例（statusbar 更新提示可点击 + 设置图标徽标）
-  autoUpdate: { type: Object, default: null }
+  autoUpdate?: ReturnType<typeof useAutoUpdate> | null;
+}>(), {
+  desktopRuntimeAvailable: false,
+  panelResize: null,
+  autoUpdate: null
 });
 
-const emit = defineEmits([
-  'create-asset',
-  'create-group',
-  'connect-selected',
-  'open-settings',
-  'open-mcp-panel',
-  'toggle-theme',
-  'toggle-assets',
-  'toggle-right',
-  'toggle-transfer-drawer'
-]);
+const emit = defineEmits<{
+  'create-asset': [];
+  'create-group': [];
+  'connect-selected': [];
+  'open-settings': [];
+  'open-mcp-panel': [];
+  'toggle-theme': [];
+  'toggle-assets': [];
+  'toggle-right': [];
+  'toggle-transfer-drawer': [];
+}>();
 
 const sidebarSearch = ref('');
 const quickConnect = ref('');
 const isMaximized = ref(false);
-const searchInputRef = ref(null);
+const searchInputRef = ref<HTMLInputElement | null>(null);
 const activeSearchIndex = ref(0);
 
 const activeTransferCount = computed(() => props.store.activeTransfers?.length || 0);
@@ -85,15 +93,15 @@ function openSearch() {
   nextTick(() => searchInputRef.value?.focus());
 }
 
-function updateSearchQuery(event) {
-  props.store.setGlobalSearchQuery(event.target.value);
+function updateSearchQuery(event: Event) {
+  props.store.setGlobalSearchQuery((event.target as HTMLInputElement).value);
 }
 
-function activateSearchSuggestion(item) {
+function activateSearchSuggestion(item: SearchSuggestion) {
   props.store.activateSuggestion(item);
 }
 
-function onSearchKeydown(event) {
+function onSearchKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
     event.preventDefault();
     props.store.closeGlobalSearch();
@@ -117,61 +125,64 @@ function onSearchKeydown(event) {
   }
 }
 
-function selectAsset(id) {
+function selectAsset(id: string) {
   props.store.selectAsset(id);
 }
 
-function connectAsset(id) {
+function connectAsset(id: string) {
   props.store.selectAsset(id);
   props.store.connectSelected();
 }
 
-function quickConnectAsset(parsed) {
-  props.store.activateSuggestion({ kind: 'quick-connect', ...parsed });
+// ConnectionSidebar 的 quick-connect 解析结果（username/host/port）
+function quickConnectAsset(parsed: { username: string; host: string; port: number }) {
+  // SearchSuggestion 的 quick-connect 变体含 label（仅搜索列表展示用），激活路径不消费；
+  // 透传保持原 payload 不加字段，故此处断言。
+  props.store.activateSuggestion({ kind: 'quick-connect', ...parsed } as SearchSuggestion);
 }
 
-function editAsset(asset) {
+function editAsset(asset: NormalizedConnectionAsset) {
   props.store.selectAsset(asset.id, false);
   props.store.modal = { type: 'assetEditor', asset };
 }
 
-function duplicateAsset(asset) {
+function duplicateAsset(asset: NormalizedConnectionAsset) {
   props.store.duplicateAsset(asset);
 }
 
-function deleteAsset(asset) {
+function deleteAsset(asset: NormalizedConnectionAsset) {
   props.store.modal = { type: 'confirmDelete', asset };
 }
 
-function moveAsset(asset) {
+function moveAsset(asset: NormalizedConnectionAsset) {
   props.store.modal = { type: 'moveAsset', asset };
 }
 
-function moveAssetDirect(payload) {
+function moveAssetDirect(payload: { id: string; group: string }) {
   props.store.moveAsset(payload.id, payload.group);
 }
 
-function renameGroup(path) {
-  props.store.modal = { type: 'renameGroup', path };
+function renameGroup(path: string) {
+  props.store.modal = { type: 'renameGroup', path } as ModalState;
 }
 
-function dissolveGroup(path) {
+function dissolveGroup(path: string) {
   props.store.dissolveGroup(path);
 }
 
-function reorderGroups(paths) {
+function reorderGroups(paths: string[]) {
   props.store.reorderGroups(paths);
 }
 
-function startResize(event, which) {
+function startResize(event: PointerEvent, which: ResizeRegion) {
   props.panelResize?.startResize?.(event, which);
 }
 
-function resizeKeydown(event, which) {
+function resizeKeydown(event: KeyboardEvent, which: ResizeRegion) {
   props.panelResize?.handleResizeKeydown?.(event, which);
 }
 
-function resetPane(which) {
+function resetPane(which: ResizeRegion) {
   props.panelResize?.resetPane?.(which);
 }
 
@@ -179,15 +190,15 @@ async function syncWindowState() {
   isMaximized.value = await isTauriWindowMaximized();
 }
 
-async function handleTitlebarPointerDown(event) {
+async function handleTitlebarPointerDown(event: PointerEvent) {
   if (!isTauriRuntime() || event.button !== 0) return;
-  if (event.target.closest('button, input, [role="button"], [data-no-drag="true"]')) return;
+  if ((event.target as HTMLElement).closest('button, input, [role="button"], [data-no-drag="true"]')) return;
   await startTauriWindowDragging();
 }
 
-async function handleTitlebarDoubleClick(event) {
+async function handleTitlebarDoubleClick(event: MouseEvent) {
   if (!isTauriRuntime()) return;
-  if (event.target.closest('button, input, [role="button"], [data-no-drag="true"]')) return;
+  if ((event.target as HTMLElement).closest('button, input, [role="button"], [data-no-drag="true"]')) return;
   await toggleWindowMaximize();
 }
 
@@ -229,7 +240,7 @@ onMounted(() => {
           class="tb-search"
           data-no-drag="true"
           role="combobox"
-          :aria-expanded="String(searchOpen)"
+          :aria-expanded="searchOpen ? 'true' : 'false'"
           aria-label="全局搜索"
           @click="openSearch"
         >
@@ -251,7 +262,7 @@ onMounted(() => {
               :key="item.kind === 'asset' ? item.asset.id : `${item.kind}-${item.host}-${idx}`"
               :class="{ active: idx === activeSearchIndex }"
               role="option"
-              :aria-selected="String(idx === activeSearchIndex)"
+              :aria-selected="idx === activeSearchIndex ? 'true' : 'false'"
               @mouseenter="activeSearchIndex = idx"
               @mousedown.prevent="activateSearchSuggestion(item)"
             >
@@ -274,7 +285,7 @@ onMounted(() => {
           type="button"
           aria-label="收起或展开右侧面板"
           :title="store.rightCollapsed ? '展开右侧面板' : '收起右侧面板'"
-          :aria-pressed="String(store.rightCollapsed)"
+          :aria-pressed="store.rightCollapsed ? 'true' : 'false'"
           @click="emit('toggle-right')"
         >
           <PanelRight />
@@ -314,7 +325,7 @@ onMounted(() => {
       <ConnectionSidebar
         :assets="store.assets"
         :grouped-assets="store.groupedAssets"
-        :selected-asset-id="store.selectedAssetId"
+        :selected-asset-id="store.selectedAssetId as string | undefined"
         :assets-collapsed="store.assetsCollapsed"
         :search-query="sidebarSearch"
         :quick-connect-input="quickConnect"

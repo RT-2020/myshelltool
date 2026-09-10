@@ -1,23 +1,37 @@
-<script setup>
+<script setup lang="ts">
 import { computed, ref, watch, nextTick } from 'vue';
 import { Search, ChevronUp, ChevronDown, X, CaseSensitive, Regex, WholeWord } from 'lucide-vue-next';
 
-const props = defineProps({
-  open: { type: Boolean, default: false },
-  query: { type: String, default: '' },
-  result: { type: String, default: '' },
-  matchIndex: { type: Number, default: 0 },
-  matchTotal: { type: Number, default: 0 },
-  caseSensitive: { type: Boolean, default: false },
-  regex: { type: Boolean, default: false },
-  wholeWord: { type: Boolean, default: false }
+const props = withDefaults(defineProps<{
+  open?: boolean;
+  query?: string;
+  result?: string | null;
+  matchIndex?: number;
+  matchTotal?: number;
+  caseSensitive?: boolean;
+  regex?: boolean;
+  wholeWord?: boolean;
+}>(), {
+  open: false,
+  query: '',
+  result: '',
+  matchIndex: 0,
+  matchTotal: 0,
+  caseSensitive: false,
+  regex: false,
+  wholeWord: false
 });
-const emit = defineEmits([
-  'update:query', 'update:caseSensitive', 'update:regex', 'update:wholeWord',
-  'next', 'prev', 'close'
-]);
+const emit = defineEmits<{
+  'update:query': [value: string];
+  'update:caseSensitive': [value: boolean];
+  'update:regex': [value: boolean];
+  'update:wholeWord': [value: boolean];
+  next: [];
+  prev: [];
+  close: [];
+}>();
 
-const inputRef = ref(null);
+const inputRef = ref<HTMLInputElement | null>(null);
 watch(() => props.open, async (v) => {
   if (v) {
     await nextTick();
@@ -44,8 +58,8 @@ const matchText = computed(() => {
       placeholder="搜索终端内容 (Enter 下一个 / Shift+Enter 上一个 / Esc 关闭)"
       spellcheck="false"
       aria-label="搜索终端内容"
-      @input="emit('update:query', $event.target.value)"
-      @keydown.enter.prevent="emit($event.shiftKey ? 'prev' : 'next')"
+      @input="emit('update:query', ($event.target as HTMLInputElement).value)"
+      @keydown.enter.prevent="$event.shiftKey ? emit('prev') : emit('next')"
       @keydown.escape.prevent="emit('close')"
     />
     <button class="search-toggle" :class="{ active: caseSensitive }" title="区分大小写" :aria-pressed="caseSensitive" @click="emit('update:caseSensitive', !caseSensitive)"><CaseSensitive :size="14" /></button>

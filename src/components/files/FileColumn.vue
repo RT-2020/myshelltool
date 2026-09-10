@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /**
  * FileColumn — Wave 3 Step 3.4
  * Single-pane file list (local or remote) — Tabby-style hairline rows, sticky
@@ -15,31 +15,35 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { storeToRefs } from 'pinia';
-import { useFilesStore } from '@/stores/files.js';
-import { useUiStore } from '@/stores/ui.js';
+import { useFilesStore } from '@/stores/files';
+import { useUiStore } from '@/stores/ui';
 import FileColumnColumns from './FileColumnColumns.vue';
 import FileColumnHeader from './FileColumnHeader.vue';
 import FileColumnList from './FileColumnList.vue';
 import {
   buildPathCrumbs,
   inferFileEntryType
-} from './fileColumnUtils.js';
+} from './fileColumnUtils';
+import type { ModalState, RemoteFileEntry } from '@/types/domain';
 
-const props = defineProps({
-  kind: { type: String, required: true, validator: (v) => v === 'local' || v === 'remote' },
+const props = withDefaults(defineProps<{
+  kind: 'local' | 'remote';
   // Visual heading label ("本地" / "远程"); defaults based on kind.
-  title: { type: String, default: '' },
+  title?: string;
   // Disable interaction when desktop runtime unavailable (local only).
-  disabledHint: { type: String, default: '' }
+  disabledHint?: string;
+}>(), {
+  title: '',
+  disabledHint: ''
 });
-const emit = defineEmits([
-  'item-click',
-  'item-double-click',
-  'sort-change',
-  'context-menu-open',
-  'selection-change',
-  'drag-start'
-]);
+const emit = defineEmits<{
+  'item-click': [entry: RemoteFileEntry];
+  'item-double-click': [entry: RemoteFileEntry];
+  'sort-change': [field: string];
+  'context-menu-open': [entry: RemoteFileEntry, x: number, y: number];
+  'selection-change': [];
+  'drag-start': [count: number];
+}>();
 
 const filesStore = useFilesStore();
 const uiStore = useUiStore();
@@ -103,7 +107,7 @@ const localFilterQuery = ref('');
 const localSortKey = ref('name');
 const localSortDir = ref('asc');
 
-function setLocalSort(key) {
+function setLocalSort(key: string) {
   if (localSortKey.value === key) {
     localSortDir.value = localSortDir.value === 'asc' ? 'desc' : 'asc';
   } else {
@@ -113,7 +117,7 @@ function setLocalSort(key) {
 }
 
 // 类型推断（排序用，与模板内 inferType 同义；定义在 computed 之前避免前向引用）。
-function typeOfEntry(e) {
+function typeOfEntry(e: RemoteFileEntry) {
   return inferFileEntryType(e);
 }
 
@@ -126,12 +130,12 @@ const sortedLocalEntries = computed(() => {
     : localEntries.value.slice();
   const key = localSortKey.value;
   const dir = localSortDir.value === 'asc' ? 1 : -1;
-  const ownerOf = (e) => [e.user || '', e.group || ''].join(':');
+  const ownerOf = (e: RemoteFileEntry) => [e.user || '', e.group || ''].join(':');
   return list.sort((a, b) => {
     const aDir = a.kind === 'directory' ? 0 : 1;
     const bDir = b.kind === 'directory' ? 0 : 1;
     if (aDir !== bDir) return aDir - bDir;
-    let av, bv;
+    let av: string | number, bv: string | number;
     if (key === 'size') { av = a.size || 0; bv = b.size || 0; }
     else if (key === 'modified') { av = Number(a.modified) || 0; bv = Number(b.modified) || 0; }
     else if (key === 'type') { av = typeOfEntry(a); bv = typeOfEntry(b); }
@@ -155,7 +159,7 @@ function effectiveEntries() {
 // ============================================================
 // Click handlers (migrated from App.vue onRemoteRowClick etc.)
 // ============================================================
-function onRowClick(event, entry) {
+function onRowClick(event: MouseEvent, entry: RemoteFileEntry) {
   if (isBusy.value) return;
   if (isLocal.value) {
     // shift 范围多选：与远程行 range 逻辑同构（复用 files.js 的 range 参数）
@@ -173,7 +177,7 @@ function onRowClick(event, entry) {
   emit('item-click', entry);
 }
 
-function onRowDblClick(entry) {
+function onRowDblClick(entry: RemoteFileEntry) {
   if (isBusy.value) return;
   if (isLocal.value) {
     if (entry.kind === 'directory') {
@@ -189,7 +193,7 @@ function onRowDblClick(entry) {
   emit('item-double-click', entry);
 }
 
-function onContextMenu(event, entry) {
+function onContextMenu(event: MouseEvent, entry: RemoteFileEntry) {
   event.preventDefault();
   if (isBusy.value) return;
   if (isLocal.value) {
@@ -224,20 +228,22 @@ function clearFilter() {
   if (isLocal.value) localFilterQuery.value = '';
   else filesStore.setRemoteFilter('');
 }
-function onFilterInput(event) {
-  if (isLocal.value) localFilterQuery.value = event.target.value;
-  else filesStore.setRemoteFilter(event.target.value);
+function onFilterInput(event: Event) {
+  const value = (event.target as HTMLInputElement).value;
+  if (isLocal.value) localFilterQuery.value = value;
+  else filesStore.setRemoteFilter(value);
 }
-function onManualPathInput(event) {
-  if (isLocal.value) filesStore.setManualLocalPath(event.target.value);
-  else filesStore.setManualRemotePath(event.target.value);
+function onManualPathInput(event: Event) {
+  const value = (event.target as HTMLInputElement).value;
+  if (isLocal.value) filesStore.setManualLocalPath(value);
+  else filesStore.setManualRemotePath(value);
 }
 function onManualPathEnter() {
   if (isBusy.value) return;
   if (isLocal.value) filesStore.goToManualLocalPath();
   else filesStore.goToManualRemotePath();
 }
-function setSort(field) {
+function setSort(field: string) {
   emit('sort-change', field);
   if (isLocal.value) setLocalSort(field);
   else filesStore.setRemoteSort(field);
@@ -247,12 +253,12 @@ function setSort(field) {
 // Keyboard shortcuts (F2 / Del / F5 / Ctrl+A / Esc)
 // Bound at column mount; only fire when column DOM is focused or files tab active.
 // ============================================================
-const columnRef = ref(null);
+const columnRef = ref<HTMLElement | null>(null);
 
-function onKeydown(event) {
+function onKeydown(event: KeyboardEvent) {
   // Active tab must be files; ignore if user is typing in an input/textarea outside the column.
   if (uiStore.activeTab !== 'files') return;
-  const tag = event.target?.tagName;
+  const tag = (event.target as HTMLElement | null)?.tagName;
   const isInputLike = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
   // Allow F2/Del/F5/Esc through input fields only when the focus is inside this column
   // (e.g., manual path input). For simplicity, allow Esc/F2/Del/F5 only when not in an input.
@@ -301,7 +307,7 @@ function onColumnMouseLeave() { activeHover = false; }
 function isColumnActive() {
   // Active when hovered OR contains document.activeElement OR no other column has been hovered.
   // Simple heuristic: hovered column wins.
-  return activeHover || columnRef.value?.contains(document.activeElement);
+  return activeHover || columnRef.value?.contains(document.activeElement) || false;
 }
 
 function triggerRename() {
@@ -309,11 +315,11 @@ function triggerRename() {
     const [path] = selectedLocalPaths.value;
     if (!path) return;
     const entry = localEntries.value.find(e => e.path === path);
-    if (entry) uiStore.modal = { type: 'localRename', entry };
+    if (entry) uiStore.modal = { type: 'localRename', entry } as ModalState;
   } else {
     if (selectedRemoteEntries.value.length !== 1) return;
     const entry = selectedRemoteEntries.value[0];
-    uiStore.modal = { type: 'rename', entry };
+    uiStore.modal = { type: 'rename', entry } as ModalState;
   }
 }
 
@@ -371,7 +377,7 @@ function enterPathEditing() {
 function exitPathEditing() {
   pathEditing.value = false;
 }
-function onPathInputKeydown(event) {
+function onPathInputKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
     event.preventDefault();
     exitPathEditing();
@@ -381,7 +387,7 @@ function onPathInputKeydown(event) {
     exitPathEditing();
   }
 }
-function crumbClick(seg) {
+function crumbClick(seg: { path: string }) {
   if (isBusy.value) return;
   if (isLocal.value) filesStore.navigateLocalPath(seg.path);
   else filesStore.navigateRemotePath(seg.path);

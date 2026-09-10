@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /**
  * SyncAutoSyncControl — v1.6 自动同步开关子组件。
  *
@@ -15,7 +15,7 @@
 import { ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { Zap, ZapOff, ShieldCheck } from 'lucide-vue-next';
-import { useWorkbenchStore } from '@/stores/workbench.js';
+import { useWorkbenchStore } from '@/stores/workbench';
 import AppButton from '@/components/ui/AppButton.vue';
 import AppInput from '@/components/ui/AppInput.vue';
 

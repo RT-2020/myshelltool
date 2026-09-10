@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /**
  * PatConfigCard — GitHub token 配置卡片（Device Flow 登录 + 手动 PAT 兜底）。
  *
@@ -15,9 +15,9 @@
 import { computed, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { Check, Copy, ExternalLink, Github } from 'lucide-vue-next';
-import { useWorkbenchStore } from '@/stores/workbench.js';
-import { useGithubDeviceLogin } from '@/composables/useGithubDeviceLogin.js';
-import { useClipboard } from '@/composables/useClipboard.js';
+import { useWorkbenchStore } from '@/stores/workbench';
+import { useGithubDeviceLogin } from '@/composables/useGithubDeviceLogin';
+import { useClipboard } from '@/composables/useClipboard';
 import AppInput from '@/components/ui/AppInput.vue';
 import AppButton from '@/components/ui/AppButton.vue';
 

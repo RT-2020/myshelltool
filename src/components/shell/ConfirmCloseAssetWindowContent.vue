@@ -1,10 +1,8 @@
-<script setup>
+<script setup lang="ts">
 // confirmCloseAssetWindow 的弹窗 body（独立资产窗口关闭确认，Phase 1-A）。
 // 按钮在 GlobalModals 的 modal-actions（照 confirmDelete 模式：danger 主按钮
 // 「断开并关闭」走 submitModal → modal.onConfirm，次按钮「取消」走 closeModal）。
-defineProps({
-  count: { type: Number, default: 0 }
-});
+withDefaults(defineProps<{ count?: number }>(), { count: 0 });
 </script>
 
 <template>

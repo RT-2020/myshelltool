@@ -1,14 +1,14 @@
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue';
 import { Download, PanelRightClose, Pause, Play } from 'lucide-vue-next';
 import ResourceMonitorPanel from '@/components/resource-monitor/ResourceMonitorPanel.vue';
 import OpsSummaryPanel from './OpsSummaryPanel.vue';
-import { useResourceMonitorStore } from '@/stores/resourceMonitor.js';
-import { useSessionsStore } from '@/stores/sessions.js';
-import { useWorkbenchStore } from '@/stores/workbench.js';
-import { useClipboard } from '@/composables/useClipboard.js';
+import { useResourceMonitorStore } from '@/stores/resourceMonitor';
+import { useSessionsStore } from '@/stores/sessions';
+import { useWorkbenchStore } from '@/stores/workbench';
+import { useClipboard } from '@/composables/useClipboard';
 
-const emit = defineEmits(['collapse']);
+const emit = defineEmits<{ collapse: [] }>();
 
 const rm = useResourceMonitorStore();
 const sessions = useSessionsStore();

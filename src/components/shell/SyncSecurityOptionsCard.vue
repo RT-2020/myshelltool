@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /**
  * SyncSecurityOptionsCard — 凭据与托管私钥安全同步配置子组件。
  *
@@ -8,13 +8,13 @@
  */
 import { storeToRefs } from 'pinia';
 import { KeyRound, ShieldCheck, Lock } from 'lucide-vue-next';
-import { useWorkbenchStore } from '@/stores/workbench.js';
+import { useWorkbenchStore } from '@/stores/workbench';
 
 const store = useWorkbenchStore();
 const { syncCredentialsEnabled, syncLoading } = storeToRefs(store);
 
-async function onToggleCredentials(event) {
-  const checked = event.target.checked;
+async function onToggleCredentials(event: Event) {
+  const checked = (event.target as HTMLInputElement).checked;
   await store.setSyncCredentialsEnabled(checked);
 }
 </script>

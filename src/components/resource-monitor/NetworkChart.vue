@@ -1,12 +1,19 @@
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue';
-import { CHART_H, CHART_W, buildLinePath, formatCompactRate, formatRate } from './chart-utils.js';
-const props = defineProps({
-  rxPoints: { type: Array, default: () => [] },
-  txPoints: { type: Array, default: () => [] },
-  rxRate: { type: Number, default: 0 },
-  txRate: { type: Number, default: 0 },
-  hasData: { type: Boolean, default: true }
+import { CHART_H, CHART_W, buildLinePath, formatCompactRate, formatRate } from './chart-utils';
+
+const props = withDefaults(defineProps<{
+  rxPoints?: number[];
+  txPoints?: number[];
+  rxRate?: number;
+  txRate?: number;
+  hasData?: boolean;
+}>(), {
+  rxPoints: () => [],
+  txPoints: () => [],
+  rxRate: 0,
+  txRate: 0,
+  hasData: true
 });
 
 const allPoints = computed(() => [...props.rxPoints, ...props.txPoints]);

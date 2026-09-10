@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /**
  * SyncPatGuide — v1.6 PAT（GitHub Token）获取引导子组件。
  *
@@ -12,8 +12,8 @@
  * 视觉语言照搬父组件的 block 范式，零新增 token（AGENTS.md 红线：用 var(--token)）。
  */
 import { KeyRound, ShieldCheck, ExternalLink, Lock } from 'lucide-vue-next';
-import { useWorkbenchStore } from '@/stores/workbench.js';
-import { isTauriRuntime } from '@/services/backend.js';
+import { useWorkbenchStore } from '@/stores/workbench';
+import { isTauriRuntime } from '@/services/backend';
 import AppButton from '@/components/ui/AppButton.vue';
 
 const store = useWorkbenchStore();
@@ -26,7 +26,7 @@ const REQUIRED_SCOPE = 'gist';
 // ─── 外链打开（照 useClipboard 的「动态 import + runtime 检测」范式）───
 // 非 Tauri runtime（浏览器预览模式）走 window.open；Tauri 走 opener 插件。
 // 动态 import 避免 npm run dev 下静态 import Tauri 插件即崩。
-async function openExternal(url) {
+async function openExternal(url: string) {
   if (!isTauriRuntime()) {
     window.open(url, '_blank', 'noopener');
     return;

@@ -1,26 +1,39 @@
-<script>
+<script lang="ts">
 // 模块级计数器：保证未传 id 的实例 errorId 全局唯一
 let inputErrorSeq = 0;
 </script>
 
-<script setup>
+<script setup lang="ts">
 import { computed, ref } from 'vue';
 import { Search, X, Eye, EyeOff } from 'lucide-vue-next';
 
-const props = defineProps({
-  modelValue: { type: [String, Number], default: '' },
-  placeholder: { type: String, default: '' },
-  type: { type: String, default: 'text' }, // text | password | search | number
-  error: { type: String, default: '' },
-  disabled: { type: Boolean, default: false },
-  mono: { type: Boolean, default: false },
-  id: { type: String, default: '' }
-});
-const emit = defineEmits(['update:modelValue']);
+const props = withDefaults(
+  defineProps<{
+    /** 宽松 null/undefined：部分消费方未绑定即渲染，hasValue 需判空。 */
+    modelValue?: string | number | null;
+    placeholder?: string;
+    /** text | password | search | number。 */
+    type?: string;
+    error?: string;
+    disabled?: boolean;
+    mono?: boolean;
+    id?: string;
+  }>(),
+  {
+    modelValue: '',
+    placeholder: '',
+    type: 'text',
+    error: '',
+    disabled: false,
+    mono: false,
+    id: ''
+  }
+);
+const emit = defineEmits<{ 'update:modelValue': [value: string] }>();
 
 const instanceSeq = ++inputErrorSeq;
 
-const inputEl = ($event) => $event.target.value;
+const inputEl = (e: Event) => (e.target as HTMLInputElement).value;
 
 const isSearch = computed(() => props.type === 'search');
 const isPassword = computed(() => props.type === 'password');
@@ -29,7 +42,7 @@ const showPassword = ref(false);
 const fieldType = computed(() => (isPassword.value && !showPassword.value ? 'password' : props.type));
 const errorId = computed(() => (props.id ? `${props.id}-error` : `app-input-error-${instanceSeq}`));
 
-function onInput(e) {
+function onInput(e: Event) {
   emit('update:modelValue', inputEl(e));
 }
 function clear() {
@@ -53,7 +66,7 @@ function togglePassword() {
         :value="modelValue"
         :placeholder="placeholder"
         :disabled="disabled"
-        :aria-invalid="String(!!error)"
+        :aria-invalid="!!error"
         :aria-describedby="error ? errorId : undefined"
         @input="onInput"
       />

@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /**
  * ConnectionSidebar — Wave 3 Step 3.2（+ 分组管理扩展）
  *
@@ -8,7 +8,7 @@
  * 本组件是 store-agnostic 展示组件：仅消费 props + emit 事件，父级 App.vue 接 store。
  *
  * 操作入口（资产）：悬停显示「编辑/删除」快捷按钮 + 右键菜单（编辑/复制/移动/独立窗口/删除）；
- * 拖出主窗口边界释放也开独立资产窗口（Phase 2，开窗/判定逻辑在 lib/assetWindows.js）。
+ * 拖出主窗口边界释放也开独立资产窗口（Phase 2，开窗/判定逻辑在 lib/assetWindows）。
  * 操作入口（分组）：分组头右键菜单（重命名/解散）。「未分组」是保留节点，无分组菜单。
  *
  * 通过 provide('connectionSidebar', ...) 把 handler/state 注入给 AssetGroupNode，
@@ -26,53 +26,71 @@ import {
 } from 'lucide-vue-next';
 import AppContextMenu from '../ui/AppContextMenu.vue';
 import AssetGroupNode from './AssetGroupNode.vue';
-import { useSessionsStore } from '@/stores/sessions.js';
-import { useWorkbenchStore } from '@/stores/workbench.js';
-import { normalizeStatus } from '@/stores/workbench.js';
-import { openAssetWindow } from '@/lib/assetWindows.js';
-import { useDragOutsideViewport } from '@/composables/useDragOutsideViewport.js';
-import { isTauriRuntime } from '@/services/backend.js';
+import { useSessionsStore } from '@/stores/sessions';
+import { useWorkbenchStore, normalizeStatus } from '@/stores/workbench';
+import { openAssetWindow } from '@/lib/assetWindows';
+import { useDragOutsideViewport } from '@/composables/useDragOutsideViewport';
+import { isTauriRuntime } from '@/services/backend';
+import { parseSshTarget } from '@/lib/parseSshTarget';
+import type { GroupTreeNode, NormalizedConnectionAsset } from '@/types/domain';
 
-const props = defineProps({
-  assets: { type: Array, default: () => [] },
-  // 分组树根：{ name:'', path:'', parent:'', children:[TreeNode], items:[asset] }
-  groupedAssets: { type: Object, default: () => ({ name: '', path: '', parent: '', children: [], items: [] }) },
-  selectedAssetId: { type: String, default: '' },
-  assetsCollapsed: { type: Boolean, default: false },
-  searchQuery: { type: String, default: '' },
-  quickConnectInput: { type: String, default: '' }
-});
+const props = withDefaults(
+  defineProps<{
+    assets?: NormalizedConnectionAsset[];
+    /** 分组树根（assets store buildGroupTree 的产物）。 */
+    groupedAssets?: GroupTreeNode;
+    selectedAssetId?: string;
+    assetsCollapsed?: boolean;
+    searchQuery?: string;
+    quickConnectInput?: string;
+  }>(),
+  {
+    assets: () => [],
+    groupedAssets: () => ({ name: '', path: '', parent: '', children: [], items: [] }),
+    selectedAssetId: '',
+    assetsCollapsed: false,
+    searchQuery: '',
+    quickConnectInput: ''
+  }
+);
 
-const emit = defineEmits([
-  'update:searchQuery',
-  'update:quickConnectInput',
-  'select-asset',
-  'connect-asset',
-  'quick-connect',
-  'toggle-collapse',
-  'create-asset',
-  'create-group',
+/** 快速连接解析结果（emit 'quick-connect' 的 payload）。 */
+interface QuickConnectTarget {
+  username: string;
+  host: string;
+  port: number;
+}
+
+const emit = defineEmits<{
+  'update:searchQuery': [value: string];
+  'update:quickConnectInput': [value: string];
+  'select-asset': [id: string];
+  'connect-asset': [id: string];
+  'quick-connect': [target: QuickConnectTarget];
+  'toggle-collapse': [];
+  'create-asset': [];
+  'create-group': [];
   // 以下事件 payload 均为 asset 对象或 group path 字符串
-  'edit-asset',
-  'delete-asset',
-  'duplicate-asset',
-  'move-asset',           // 右键菜单「移动到分组…」→ 打开弹窗
-  'rename-group',
-  'dissolve-group',
+  'edit-asset': [asset: NormalizedConnectionAsset];
+  'delete-asset': [asset: NormalizedConnectionAsset];
+  'duplicate-asset': [asset: NormalizedConnectionAsset];
+  'move-asset': [asset: NormalizedConnectionAsset];
+  'rename-group': [path: string];
+  'dissolve-group': [path: string];
   // 拖拽：直接落盘，不走弹窗
-  'move-asset-direct',    // payload { id, group }：资产拖到分组 → 直接移动
-  'reorder-groups'        // payload string[]：分组拖拽排序后的全量新顺序
-]);
+  'move-asset-direct': [payload: { id: string; group: string }]; // 资产拖到分组 → 直接移动
+  'reorder-groups': [paths: string[]]; // 分组拖拽排序后的全量新顺序
+}>();
 
 // ============================================================
-// 运行时连接态派生：session.status 是唯一权威源（sessions.js 维护）。
+// 运行时连接态派生：session.status 是唯一权威源（sessions store 维护）。
 // 侧栏圆点不读 asset.status（连接流程中从不更新），而是查该 asset 是否有
 // connected/connecting 会话。无会话时回退 asset.status（编辑器初始值，通常 Idle → 灰点）。
 // ============================================================
 const sessionsStore = useSessionsStore();
 const workbench = useWorkbenchStore();
 const connectedAssetIds = computed(() => {
-  const set = new Set();
+  const set = new Set<string | undefined>();
   for (const session of sessionsStore.sessions) {
     if (session.status === 'connected' || session.status === 'connecting') {
       set.add(session.asset?.id);
@@ -84,16 +102,16 @@ const connectedAssetIds = computed(() => {
 // ============================================================
 // 折叠态：按完整 path 存储（嵌套下同名子分组需区分）。
 // ============================================================
-const collapsedGroups = ref(new Set());
+const collapsedGroups = ref(new Set<string>());
 
-function toggleGroup(path) {
+function toggleGroup(path: string) {
   const next = new Set(collapsedGroups.value);
   if (next.has(path)) next.delete(path);
   else next.add(path);
   collapsedGroups.value = next;
 }
 
-function isCollapsed(path) {
+function isCollapsed(path: string) {
   return collapsedGroups.value.has(path);
 }
 
@@ -107,11 +125,11 @@ const visibleTree = computed(() => {
   return filterNode(props.groupedAssets, query) || emptyRoot();
 });
 
-function emptyRoot() {
+function emptyRoot(): GroupTreeNode {
   return { name: '', path: '', parent: '', children: [], items: [] };
 }
 
-function filterNode(node, query) {
+function filterNode(node: GroupTreeNode, query: string): GroupTreeNode | null {
   const matchedItems = (node.items || []).filter(asset => {
     const haystack = [
       asset.name, asset.host, asset.username, asset.group,
@@ -119,7 +137,7 @@ function filterNode(node, query) {
     ].filter(Boolean).join(' ').toLowerCase();
     return haystack.includes(query);
   });
-  const filteredChildren = [];
+  const filteredChildren: GroupTreeNode[] = [];
   for (const child of (node.children || [])) {
     const fc = filterNode(child, query);
     if (fc) filteredChildren.push(fc);
@@ -145,12 +163,12 @@ const hasQuery = computed(() => (props.searchQuery || '').trim().length > 0);
 
 // 扁平化可见资产（跳过折叠分组），用于箭头键导航
 const flatAssets = computed(() => {
-  const out = [];
+  const out: NormalizedConnectionAsset[] = [];
   walkTree(visibleTree.value, false, out);
   return out;
 });
 
-function walkTree(node, parentCollapsed, out) {
+function walkTree(node: GroupTreeNode, parentCollapsed: boolean, out: NormalizedConnectionAsset[]) {
   // 有搜索词时忽略折叠态（过滤树已剔除无关项，全部展开便于浏览）
   const collapsed = hasQuery.value ? false : (parentCollapsed || collapsedGroups.value.has(node.path));
   if (!collapsed) {
@@ -162,14 +180,14 @@ function walkTree(node, parentCollapsed, out) {
 }
 
 // ============================================================
-// Status normalization — 复用 workbench.js 导出的 normalizeStatus。
+// Status normalization — 复用 workbench 导出的 normalizeStatus。
 // ============================================================
-function statusClass(asset) {
+function statusClass(asset: NormalizedConnectionAsset) {
   const runtimeStatus = connectedAssetIds.value.has(asset.id) ? 'connected' : (asset.status || 'Idle');
   return normalizeStatus(runtimeStatus).dotClass;
 }
 
-function isActiveAsset(asset) {
+function isActiveAsset(asset: NormalizedConnectionAsset) {
   return Boolean(props.selectedAssetId) && props.selectedAssetId === asset.id;
 }
 
@@ -180,9 +198,14 @@ function isActiveAsset(asset) {
 // ============================================================
 const DRAG_MIME = 'application/x-myshelltool-drag';
 
+/** dataTransfer 自定义 MIME 的载荷（readDragData/writeDragData 的契约）。 */
+type DragPayload =
+  | { kind: 'asset'; id: string }
+  | { kind: 'group'; path: string; parent: string };
+
 // 拖拽态：当前被拖对象 / 当前悬停目标分组 / 上半还是下半区
-const dragSource = ref(null);   // { kind:'asset', id } | { kind:'group', path, parent } | null
-const dropTarget = ref(null);   // { path, position:'in'|'before'|'after' } | null
+const dragSource = ref<DragPayload | null>(null);
+const dropTarget = ref<{ path: string; position: 'in' | 'before' | 'after' } | null>(null);
 // 内部 drop 消费标记：分组移动 / 分组排序 drop 命中（onGroupDrop 的 emit 处）置 true，
 // dragend 据此跳过「拖出主窗口开独立窗口」判定；每次 dragend 结束时复位，不残留
 let internalDropHandled = false;
@@ -190,33 +213,34 @@ let internalDropHandled = false;
 const dragOutside = useDragOutsideViewport();
 
 // 开独立资产窗口（拖出判定 / 右键菜单共用入口）：失败 console.error + toast 提示，不阻断
-function openAssetDetached(asset) {
+function openAssetDetached(asset: NormalizedConnectionAsset) {
   openAssetWindow(asset).catch(error => {
     console.error('[ConnectionSidebar] open asset window failed:', error);
-    workbench.announce('打开独立窗口失败：' + (error?.message || error), { level: 'error' });
+    workbench.announce('打开独立窗口失败：' + ((error as Error | undefined)?.message || error), { level: 'error' });
   });
 }
 
-function readDragData(event) {
+function readDragData(event: DragEvent): DragPayload | null {
   const raw = event.dataTransfer?.getData(DRAG_MIME);
   if (!raw) return null;
-  try { return JSON.parse(raw); } catch { return null; }
+  try { return JSON.parse(raw) as DragPayload; } catch { return null; }
 }
-function writeDragData(event, payload) {
+function writeDragData(event: DragEvent, payload: DragPayload) {
   // 兜底 text/plain：某些环境（部分 webview）对自定义 MIME 支持不稳
   event.dataTransfer?.setData(DRAG_MIME, JSON.stringify(payload));
   event.dataTransfer?.setData('text/plain', payload.kind === 'asset' ? payload.id : payload.path);
-  event.dataTransfer.effectAllowed = 'move';
+  // dragstart/dragover 事件的 dataTransfer 恒非空（DOM 契约），非空断言仅类型层收窄
+  event.dataTransfer!.effectAllowed = 'move';
 }
 
 // —— 资产拖拽 source ——
-function onAssetDragStart(event, asset) {
+function onAssetDragStart(event: DragEvent, asset: NormalizedConnectionAsset) {
   dragSource.value = { kind: 'asset', id: asset.id };
   writeDragData(event, { kind: 'asset', id: asset.id });
   // 挂 document 级视口跟踪（仅资产拖拽需要，分组拖拽不开独立窗口）
   dragOutside.attach();
 }
-function onAssetDragEnd(event) {
+function onAssetDragEnd(event: DragEvent) {
   // 拖出主窗口边界释放 → 开独立资产窗口（Phase 2）。
   // 判定 = 坐标在视口外 ∥ 拖拽期间离开过视口（dragend 坐标在窗外释放时不可靠，
   // dragleave 标记是可靠信号，两者取或，详见 useDragOutsideViewport）。
@@ -233,64 +257,65 @@ function onAssetDragEnd(event) {
   internalDropHandled = false;
   dragOutside.detach();
   if (!openDetached) return;
-  const asset = props.assets.find(a => a.id === src.id);
+  // 类型断言：openDetached 为 true 蕴含 src 非 null 且 kind === 'asset'（上方判定式）
+  const asset = props.assets.find(a => a.id === (src as { id: string }).id);
   if (asset) openAssetDetached(asset);
 }
-function isDraggingAsset(id) {
+function isDraggingAsset(id: string) {
   return dragSource.value?.kind === 'asset' && dragSource.value.id === id;
 }
 
 // —— 分组拖拽 source（排序）——
-function onGroupDragStart(event, path, parent) {
+function onGroupDragStart(event: DragEvent, path: string, parent: string) {
   if (path === '未分组') { event.preventDefault(); return; } // 保留节点不可拖
   dragSource.value = { kind: 'group', path, parent };
   writeDragData(event, { kind: 'group', path, parent });
 }
-function onGroupDragEnd() {
+function onGroupDragEnd(event: DragEvent) {
   dragSource.value = null;
   dropTarget.value = null;
   internalDropHandled = false; // 分组拖拽同样复位，避免残留毒化下一次资产拖出判定
 }
 
 // —— 分组头作为 drop target（同时收资产拖入与分组排序）——
-function onGroupDragOver(event, path, parent) {
+function onGroupDragOver(event: DragEvent, path: string, parent: string) {
   const src = readDragData(event) || dragSource.value;
   if (!src) return;
   // 资产拖入：任意分组都可接收（含「未分组」），effectAllowed=move 需配 dropEffect
   if (src.kind === 'asset') {
-    event.dataTransfer.dropEffect = 'move';
+    event.dataTransfer!.dropEffect = 'move';
     event.preventDefault();
     return;
   }
   // 分组排序：仅同级可排（同 parent），且不能排到自己上、不能排到「未分组」
   if (src.kind === 'group') {
     if (path === '未分组' || src.path === path || src.parent !== parent) return;
-    event.dataTransfer.dropEffect = 'move';
+    event.dataTransfer!.dropEffect = 'move';
     event.preventDefault();
   }
 }
-function onGroupDragEnter(event, path) {
+function onGroupDragEnter(event: DragEvent, path: string) {
   const src = readDragData(event) || dragSource.value;
   if (!src) return;
   if (src.kind === 'asset') {
     dropTarget.value = { path, position: 'in' };
   } else if (src.kind === 'group' && path !== '未分组' && src.path !== path) {
     // 上半/下半区决定 before/after
-    const rect = event.currentTarget.getBoundingClientRect();
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     const position = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
     dropTarget.value = { path, position };
   }
 }
-function onGroupDragLeave(event, path) {
+function onGroupDragLeave(event: DragEvent, path: string) {
   // dragleave 会因子元素冒泡频繁触发；仅在真正离开该分组头时清目标
   if (dropTarget.value?.path === path) {
     const related = event.relatedTarget;
-    if (!event.currentTarget.contains(related)) {
+    if (!(event.currentTarget as HTMLElement).contains(related as Node | null)) {
       dropTarget.value = null;
     }
   }
 }
-function onGroupDrop(event, targetPath, targetParent) {
+function onGroupDrop(event: DragEvent, targetPath: string, targetParent: string) {
   const src = readDragData(event) || dragSource.value;
   dropTarget.value = null;
   dragSource.value = null;
@@ -305,7 +330,7 @@ function onGroupDrop(event, targetPath, targetParent) {
     // 同级排序：把 src.path 插到 targetPath 的 before/after
     if (targetPath === '未分组' || src.path === targetPath || src.parent !== targetParent) return;
     internalDropHandled = true;
-    const rect = event.currentTarget.getBoundingClientRect();
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     const placeAfter = event.clientY >= rect.top + rect.height / 2;
     emit('reorder-groups', buildReorderedPaths(src.path, targetPath, placeAfter));
   }
@@ -314,7 +339,7 @@ function onGroupDrop(event, targetPath, targetParent) {
 // 把分组拖拽结果转成全量新顺序（扁平路径，父在子前 DFS 先序）。
 // 思路：从当前分组树按 DFS 先序收集所有非「未分组」路径，移除 src，
 // 插到 target 的 before/after 位置。
-function buildReorderedPaths(srcPath, targetPath, placeAfter) {
+function buildReorderedPaths(srcPath: string, targetPath: string, placeAfter: boolean): string[] {
   const ordered = collectGroupPathsDfs(props.groupedAssets);
   const filtered = ordered.filter(p => p !== srcPath);
   const idx = filtered.indexOf(targetPath);
@@ -323,9 +348,9 @@ function buildReorderedPaths(srcPath, targetPath, placeAfter) {
   return filtered;
 }
 // DFS 先序收集分组路径（root.children 起步），跳过「未分组」。
-function collectGroupPathsDfs(root) {
-  const out = [];
-  const walk = (node) => {
+function collectGroupPathsDfs(root: GroupTreeNode): string[] {
+  const out: string[] = [];
+  const walk = (node: GroupTreeNode) => {
     for (const child of (node.children || [])) {
       if (child.path !== '未分组') out.push(child.path);
       walk(child);
@@ -336,7 +361,7 @@ function collectGroupPathsDfs(root) {
 }
 
 // 分组头拖放态 class（AssetGroupNode 调用）
-function groupHeaderClass(path) {
+function groupHeaderClass(path: string) {
   if (!dropTarget.value || dropTarget.value.path !== path) {
     return dragSource.value?.kind === 'group' && dragSource.value.path === path ? 'is-dragging' : '';
   }
@@ -349,24 +374,18 @@ function groupHeaderClass(path) {
 
 // ============================================================
 // Quick connect parser — `ssh user@host[:port]`
+// 解析逻辑抽到 lib/parseSshTarget（与 ui store 全局搜索共用，含 IPv6 括号形式）
 // ============================================================
-function parseQuickConnect(input) {
-  const trimmed = input.trim();
-  const match = trimmed.match(/^ssh\s+([^\s@]+)@([^\s:]+)(?::(\d+))?$/);
-  if (!match) return null;
-  return {
-    username: match[1],
-    host: match[2],
-    port: Number(match[3] || 22)
-  };
+function parseQuickConnect(input: string): QuickConnectTarget | null {
+  return parseSshTarget(input);
 }
 
 // 快速连接解析失败就地提示（输入变化即清除）
 const quickConnectError = ref('');
 
-function onQuickConnectInput(event) {
+function onQuickConnectInput(event: Event) {
   quickConnectError.value = '';
-  emit('update:quickConnectInput', event.target.value);
+  emit('update:quickConnectInput', (event.target as HTMLInputElement).value);
 }
 
 function onQuickConnectEnter() {
@@ -389,7 +408,7 @@ function onQuickConnectEnter() {
 // ============================================================
 // Keyboard navigation — Up/Down 移动焦点，Enter 连接
 // ============================================================
-function onAssetKeydown(event, asset) {
+function onAssetKeydown(event: KeyboardEvent, asset: NormalizedConnectionAsset) {
   if (event.key === 'Enter') {
     event.preventDefault();
     emit('connect-asset', asset.id);
@@ -409,18 +428,26 @@ function onAssetKeydown(event, asset) {
 }
 
 // DOM ref 映射（AssetGroupNode 通过 inject 调用 registerAssetEl）
-const assetElMap = ref(new Map());
-function registerAssetEl(id, el) {
-  if (el) assetElMap.value.set(id, el);
+const assetElMap = ref(new Map<string, HTMLElement>());
+function registerAssetEl(id: string, el: unknown) {
+  if (el) assetElMap.value.set(id, el as HTMLElement);
   else assetElMap.value.delete(id);
 }
 
 // ============================================================
 // 右键菜单：资产 / 分组两套，共用一个 contextMenu ref（带 kind 区分）
 // ============================================================
-const contextMenu = ref({ visible: false, kind: '', x: 0, y: 0, asset: null, path: '' });
+interface SidebarMenuState {
+  visible: boolean;
+  kind: '' | 'asset' | 'group';
+  x: number;
+  y: number;
+  asset: NormalizedConnectionAsset | null;
+  path: string;
+}
+const contextMenu = ref<SidebarMenuState>({ visible: false, kind: '', x: 0, y: 0, asset: null, path: '' });
 
-function openContextMenu(event, kind, payload) {
+function openContextMenu(event: MouseEvent, kind: 'asset' | 'group', payload: { asset?: NormalizedConnectionAsset; path?: string }) {
   contextMenu.value = {
     visible: true,
     kind,
@@ -431,11 +458,11 @@ function openContextMenu(event, kind, payload) {
   };
 }
 
-function onAssetContextMenu(event, asset) {
+function onAssetContextMenu(event: MouseEvent, asset: NormalizedConnectionAsset) {
   openContextMenu(event, 'asset', { asset });
 }
 
-function onGroupContextMenu(event, path) {
+function onGroupContextMenu(event: MouseEvent, path: string) {
   // 「未分组」是保留节点，不提供分组管理菜单
   if (path === '未分组') return;
   openContextMenu(event, 'group', { path });
@@ -449,7 +476,7 @@ const assetMenuItems = computed(() => {
   if (!contextMenu.value.visible || contextMenu.value.kind !== 'asset') return [];
   const a = contextMenu.value.asset;
   if (!a) return [];
-  const make = (label, fn, opts = {}) => ({ label, action: fn, ...opts });
+  const make = (label: string, fn: () => void, opts: { danger?: boolean } = {}) => ({ label, action: fn, ...opts });
   return [
     make('编辑', () => emit('edit-asset', a)),
     make('复制', () => emit('duplicate-asset', a)),
@@ -468,7 +495,7 @@ const groupMenuItems = computed(() => {
   if (!contextMenu.value.visible || contextMenu.value.kind !== 'group') return [];
   const path = contextMenu.value.path;
   if (!path) return [];
-  const make = (label, fn, opts = {}) => ({ label, action: fn, ...opts });
+  const make = (label: string, fn: () => void, opts: { danger?: boolean } = {}) => ({ label, action: fn, ...opts });
   return [
     make('重命名…', () => emit('rename-group', path)),
     { separator: true },
@@ -479,13 +506,14 @@ const groupMenuItems = computed(() => {
 // ============================================================
 // provide：AssetGroupNode 通过 inject('connectionSidebar') 调用这些。
 // 用 ref 函数包裹响应式依赖，避免 provide 快照失效。
+// （注入契约的完整形状见 AssetGroupNode.vue 的 SidebarContext interface）
 // ============================================================
 provide('connectionSidebar', {
   isCollapsed,
   toggleGroup,
   statusClass,
   isActiveAsset,
-  isUngrouped: path => path === '未分组',
+  isUngrouped: (path: string) => path === '未分组',
   // 拖拽态
   isDraggingAsset,
   groupHeaderClass,
@@ -497,14 +525,14 @@ provide('connectionSidebar', {
   onGroupDragEnter,
   onGroupDragLeave,
   onGroupDrop,
-  onSelectAsset: id => emit('select-asset', id),
-  onConnectAsset: id => emit('connect-asset', id),
+  onSelectAsset: (id: string) => emit('select-asset', id),
+  onConnectAsset: (id: string) => emit('connect-asset', id),
   onAssetKeydown,
   onAssetContextMenu,
   onGroupContextMenu,
-  onEditAsset: asset => emit('edit-asset', asset),
-  onDeleteAsset: asset => emit('delete-asset', asset),
-  onDuplicateAsset: asset => emit('duplicate-asset', asset),
+  onEditAsset: (asset: NormalizedConnectionAsset) => emit('edit-asset', asset),
+  onDeleteAsset: (asset: NormalizedConnectionAsset) => emit('delete-asset', asset),
+  onDuplicateAsset: (asset: NormalizedConnectionAsset) => emit('duplicate-asset', asset),
   registerAssetEl
 });
 </script>
@@ -524,7 +552,7 @@ provide('connectionSidebar', {
           type="button"
           class="icon-btn"
           :aria-label="assetsCollapsed ? '展开连接资产' : '收起连接资产'"
-          :aria-expanded="String(!assetsCollapsed)"
+          :aria-expanded="!assetsCollapsed ? 'true' : 'false'"
           title="收起 / 展开"
           @click="emit('toggle-collapse')"
         >
@@ -594,7 +622,7 @@ provide('connectionSidebar', {
         :value="searchQuery"
         placeholder="筛选分组、标签、主机、用户"
         aria-label="筛选资产"
-        @input="emit('update:searchQuery', $event.target.value)"
+        @input="emit('update:searchQuery', ($event.target as HTMLInputElement).value)"
       />
     </div>
 

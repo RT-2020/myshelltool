@@ -23,6 +23,7 @@ target/
 release/
 .DS_Store
 *.log
+*.tsbuildinfo
 
 # 本地调试脚本（下划线前缀的临时 PowerShell 脚本，如查/杀僵尸进程锁 DLL，
 # 仅本机排障用，不进仓库）

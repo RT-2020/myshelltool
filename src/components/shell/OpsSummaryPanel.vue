@@ -1,12 +1,26 @@
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue';
-import { useAssetsStore } from '@/stores/assets.js';
-import { useTunnelsStore } from '@/stores/tunnels.js';
-import { useSessionsStore } from '@/stores/sessions.js';
+import { useAssetsStore } from '@/stores/assets';
+import { useTunnelsStore } from '@/stores/tunnels';
+import { useSessionsStore } from '@/stores/sessions';
 
 const assets = useAssetsStore();
 const tunnels = useTunnelsStore();
 const sessions = useSessionsStore();
+
+/** 摘要行（模板 dt/dd 渲染，muted 可选弱化）。 */
+interface SummaryRow {
+  label: string;
+  value: string;
+  muted?: boolean;
+}
+
+/** 系统功能行（badge tone 语义色类名）。 */
+interface SystemRow {
+  label: string;
+  value: string;
+  tone: string;
+}
 
 const selected = computed(() => assets.selectedAsset || null);
 const tags = computed(() => {
@@ -20,7 +34,8 @@ const activeSession = computed(() => {
   if (!selected.value) return null;
   return sessions.sessions.find(
     session =>
-      (session.assetId === selected.value.id || session.asset?.id === selected.value.id)
+      // assetId 是早期会话对象的兼容字段（store 类型未声明，运行时可能 undefined）
+      ((session as { assetId?: string }).assetId === selected.value.id || session.asset?.id === selected.value.id)
       && (session.status === 'connected' || session.status === 'connecting')
   ) || null;
 });
@@ -32,11 +47,12 @@ const summaryState = computed(() => {
   return activeSession.value ? '已连接' : '空闲';
 });
 
-const summaryRows = computed(() => {
+const summaryRows = computed<SummaryRow[]>(() => {
   if (!selected.value) return [];
 
   const connected = activeSession.value?.status === 'connected';
-  const sessionId = activeSession.value?.sessionId || activeSession.value?.id || '';
+  // .id 同为早期会话对象的兼容字段（运行时可能 undefined）
+  const sessionId = activeSession.value?.sessionId || (activeSession.value as { id?: string } | null)?.id || '';
 
   return [
     { label: '会话', value: activeSession.value ? `${sessionId.slice(0, 8)} · ${connected ? '已连接' : '连接中'}` : '— · 未连接', muted: !activeSession.value },
@@ -54,7 +70,7 @@ const credentialBadge = computed(() => {
 
 // MCP/同步状态不在本面板重复展示（L0 信息唯一性）：与底部状态栏 badge 重复，
 // 且状态栏版可点击打开对应设置面板。此处仅保留凭据绑定状态。
-const systemRows = computed(() => [
+const systemRows = computed<SystemRow[]>(() => [
   { label: '凭据', value: credentialBadge.value, tone: selected.value ? 'muted' : 'warn' }
 ]);
 </script>

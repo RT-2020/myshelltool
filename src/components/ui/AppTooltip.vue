@@ -1,14 +1,22 @@
-<script setup>
+<script setup lang="ts">
 import { ref, onBeforeUnmount } from 'vue';
 
-const props = defineProps({
-  content: { type: String, default: '' },
-  placement: { type: String, default: 'top' }, // top | right | bottom | left
-  delay: { type: Number, default: 300 }
-});
+const props = withDefaults(
+  defineProps<{
+    content?: string;
+    /** top | right | bottom | left。 */
+    placement?: string;
+    delay?: number;
+  }>(),
+  {
+    content: '',
+    placement: 'top',
+    delay: 300
+  }
+);
 
 const visible = ref(false);
-let showTimer = null;
+let showTimer: ReturnType<typeof setTimeout> | null = null;
 
 function onMouseEnter() {
   if (showTimer) clearTimeout(showTimer);

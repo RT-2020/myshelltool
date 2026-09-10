@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /**
  * McpPanelContent — v1.2 MCP 服务可观测与配置引导面板内容。
  *
@@ -19,9 +19,10 @@
 import { computed, ref, onMounted } from 'vue';
 import { storeToRefs } from 'pinia';
 import { Plug, Copy, RefreshCw, FileCode2, Database } from 'lucide-vue-next';
-import { useWorkbenchStore } from '@/stores/workbench.js';
-import { useMcpStore } from '@/stores/mcp.js';
-import { useClipboard } from '@/composables/useClipboard.js';
+import { useWorkbenchStore } from '@/stores/workbench';
+import { useMcpStore } from '@/stores/mcp';
+import { useClipboard } from '@/composables/useClipboard';
+import type { McpStatusResult } from '@/types/domain';
 import AppButton from '@/components/ui/AppButton.vue';
 import McpCapabilityList from '@/components/shell/McpCapabilityList.vue';
 import McpInterceptionSettings from '@/components/shell/McpInterceptionSettings.vue';
@@ -41,15 +42,15 @@ const { copy } = useClipboard();
 
 const copiedHint = ref('');
 
-const status = computed(() => mcpStatus.value || {});
+const status = computed<Partial<McpStatusResult>>(() => mcpStatus.value || {});
 const hasStatus = computed(() => Boolean(mcpStatus.value));
 
-function fmtTime(iso) {
+function fmtTime(iso?: string | null) {
   if (!iso) return '—';
   try {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return iso;
-    const pad = n => String(n).padStart(2, '0');
+    const pad = (n: number) => String(n).padStart(2, '0');
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
   } catch {
     return iso;
@@ -67,7 +68,7 @@ async function onCopyDataDir() {
   const ok = await copy(mcpDataDir.value);
   flashHint(ok ? '✓ 路径已复制' : '复制失败');
 }
-function flashHint(msg) {
+function flashHint(msg: string) {
   copiedHint.value = msg;
   setTimeout(() => { copiedHint.value = ''; }, 2000);
 }

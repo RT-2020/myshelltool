@@ -1,30 +1,32 @@
-<script setup>
+<script setup lang="ts">
+import type { Component } from 'vue';
 import { AlertTriangle, CheckCircle2, Info, X, XCircle } from 'lucide-vue-next';
-import { useUiStore } from '@/stores/ui.js';
+import { useUiStore } from '@/stores/ui';
+import type { ToastItem } from '@/types/domain';
 
 // 直连 ui store 读 toast 队列（与 ResourceMonitorPanel 直连模式一致）
 const ui = useUiStore();
 
-const LEVEL_ICONS = {
+const LEVEL_ICONS: Record<string, Component> = {
   success: CheckCircle2,
   warn: AlertTriangle,
   error: XCircle,
   info: Info
 };
 
-function iconFor(level) {
+function iconFor(level: string): Component {
   return LEVEL_ICONS[level] || Info;
 }
 
 // action 按钮：先执行 run()，再关闭该 toast
-function runAction(toast) {
+function runAction(toast: ToastItem) {
   if (toast.action && typeof toast.action.run === 'function') {
     toast.action.run();
   }
   ui.dismissToast(toast.id);
 }
 
-function dismiss(id) {
+function dismiss(id: number) {
   ui.dismissToast(id);
 }
 </script>

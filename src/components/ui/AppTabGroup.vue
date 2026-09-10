@@ -1,13 +1,27 @@
-<script setup>
+<script setup lang="ts">
+import type { Component } from 'vue';
 import AppTab from './AppTab.vue';
 
-const props = defineProps({
-  tabs: { type: Array, default: () => [] }, // [{ id, label, icon }]
-  active: { type: [String, Number], default: '' }
-});
-const emit = defineEmits(['update:active']);
+/** tab 条目契约（AppTabGroup 消费方按此形状传入）。 */
+interface TabItem {
+  id: string | number;
+  label: string;
+  icon?: Component | null;
+}
 
-function onSelect(id) {
+withDefaults(
+  defineProps<{
+    tabs?: TabItem[];
+    active?: string | number;
+  }>(),
+  {
+    tabs: () => [],
+    active: ''
+  }
+);
+const emit = defineEmits<{ 'update:active': [id: string | number] }>();
+
+function onSelect(id: string | number) {
   emit('update:active', id);
 }
 </script>

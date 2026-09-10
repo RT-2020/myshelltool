@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /**
  * TerminalSurface — Wave 3 Step 3.3
  * Center-top container composing all 8 terminal sub-components (Tabby-style).
@@ -11,27 +11,29 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { AlertTriangle, RotateCw } from 'lucide-vue-next';
-import { useSessionsStore } from '@/stores/sessions.js';
-import { useWorkbenchStore } from '@/stores/workbench.js';
-import { useUiStore } from '@/stores/ui.js';
-import { useAssetsStore } from '@/stores/assets.js';
-import { useClipboard } from '@/composables/useClipboard.js';
-import { isTauriRuntime } from '@/services/backend.js';
-import { tearOffSession } from '@/lib/sessionHandoff.js';
+import { useSessionsStore } from '@/stores/sessions';
+import { useWorkbenchStore } from '@/stores/workbench';
+import { useUiStore } from '@/stores/ui';
+import { useAssetsStore } from '@/stores/assets';
+import { useClipboard } from '@/composables/useClipboard';
+import { isTauriRuntime } from '@/services/backend';
+import { tearOffSession } from '@/lib/sessionHandoff';
 import TerminalTabs from './TerminalTabs.vue';
 import TerminalSearchBar from './TerminalSearchBar.vue';
 import TerminalPane from './TerminalPane.vue';
 import ShortcutCheatsheet from './ShortcutCheatsheet.vue';
 import CommandPalette from './CommandPalette.vue';
 import DangerousPasteConfirm from './DangerousPasteConfirm.vue';
-import { AppContextMenu } from '@/components/ui/index.js';
+import { AppContextMenu } from '@/components/ui';
 
 // ============================================================
 // Stores (store-bound wiring — no prop drilling)
 // ============================================================
-const props = defineProps({
+const props = withDefaults(defineProps<{
   // 独立资产窗口（单会话窗）不渲染顶部 tab 条；主窗口默认渲染
-  showTabs: { type: Boolean, default: true }
+  showTabs?: boolean;
+}>(), {
+  showTabs: true
 });
 const sessionsStore = useSessionsStore();
 const workbenchStore = useWorkbenchStore();
@@ -56,7 +58,7 @@ const isTauriCore = computed(() => isTauriRuntime());
 // ============================================================
 // Keyboard shortcuts — migrated from App.vue handleTerminalKeydown
 // ============================================================
-function handleKeydown(event) {
+function handleKeydown(event: KeyboardEvent) {
   // Esc: dismiss any open overlay (works regardless of active tab)
   if (event.key === 'Escape') {
     if (terminalSearch.value.open) { sessionsStore.closeTerminalSearchInline(); event.preventDefault(); return; }
@@ -66,7 +68,7 @@ function handleKeydown(event) {
   }
 
   // Only intercept terminal shortcuts when terminal tab is active AND not typing
-  const isTextInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target?.tagName);
+  const isTextInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes((event.target as HTMLElement | null)?.tagName ?? '');
   if (activeTab.value !== 'terminal' || isTextInput) return;
 
   const mod = event.ctrlKey || event.metaKey;
@@ -116,7 +118,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown));
 // ============================================================
 const terminalMenu = reactive({ open: false, x: 0, y: 0, hasSelection: false });
 
-function handleTerminalContextMenu({ x, y, hasSelection }) {
+/** TerminalPane context-menu 事件的 payload 契约。 */
+interface TerminalContextMenuPayload {
+  x: number;
+  y: number;
+  hasSelection: boolean;
+}
+
+function handleTerminalContextMenu({ x, y, hasSelection }: TerminalContextMenuPayload) {
   terminalMenu.x = x;
   terminalMenu.y = y;
   terminalMenu.hasSelection = hasSelection;
@@ -134,25 +143,25 @@ const terminalMenuItems = computed(() => [
 // ============================================================
 // Tab context-menu actions — migrated from App.vue
 // ============================================================
-function handleTabSelect(id) {
+function handleTabSelect(id: string) {
   sessionsStore.setActiveSession(id);
   uiStore.setTab('terminal');
 }
 
-function handleCloseOthers(keepSessionId) {
+function handleCloseOthers(keepSessionId: string) {
   sessions.value
     .filter(s => s.sessionId !== keepSessionId)
     .forEach(s => sessionsStore.disconnectSession(s.sessionId));
 }
 
-function handleCloseRight(fromSessionId) {
+function handleCloseRight(fromSessionId: string) {
   const list = sessions.value;
   const idx = list.findIndex(s => s.sessionId === fromSessionId);
   if (idx < 0) return;
   for (let i = list.length - 1; i > idx; i--) sessionsStore.disconnectSession(list[i].sessionId);
 }
 
-async function handleCopyHost(sessionId) {
+async function handleCopyHost(sessionId: string) {
   const s = sessions.value.find(x => x.sessionId === sessionId);
   if (!s) return;
   const text = `${s.asset?.username || ''}@${s.asset?.host || ''}`;
@@ -164,11 +173,11 @@ async function handleCopyHost(sessionId) {
 // Tab 拖出（sessionHandoff tearoff 接线，错误由协议层内部 announce）
 // tab 只存在于主窗口（asset 窗口单会话无 tab 条）：拖出窗外 = 拆出独立窗口
 // ============================================================
-function handleTabDragOut(sessionId) {
+function handleTabDragOut(sessionId: string) {
   tearOffSession({ sessionsStore, workbenchStore, sessionId });
 }
 
-function handleCommandPaletteAction(action) {
+function handleCommandPaletteAction(action: string) {
   if (action === 'cheatsheet') { shortcutCheatsheetOpen.value = true; return; }
   sessionsStore.runTerminalAction(action);
 }
@@ -179,7 +188,7 @@ function openAssetEditor() { uiStore.modal = { type: 'assetEditor', asset: null 
 
 // 认证失败特征（对应后端 ssh.rs 的错误文案）：命中时错误卡片追加
 // 「重新输入密码 / 更换密钥」引导（密钥未授权、密码变更、passphrase 不符等场景）
-function isAuthFailure(connectError) {
+function isAuthFailure(connectError: string | null) {
   return /Authentication failed|Public key auth failed|Auth failed|permission denied|The key is encrypted/i
     .test(connectError || '');
 }
@@ -278,7 +287,7 @@ function isAuthFailure(connectError) {
       :open="sessionsStore.dangerousPastePrompt.open"
       :command="sessionsStore.dangerousPastePrompt.command"
       :matched-pattern="sessionsStore.dangerousPastePrompt.matchedPattern"
-      @confirm="sessionsStore.approveDangerousPaste"
+      @confirm="(p) => sessionsStore.approveDangerousPaste(p as string)"
       @cancel="sessionsStore.cancelDangerousPaste"
     />
   </div>
