@@ -167,7 +167,11 @@ onBeforeUnmount(() => {
 
 .app-context-menu {
   position: fixed;
-  z-index: var(--z-dropdown);
+  // body 级瞬态浮层（Teleport to body）：必须压住 app 内的 sticky 表头，否则文件区
+  // 右键菜单会被文件列头/列头行（--z-sticky = 200）盖掉；用 --z-popover(250) 而非
+  // --z-dropdown(100)，同时保持低于抽屉(300)/模态(400)——抽屉与模态是用户显式打开的
+  // 面板，理应在菜单之上。
+  z-index: var(--z-popover);
   list-style: none;
   margin: 0;
   padding: 4px;

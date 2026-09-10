@@ -49,7 +49,7 @@ $typography: (
 
 $motion: (fast: 120ms, base: 200ms, slow: 320ms);
 $ease: (standard: cubic-bezier(.4,0,.2,1));
-$z-indexes: (base: 1, dropdown: 100, sticky: 200, drawer: 300, modal: 400, toast: 500, tooltip: 600);
+$z-indexes: (base: 1, dropdown: 100, sticky: 200, popover: 250, drawer: 300, modal: 400, toast: 500, tooltip: 600);
 
 // ===========================================================================
 // CSS 变量输出（运行时主题切换消费）
@@ -159,7 +159,10 @@ $z-indexes: (base: 1, dropdown: 100, sticky: 200, drawer: 300, modal: 400, toast
   --ease-emphasized: cubic-bezier(0.05, 0, 0.2, 1);
 
   // z-index
-  --z-base: 1; --z-dropdown: 100; --z-sticky: 200;
+  //   popover 专给「teleport 到 body 的瞬态浮层」（右键菜单等）：它必须压住 app 内
+  //   的 sticky 表头（--z-sticky = 200，列表头/列头都是 sticky），但仍低于抽屉（300，
+  //   用户显式打开的整块面板）与模态（400）。
+  --z-base: 1; --z-dropdown: 100; --z-sticky: 200; --z-popover: 250;
   --z-drawer: 300; --z-modal: 400; --z-toast: 500; --z-tooltip: 600;
 
   // 聚焦环 / elevation（兼容旧引用）

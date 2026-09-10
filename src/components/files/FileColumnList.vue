@@ -2,10 +2,12 @@
 import { computed } from 'vue';
 import { File as FileIcon, Folder, Link2, Loader2, AlertCircle, RefreshCw } from 'lucide-vue-next';
 import {
+  formatFileEntryPermissions,
   formatFileEntrySize,
   formatFileEntryTime,
   inferFileEntryType,
   FILE_COLUMN_GRID_ROW,
+  FILE_COLUMN_GRID_ROW_NARROW,
   FILE_COLUMN_GRID_COMPACT
 } from './fileColumnUtils';
 import type { RemoteFileEntry } from '@/types/domain';
@@ -119,6 +121,10 @@ const emptyDesc = computed(() => {
       </span>
       <span class="col-name file-row-name" :title="entry.name">{{ entry.name }}</span>
       <template v-if="listMode === 'detailed'">
+        <span
+          class="col-perm file-row-perm"
+          :title="entry.permissions || ''"
+        >{{ formatFileEntryPermissions(entry) }}</span>
         <span class="col-size file-row-size">{{ formatFileEntrySize(entry.size) }}</span>
         <span class="col-type file-row-type" :title="inferFileEntryType(entry)">
           {{ inferFileEntryType(entry) }}
@@ -247,6 +253,18 @@ const emptyDesc = computed(() => {
   grid-template-columns: v-bind(FILE_COLUMN_GRID_COMPACT);
 }
 
+// 窄栏回退：与 FileColumnColumns 的 @container 规则同阈值同步（去掉权限列 + 换模板）。
+// 选择器带 .file-row 前缀提高特异性，防跨组件打包顺序影响（同 .col-header .col-perm）。
+@container (max-width: 560px) {
+  .file-row .col-perm {
+    display: none;
+  }
+
+  .file-row {
+    grid-template-columns: v-bind(FILE_COLUMN_GRID_ROW_NARROW);
+  }
+}
+
 .file-row-icon {
   display: inline-flex;
   align-items: center;
@@ -282,7 +300,16 @@ const emptyDesc = computed(() => {
   font-size: var(--text-xs);
   color: var(--app-muted);
   font-family: var(--font-mono);
-  text-align: end;
+  text-align: center;
+}
+
+// 权限：等宽 + 定长（10 字符），列内放得下 76px = 12px 等宽 × 10。与其余元数据列一起居中。
+.file-row-perm {
+  font-size: var(--text-xs);
+  color: var(--app-muted);
+  font-family: var(--font-mono);
+  text-align: center;
+  white-space: nowrap;
 }
 
 .file-row-type {
@@ -292,6 +319,7 @@ const emptyDesc = computed(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-align: center;
 }
 
 .file-row-time {
@@ -300,6 +328,7 @@ const emptyDesc = computed(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-align: center;
 }
 
 .col-empty,

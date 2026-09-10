@@ -484,6 +484,10 @@ function crumbClick(seg: { path: string }) {
   font-family: var(--font-body);
   font-size: var(--text-sm);
   overflow: hidden;
+  // 尺寸容器：表头（FileColumnColumns）与行（FileColumnList）的 @container 窄栏回退
+  // 都按栏宽判定（双栏模式每栏约 400px 时去掉权限列）。inline-size 只影响内联轴，
+  // 栏宽来自外层 grid（1fr），不依赖内容，故 contain 不会引发回流问题。
+  container-type: inline-size;
 }
 
 .file-column.is-local-disabled {
