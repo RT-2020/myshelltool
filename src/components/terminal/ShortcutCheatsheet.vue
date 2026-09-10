@@ -1,10 +1,12 @@
-<script setup>
+<script setup lang="ts">
 import { X } from 'lucide-vue-next';
 
-defineProps({
-  open: { type: Boolean, default: false }
+withDefaults(defineProps<{
+  open?: boolean;
+}>(), {
+  open: false
 });
-const emit = defineEmits(['close']);
+const emit = defineEmits<{ close: [] }>();
 
 const groups = [
   {

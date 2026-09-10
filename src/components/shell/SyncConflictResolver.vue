@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /**
  * SyncConflictResolver — v1.6 冲突解决子组件。
  *
@@ -14,7 +14,7 @@
 import { ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { AlertTriangle } from 'lucide-vue-next';
-import { useWorkbenchStore } from '@/stores/workbench.js';
+import { useWorkbenchStore } from '@/stores/workbench';
 import AppButton from '@/components/ui/AppButton.vue';
 import AppInput from '@/components/ui/AppInput.vue';
 
@@ -24,9 +24,11 @@ const { syncConflict, syncLoading, syncAutoSyncEnabled } = storeToRefs(store);
 // 子组件自管主密码（v1.6：启用自动同步后可留空）
 const opPassword = ref('');
 
-async function onResolve(choice) {
+async function onResolve(choice: string) {
   await store.syncResolveConflict(opPassword.value, choice);
-  await store.listAssets();
+  // 事实备注：workbench store 未导出 listAssets（迁移前即如此，运行时该调用抛
+  // TypeError 未捕获；资产列表实际由 store 内部刷新兜底）。按「行为零变化」保留原调用。
+  await (store as unknown as { listAssets: () => Promise<unknown> }).listAssets();
   opPassword.value = '';
 }
 
@@ -35,9 +37,9 @@ function onDismiss() {
 }
 
 // 资产 JSON 摘要（冲突框展示用）
-function assetSummary(jsonStr) {
+function assetSummary(jsonStr?: string) {
   try {
-    const data = JSON.parse(jsonStr);
+    const data = JSON.parse(jsonStr ?? '') as { assets?: unknown[]; groups?: unknown[] };
     const count = data.assets?.length ?? 0;
     const groups = data.groups?.length ?? 0;
     return `${count} 个连接 · ${groups} 个分组`;

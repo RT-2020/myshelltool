@@ -1,21 +1,38 @@
-<script setup>
+<script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 
-const props = defineProps({
-  items: { type: Array, default: () => [] }, // [{ label, action, danger, separator, disabled }]
-  open: { type: Boolean, default: false },
-  x: { type: Number, default: 0 },
-  y: { type: Number, default: 0 }
-});
-const emit = defineEmits(['close']);
+/** 右键菜单条目契约（FileSurface 等消费方按此形状传入）。 */
+interface ContextMenuItem {
+  label?: string;
+  action?: () => void;
+  danger?: boolean;
+  separator?: boolean;
+  disabled?: boolean;
+}
 
-const menuRef = ref(null);
-const pos = ref({ left: 0, top: 0 });
+const props = withDefaults(
+  defineProps<{
+    items?: ContextMenuItem[];
+    open?: boolean;
+    x?: number;
+    y?: number;
+  }>(),
+  {
+    items: () => [],
+    open: false,
+    x: 0,
+    y: 0
+  }
+);
+const emit = defineEmits<{ close: [] }>();
+
+const menuRef = ref<HTMLElement | null>(null);
+const pos = ref<{ left: number; top: number }>({ left: 0, top: 0 });
 const activeIndex = ref(0);
 
 // 可交互项（跳过 separator / disabled），activeIndex 指向该数组下标
 const selectable = computed(() => {
-  const res = [];
+  const res: Array<{ item: ContextMenuItem; index: number }> = [];
   props.items.forEach((item, i) => {
     if (!item.separator && !item.disabled) res.push({ item, index: i });
   });
@@ -26,13 +43,13 @@ function close() {
   emit('close');
 }
 
-function onItemClick(item) {
+function onItemClick(item: ContextMenuItem) {
   if (item.separator || item.disabled) return;
   if (typeof item.action === 'function') item.action();
   close();
 }
 
-function moveHighlight(dir) {
+function moveHighlight(dir: number) {
   const len = selectable.value.length;
   if (!len) return;
   let next = activeIndex.value + dir;
@@ -45,7 +62,7 @@ function onDocClick() {
   if (props.open) close();
 }
 
-function onKeydown(e) {
+function onKeydown(e: KeyboardEvent) {
   if (!props.open) return;
   if (e.key === 'Escape') {
     e.preventDefault();
@@ -64,7 +81,7 @@ function onKeydown(e) {
   }
 }
 
-function onMenuClick(e) {
+function onMenuClick(e: MouseEvent) {
   e.stopPropagation();
 }
 
@@ -88,7 +105,7 @@ watch(
           top = Math.max(margin, window.innerHeight - rect.height - margin);
         }
         pos.value = { left, top };
-        const first = menuRef.value.querySelector('.app-context-menu-item:not(.disabled)');
+        const first = menuRef.value.querySelector<HTMLElement>('.app-context-menu-item:not(.disabled)');
         if (first) first.focus();
       });
     }

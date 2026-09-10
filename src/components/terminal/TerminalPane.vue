@@ -1,17 +1,34 @@
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount } from 'vue';
 import { TerminalSquare, PlugZap } from 'lucide-vue-next';
+import type { useSessionsStore } from '@/stores/sessions';
+import type { NormalizedConnectionAsset } from '@/types/domain';
 
-const props = defineProps({
-  store: { type: Object, required: true },
-  hasActiveSession: { type: Boolean, default: false },
-  isTauriCore: { type: Boolean, default: false },
-  selectedAsset: { type: Object, default: null }
+/** context-menu 事件 payload 契约（TerminalSurface 侧同构解构）。 */
+interface TerminalContextMenuPayload {
+  x: number;
+  y: number;
+  hasSelection: boolean;
+}
+
+const props = withDefaults(defineProps<{
+  store: ReturnType<typeof useSessionsStore>;
+  hasActiveSession?: boolean;
+  isTauriCore?: boolean;
+  selectedAsset?: NormalizedConnectionAsset | null;
+}>(), {
+  hasActiveSession: false,
+  isTauriCore: false,
+  selectedAsset: null
 });
 
-const emit = defineEmits(['connect-selected', 'open-asset-editor', 'context-menu']);
+const emit = defineEmits<{
+  'connect-selected': [];
+  'open-asset-editor': [];
+  'context-menu': [payload: TerminalContextMenuPayload];
+}>();
 
-const mountRef = ref(null);
+const mountRef = ref<HTMLDivElement | null>(null);
 
 function setContainer() {
   if (mountRef.value && props.store?.setTerminalContainer) {
@@ -24,14 +41,14 @@ onBeforeUnmount(() => {
   // Keep the store container reference stable across short-lived tab remounts.
 });
 
-function onWheel(e) {
+function onWheel(e: WheelEvent) {
   if (!e.ctrlKey) return;
   e.preventDefault();
   if (e.deltaY < 0) props.store?.runTerminalAction?.('font-inc');
   if (e.deltaY > 0) props.store?.runTerminalAction?.('font-dec');
 }
 
-function onContextMenu(event) {
+function onContextMenu(event: MouseEvent) {
   if (!props.hasActiveSession) return;
   const hasSelection = Boolean(props.store?.activeSession?.term?.getSelection());
   emit('context-menu', { x: event.clientX, y: event.clientY, hasSelection });

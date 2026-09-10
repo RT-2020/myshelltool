@@ -1,30 +1,40 @@
-<script setup>
+<script setup lang="ts">
 import { ref, watch, nextTick, onBeforeUnmount } from 'vue';
 
-const props = defineProps({
-  open: { type: Boolean, default: false },
-  side: { type: String, default: 'right' }, // right | bottom
-  width: { type: String, default: '320px' },
-  height: { type: String, default: 'auto' },
-  ariaLabel: { type: String, default: '侧边抽屉' }
-});
-const emit = defineEmits(['close']);
+const props = withDefaults(
+  defineProps<{
+    open?: boolean;
+    /** right | bottom。 */
+    side?: string;
+    width?: string;
+    height?: string;
+    ariaLabel?: string;
+  }>(),
+  {
+    open: false,
+    side: 'right',
+    width: '320px',
+    height: 'auto',
+    ariaLabel: '侧边抽屉'
+  }
+);
+const emit = defineEmits<{ close: [] }>();
 
-const panelRef = ref(null);
-const lastFocus = ref(null);
+const panelRef = ref<HTMLElement | null>(null);
+const lastFocus = ref<HTMLElement | null>(null);
 
 function close() {
   emit('close');
 }
 
-function onKeydown(e) {
+function onKeydown(e: KeyboardEvent) {
   if (props.open && e.key === 'Escape') {
     e.preventDefault();
     close();
   }
 }
 
-function onBackdropClick(e) {
+function onBackdropClick(e: MouseEvent) {
   if (e.target === e.currentTarget) close();
 }
 
@@ -33,11 +43,11 @@ watch(
   (v) => {
     if (v) {
       // 打开时记住触发元素，关闭后还原焦点
-      lastFocus.value = document.activeElement;
+      lastFocus.value = document.activeElement as HTMLElement | null;
       document.addEventListener('keydown', onKeydown);
       nextTick(() => {
         if (panelRef.value) {
-          const focusable = panelRef.value.querySelector(
+          const focusable = panelRef.value.querySelector<HTMLElement>(
             'a[href], area[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])'
           );
           if (focusable) focusable.focus();

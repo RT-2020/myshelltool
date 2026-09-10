@@ -1,0 +1,463 @@
+import { defineStore } from 'pinia';
+import { computed, ref } from 'vue';
+import type {
+  AssetSaveCredentials,
+  BackendStatusState,
+  ConnectionAssetInput,
+  ModalState,
+  NormalizedConnectionAsset,
+  NotifyOptions,
+  SearchState,
+  SearchSuggestion,
+  ToastItem
+} from '@/types/domain';
+import {
+  normalizeAsset,
+  slugify
+} from '../services/backend';
+import {
+  applyTheme,
+  readSystemPrefersDark,
+  startSystemThemeListener,
+  THEME_LABELS,
+  THEME_ORDER
+} from '../composables/useTheme';
+import type { ThemeMode } from '../composables/useTheme';
+import { parseSshTarget } from '../lib/parseSshTarget';
+
+// localStorage key（CRITICAL: do NOT rename — Critic 改进 3）
+const THEME_STORAGE_KEY = 'myshelltool-theme';
+const ASSETS_COLLAPSED_KEY = 'myshelltool-assets';
+const RIGHT_COLLAPSED_KEY = 'myshelltool-right';
+
+// 独立资产窗口（?win=asset）：模块加载即定（无响应性需求）。asset 窗口的右栏
+// 折叠不得写共享 localStorage——否则会泄漏到主窗口下次启动；dataset 照写
+// （每个 webview 独立 document，天然隔离）。
+const isAssetWindow = typeof location !== 'undefined'
+  && new URLSearchParams(location.search).get('win') === 'asset';
+
+function readStored(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeStoredTheme(value: string | null): ThemeMode {
+  if (value && (THEME_ORDER as readonly string[]).includes(value)) return value as ThemeMode;
+  return 'system';
+}
+
+/**
+ * 把 assets 收起状态写入 dataset 并可选持久化到 localStorage
+ */
+function applyAssetsState(collapsed: boolean, persist: boolean) {
+  if (typeof document !== 'undefined' && document.documentElement) {
+    document.documentElement.dataset.assets = collapsed ? 'collapsed' : 'expanded';
+  }
+  if (persist) {
+    try {
+      localStorage.setItem(ASSETS_COLLAPSED_KEY, collapsed ? 'collapsed' : 'expanded');
+    } catch {
+      /* localStorage 不可用时静默忽略 */
+    }
+  }
+}
+
+/**
+ * 把右侧面板（资源监控+运维摘要）收起状态写入 dataset 并持久化。
+ * 镜像 applyAssetsState：AppShellLayout 用 :global(:root[data-right='collapsed'])
+ * 把 --right-w 覆盖为 0，整列折叠。
+ */
+function applyRightState(collapsed: boolean, persist: boolean) {
+  if (typeof document !== 'undefined' && document.documentElement) {
+    document.documentElement.dataset.right = collapsed ? 'collapsed' : 'expanded';
+  }
+  // asset 模式不写共享 key（见文件头 isAssetWindow 说明）
+  if (persist && !isAssetWindow) {
+    try {
+      localStorage.setItem(RIGHT_COLLAPSED_KEY, collapsed ? 'collapsed' : 'expanded');
+    } catch {
+      /* localStorage 不可用时静默忽略 */
+    }
+  }
+}
+
+function tabLabel(tab: string) {
+  return ({
+    overview: '工作区总览',
+    terminal: '终端',
+    files: '文件',
+    tunnels: '隧道管理',
+    editor: '编辑器'
+  } as Record<string, string>)[tab] || tab;
+}
+
+/** ui store setTab 跨 store 编排所需的 files store 最小结构。 */
+interface UiFilesStoreLike {
+  refreshRemoteFiles(path?: string | null, opts?: { silent?: boolean }): Promise<unknown>;
+  refreshLocalFiles(path?: string | null): Promise<unknown>;
+  remotePath: string;
+  localPath: string;
+  manualRemotePathInput: string;
+  manualLocalPathInput: string;
+}
+
+/** ui store setTab 跨 store 编排所需的 tunnels store 最小结构。 */
+interface UiTunnelsStoreLike {
+  refreshTunnels(): Promise<unknown>;
+}
+
+/** ui store 搜索激活所需的 sessions store 最小结构。 */
+interface UiSessionsStoreLike {
+  connectSelected(): Promise<unknown>;
+}
+
+/** ui store 实际消费的 workbench bridge 最小结构。 */
+interface UiWorkbenchBridge {
+  announce(message: string, opts?: NotifyOptions): unknown;
+  filesStore(): UiFilesStoreLike | null;
+  tunnelsStore(): UiTunnelsStoreLike | null;
+  sessionsStore(): UiSessionsStoreLike | null;
+  assets(): NormalizedConnectionAsset[] | null;
+  selectAsset(id: string, announceSelection?: boolean): unknown;
+  saveAsset(input: ConnectionAssetInput, credentials?: AssetSaveCredentials): Promise<unknown>;
+}
+
+/**
+ * useUiStore — Wave 2 Step 2.3
+ *
+ * 从 workbench.js 抽取 UI / 全局 / 主题 / 搜索 / backend 状态：
+ *   - theme / effectiveTheme / themeLabel / systemPrefersDark（三态主题）
+ *   - activeTab（4 tab 切换，setTab 跨 store 编排）
+ *   - assetsCollapsed（左栏折叠 + localStorage 持久化）
+ *   - statusMessage（底部状态栏文本）
+ *   - modal（资产/隧道/hostKey 编辑器中心化）
+ *   - searchState（全局搜索 + ssh:// 快速连接）
+ *   - backendStatus（backend_status 命令结果）
+ *
+ * 跨 store 桥接（lazy getter 注入）：
+ *   - sessionsStore（setTab 切到 files/tunnels 时不需要 sessions，但搜索激活时需要）
+ *   - filesStore（setTab 切到 files 时刷新 remote + sync manual path）
+ *   - tunnelsStore（setTab 切到 tunnels 时刷新隧道列表）
+ *   - assetsStore（搜索 suggestion 走 assets + selectAsset 转发）
+ *
+ * localStorage keys（CRITICAL Critic 改进 3，禁重命名）：
+ *   - 'myshelltool-theme' 主题持久化
+ *   - 'myshelltool-assets' 左栏折叠状态持久化
+ */
+export const useUiStore = defineStore('ui', () => {
+  // ============================================================
+  // State
+  // ============================================================
+  const backendStatus = ref<BackendStatusState>({ ready: false, mode: 'loading' });
+  const activeTab = ref('overview');
+  const theme = ref<ThemeMode>(normalizeStoredTheme(readStored(THEME_STORAGE_KEY)));
+  const systemPrefersDark = ref(readSystemPrefersDark());
+  const assetsCollapsed = ref(readStored(ASSETS_COLLAPSED_KEY) === 'collapsed');
+  const rightCollapsed = ref(readStored(RIGHT_COLLAPSED_KEY) === 'collapsed');
+  const statusMessage = ref('就绪：连接资产可收起，双击主机打开 SSH 会话。');
+  const modal = ref<ModalState>({ type: null, asset: null });
+  const searchState = ref<SearchState>({ open: false, query: '', suggestions: [] });
+
+  // module-level closure — system theme listener unlisten（必须 store factory 内初始化）
+  let systemThemeUnlisten: (() => void) | null = null;
+
+  // ============================================================
+  // Computed
+  // ============================================================
+  const effectiveTheme = computed<'light' | 'dark'>(() => {
+    if (theme.value === 'system') return systemPrefersDark.value ? 'dark' : 'light';
+    return theme.value;
+  });
+  const themeLabel = computed(() => THEME_LABELS[theme.value] || theme.value);
+
+  // ============================================================
+  // 跨 store 桥接（lazy）
+  // ============================================================
+  let workbenchBridge: UiWorkbenchBridge | null = null;
+  function attachWorkbench(store: UiWorkbenchBridge) {
+    workbenchBridge = store;
+  }
+  function wb(): UiWorkbenchBridge {
+    if (!workbenchBridge) {
+      throw new Error('ui store: workbench bridge not attached. Call uiStore.attachWorkbench(workbenchStore) at App.vue init.');
+    }
+    return workbenchBridge;
+  }
+  function announce(message: string) {
+    // 对外兼容入口：不带 level，只更新状态栏，不进 toast 队列
+    return notify(message);
+  }
+
+  // ============================================================
+  // Actions — toast 通知（分级反馈 + 自动消失，上限 5 条）
+  // ============================================================
+  const TOAST_LEVELS: readonly string[] = ['info', 'success', 'warn', 'error'];
+  const toasts = ref<ToastItem[]>([]);
+  let toastSeq = 0;
+  const toastTimers = new Map<number, ReturnType<typeof setTimeout>>();
+
+  function clearToastTimer(id: number) {
+    const timer = toastTimers.get(id);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      toastTimers.delete(id);
+    }
+  }
+
+  function notify(message: string, opts: NotifyOptions = {}): number | null {
+    // 状态栏保持原有行为：任何 notify 都写入底部一行文字
+    statusMessage.value = message;
+    // 仅带 level 的通知进 toast 队列（announce 不带 level，保持旧行为）
+    if (!opts.level || !TOAST_LEVELS.includes(opts.level)) return null;
+    const id = ++toastSeq;
+    const toast: ToastItem = { id, level: opts.level, message, action: opts.action ?? null };
+    toasts.value.push(toast);
+    // 上限 5 条，超出移除最早一条并清理其 timer
+    if (toasts.value.length > 5) {
+      clearToastTimer(toasts.value[0].id);
+      toasts.value.shift();
+    }
+    scheduleToastDismiss(id, opts);
+    return id;
+  }
+
+  function scheduleToastDismiss(id: number, opts: NotifyOptions) {
+    // 默认时长：info/success 3500ms、warn/error 6000ms、带 action 8000ms；
+    // opts.duration 可覆盖。带 action 也可超时消失（保持简单）。
+    let duration: number | undefined = opts.duration;
+    if (typeof duration !== 'number') {
+      duration = opts.action
+        ? 8000
+        : (opts.level === 'warn' || opts.level === 'error' ? 6000 : 3500);
+    }
+    clearToastTimer(id);
+    toastTimers.set(id, setTimeout(() => dismissToast(id), duration));
+  }
+
+  function dismissToast(id: number) {
+    clearToastTimer(id);
+    const idx = toasts.value.findIndex(t => t.id === id);
+    if (idx !== -1) toasts.value.splice(idx, 1);
+  }
+
+  // ============================================================
+  // Actions — 主题
+  // ============================================================
+  function applyThemeValue(value: string) {
+    applyTheme(value);
+  }
+
+  function toggleTheme() {
+    const current = THEME_ORDER.indexOf(theme.value);
+    theme.value = THEME_ORDER[(current + 1) % THEME_ORDER.length];
+    applyTheme(effectiveTheme.value);
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, theme.value);
+    } catch {
+      /* localStorage 不可用，静默 */
+    }
+    announce('主题已切换：' + (THEME_LABELS[theme.value] || theme.value));
+  }
+
+  // 设置面板「外观」tab 用：点哪个选哪个（区别于 toggleTheme 的循环切换）。
+  // value 必须是 THEME_ORDER 之一，非法值由 normalizeStoredTheme 兜底。
+  function setTheme(value: string) {
+    const next = normalizeStoredTheme(value);
+    if (next === theme.value) return; // 无变化不重复 announce
+    theme.value = next;
+    applyTheme(effectiveTheme.value);
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, theme.value);
+    } catch {
+      /* localStorage 不可用，静默 */
+    }
+    announce('主题已切换：' + (THEME_LABELS[theme.value] || theme.value));
+  }
+
+  // ============================================================
+  // Actions — assets 收起
+  // ============================================================
+  function toggleAssets() {
+    assetsCollapsed.value = !assetsCollapsed.value;
+    applyAssetsState(assetsCollapsed.value, true);
+    announce(assetsCollapsed.value ? '连接资产已收起，主工作区已扩展' : '连接资产已展开');
+  }
+
+  // ============================================================
+  // Actions — 右侧面板收起（资源监控+运维摘要整列）
+  // ============================================================
+  function toggleRight() {
+    rightCollapsed.value = !rightCollapsed.value;
+    applyRightState(rightCollapsed.value, true);
+    announce(rightCollapsed.value ? '右侧面板已收起' : '右侧面板已展开');
+  }
+
+  // ============================================================
+  // Actions — setTab（跨 store 编排）
+  // ============================================================
+  function setTab(tab: string) {
+    activeTab.value = tab;
+    if (workbenchBridge) {
+      if (tab === 'files' && typeof workbenchBridge.filesStore === 'function') {
+        const filesStore = workbenchBridge.filesStore();
+        if (filesStore && typeof filesStore.refreshRemoteFiles === 'function') {
+          filesStore.refreshRemoteFiles().catch((error: Error) => announce('远程文件刷新失败：' + error.message));
+          filesStore.manualRemotePathInput = filesStore.remotePath;
+          filesStore.manualLocalPathInput = filesStore.localPath;
+          if (!filesStore.localPath) filesStore.refreshLocalFiles().catch(() => null);
+        }
+      }
+      if (tab === 'tunnels' && typeof workbenchBridge.tunnelsStore === 'function') {
+        const tunnelsStore = workbenchBridge.tunnelsStore();
+        if (tunnelsStore && typeof tunnelsStore.refreshTunnels === 'function') {
+          tunnelsStore.refreshTunnels().catch(() => null);
+        }
+      }
+    }
+    announce('已切换到 ' + tabLabel(tab));
+  }
+
+  // ============================================================
+  // Actions — 全局搜索 / 快速连接
+  // ============================================================
+  function openGlobalSearch() {
+    searchState.value = { ...searchState.value, open: true };
+  }
+
+  function closeGlobalSearch() {
+    searchState.value = { ...searchState.value, open: false };
+  }
+
+  function setGlobalSearchQuery(query: string) {
+    searchState.value.query = query;
+    const trimmed = query.trim();
+    // 有输入即展开建议下拉；清空则关闭。修复：原先只更新 query/suggestions 而未置
+    // open=true，导致 AppTitleBar 的 isOpen(= open && suggestions.length) 恒为 false，
+    // 下拉永远不显示——这是「全局搜索未接入实际功能」的根因。
+    searchState.value.open = trimmed.length > 0;
+    if (!trimmed) {
+      searchState.value.suggestions = [];
+      return;
+    }
+    const sshTarget = parseSshTarget(trimmed);
+    if (sshTarget) {
+      searchState.value.suggestions = [{
+        kind: 'quick-connect',
+        username: sshTarget.username,
+        host: sshTarget.host,
+        port: sshTarget.port,
+        label: `快速连接 ${sshTarget.username}@${sshTarget.host}`
+      }];
+      return;
+    }
+    const lower = trimmed.toLowerCase();
+    const assets = (workbenchBridge && typeof workbenchBridge.assets === 'function')
+      ? workbenchBridge.assets()
+      : [];
+    const list = Array.isArray(assets) ? assets : [];
+    searchState.value.suggestions = list
+      .filter(asset => [asset.name, asset.host, asset.username, asset.group, ...(asset.tags || [])].join(' ').toLowerCase().includes(lower))
+      .slice(0, 6)
+      .map(asset => ({ kind: 'asset', asset }) as SearchSuggestion);
+  }
+
+  async function activateSuggestion(suggestion: SearchSuggestion | null) {
+    if (!suggestion) return;
+    if (suggestion.kind === 'asset') {
+      if (workbenchBridge && typeof workbenchBridge.selectAsset === 'function') {
+        workbenchBridge.selectAsset(suggestion.asset.id);
+      }
+      closeGlobalSearch();
+      return;
+    }
+    if (suggestion.kind === 'quick-connect') {
+      closeGlobalSearch();
+      // id 必须区分同 host 不同 username/port 的目标：否则 saveAsset 走「编辑」
+      // 分支互相改写名称/用户名，且 previous.credential_id 会把前一个用户的
+      // 密码凭据沿给后一个（连接用错凭据）。port 缺省/22 不入 id。
+      const tempId = slugify(
+        `${suggestion.username}-${suggestion.host}${suggestion.port && suggestion.port !== 22 ? `-${suggestion.port}` : ''}`
+      );
+      const item = normalizeAsset({
+        id: tempId,
+        name: `${suggestion.username}@${suggestion.host}`,
+        host: suggestion.host,
+        port: suggestion.port,
+        username: suggestion.username,
+        auth_method: 'Password',
+        group: '快速连接',
+        tags: ['quick']
+      });
+      if (workbenchBridge) {
+        if (typeof workbenchBridge.saveAsset === 'function') {
+          await workbenchBridge.saveAsset(item);
+        }
+        if (typeof workbenchBridge.sessionsStore === 'function') {
+          const sessionsStore = workbenchBridge.sessionsStore();
+          if (sessionsStore && typeof sessionsStore.connectSelected === 'function') {
+            await sessionsStore.connectSelected();
+          }
+        }
+      }
+    }
+  }
+
+  // ============================================================
+  // Initialize
+  // ============================================================
+  function initializeTheme() {
+    applyTheme(effectiveTheme.value);
+    if (typeof systemThemeUnlisten !== 'function') {
+      systemThemeUnlisten = startSystemThemeListener(matches => { systemPrefersDark.value = matches; });
+    }
+    applyAssetsState(assetsCollapsed.value, false);
+    applyRightState(rightCollapsed.value, false);
+  }
+
+  function disposeSystemThemeListener() {
+    if (typeof systemThemeUnlisten === 'function') {
+      systemThemeUnlisten();
+      systemThemeUnlisten = null;
+    }
+  }
+
+  return {
+    // state
+    backendStatus,
+    activeTab,
+    theme,
+    systemPrefersDark,
+    assetsCollapsed,
+    rightCollapsed,
+    statusMessage,
+    toasts,
+    modal,
+    searchState,
+    // computed
+    effectiveTheme,
+    themeLabel,
+    // bridge
+    attachWorkbench,
+    // theme actions
+    toggleTheme,
+    setTheme,
+    applyThemeValue,
+    initializeTheme,
+    disposeSystemThemeListener,
+    // 面板折叠 actions
+    toggleAssets,
+    toggleRight,
+    setTab,
+    // search actions
+    openGlobalSearch,
+    closeGlobalSearch,
+    setGlobalSearchQuery,
+    activateSuggestion,
+    // toast actions
+    notify,
+    dismissToast
+  };
+});

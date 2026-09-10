@@ -1,13 +1,16 @@
-<script setup>
+<script setup lang="ts">
 import { ChevronDown, ChevronUp } from 'lucide-vue-next';
-import { FILE_COLUMN_GRID_HEADER } from './fileColumnUtils.js';
+import { FILE_COLUMN_GRID_HEADER } from './fileColumnUtils';
 
-defineProps({
-  sortKey: { type: String, default: 'name' },
-  sortDir: { type: String, default: 'asc' }
+withDefaults(defineProps<{
+  sortKey?: string;
+  sortDir?: string;
+}>(), {
+  sortKey: 'name',
+  sortDir: 'asc'
 });
 
-const emit = defineEmits(['sort']);
+const emit = defineEmits<{ sort: [key: string] }>();
 
 const columns = [
   { key: 'name', label: '名称', className: 'col-name col-sort' },

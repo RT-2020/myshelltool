@@ -1,12 +1,17 @@
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue';
-import { CHART_H, CHART_W, buildLinePath, formatBytes } from './chart-utils.js';
+import { CHART_H, CHART_W, buildLinePath, formatBytes } from './chart-utils';
 
-const props = defineProps({
-  points: { type: Array, default: () => [] },
-  memTotal: { type: Number, default: 0 },
-  memUsed: { type: Number, default: 0 },
-  hasData: { type: Boolean, default: true }
+const props = withDefaults(defineProps<{
+  points?: number[];
+  memTotal?: number;
+  memUsed?: number;
+  hasData?: boolean;
+}>(), {
+  points: () => [],
+  memTotal: 0,
+  memUsed: 0,
+  hasData: true
 });
 
 const usedPct = computed(() => {

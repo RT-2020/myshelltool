@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /**
  * McpCapabilityList — MCP server 暴露的能力清单（工具 + resources + prompts）。
  *
@@ -10,12 +10,20 @@
  */
 import { computed } from 'vue';
 import { ShieldAlert, BookOpen } from 'lucide-vue-next';
+import type { McpToolInfo, McpResourceInfo, McpPromptInfo } from '@/types/domain';
 
-const props = defineProps({
-  tools: { type: Array, default: () => [] },
-  resources: { type: Array, default: () => [] },
-  prompts: { type: Array, default: () => [] }
-});
+const props = withDefaults(
+  defineProps<{
+    tools?: McpToolInfo[];
+    resources?: McpResourceInfo[];
+    prompts?: McpPromptInfo[];
+  }>(),
+  {
+    tools: () => [],
+    resources: () => [],
+    prompts: () => []
+  }
+);
 
 const dangerousTools = computed(() => props.tools.filter(t => t.tag === 'dangerous'));
 const readonlyTools = computed(() => props.tools.filter(t => t.tag !== 'dangerous'));

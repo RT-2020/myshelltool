@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /**
  * McpInterceptionSettings — v2 MCP 危险命令拦截等级设置区块。
  *
@@ -17,7 +17,7 @@
  */
 import { computed } from 'vue';
 import { ShieldAlert, ShieldCheck } from 'lucide-vue-next';
-import { useMcpStore } from '@/stores/mcp.js';
+import { useMcpStore } from '@/stores/mcp';
 import AppSelect from '@/components/ui/AppSelect.vue';
 
 const mcpStore = useMcpStore();
@@ -30,9 +30,10 @@ const LEVEL_OPTIONS = [
 const level = computed(() => mcpStore.interceptLevel);
 const isMinimal = computed(() => level.value !== 'strict');
 
-function onLevelChange(value) {
+function onLevelChange(value: string | number) {
+  // LEVEL_OPTIONS 的 value 恒为 string，String() 仅类型收敛、不改值
   if (value === mcpStore.interceptLevel) return;
-  mcpStore.setMcpInterceptLevel(value);
+  mcpStore.setMcpInterceptLevel(String(value));
 }
 </script>
 

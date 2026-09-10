@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /**
  * AssetWindowShell — 独立资产工作台窗口壳（Phase 1-A）
  *
@@ -27,8 +27,8 @@ import TerminalSurface from '@/components/terminal/TerminalSurface.vue';
 import FileSurface from '@/components/files/FileSurface.vue';
 import RightSidebar from '@/components/shell/RightSidebar.vue';
 import { AppBrandLogo } from '@/components/ui';
-import { useSessionsStore } from '@/stores/sessions.js';
-import { pushSessionToMainWindow } from '@/lib/sessionHandoff.js';
+import { useSessionsStore } from '@/stores/sessions';
+import { pushSessionToMainWindow } from '@/lib/sessionHandoff';
 import {
   closeTauriWindow,
   getExistingTauriWebviewWindow,
@@ -38,16 +38,28 @@ import {
   minimizeTauriWindow,
   startTauriWindowDragging,
   toggleTauriWindowMaximize
-} from '@/services/backend.js';
+} from '@/services/backend';
+import type { useWorkbenchStore } from '@/stores/workbench';
+import type { usePanelResize, ResizeRegion } from '@/composables/usePanelResize';
+import type { ModalState } from '@/types/domain';
 
-const props = defineProps({
-  store: { type: Object, required: true },
-  desktopRuntimeAvailable: { type: Boolean, default: false },
-  panelResize: { type: Object, default: null }
+/** 本组件消费的窗口可选能力（tauri.d.ts 的 TauriWindowLike 未声明，局部收窄）。 */
+interface CloseableTauriWindow {
+  onCloseRequested?: (handler: (event: { preventDefault(): void }) => void | Promise<void>) => Promise<() => void>;
+  destroy?: () => Promise<void>;
+}
+
+const props = withDefaults(defineProps<{
+  store: ReturnType<typeof useWorkbenchStore>;
+  desktopRuntimeAvailable?: boolean;
+  panelResize?: ReturnType<typeof usePanelResize> | null;
+}>(), {
+  desktopRuntimeAvailable: false,
+  panelResize: null
 });
 
 const isMaximized = ref(false);
-let unlistenClose = null;
+let unlistenClose: (() => void) | null = null;
 
 // ============================================================
 // 「移回主窗口」（tab 条已删，回迁入口收敛到标题栏按钮）
@@ -109,15 +121,15 @@ function onToggleRight() {
   props.panelResize?.syncCollapse?.();
 }
 
-function startResize(event, which) {
+function startResize(event: PointerEvent, which: ResizeRegion) {
   props.panelResize?.startResize?.(event, which);
 }
 
-function resizeKeydown(event, which) {
+function resizeKeydown(event: KeyboardEvent, which: ResizeRegion) {
   props.panelResize?.handleResizeKeydown?.(event, which);
 }
 
-function resetPane(which) {
+function resetPane(which: ResizeRegion) {
   props.panelResize?.resetPane?.(which);
 }
 
@@ -125,15 +137,15 @@ async function syncWindowState() {
   isMaximized.value = await isTauriWindowMaximized();
 }
 
-async function handleTitlebarPointerDown(event) {
+async function handleTitlebarPointerDown(event: PointerEvent) {
   if (!isTauriRuntime() || event.button !== 0) return;
-  if (event.target.closest('button, input, [role="button"], [data-no-drag="true"]')) return;
+  if ((event.target as HTMLElement).closest('button, input, [role="button"], [data-no-drag="true"]')) return;
   await startTauriWindowDragging();
 }
 
-async function handleTitlebarDoubleClick(event) {
+async function handleTitlebarDoubleClick(event: MouseEvent) {
   if (!isTauriRuntime()) return;
-  if (event.target.closest('button, input, [role="button"], [data-no-drag="true"]')) return;
+  if ((event.target as HTMLElement).closest('button, input, [role="button"], [data-no-drag="true"]')) return;
   await toggleWindowMaximize();
 }
 
@@ -166,7 +178,7 @@ async function requestCloseAssetWindow() {
     type: 'confirmCloseAssetWindow',
     count: active.length,
     onConfirm: () => closeAfterConfirm()
-  };
+  } as ModalState;
 }
 
 // 确认关闭：connecting 会话的 sessionId 还是 pending 占位（断不开，会留
@@ -190,7 +202,7 @@ async function closeAfterConfirm() {
 // destroy 绕过 close-requested（防确认弹窗递归）；失败仅记录，不静默吞
 async function destroyWindow() {
   try {
-    await getTauriWindow()?.destroy();
+    await (getTauriWindow() as CloseableTauriWindow | null)?.destroy?.();
   } catch (error) {
     console.error('[AssetWindowShell] destroy window failed:', error);
   }
@@ -199,7 +211,7 @@ async function destroyWindow() {
 onMounted(async () => {
   syncWindowState();
   probeMainAlive();
-  const currentWindow = getTauriWindow();
+  const currentWindow = getTauriWindow() as CloseableTauriWindow | null;
   if (typeof currentWindow?.onCloseRequested === 'function') {
     unlistenClose = await currentWindow.onCloseRequested(async event => {
       event.preventDefault();
@@ -256,7 +268,7 @@ onBeforeUnmount(() => {
           type="button"
           aria-label="收起或展开右侧面板"
           :title="props.store.rightCollapsed ? '展开右侧面板' : '收起右侧面板'"
-          :aria-pressed="String(props.store.rightCollapsed)"
+          :aria-pressed="props.store.rightCollapsed ? 'true' : 'false'"
           @click="onToggleRight"
         >
           <PanelRight />

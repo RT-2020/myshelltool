@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /**
  * AssetGroupNode — 连接资产嵌套分组树的递归节点（Wave: 分组管理）
  *
@@ -23,18 +23,54 @@
  */
 import { inject } from 'vue';
 import { ChevronDown, ChevronRight, Pencil, Trash2 } from 'lucide-vue-next';
+import type { GroupTreeNode, NormalizedConnectionAsset } from '@/types/domain';
 
 defineOptions({ name: 'AssetGroupNode' });
 
-const props = defineProps({
-  node: { type: Object, required: true }, // { name, path, parent, children:[], items:[] }
-  depth: { type: Number, default: 0 }
-});
+withDefaults(
+  defineProps<{
+    /** 分组树节点（assets store buildGroupTree 的产物）。 */
+    node: GroupTreeNode;
+    depth?: number;
+  }>(),
+  { depth: 0 }
+);
 
-// 父级注入的 handler / state（见上方注释清单）
-const sidebar = inject('connectionSidebar');
+/**
+ * 父级 ConnectionSidebar provide('connectionSidebar', ...) 的注入契约。
+ * 与 ConnectionSidebar.vue 的 provide 对象逐项对齐（含拖拽/右键/键盘导航 handler）。
+ */
+interface SidebarContext {
+  isCollapsed(path: string): boolean;
+  toggleGroup(path: string): void;
+  statusClass(asset: NormalizedConnectionAsset): string;
+  isActiveAsset(asset: NormalizedConnectionAsset): boolean;
+  isUngrouped(path: string): boolean;
+  isDraggingAsset(id: string): boolean;
+  groupHeaderClass(path: string): string;
+  onAssetDragStart(event: DragEvent, asset: NormalizedConnectionAsset): void;
+  onAssetDragEnd(event: DragEvent): void;
+  onGroupDragStart(event: DragEvent, path: string, parent: string): void;
+  onGroupDragEnd(event: DragEvent): void;
+  onGroupDragOver(event: DragEvent, path: string, parent: string): void;
+  onGroupDragEnter(event: DragEvent, path: string): void;
+  onGroupDragLeave(event: DragEvent, path: string): void;
+  onGroupDrop(event: DragEvent, path: string, parent: string, name: string): void;
+  onSelectAsset(id: string): void;
+  onConnectAsset(id: string): void;
+  onAssetKeydown(event: KeyboardEvent, asset: NormalizedConnectionAsset): void;
+  onAssetContextMenu(event: MouseEvent, asset: NormalizedConnectionAsset): void;
+  onGroupContextMenu(event: MouseEvent, path: string): void;
+  onEditAsset(asset: NormalizedConnectionAsset): void;
+  onDeleteAsset(asset: NormalizedConnectionAsset): void;
+  onDuplicateAsset(asset: NormalizedConnectionAsset): void;
+  registerAssetEl(id: string, el: unknown): void;
+}
 
-function assetIndicatorClasses(asset) {
+// 父级注入的 handler / state（见上方注释清单）；递归渲染必在 ConnectionSidebar 内，必已 provide
+const sidebar = inject<SidebarContext>('connectionSidebar')!;
+
+function assetIndicatorClasses(asset: NormalizedConnectionAsset) {
   // 返回全局 .dot 修饰符集（_utilities.scss）：connected / warn / idle
   const status = sidebar.statusClass(asset);
   if (status === 'running') return ['connected'];
@@ -50,8 +86,8 @@ function assetIndicatorClasses(asset) {
       class="sb-group-head group-header"
       :class="sidebar.groupHeaderClass(node.path)"
       :style="{ 'padding-inline-start': 8 + depth * 12 + 'px' }"
-      :aria-expanded="String(!sidebar.isCollapsed(node.path))"
-      :draggable="String(!sidebar.isUngrouped(node.path))"
+      :aria-expanded="!sidebar.isCollapsed(node.path) ? 'true' : 'false'"
+      :draggable="!sidebar.isUngrouped(node.path) ? 'true' : 'false'"
       @click="sidebar.toggleGroup(node.path)"
       @contextmenu.prevent="sidebar.onGroupContextMenu($event, node.path)"
       @dragstart="sidebar.onGroupDragStart($event, node.path, node.parent)"
@@ -91,7 +127,7 @@ function assetIndicatorClasses(asset) {
           role="treeitem"
           tabindex="0"
           draggable="true"
-          :aria-selected="String(sidebar.isActiveAsset(asset))"
+          :aria-selected="sidebar.isActiveAsset(asset) ? 'true' : 'false'"
           :title="`${asset.name} · ${asset.host} · ${asset.username}`"
           :style="{ 'padding-inline-start': 8 + depth * 12 + 'px' }"
           @click="sidebar.onSelectAsset(asset.id)"

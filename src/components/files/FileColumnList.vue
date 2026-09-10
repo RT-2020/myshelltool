@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue';
 import { File as FileIcon, Folder, Link2, Loader2, AlertCircle, RefreshCw } from 'lucide-vue-next';
 import {
@@ -7,31 +7,44 @@ import {
   inferFileEntryType,
   FILE_COLUMN_GRID_ROW,
   FILE_COLUMN_GRID_COMPACT
-} from './fileColumnUtils.js';
+} from './fileColumnUtils';
+import type { RemoteFileEntry } from '@/types/domain';
 
-const props = defineProps({
-  entries: { type: Array, default: () => [] },
-  selectionSet: { type: Object, required: true },
-  listMode: { type: String, default: 'detailed' },
-  isLocal: { type: Boolean, default: false },
-  disabledHint: { type: String, default: '' },
-  currentPath: { type: String, default: '' },
-  remoteEntriesLength: { type: Number, default: 0 },
-  remoteFilter: { type: String, default: '' },
-  remoteError: { type: String, default: '' },
-  remoteLoaded: { type: Boolean, default: false },
-  isBusy: { type: Boolean, default: false },
-  busyMessage: { type: String, default: '' }
+const props = withDefaults(defineProps<{
+  entries?: RemoteFileEntry[];
+  selectionSet: Set<string>;
+  listMode?: string;
+  isLocal?: boolean;
+  disabledHint?: string;
+  currentPath?: string;
+  remoteEntriesLength?: number;
+  remoteFilter?: string;
+  remoteError?: string | null;
+  remoteLoaded?: boolean;
+  isBusy?: boolean;
+  busyMessage?: string;
+}>(), {
+  entries: () => [],
+  listMode: 'detailed',
+  isLocal: false,
+  disabledHint: '',
+  currentPath: '',
+  remoteEntriesLength: 0,
+  remoteFilter: '',
+  remoteError: '',
+  remoteLoaded: false,
+  isBusy: false,
+  busyMessage: ''
 });
 
-const emit = defineEmits([
-  'list-click',
-  'row-click',
-  'row-double-click',
-  'row-context-menu',
-  'retry',
-  'drag-start'
-]);
+const emit = defineEmits<{
+  'list-click': [];
+  'row-click': [event: MouseEvent, entry: RemoteFileEntry];
+  'row-double-click': [entry: RemoteFileEntry];
+  'row-context-menu': [event: MouseEvent, entry: RemoteFileEntry];
+  retry: [];
+  'drag-start': [count: number];
+}>();
 
 // ============================================================
 // 栏间拖拽上传（本地 → 远程）：仅本地行可拖，dragstart 写自定义 MIME。
@@ -39,7 +52,7 @@ const emit = defineEmits([
 // ============================================================
 const FILE_DRAG_MIME = 'application/x-myshelltool-file';
 
-function onRowDragStart(event, entry) {
+function onRowDragStart(event: DragEvent, entry: RemoteFileEntry) {
   if (!props.isLocal || !event.dataTransfer) return;
   // 该行在选中集内 → 携带整个选中集（当前可见条目）；否则仅该行。
   // 目录也允许拖（drop 侧过滤并提示，uploadLocalEntry 仅支持文件）。

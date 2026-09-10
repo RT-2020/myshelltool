@@ -1,17 +1,38 @@
-<script setup>
+<script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue';
 import { Search, CornerDownLeft, ArrowUp, ArrowDown } from 'lucide-vue-next';
+import type { useSessionsStore } from '@/stores/sessions';
 
-const props = defineProps({
-  open: { type: Boolean, default: false },
-  sessions: { type: Array, default: () => [] },
-  activeSessionId: { type: String, default: '' }
+/** 会话条目（sessions store 数组元素，按 store 类型推断）。 */
+type SessionItem = ReturnType<typeof useSessionsStore>['sessions'][number];
+
+/** 面板结果条目（session 与 action 两种 kind 共用形状）。 */
+interface PaletteItem {
+  id: string;
+  label: string;
+  hint: string;
+  kind: 'session' | 'action';
+  _score: number;
+}
+
+const props = withDefaults(defineProps<{
+  open?: boolean;
+  sessions?: SessionItem[];
+  activeSessionId?: string;
+}>(), {
+  open: false,
+  sessions: () => [],
+  activeSessionId: ''
 });
-const emit = defineEmits(['close', 'selectSession', 'runAction']);
+const emit = defineEmits<{
+  close: [];
+  selectSession: [sessionId: string];
+  runAction: [action: string];
+}>();
 
 const query = ref('');
-const inputRef = ref(null);
-const listRef = ref(null);
+const inputRef = ref<HTMLInputElement | null>(null);
+const listRef = ref<HTMLUListElement | null>(null);
 const activeIdx = ref(0);
 
 const ACTIONS = [
@@ -26,8 +47,8 @@ const ACTIONS = [
   { id: 'action:cheatsheet', label: '查看快捷键速查', hint: '?', keywords: 'help shortcut' }
 ];
 
-function fuzzyMatch(text, q) {
-  if (!q) return true;
+function fuzzyMatch(text: string, q: string): number {
+  if (!q) return 1; // JS 时代返回 true（数值语境等价于 1），与 score>0/排序消费点行为一致
   const t = text.toLowerCase();
   const ql = q.toLowerCase();
   if (t.includes(ql)) return 2;
@@ -40,8 +61,8 @@ function fuzzyMatch(text, q) {
   return idx >= ql.length ? 1 : 0;
 }
 
-const results = computed(() => {
-  const items = [];
+const results = computed<PaletteItem[]>(() => {
+  const items: PaletteItem[] = [];
   const q = query.value.trim();
   // sessions
   for (const s of props.sessions) {
@@ -75,7 +96,7 @@ watch(activeIdx, () => {
   });
 });
 
-function onKeydown(e) {
+function onKeydown(e: KeyboardEvent) {
   if (e.key === 'ArrowDown') {
     e.preventDefault();
     // 空列表保持 0，防止 length-1 算出 -1
@@ -94,7 +115,7 @@ function onKeydown(e) {
   }
 }
 
-function pick(item) {
+function pick(item?: PaletteItem) {
   if (!item) return;
   if (item.kind === 'session') {
     emit('selectSession', item.id.replace('session:', ''));

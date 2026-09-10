@@ -1,15 +1,23 @@
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue';
-import { CHART_H, CHART_W, buildLinePath, formatBytes, formatCompactRate, formatRate } from './chart-utils.js';
+import { CHART_H, CHART_W, buildLinePath, formatBytes, formatCompactRate, formatRate } from './chart-utils';
 
-const props = defineProps({
-  readPoints: { type: Array, default: () => [] },
-  writePoints: { type: Array, default: () => [] },
-  readRate: { type: Number, default: 0 },
-  writeRate: { type: Number, default: 0 },
-  diskTotal: { type: Number, default: 0 },
-  diskUsed: { type: Number, default: 0 },
-  hasData: { type: Boolean, default: true }
+const props = withDefaults(defineProps<{
+  readPoints?: number[];
+  writePoints?: number[];
+  readRate?: number;
+  writeRate?: number;
+  diskTotal?: number;
+  diskUsed?: number;
+  hasData?: boolean;
+}>(), {
+  readPoints: () => [],
+  writePoints: () => [],
+  readRate: 0,
+  writeRate: 0,
+  diskTotal: 0,
+  diskUsed: 0,
+  hasData: true
 });
 
 const allPoints = computed(() => [...props.readPoints, ...props.writePoints]);

@@ -6,7 +6,8 @@
   "packageManager": "pnpm@10.33.2",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "vite build",
+    "type-check": "vue-tsc --build",
+    "build": "npm run type-check && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test:core": "cargo test --manifest-path crates/myshelltool-core/Cargo.toml",
     "test:ui": "node tests/ui-smoke.mjs && node tests/ui-host-key.mjs && node tests/ui-file-loading.mjs",
@@ -17,7 +18,9 @@
     "@tauri-apps/cli": "^2.9.5",
     "playwright": "^1.60.0",
     "sass": "^1.101.0",
-    "vite": "^7.2.7"
+    "typescript": "^5.9.3",
+    "vite": "^7.2.7",
+    "vue-tsc": "^3.3.11"
   },
   "dependencies": {
     "@tauri-apps/plugin-clipboard-manager": "^2.0.0",

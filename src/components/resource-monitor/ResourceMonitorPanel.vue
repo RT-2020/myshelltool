@@ -1,8 +1,8 @@
-<script setup>
+<script setup lang="ts">
 import { computed, onBeforeUnmount, watch } from 'vue';
 import { AlertTriangle, MonitorOff } from 'lucide-vue-next';
-import { useResourceMonitorStore } from '@/stores/resourceMonitor.js';
-import { useSessionsStore } from '@/stores/sessions.js';
+import { useResourceMonitorStore } from '@/stores/resourceMonitor';
+import { useSessionsStore } from '@/stores/sessions';
 import CpuChart from './CpuChart.vue';
 import MemoryChart from './MemoryChart.vue';
 import NetworkChart from './NetworkChart.vue';

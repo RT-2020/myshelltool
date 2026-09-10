@@ -1,18 +1,12 @@
-<script setup>
+<script setup lang="ts">
 /**
  * AppBrandLogo.vue
  * myshelltool 官方矢量品牌徽标组件。
  * 结合了 Squircle 钛晶底座、发光终端提示符 `>`、SSH 主从拓扑网络与就绪光标。
  */
-const props = defineProps({
-  size: {
-    type: [Number, String],
-    default: 20
-  },
-  glow: {
-    type: Boolean,
-    default: true
-  }
+withDefaults(defineProps<{ size?: number | string; glow?: boolean }>(), {
+  size: 20,
+  glow: true
 });
 </script>
 

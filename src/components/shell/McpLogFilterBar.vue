@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /**
  * McpLogFilterBar — MCP 执行日志过滤条（v2.3）。
  *
@@ -10,16 +10,32 @@ import { computed } from 'vue';
 import { Search } from 'lucide-vue-next';
 import AppInput from '@/components/ui/AppInput.vue';
 import AppSelect from '@/components/ui/AppSelect.vue';
-import { TOOL_LABELS, OUTCOME_LABELS } from '@/lib/mcpLogLabels.js';
+import { TOOL_LABELS, OUTCOME_LABELS } from '@/lib/mcpLogLabels';
+import type { McpExecutionLogEntry } from '@/types/domain';
 
-const props = defineProps({
-  logs: { type: Array, default: () => [] }, // 原始日志（推导下拉选项用）
-  search: { type: String, default: '' },
-  tool: { type: String, default: '' },
-  asset: { type: String, default: '' },
-  outcome: { type: String, default: '' }
-});
-const emit = defineEmits(['update:search', 'update:tool', 'update:asset', 'update:outcome']);
+const props = withDefaults(
+  defineProps<{
+    /** 原始日志（推导下拉选项用）。 */
+    logs?: McpExecutionLogEntry[];
+    search?: string;
+    tool?: string;
+    asset?: string;
+    outcome?: string;
+  }>(),
+  {
+    logs: () => [],
+    search: '',
+    tool: '',
+    asset: '',
+    outcome: ''
+  }
+);
+const emit = defineEmits<{
+  'update:search': [value: string];
+  'update:tool': [value: string];
+  'update:asset': [value: string];
+  'update:outcome': [value: string];
+}>();
 
 const ALL = { label: '全部工具', value: '' };
 
@@ -32,7 +48,7 @@ const toolOptions = computed(() => {
 
 // 资产下拉：按 assetId 去重（同名资产多主机时 id 更稳），展示名优先
 const assetOptions = computed(() => {
-  const map = new Map();
+  const map = new Map<string, string>();
   for (const log of props.logs) {
     const id = log.assetId || log.host || '';
     if (!id || map.has(id)) continue;
@@ -80,19 +96,19 @@ const hasAnyFilter = computed(() =>
         class="filter-select"
         :model-value="tool"
         :options="toolOptions"
-        @update:model-value="v => emit('update:tool', v)"
+        @update:model-value="v => emit('update:tool', String(v))"
       />
       <AppSelect
         class="filter-select"
         :model-value="asset"
         :options="assetOptions"
-        @update:model-value="v => emit('update:asset', v)"
+        @update:model-value="v => emit('update:asset', String(v))"
       />
       <AppSelect
         class="filter-select"
         :model-value="outcome"
         :options="outcomeOptions"
-        @update:model-value="v => emit('update:outcome', v)"
+        @update:model-value="v => emit('update:outcome', String(v))"
       />
     </div>
   </div>

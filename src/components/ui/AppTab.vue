@@ -1,11 +1,22 @@
-<script setup>
-defineProps({
-  id: { type: [String, Number], default: '' },
-  label: { type: String, default: '' },
-  icon: { type: [Object, Function], default: null },
-  active: { type: Boolean, default: false }
-});
-const emit = defineEmits(['click']);
+<script setup lang="ts">
+import type { Component } from 'vue';
+
+withDefaults(
+  defineProps<{
+    id?: string | number;
+    label?: string;
+    /** lucide-vue-next 图标组件（对象式或函数式组件）。 */
+    icon?: Component | null;
+    active?: boolean;
+  }>(),
+  {
+    id: '',
+    label: '',
+    icon: null,
+    active: false
+  }
+);
+const emit = defineEmits<{ click: [] }>();
 
 function onClick() {
   emit('click');
@@ -17,7 +28,7 @@ function onClick() {
     class="app-tab"
     :class="{ active }"
     role="tab"
-    :aria-selected="String(active)"
+    :aria-selected="active"
     @click="onClick"
   >
     <component v-if="icon" :is="icon" :size="14" class="app-tab-icon" />

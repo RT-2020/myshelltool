@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /**
  * SettingsPanelContent — v1.8 统一设置中心。
  *
@@ -19,10 +19,12 @@
  * 避免 GlobalModals.vue 超 500 行 SFC 硬上限（AGENTS.md 质量红线）。
  */
 import { ref, computed, onMounted, unref, watch } from 'vue';
+import type { Component } from 'vue';
 import { storeToRefs } from 'pinia';
 import { Info, LayoutGrid, Palette, RefreshCw, Plug, Sun, Moon, Monitor, Download, ExternalLink, TerminalSquare } from 'lucide-vue-next';
-import { useWorkbenchStore } from '@/stores/workbench.js';
-import { THEME_ORDER, THEME_LABELS } from '@/composables/useTheme.js';
+import { useWorkbenchStore } from '@/stores/workbench';
+import { THEME_ORDER, THEME_LABELS } from '@/composables/useTheme';
+import type { useAutoUpdate } from '@/composables/useAutoUpdate';
 import AppTabGroup from '@/components/ui/AppTabGroup.vue';
 import AppButton from '@/components/ui/AppButton.vue';
 import AppProgress from '@/components/ui/AppProgress.vue';
@@ -30,18 +32,30 @@ import AppSelect from '@/components/ui/AppSelect.vue';
 import AppBrandLogo from '@/components/ui/AppBrandLogo.vue';
 import McpPanelContent from '@/components/shell/McpPanelContent.vue';
 import SyncPanelContent from '@/components/shell/SyncPanelContent.vue';
-import { isTauriRuntime } from '@/services/backend.js';
+import { isTauriRuntime } from '@/services/backend';
+
+/**
+ * settings modal 的运行时附加字段（App.vue 注入，ModalState 之外的动态扩展，
+ * 故经 cast 窄化读取——动态边界）。
+ */
+interface SettingsModalExtras {
+  autoUpdate?: ReturnType<typeof useAutoUpdate> | null;
+  resetLayout?: (() => void) | null;
+  tab?: string;
+}
 
 const store = useWorkbenchStore();
 const { theme, modal } = storeToRefs(store);
 
+const modalExtras = computed<SettingsModalExtras>(() => (modal.value ?? {}) as unknown as SettingsModalExtras);
+
 // autoUpdate 实例由 App.vue 通过 modal payload 注入（store.modal = { type:'settings', autoUpdate, tab }）。
 // 同一实例，与状态栏点击共享状态。未注入时（浏览器预览）更新区降级隐藏。
-const autoUpdate = computed(() => modal.value?.autoUpdate || null);
+const autoUpdate = computed(() => modalExtras.value.autoUpdate || null);
 
 // resetLayout 回调由 App.vue 通过 modal payload 注入（原顶栏布局菜单删除后的
 // 补偿入口）。无回调时不渲染「恢复默认布局」按钮。
-const resetLayout = computed(() => modal.value?.resetLayout || null);
+const resetLayout = computed(() => modalExtras.value.resetLayout || null);
 
 // —— 终端排版（外观 tab）——
 const fontSizeOptions = [10, 11, 12, 13, 14, 15, 16, 18, 20]
@@ -49,7 +63,7 @@ const fontSizeOptions = [10, 11, 12, 13, 14, 15, 16, 18, 20]
 const lineHeightOptions = [1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.8, 2.0]
   .map(lh => ({ label: lh.toFixed(1), value: lh }));
 // store 的 setTerminalFontSize 是增量式（delta）；面板选绝对值 → 换算差值复用同一管线。
-function setTerminalFontSizeTo(value) {
+function setTerminalFontSizeTo(value: string | number) {
   const delta = Number(value) - store.terminalFontSize;
   if (delta) store.setTerminalFontSize(delta);
 }
@@ -64,15 +78,16 @@ const TABS = [
 ];
 // 默认 about；外部入口通过 modal.tab 指定（合法 tab id 才采纳，否则回退 about）。
 const validTabs = TABS.map(t => t.id);
-const activeTab = ref(validTabs.includes(modal.value?.tab) ? modal.value.tab : 'about');
+const initialTab = modalExtras.value.tab ?? '';
+const activeTab = ref(validTabs.includes(initialTab) ? initialTab : 'about');
 
-watch(() => modal.value?.tab, next => {
+watch(() => modalExtras.value.tab, next => {
   if (next && validTabs.includes(next)) {
     activeTab.value = next;
   }
 });
 
-async function openExternal(url) {
+async function openExternal(url: string) {
   if (!isTauriRuntime()) {
     window.open(url, '_blank', 'noopener');
     return;
@@ -95,7 +110,7 @@ onMounted(async () => {
     const { getVersion } = await import('@tauri-apps/api/app'); // 动态加载：浏览器预览缺 Tauri 模块
     appVersion.value = await getVersion();
   } catch (err) {
-    console.warn('[settings] 获取版本号失败：', err?.message || err);
+    console.warn('[settings] 获取版本号失败：', (err as Error | undefined)?.message || err);
   }
 });
 
@@ -133,13 +148,13 @@ function onUpdateClick() {
 // —— 主题选择（外观 tab）——
 // 读 uiStore.theme（原始三态 system/light/dark）+ 调 setTheme（点哪个选哪个）。
 // 主题图标：system→Monitor / light→Sun / dark→Moon。
-const themeIcons = { system: Monitor, light: Sun, dark: Moon };
+const themeIcons: Record<string, Component> = { system: Monitor, light: Sun, dark: Moon };
 const themeDescription = computed(() => {
   if (theme.value === 'light') return '「浅色」始终保持明亮清爽的界面风格，切换即时生效并持久化。';
   if (theme.value === 'dark') return '「深色」适合弱光环境与沉浸式终端运维操作，切换即时生效并持久化。';
   return '「跟随系统」随系统外观明暗自动无缝切换，切换即时生效并持久化。';
 });
-function selectTheme(value) {
+function selectTheme(value: string) {
   store.setTheme(value);
 }
 </script>
@@ -247,7 +262,7 @@ function selectTheme(value) {
               <AppSelect
                 :model-value="store.terminalLineHeight"
                 :options="lineHeightOptions"
-                @update:model-value="v => store.setTerminalLineHeight(v)"
+                @update:model-value="v => store.setTerminalLineHeight(Number(v))"
               />
             </label>
           </div>

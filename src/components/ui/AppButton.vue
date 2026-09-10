@@ -1,10 +1,20 @@
-<script setup>
-defineProps({
-  variant: { type: String, default: 'ghost' }, // primary | ghost | subtle | danger
-  size: { type: String, default: 'md' }, // sm | md
-  disabled: { type: Boolean, default: false },
-  loading: { type: Boolean, default: false }
-});
+<script setup lang="ts">
+withDefaults(
+  defineProps<{
+    /** primary | ghost | subtle | danger（保持宽松 string：消费方可传自定义 variant 类名）。 */
+    variant?: string;
+    /** sm | md。 */
+    size?: string;
+    disabled?: boolean;
+    loading?: boolean;
+  }>(),
+  {
+    variant: 'ghost',
+    size: 'md',
+    disabled: false,
+    loading: false
+  }
+);
 </script>
 
 <template>

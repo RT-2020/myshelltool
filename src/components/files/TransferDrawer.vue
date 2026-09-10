@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /**
  * TransferDrawer — Wave 3 Step 3.4（v2 精简版）
  * 传输队列 sheet：仅保留 Teleport 到 body 的上滑面板。
@@ -12,27 +12,31 @@
  * 状态药丸 + 细线性进度。
  */
 import { onBeforeUnmount, watch } from 'vue';
+import type { Component } from 'vue';
 import { storeToRefs } from 'pinia';
 import { Upload, Download, ChevronDown, AlertCircle, CheckCircle2, Loader2, XCircle, X, RotateCcw, ArrowUpDown } from 'lucide-vue-next';
-import { useFilesStore } from '@/stores/files.js';
-import { formatSpeed, formatEta } from '@/lib/transferUtils.js';
+import { useFilesStore } from '@/stores/files';
+import { formatSpeed, formatEta } from '@/lib/transferUtils';
+import type { TransferQueueItem } from '@/lib/transferUtils';
 
-const props = defineProps({
-  open: { type: Boolean, default: false }
+const props = withDefaults(defineProps<{
+  open?: boolean;
+}>(), {
+  open: false
 });
-const emit = defineEmits(['toggle']);
+const emit = defineEmits<{ toggle: [] }>();
 
 const filesStore = useFilesStore();
 const { transferQueue, activeTransfers, completedTransfers, failedTransfers } = storeToRefs(filesStore);
 
-function formatBytes(bytes) {
+function formatBytes(bytes: number | null | undefined) {
   const size = Number(bytes) || 0;
   if (size >= 1024 * 1024) return Math.round(size / 1024 / 1024) + ' MB';
   if (size >= 1024) return Math.round(size / 1024) + ' KB';
   return size + ' B';
 }
 
-function statusMeta(item) {
+function statusMeta(item: TransferQueueItem): { icon: Component; spin: boolean; label: string; tone: string } {
   if (item.status === 'running') return { icon: Loader2, spin: true, label: '传输中', tone: 'running' };
   if (item.status === 'done') return { icon: CheckCircle2, spin: false, label: '完成', tone: 'done' };
   if (item.status === 'error') return { icon: AlertCircle, spin: false, label: '失败', tone: 'error' };
@@ -41,14 +45,14 @@ function statusMeta(item) {
 }
 
 // 状态药丸文案：错误/取消显示文字而非百分比（失败项百分比无意义）
-function pillLabel(item) {
+function pillLabel(item: TransferQueueItem) {
   if (item.status === 'error') return '失败';
   if (item.status === 'cancelled') return '已取消';
   return (item.percent || 0) + '%';
 }
 
 // 抽屉打开时注册 Escape 关闭，关闭/卸载时移除
-function onDrawerKeydown(event) {
+function onDrawerKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') emit('toggle');
 }
 watch(() => props.open, open => {

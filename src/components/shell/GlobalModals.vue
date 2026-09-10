@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 /**
  * GlobalModals — Wave 3 Step 3.5
  *
@@ -27,7 +27,7 @@
  */
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
-import { useWorkbenchStore } from '@/stores/workbench.js';
+import { useWorkbenchStore } from '@/stores/workbench';
 import AppButton from '@/components/ui/AppButton.vue';
 import AppInput from '@/components/ui/AppInput.vue';
 import AppSelect from '@/components/ui/AppSelect.vue';
@@ -37,11 +37,28 @@ import SettingsPanelContent from '@/components/shell/SettingsPanelContent.vue';
 import ConfirmCloseAssetWindowContent from '@/components/shell/ConfirmCloseAssetWindowContent.vue';
 import PatConfigCard from '@/components/shell/PatConfigCard.vue';
 import AssetPrivateKeyInput from '@/components/shell/AssetPrivateKeyInput.vue';
-import { openPrivateKeyFileDialog } from '@/services/backend.js';
+import { openPrivateKeyFileDialog } from '@/services/backend';
+import type {
+  ConnectionAssetInput,
+  ModalState,
+  RemoteFileEntry
+} from '@/types/domain';
+
+/**
+ * modal 的按需挂载载荷：ModalState（ui store 的权威形状）只声明 type/asset/payload，
+ * path / entry / count / onConfirm 等字段由各业务按弹窗类型附加（弱约束透传）。
+ * 组件内以本接口消费（类型断言不改变运行时）。
+ */
+interface ModalExtras extends ModalState {
+  path?: string;
+  entry?: RemoteFileEntry | null;
+  count?: number;
+  onConfirm?: (() => void) | null;
+}
 
 const store = useWorkbenchStore();
 const {
-  modal,
+  modal: modalRef,
   hostKeyPrompt,
   keyboardPrompt,
   mcpApprovalPrompt,
@@ -49,18 +66,57 @@ const {
   localPath,
   pendingFileDelete
 } = storeToRefs(store);
+const modal = computed(() => modalRef.value as ModalExtras);
 
 // ============================================================
 // Local form state — mirrors the App.vue reactive forms we deleted.
 // All of these are only ever visible while modal.type matches their
 // respective branch, so they don't bleed across types.
 // ============================================================
+/** 资产编辑表单（tags 编辑态为逗号串，port/auth_method 收 AppInput/AppSelect 的 string 回传）。 */
+interface AssetEditorForm {
+  id: string;
+  name: string;
+  host: string;
+  port: number | string;
+  username: string;
+  auth_method: string | number;
+  private_key_path: string;
+  group: string;
+  tags: string;
+  status: string;
+  credential_id: string | null;
+  passphrase_credential_id: string | null;
+  private_key_credential_id: string | null;
+}
+
+/** 资产编辑器的凭据表单（clear* 为「清除已存凭据」标记，与重新输入互斥）。 */
+interface CredentialEditorForm {
+  password: string;
+  passphrase: string;
+  privateKey: string;
+  clearPassword: boolean;
+  clearPassphrase: boolean;
+  clearPrivateKey: boolean;
+}
+
+/** 隧道新建表单（端口为 string，提交时 Number() 转换）。 */
+interface TunnelEditorForm {
+  name: string;
+  kind: string | number;
+  local_addr: string;
+  local_port: string;
+  remote_addr: string;
+  remote_port: string;
+  auto_start: boolean;
+}
+
 const editingAsset = reactive(emptyAsset());
 const editingCredential = reactive(emptyCredential());
 const tunnelForm = reactive(emptyTunnelForm());
 const mkdirName = ref('');
 const renameTarget = reactive({ path: '', current: '', next: '' });
-const keyboardResponses = reactive({});
+const keyboardResponses = reactive<Record<string, string>>({});
 
 // ---- 分组管理 / 删除确认 表单状态 ----
 // renameGroup: 输入新分组名（单段，禁 '/');由 modal.value.path 提供旧路径
@@ -77,6 +133,13 @@ const groupFormError = ref('');
 const submitting = ref(false);
 // reauthPassword：连接失败快捷重认证表单（TerminalSurface 错误卡片入口）
 const reauthForm = reactive({ password: '', error: '' });
+
+// 事实备注：KeyboardInteractivePayload 权威类型（domain.ts）字段为 instruction（单数），
+// 此处历史代码访问 instructions（复数）——与后端契约不一致、运行时恒 undefined 不显示。
+// 按「行为零变化」保留原属性访问路径，仅类型层断言放宽。
+const keyboardInstructions = computed(() =>
+  (keyboardPrompt.value as { instructions?: string | null } | null)?.instructions
+);
 
 // 认证方式选项。Token 认证后端支持存疑，本轮不加（follow-up：确认 save_credential
 // / ssh_connect 的 token 语义后再补选项）。
@@ -201,7 +264,7 @@ watch(() => modal.value.type, type => {
   }
 });
 
-function emptyAsset() {
+function emptyAsset(): AssetEditorForm {
   return {
     id: '',
     name: '',
@@ -219,7 +282,7 @@ function emptyAsset() {
   };
 }
 
-function emptyCredential() {
+function emptyCredential(): CredentialEditorForm {
   // clearPassword / clearPassphrase / clearPrivateKey：编辑器「清除」按钮的标记（保存时删除凭据）。
   // 与重新输入互斥：输入框有值会重置对应标记。
   return {
@@ -232,7 +295,7 @@ function emptyCredential() {
   };
 }
 
-function emptyTunnelForm() {
+function emptyTunnelForm(): TunnelEditorForm {
   return {
     name: '',
     kind: 'local',
@@ -244,7 +307,7 @@ function emptyTunnelForm() {
   };
 }
 
-function cloneAsset(asset) {
+function cloneAsset(asset: NonNullable<ModalState['asset']>): AssetEditorForm {
   return {
     ...asset,
     tags: asset.tags.join(', '),
@@ -252,7 +315,7 @@ function cloneAsset(asset) {
   };
 }
 
-function splitTags(tags) {
+function splitTags(tags: string | string[]): string[] {
   return Array.isArray(tags) ? tags : String(tags || '').split(/[·,，\s]+/).filter(Boolean);
 }
 
@@ -302,11 +365,12 @@ async function submitModal() {
       assetFormError.value = '';
       await runSubmit(() =>
         store.saveAsset(
+          // 表单态（port/auth_method 可能被输入控件回传 string）按 saveAsset 入参契约断言透传，与迁移前运行时行为一致
           {
             ...editingAsset,
             private_key_path: String(editingAsset.private_key_path || '').trim() || null,
             tags: splitTags(editingAsset.tags)
-          },
+          } as ConnectionAssetInput,
           {
             password: editingCredential.password,
             passphrase: editingCredential.passphrase,
@@ -319,7 +383,8 @@ async function submitModal() {
       );
       return;
     case 'confirmDelete':
-      await runSubmit(() => store.deleteAsset(modal.value.asset?.id));
+      // confirmDelete 弹窗打开时必有 asset（payload 契约），断言仅类型层收窄
+      await runSubmit(() => store.deleteAsset(modal.value.asset?.id as string));
       return;
     case 'renameGroup': {
       const newName = renameGroupInput.value.trim();
@@ -352,7 +417,8 @@ async function submitModal() {
         groupFormError.value = '请输入目标分组';
         return;
       }
-      await runSubmit(() => store.moveAsset(modal.value.asset?.id, target));
+      // moveAsset 弹窗打开时必有 asset（payload 契约），断言仅类型层收窄
+      await runSubmit(() => store.moveAsset(modal.value.asset?.id as string, target));
       return;
     }
     case 'tokenConfig':
@@ -376,13 +442,13 @@ async function submitModal() {
       if (await runSubmit(() => store.localMkdir(mkdirName.value))) closeModal();
       return;
     case 'rename':
-      if (await runSubmit(() => store.renameRemote({ path: renameTarget.path, name: renameTarget.current }, renameTarget.next))) closeModal();
+      if (await runSubmit(() => store.renameRemote({ path: renameTarget.path, name: renameTarget.current } as RemoteFileEntry, renameTarget.next))) closeModal();
       return;
     case 'localRename':
       if (await runSubmit(() => store.localRename(renameTarget.path, renameTarget.next))) closeModal();
       return;
     case 'hostKeyVerify':
-      store.resolveHostKeyPrompt(hostKeyPrompt.value.request_id, true);
+      store.resolveHostKeyPrompt(hostKeyPrompt.value!.request_id, true);
       // 不走 closeModal()：它对 hostKeyVerify 路由到 denyHostKey()，会在 accept
       // 之后又补发一次 accepted:false（denyHostKey → closeModal 还会递归）
       store.modal = { type: null, asset: null };
@@ -393,19 +459,25 @@ async function submitModal() {
       store.modal = { type: null, asset: null };
       return;
     case 'mcpApproval':
-      store.resolveMcpApproval(mcpApprovalPrompt.value.request_id, true);
+      store.resolveMcpApproval(mcpApprovalPrompt.value!.request_id, true);
       // 同 hostKeyVerify：closeModal 会路由 denyMcpApproval 补发 accepted:false
       store.modal = { type: null, asset: null };
       return;
     case 'keyboardInteractive':
-      store.resolveKeyboardPrompt(keyboardPrompt.value.request_id, Object.values(keyboardResponses));
+      store.resolveKeyboardPrompt(keyboardPrompt.value!.request_id, Object.values(keyboardResponses));
       closeModal();
       return;
-    case 'terminalSearch':
-      if (modal.value.payload?.sessionId) {
-        store.executeTerminalSearch(modal.value.payload.sessionId, store.terminalSearch.query);
+    case 'terminalSearch': {
+      // 事实备注：workbench store 未导出 executeTerminalSearch（迁移前即如此，运行时
+      // 该调用抛 TypeError 未捕获；该分支为兼容入口，正常运行流程不会进入）。按
+      // 「行为零变化」保留原调用语义（无条件调用，非可选链）。
+      const sessionId = modal.value.payload?.sessionId as string | undefined;
+      if (sessionId) {
+        (store as unknown as { executeTerminalSearch: (sessionId: string, query: string) => void })
+          .executeTerminalSearch(sessionId, store.terminalSearch.query);
       }
       return;
+    }
     case 'reauthPassword': {
       if (!reauthForm.password) {
         reauthForm.error = '请输入密码';
@@ -417,7 +489,7 @@ async function submitModal() {
         const current = (store.assets || []).find(a => a && a.id === modal.value.asset?.id) || modal.value.asset;
         // saveAsset 成功后会关闭 modal，先取 sessionId 再调用；
         // 切到密码认证时顺带清掉残留的 passphrase 凭据（PrivateKey 专属，避免换回时旧值干扰）
-        const sessionId = modal.value.payload?.sessionId;
+        const sessionId = modal.value.payload?.sessionId as string | undefined;
         await store.saveAsset(
           { ...current, auth_method: 'Password' },
           { password: reauthForm.password, clearPassphrase: true }
@@ -435,7 +507,7 @@ async function submitModal() {
  * 执行异步提交：期间 submitting=true（按钮禁用 + spinner，防重复提交）。
  * 成功返回 true；失败返回 false（错误由对应 store action announce，弹窗保持打开可重试）。
  */
-async function runSubmit(task) {
+async function runSubmit(task: () => Promise<unknown>): Promise<boolean> {
   if (submitting.value) return false;
   submitting.value = true;
   try {
@@ -443,7 +515,7 @@ async function runSubmit(task) {
     return true;
   } catch (error) {
     // 提交失败必须可见（部分 store action 不自带失败 announce），弹窗保持打开可重试
-    store.announce('操作失败：' + (error?.message || error), { level: 'error' });
+    store.announce('操作失败：' + ((error as Error | undefined)?.message || error), { level: 'error' });
     return false;
   } finally {
     submitting.value = false;
@@ -470,14 +542,14 @@ async function runFileDeleteConfirm() {
 }
 
 function denyHostKey() {
-  store.resolveHostKeyPrompt(hostKeyPrompt.value.request_id, false);
+  store.resolveHostKeyPrompt(hostKeyPrompt.value!.request_id, false);
   // 直接清 modal 而非 closeModal()：本函数就是 closeModal 的 hostKeyVerify 路由
   // 目标，再走 closeModal 会无限递归（× / Esc / danger 按钮三条路径共用此处）
   store.modal = { type: null, asset: null };
 }
 
 function denyMcpApproval() {
-  store.resolveMcpApproval(mcpApprovalPrompt.value.request_id, false);
+  store.resolveMcpApproval(mcpApprovalPrompt.value!.request_id, false);
   // 同 denyHostKey：防 closeModal → denyMcpApproval 递归
   store.modal = { type: null, asset: null };
 }
@@ -506,7 +578,7 @@ function dismissByEsc() {
   closeModal();
 }
 
-function onKeydownEsc(event) {
+function onKeydownEsc(event: KeyboardEvent) {
   if (event.key !== 'Escape') return;
   event.preventDefault();
   dismissByEsc();
@@ -528,7 +600,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydownEsc));
       - #modalPrimary      (host-key test step 4)
       - .modal-actions .btn.danger  (host-key test step reject)
   -->
-  <div class="modal-layer" id="modalLayer" :class="{ open: modal.type }" :aria-hidden="String(!modal.type)" @click.self="onBackdropClick">
+  <div class="modal-layer" id="modalLayer" :class="{ open: modal.type }" :aria-hidden="!modal.type ? 'true' : 'false'" @click.self="onBackdropClick">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
       <div class="modal-head">
         <h2 id="modalTitle">{{ modalTitle }}</h2>
@@ -556,7 +628,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydownEsc));
               <input
                 class="native-input"
                 :value="editingAsset.group"
-                @input="e => editingAsset.group = e.target.value"
+                @input="e => editingAsset.group = (e.target as HTMLInputElement).value"
                 list="group-list-editor"
                 placeholder="未分组 或 生产/数据库"
                 data-asset-field="group"
@@ -686,8 +758,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydownEsc));
         <div v-else-if="modal.type === 'keyboardInteractive'" class="stack">
           <p class="muted">服务器需要键盘交互认证，请根据提示输入：</p>
           <p v-if="keyboardPrompt?.name"><strong>{{ keyboardPrompt.name }}</strong></p>
-          <p v-if="keyboardPrompt?.instructions" class="muted">{{ keyboardPrompt.instructions }}</p>
-          <label v-for="(prompt, idx) in (keyboardPrompt?.prompts || [])" :key="idx" class="stack">
+          <p v-if="keyboardInstructions" class="muted">{{ keyboardInstructions }}</p>
+          <label v-for="(prompt, idx) in ((keyboardPrompt?.prompts as string[] | undefined) || [])" :key="idx" class="stack">
             <span class="muted">{{ prompt }}</span>
             <AppInput :model-value="keyboardResponses[idx]" type="password" :placeholder="prompt"
               @update:model-value="v => keyboardResponses[idx] = v" />
