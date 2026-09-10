@@ -15,18 +15,18 @@ alwaysApply: true
 
 | 类型 | 软警告 | 硬上限 |
 |---|---|---|
-| Vue SFC `.vue` | 300 行 | **500 行** |
-| Pinia store `.js` | 300 行 | **500 行** |
+| Vue SFC `.vue`（`<script setup lang="ts">`） | 300 行 | **500 行** |
+| Pinia store `.ts` | 300 行 | **500 行** |
 | Rust 模块 `.rs` | 400 行 | **800 行** |
 
 > Vue 社区共识 ~300 行为软上限（[Vue SFC 官方指南](https://vuejs.org/guide/scaling-up/sfc.html)、SOLID/SRP）。
 
-## 当前已超标文件（新增功能前优先评估拆分，而非继续堆）
+## 当前已超标文件（新增功能前优先评估拆分，而非继续堆；实测值见 `docs/architecture-log.md` Baseline，此处为 2026-09 快照）
 
-- `src-tauri/src/ssh.rs` **1548 行**（SSH+认证+SFTP+隧道+SOCKS5 全堆一起）→ 候选拆 `ssh/{connect,pty,sftp,tunnel,known_hosts}.rs`。
-- `src/stores/sessions.js` **810 行**（事件监听+OSC+xterm+DOM+主题+连接流程）→ 抽 composable。
-- `src/components/files/FileColumn.vue` **768 行**、`src/stores/files.js` **612 行**。
-- `src/components/shell/GlobalModals.vue` **512 行**（9 种 modal）→ 考虑注册表 + 独立 modal 组件。
+- `src-tauri/src/ssh.rs` **2158 行**（SSH+认证+SFTP+隧道+SOCKS5 全堆一起）→ 候选拆 `ssh/{connect,pty,sftp,tunnel,known_hosts}.rs`。
+- `src/stores/sessions.ts` **1311 行**（事件监听+OSC+xterm+DOM+主题+连接流程）→ 抽 composable。
+- `src/stores/files.ts` **1287 行**、`src/components/shell/GlobalModals.vue` **1182 行**、`src/components/shell/ConnectionSidebar.vue` **977 行**。
+- `src-tauri/src/sync.rs` **894 行**、`crates/myshelltool-core/src/lib.rs` **969 行**、`src-tauri/src/resource_monitor.rs` **875 行**（.rs 超 800）。
 
 ## 拆分原则
 

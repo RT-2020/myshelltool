@@ -29,8 +29,8 @@
 
 | 类型 | 软警告 | 硬上限 |
 |---|---|---|
-| Vue SFC `.vue` | 300 行 | **500 行** |
-| Pinia store `.js` | 300 行 | **500 行** |
+| Vue SFC `.vue`（`<script setup lang="ts">`） | 300 行 | **500 行** |
+| Pinia store `.ts` | 300 行 | **500 行** |
 | Rust 模块 `.rs` | 400 行 | **800 行** |
 
 > ⚠️ 当前已超标的文件（重构候选）+ Soft-warn 监视清单，见 [`docs/architecture-log.md`](./docs/architecture-log.md) 的 Baseline snapshot（用 `wc -l` 实测维护）。新增功能时优先考虑拆分这些文件，而非继续往里堆。手动清单易漂移，以 architecture-log 为唯一信息源。
@@ -42,6 +42,7 @@
 - ❌ 硬编码颜色/z-index/间距：用 `var(--token)`（见 `src/styles/_tokens.scss`）。
 - ❌ 同一概念多份实现：连接状态等用权威定义点（见指南 §5）。
 - ❌ 死代码：未被 import 的模块确认后删除。
+- ❌ 靠猜测代替事实：对外部环境（家目录/工具链/locale/时钟域/就绪信号/身份键）不做臆断——协议求证（SFTP canonicalize/stat、pty 终端模式）、解析命令输出加 `LC_ALL=C` + POSIX 选项、比较同钟域、身份用完整键、探测三态（真/假/未知按保守处理）。详见指南 §7。
 
 ---
 
@@ -62,6 +63,7 @@
 | 桌面框架 | **Tauri 2** | `@tauri-apps/cli ^2.9.5` |
 | 后端 | **Rust** | `russh 0.49`、`russh-sftp 2.x`、`tokio`（rt-multi-thread/net/sync） |
 | 前端框架 | **Vue 3**（`<script setup>` + Composition API） | `vue ^3.5.38` |
+| 语言 | **TypeScript**（strict 全量，vue-tsc 类型门禁） | `typescript ^5.9.3` + `vue-tsc ^3.3.11` |
 | 状态管理 | **Pinia 3**（setup store 风格） | `pinia ^3.0.4` |
 | 图标 | **lucide-vue-next** | `^0.460.0` |
 | 终端 | **xterm.js 6** + addon-fit/search/serialize/web-links/webgl | `@xterm/xterm ^6` |
@@ -80,7 +82,7 @@
 myshelltool/
 ├── src/                        # 前端（Vite root）
 │   ├── index.html              # 主页面（Vite 入口 HTML）
-│   ├── main.js                 # 应用入口：createApp(App).use(createPinia()).mount('#app')
+│   ├── main.ts                 # 应用入口：createApp(App).use(createPinia()).mount('#app')
 │   ├── App.vue                 # 根组件：按 query 分支（?win=asset&assetId= → AssetWindowShell，否则 WorkbenchShell）+ initialize 启动加载
 │   ├── components/
 │   │   ├── shell/              # 外壳：ConnectionSidebar / AssetGroupNode(递归) /
@@ -92,24 +94,26 @@ myshelltool/
 │   │   ├── resource-monitor/   # 资源监控：Cpu/Memory/Network/Disk 图表 + chart-utils
 │   │   └── ui/                 # 基础组件库：App{Input,Button,Select,Modal,Drawer,
 │   │                           #            ContextMenu,Tooltip,Table,Tab,Progress,...}
-│   │                           #   index.js barrel 导出全部
+│   │                           #   index.ts barrel 导出全部
 │   ├── stores/                 # Pinia stores（8 个：7 领域 + 1 编排壳）
-│   │   ├── workbench.js        # 编排壳：实例化 7 个子 store（不含 resourceMonitor），initialize() 启动加载
-│   │   ├── sessions.js         # 活跃 SSH 会话 + 终端生命周期
-│   │   ├── assets.js           # 连接资产 CRUD + 分组树
-│   │   ├── files.js            # SFTP 文件 + 传输队列
-│   │   ├── tunnels.js          # SSH 隧道/端口转发
-│   │   ├── ui.js               # UI 状态：主题/tab/modal/搜索
-│   │   ├── resourceMonitor.js  # 资源监控轮询 + 事件订阅（不经 workbench，由 panel 直接 use）
-│   │   ├── mcp.js              # 【v1.2】MCP 探测状态 + 配置引导（refresh 触发探测，无事件监听）
-│   │   └── sync.js             # 【v1.3】Gist 资产同步（push/pull/冲突解决/状态展示）
+│   │   ├── workbench.ts        # 编排壳：实例化 7 个子 store（不含 resourceMonitor），initialize() 启动加载
+│   │   ├── sessions.ts         # 活跃 SSH 会话 + 终端生命周期
+│   │   ├── assets.ts           # 连接资产 CRUD + 分组树
+│   │   ├── files.ts            # SFTP 文件 + 传输队列
+│   │   ├── tunnels.ts          # SSH 隧道/端口转发
+│   │   ├── ui.ts               # UI 状态：主题/tab/modal/搜索
+│   │   ├── resourceMonitor.ts  # 资源监控轮询 + 事件订阅（不经 workbench，由 panel 直接 use）
+│   │   ├── mcp.ts              # 【v1.2】MCP 探测状态 + 配置引导（refresh 触发探测，无事件监听）
+│   │   └── sync.ts             # 【v1.3】Gist 资产同步（push/pull/冲突解决/状态展示）
 │   ├── composables/            # useTheme / useClipboard / useTerminalConfig /
 │   │                           # useAutoReconnect / usePanelResize / useAutoUpdate
 │   ├── lib/                    # terminalThemes / dangerousCommands / terminalGuards /
 │   │                           # transferUtils / assetWindows+assetWindowBoot（资产独立窗口纯函数模块）
 │   ├── services/
-│   │   └── backend.js          # Tauri IPC 桥：invokeBackend / listenBackendEvent /
+│   │   └── backend.ts          # Tauri IPC 桥：invokeBackend / listenBackendEvent /
 │   │                           #                 normalizeAsset / slugify
+│   ├── types/                  # 共享类型定义：tauri.d.ts（Tauri invoke/event 类型 shim）、
+│   │                           # domain.ts（跨模块领域类型）
 │   └── styles/                 # SCSS：_tokens(设计token) / _base / _utilities / main
 ├── src-tauri/                  # Tauri/Rust 后端
 │   ├── src/
@@ -145,7 +149,7 @@ myshelltool/
 ├── .claude/                    # Claude Code 配置（见 .gitignore，部分本地）
 ├── .omc/ .omx/                 # 其他 agent 工具状态（见 .gitignore）
 ├── package.json                # npm scripts（见 §5）
-├── vite.config.js              # root=src，@→/src alias，scss loadPaths，port 41234 strict
+├── vite.config.ts              # root=src，@→/src alias，scss loadPaths，port 41234 strict
 └── AGENTS.md                   # ← 本文件
 ```
 
@@ -154,21 +158,22 @@ myshelltool/
 ## 4. 约定（硬约束，违反会破坏一致性）
 
 ### 4.1 前端
-- **Vue 3 `<script setup>`** + Composition API。**禁止** Options API。
+- **Vue 3 `<script setup lang="ts">`** + Composition API。**禁止** Options API，**禁止**新增无 `lang="ts"` 的 script。
+- **TypeScript strict 全量**：props 默认值必须用 `withDefaults`；跨模块共享的领域类型放 `src/types/domain.ts`；`any` 仅限动态边界（IPC payload 等）且须注释原因。
 - **状态用 Pinia setup store**（`defineStore('x', () => {...})` 返回 refs/computeds/actions）。
 - **图标统一用 `lucide-vue-next`**，不要引入其他图标库或内联 SVG（资源监控图表除外，用自绘 SVG）。
 - **样式用 SCSS + 设计 token**（`@/styles/_tokens.scss`）。组件内 `<style scoped lang="scss">` 顶部 `@use '@/styles/_tokens' as *;`。
   - 颜色/间距/圆角/阴影/动效/z-index **必须用 `var(--xxx)` token**，不要硬编码。z-index 用 `var(--z-base|dropdown|sticky|drawer|modal|toast|tooltip)`。
   - 新增 token 加到 `_tokens.scss` 的 map 并暴露为 `:root` CSS 变量。
-- **路径别名 `@`** → `src/`（vite.config.js 配置）。import 用 `@/stores/...`、`@/components/...`。
+- **路径别名 `@`** → `src/`（vite.config.ts 配置）。import 用 `@/stores/...`、`@/components/...`。
 - **组件分层**：`ui/` 是无业务的基础组件（`App*` 命名，barrel 导出）；业务组件按域放 `shell/`、`terminal/`、`files/`、`resource-monitor/`。
 - **通用操作入口模式**：右键菜单用 `AppContextMenu`（`items: [{label, action, danger, separator, disabled}]`），参照 `FileSurface.vue` 用法。危险操作用 `danger: true`（红色）或 `AppButton variant="danger"`。
 - **弹窗**：业务弹窗统一走 `GlobalModals.vue`（`store.modal = { type, ...payload }`），按 `modal.type` 分支。新增 type 需同步改 `modalTitle` / `submitModal` / `watch`。保留 legacy 选择器（`#modalLayer`/`#modalBody`/`.modal-actions .btn.danger`）以兼容测试。
 
 ### 4.2 状态管理（跨 store 桥接）
-- **`workbench.js` 是编排壳**：实例化 7 个子 store（sessions/files/tunnels/assets/ui/mcp/sync），`initialize()` 编排启动加载，用 plain-object 返回 + `computed()` 包裹子 store 的响应式 state（**不要直接暴露子 store 的 ref**，会丢响应性）。**注意 `resourceMonitor.js` 不经 workbench 编排**——它由 `ResourceMonitorPanel.vue` 直接 `useResourceMonitorStore()` 使用（独立轮询生命周期，与全局初始化解耦）。
+- **`workbench.ts` 是编排壳**：实例化 7 个子 store（sessions/files/tunnels/assets/ui/mcp/sync），`initialize()` 编排启动加载，用 plain-object 返回 + `computed()` 包裹子 store 的响应式 state（**不要直接暴露子 store 的 ref**，会丢响应性）。**注意 `resourceMonitor.ts` 不经 workbench 编排**——它由 `ResourceMonitorPanel.vue` 直接 `useResourceMonitorStore()` 使用（独立轮询生命周期，与全局初始化解耦）。
 - **跨 store 依赖用 lazy bridge**：子 store 通过 `attachWorkbench(bridge)` 注入跨 store 访问（如 assets store 调 workbench.announce / workbench.modal）。**禁止循环 import**。
-- **新 action 加到子 store**，再在 `workbench.js` return 块 re-export（参照 `saveAsset`/`deleteAsset` 模式）。
+- **新 action 加到子 store**，再在 `workbench.ts` return 块 re-export（参照 `saveAsset`/`deleteAsset` 模式）。
 
 ### 4.3 Rust 后端
 - **所有 Tauri 命令用 `State<'_, AppState>` 统一解析**（ADR v3 Option A 重构后）。**禁止** 双 `manage` hack。
@@ -190,8 +195,8 @@ npm run dev          # Vite 浏览器预览（127.0.0.1:41234）。无 SSH/文�
 npm run tauri:dev    # Tauri 桌面开发模式（完整功能）。SSH 类功能只能在此验证
 
 # —— 构建 ——
-npm run build        # 仅前端 Vite 构建（验证 Vue/SCSS 编译）
-npm run tauri:build  # 完整桌面安装包（Windows NSIS）
+npm run build        # 前端构建 = 先 vue-tsc 类型检查（type-check）再 Vite 构建（验证 TS/Vue/SCSS 编译）
+npm run tauri:build  # 完整桌面安装包（Windows NSIS），beforeBuildCommand 走 npm run build 自动含类型门禁
 
 # —— 测试 ——
 npm run test:core    # Rust core 单元测试：cargo test --manifest-path crates/myshelltool-core/Cargo.toml
@@ -200,6 +205,9 @@ npm run test:ui      # UI 冒烟：node tests/ui-smoke.mjs && node tests/ui-host
 # —— 后端单独验证 ——
 cd src-tauri && cargo build       # 验证 Rust 编译
 cd src-tauri && cargo check       # 更快的类型检查
+
+# —— 仅类型检查（不产 dist）——
+npm run type-check   # vue-tsc --build，strict 全量；build 亦含此步
 ```
 
 **改完代码必须跑的验证（开发闭环）**：
@@ -212,7 +220,7 @@ cd src-tauri && cargo check       # 更快的类型检查
 
 ## 6. IPC 契约（前端 ↔ Rust，关键命令清单）
 
-前端通过 `src/services/backend.js` 的 `invokeBackend(command, args)` / `listenBackendEvent(event, handler)` 调用 Rust。**非 Tauri runtime 会抛错**（浏览器预览模式无 SSH 功能）。
+前端通过 `src/services/backend.ts` 的 `invokeBackend(command, args)` / `listenBackendEvent(event, handler)` 调用 Rust。**非 Tauri runtime 会抛错**（浏览器预览模式无 SSH 功能）。
 
 ### 命令分组（在 `src-tauri/src/lib.rs` 与 `ssh.rs` 注册）
 
@@ -235,11 +243,12 @@ cd src-tauri && cargo check       # 更快的类型检查
 
 **SSH 会话/终端**（`ssh.rs`）
 - `ssh_connect({...})` → 返回 `session_id`；参数含 host/port/username/authMethod/credentialId/privateKeyPath 等
-- `ssh_list_directory` → 一次性 exec `find`（走独立连接，非当前会话）
+- `ssh_list_directory` → 一次性 SFTP 列目录（走独立连接开 sftp 子系统，空 path 时 canonicalize 家目录；不依赖远端用户态工具，曾用 GNU-only `find -printf` 在 BusyBox/BSD 上必挂，已弃用）
 - `ssh_write` / `ssh_resize` / `ssh_disconnect` / `ssh_confirm_host_key` / `ssh_keyboard_response`
 
 **SFTP**（`ssh.rs`）
 - `sftp_list_dir` / `sftp_read_file` / `sftp_write_file`
+- `sftp_list_dir` 的 **path 为空串 = 服务器默认目录**：后端 `canonicalize(".")` 解析登录用户真实家目录（root → /root）并在返回的 `path` 字段回传绝对路径；前端不再猜测 home（旧版 `/home/<username>` 对 root 必错、tag 硬编码目录不存在即 No such file，已废弃）
 - 分块上传：`sftp_upload_start` / `sftp_upload_chunk` / `sftp_upload_finalize`（防 IPC OOM）
 - `sftp_download_with_progress` / `sftp_mkdir` / `sftp_rename` / `sftp_remove` / `sftp_stat`
 
@@ -275,7 +284,7 @@ private_key_path(Option), group(String, '/' 分隔多级路径如 "生产/数据
 tags(Vec<String>), status(Connected|Warning|Idle), last_connected,
 credential_id(Option), passphrase_credential_id(Option)
 ```
-- 前端经 `normalizeAsset()`（`backend.js`）规整：默认 port=22、group=「未分组」、status=Idle。
+- 前端经 `normalizeAsset()`（`backend.ts`）规整：默认 port=22、group=「未分组」、status=Idle。
 - **分组不是独立实体**，是 `asset.group` 字符串字段（`/` 分隔层级）。空分组用 `ConnectionAssetStore.groups: Vec<String>` 单独持久化。
 - 「未分组」是保留顶级，不可重命名/解散。
 
@@ -292,8 +301,8 @@ credential_id(Option), passphrase_credential_id(Option)
 - **v1.4 架构变化**：取消双二进制（删 `bin/mcp.rs` + `pipe.rs`），MCP server 直接跑在 GUI 进程内，SSH 会话/资产/审批同进程访问。任何合规 MCP host（Claude Code / Cursor）经 HTTP URL 连入。
 - `McpProbeResult { ok: bool, reason?, detail?, exePath, serverInfo?, probedAt }`
   - `reason` 失败分类码：`endpoint_not_found`（server 未启动/未写 endpoint 配置）/ `http_error`（连不上）/ `timeout`（2s）/ `bad_protocol`（握手响应异常）
-  - `exePath`：v1.4 语义改为 HTTP endpoint URL（字段名保留兼容前端 mcp.js）
-- 前端 `mcp.js` 的 `clientConnected` computed 读 `probe.ok`（命名保留是为避免连锁改名，语义已是健康检查结果）。
+  - `exePath`：v1.4 语义改为 HTTP endpoint URL（字段名保留兼容前端 mcp.ts）
+- 前端 `mcp.ts` 的 `clientConnected` computed 读 `probe.ok`（命名保留是为避免连锁改名，语义已是健康检查结果）。
 
 ---
 
@@ -313,16 +322,16 @@ credential_id(Option), passphrase_credential_id(Option)
 - `start_remote_forward` 是返回 Err 的桩（local/dynamic SOCKS5 已实现）。
 - `sanitize_credential_id` 过滤 `:` 和 `.`（如 `192.168.2.2:password` → `192-168-2-2password`）。
 - Windows 上 `cargo build` 偶因 build script（windres）阻断，用 `cargo check` 兜底；`cargo test` 的 src-tauri 测试二进制会因 Tauri runtime DLL 缺失报 `STATUS_ENTRYPOINT_NOT_FOUND`，用 `cargo check --tests` 验证测试可编译。
-- `workbench.js` 仍是 re-export 壳（Wave 5+ 计划精简）。
+- `workbench.ts` 仍是 re-export 壳（Wave 5+ 计划精简）。
 - **【v1.4】MCP 内嵌 GUI（Streamable HTTP）**：MCP server 跑在 GUI 进程内，绑定 `127.0.0.1:41235/mcp`（占用则 +1，写 `<data_dir>/mcp-endpoint.json`）。取消双二进制（删 `bin/mcp.rs` + `pipe.rs`），根治 v1.2 的僵尸进程 + os error 32 + NSIS 打包缺口。MCP server 随 GUI 启停（`CancellationToken` 控制 graceful shutdown）。
 - **【v1.4】MCP 端口策略**：默认 41235，被占用则 +1 重试最多 10 次，**只监听 localhost**（§8 安全红线）。实际端口写 mcp-endpoint.json，前端 `mcp_status.endpoint` 返回。
 - **【v1.4 follow-up】会话复用**：`tools.rs::exec_on_asset` 当前直走 headless 建连（删了 v1.1 pipe 复用分支）。后续可注入 GUI 的 `Arc<AsyncMutex<SshSessionManager>>` 到 McpToolContext，命中已建立会话时直接复用（同进程访问，比 pipe 更简单）。
-- **【v2】MCP 审批三级降级 + 拦截等级可配置**：v1.5 已实现三级降级（elicitation → AppHandle emit `mcp-tool-approval` GUI 弹窗 + 60s oneshot 超时 → headless/emit 失败才 fail-secure 拒），不再是「不支持 elicitation 直接拒」。v2 起拦截等级用户可配置（`mcp-config.json`，GUI 经 `mcp_get_config`/`mcp_set_config` 读写）：默认 **Minimal** 仅硬拦毁灭性命令（机器报废级：rm 根级删除如 `rm -rf /`、mkfs、dd 写块设备、fork 炸弹、chmod -R 系统目录），其余命令（含 reboot、`rm -rf 目录`、`curl|bash` 等黑名单级）不经确认直接执行（用户明确选择的低摩擦默认，放行记执行日志 `minimal_allowed` 供审计）；**Strict** 非白名单一律人工确认（保留原 fail-secure 语义）。毁灭性命令两档下均直接拒绝、不弹审批（decision 记 `hard_blocked`，命令未执行）；sftp_remove 已于 v2.3 纳入等级体系，仅根级/核心目录删除恒拦。等级存共享 `Arc<RwLock<McpConfig>>`，改档后已建 MCP 会话下次调用即生效。`ssh_exec` 等工具返回结构化文本（exit_code + stdout + stderr；超 16000 字符自动截断保留头/尾各 8000，提示用 grep/tail 收窄）。
+- **【v2】MCP 审批三级降级 + 拦截等级可配置**：v1.5 已实现三级降级（elicitation → AppHandle emit `mcp-tool-approval` GUI 弹窗 + 60s oneshot 超时 → headless/emit 失败才 fail-secure 拒），不再是「不支持 elicitation 直接拒」。v2 起拦截等级用户可配置（`mcp-config.json`，GUI 经 `mcp_get_config`/`mcp_set_config` 读写）：默认 **Minimal** 仅硬拦毁灭性命令（机器报废级：rm 根级删除如 `rm -rf /`、mkfs、dd 写块设备、fork 炸弹、chmod -R 系统目录），其余命令（含 reboot、`rm -rf 目录`、`curl|bash` 等黑名单级）不经确认直接执行（用户明确选择的低摩擦默认，放行记执行日志 `minimal_allowed` 供审计）；**Strict** 非白名单一律人工确认（保留原 fail-secure 语义）。毁灭性命令两档下均直接拒绝、不弹审批（decision 记 `hard_blocked`，命令未执行）；`find` 含 `-delete`/`-exec` 不再白名单放行（落黄层：Minimal 自动放行记日志 / Strict 人工确认）；sftp_remove 已于 v2.3 纳入等级体系，仅根级/核心目录删除恒拦。等级存共享 `Arc<RwLock<McpConfig>>`，改档后已建 MCP 会话下次调用即生效。`ssh_exec` 等工具返回结构化文本（exit_code + stdout + stderr；超 16000 字符自动截断保留头/尾各 8000，提示用 grep/tail 收窄）。
 - **【v2】MCP 执行日志**：`server.rs::call_tool` 为真实触发远程执行的工具（ssh_exec/disk_usage/system_status/service_status/sftp_remove）记一条 `mcp-execution-log.json`（哪台服务器/什么命令/什么决策/什么结果），前端 MCP 面板经 `mcp_list_execution_logs`/`mcp_clear_execution_logs` 查看/清空。30 天惰性清理 + 上限 1000 条（append 时触发，无常驻定时任务）；tokio Mutex 串行化 append/clear，`.tmp`+rename 原子写，落盘失败 best-effort 不阻断工具调用。Entry 不含任何凭据字段（§8 红线）。
 - **【v2.2】MCP 文件传输全能力与全工具无桩化**：新增 `file_policy.rs`、`file_tools.rs`、`sftp_ops.rs`，提供 `sftp_list`、`sftp_read_file`、`sftp_write_file`、`sftp_upload`、`sftp_download`、`sftp_remove` 全套文件操作通道。`list_sessions` 接入活跃 GUI 会话池，`resource_monitor_snapshot` 接入真实系统资源快照，实现 MCP 工具 100% 无桩化。严格践行安全红线：文件工具（sftp_write_file/sftp_upload/sftp_download/sftp_remove）的审批已纳入拦截等级体系（v2.3）——Minimal 放行记 minimal_allowed 日志 / Strict 人工确认；例外：根级毁灭性删除与本机核心系统目录写恒 HardBlock，敏感凭据文件读取恒审批（凭据红线）；`sftp_read_file` 执行日志强制脱敏，凭据决不落盘。
 - **【多窗口】资产独立工作台窗口（Tauri 2 多 WebviewWindow）**：侧栏资产**拖出主窗口边界**释放或右键「在独立窗口打开」→ 创建独立 OS 窗口（label=`asset-<sanitized assetId>`，重复开聚焦已有窗口），加载 `/index.html?win=asset&assetId=`，App.vue 按 query 分支渲染 `AssetWindowShell`（标题栏 + 上终端/下文件 + 完整可收起右栏监控，无左栏）。**每窗口独立 webview/Pinia 实例、共享 Rust 后端**（Rust 零改动）；侧栏拖出/右键入口新建自己的会话。关键约束：① `resourceMonitor.applySnapshot` 按 sessionId 过滤（全局广播事件防双窗口串流）；② sessions 的 host-key/keyboard handler 有 `ownsConnectingSession` 守卫（防跨窗口弹错资产名的确认框）；③ asset 模式 `initialize({mode:'asset'})` 跳过 MCP/sync 初始化（MCP 审批弹窗只在主窗口）；④ 关窗走 onCloseRequested 确认（connecting 会话先等 settle ≤10s）→ 断开本窗口会话 → destroy；⑤ asset 窗口布局用独立 storageKey（`myshelltool:layout-asset:v1`）、右栏折叠不写共享 localStorage。capabilities windows 含 `asset-*` glob。已知限制：窗口不持久化恢复、资产删除不跨窗口同步、主题跨窗口不实时同步、Esc 取消的窗外拖拽可能误开窗（待实测）。
-- **【多窗口·tab 迁移】终端 tab 跨窗口拖出/合并（会话所有权迁移）**：主窗口 connected 终端 tab 拖出窗外释放 → **迁移会话**（不重连）到该资产独立窗口：`src/lib/sessionHandoff.js` 导出 scrollback（**@xterm/addon-serialize 序列化，带 SGR 颜色/样式**——`exportTerminalScrollback`，末 2000 行、1M 字符预算，超预算头部截断后 prepend `\x1b[0m` 防 delta 式 SGR 断链错色；addon 不可用时回退 `exportTerminalText` 纯文本。曾长期纯文本导出，迁移后历史整体褪成默认前景色、蓝色 prompt 变白，v2.4 修复）经 **Rust 内存中转**（`session_handoff_put`/`session_handoff_take` 命令，AppState `Mutex<HashMap>` + TTL 60s，take 即原子删除——曾用 localStorage 中转但 WebView2 跨窗口不实时共享导致 adopt 恒失败，已废弃）→ `await session.unlisten()`（先解绑防双写）→ `removeSessionEntry`（仅移 UI，不 ssh_disconnect，会话在后端存活）→ 新窗口 URL 带 `&adopt=<sessionId>`，boot 经 `sessionsStore.adoptSession` 重建 xterm（`createTerminalForAsset` 与 connectSelected 共用 helper，每 session 挂 SerializeAddon）+ `registerSessionStream` + 100 行分块 rAF 回放。**独立窗口无 tab 条**（TerminalSurface `showTabs` prop，窗口即会话），回迁主窗口走**标题栏「移回主窗口」按钮**（`pushSessionToMainWindow` push 协议：迁移 + MERGE_PUSH 事件 + 主窗口 adopt，迁移后空窗自动关窗；主窗口已关则拒绝迁移防会话无主）。协议剩两事件（`session-handoff-tearoff`/`-merge-push`，`sourceWindowId` 防自吞，TEAROFF 仅 asset 窗口且 assetId 匹配、MERGE_PUSH 仅主窗口监听）；跨窗口 drop 合并（pull 协议）已随 tab 条删除而移除（WebView2 跨窗口自定义 MIME 不可靠，按钮替代）。已知限制：回放不含 alt 屏与软换行（vim/less 中拖出只还原进 alt 前内容、超宽行拆行）、颜色状态在极端截断时回落默认色；迁移瞬间输出丢失；Esc 取消的窗外拖拽会误触发拆出；溢出折叠 tab 不可拖。
-- **【v2.3】文件面板与终端会话生命周期联动**：sessions store 断开/关闭/连接成功时经 workbench bridge 通知 files store（`handleSessionClosed` 清空面板 / `handleSessionConnected` 延迟 600ms 静默自动加载——SFTP 通道就绪前抢跑会报错）。终端 cd 跟随：连接后注入 bash 专属 OSC 7 上报（stty -echo 两段式包裹、BASH_VERSION 门控、case 幂等守卫），`createOscParser` 解析 OSC 7 → `syncTerminalCwd` 跟随切换（400ms 节流、仅面板当前绑定资产生效）。局限：依赖 shell 发 OSC 7——bash 已由注入覆盖；zsh 安全跳过不同步；fish 等语法不兼容 shell 有一次 stderr 噪音。
+- **【多窗口·tab 迁移】终端 tab 跨窗口拖出/合并（会话所有权迁移）**：主窗口 connected 终端 tab 拖出窗外释放 → **迁移会话**（不重连）到该资产独立窗口：`src/lib/sessionHandoff.ts` 导出 scrollback（**@xterm/addon-serialize 序列化，带 SGR 颜色/样式**——`exportTerminalScrollback`，末 2000 行、1M 字符预算，超预算头部截断后 prepend `\x1b[0m` 防 delta 式 SGR 断链错色；addon 不可用时回退 `exportTerminalText` 纯文本。曾长期纯文本导出，迁移后历史整体褪成默认前景色、蓝色 prompt 变白，v2.4 修复）经 **Rust 内存中转**（`session_handoff_put`/`session_handoff_take` 命令，AppState `Mutex<HashMap>` + TTL 60s，take 即原子删除——曾用 localStorage 中转但 WebView2 跨窗口不实时共享导致 adopt 恒失败，已废弃）→ `await session.unlisten()`（先解绑防双写）→ `removeSessionEntry`（仅移 UI，不 ssh_disconnect，会话在后端存活）→ 新窗口 URL 带 `&adopt=<sessionId>`，boot 经 `sessionsStore.adoptSession` 重建 xterm（`createTerminalForAsset` 与 connectSelected 共用 helper，每 session 挂 SerializeAddon）+ `registerSessionStream` + 100 行分块 rAF 回放。**独立窗口无 tab 条**（TerminalSurface `showTabs` prop，窗口即会话），回迁主窗口走**标题栏「移回主窗口」按钮**（`pushSessionToMainWindow` push 协议：迁移 + MERGE_PUSH 事件 + 主窗口 adopt，迁移后空窗自动关窗；主窗口已关则拒绝迁移防会话无主）。协议剩两事件（`session-handoff-tearoff`/`-merge-push`，`sourceWindowId` 防自吞，TEAROFF 仅 asset 窗口且 assetId 匹配、MERGE_PUSH 仅主窗口监听）；跨窗口 drop 合并（pull 协议）已随 tab 条删除而移除（WebView2 跨窗口自定义 MIME 不可靠，按钮替代）。已知限制：回放不含 alt 屏与软换行（vim/less 中拖出只还原进 alt 前内容、超宽行拆行）、颜色状态在极端截断时回落默认色；迁移瞬间输出丢失；Esc 取消的窗外拖拽会误触发拆出；溢出折叠 tab 不可拖。
+- **【v2.3】文件面板与终端会话生命周期联动**：sessions store 断开/关闭/连接成功时经 workbench bridge 通知 files store（`handleSessionClosed` 清空面板 / `handleSessionConnected` 延迟 600ms 静默自动加载——SFTP 通道就绪前抢跑会报错）。终端 cd 跟随：连接后注入 bash 专属 OSC 7 上报。**无痕注入三件套**：① Rust 端 pty 建连即以 ECHO=0 打开（`ssh.rs` request_pty `Pty::ECHO`），注入行全程不可见——早期「`stty -echo` 两段式」与「等首段输出再注入」闸门在慢 .bashrc 机器都会产生可见噪音/双重回显（MOTD 横幅是 sshd 在 shell 启动前打印的，不能作 shell 就绪信号）；② 单行注入：payload 经 `eval '...'` 包裹、行尾 ` stty echo` 恢复回显（置于 eval 之外，fish 拒Parse 也不丢回显恢复）、`test -n "$BASH_VERSION" && printf '%b' '\e[1A\e[G\e[J'` 擦除多余提示符行（bash 专属：交互 bash 每执行一行命令重画一次 PS1，readline accept 必输出换行故上移一行精确落回提示符行）；③ 前导空格不进 HISTCONTROL=ignoreboth 历史、case 幂等守卫、BASH_VERSION 门控（zsh 跳过）。局限：擦除仅对 bash 启用（zsh/dash/fish 留一个空提示符，宁留不冒险擦真实内容）；多行 PS1 擦除会留残片（已知未修）；`createOscParser` 解析 OSC 7 → `syncTerminalCwd` 跟随切换（400ms 节流、仅面板当前绑定资产生效；跟随加载为 silent——失败仅空态展示+重试，不弹 toast）。注意：Tauri 后端 `Err(String)` 在前端以**字符串** reject（无 `Error.message`），错误处理必须显式取字符串，否则任何后端失败都显示成「未知错误」；SFTP 初始化/read_dir 失败已落 error 日志（`sftp init`/`sftp_list_dir` 前缀）。
 
 ---
 
@@ -338,7 +347,7 @@ credential_id(Option), passphrase_credential_id(Option)
 收到任务时按此顺序判断：
 1. **是读/研究类**？→ 用 Explore 子 agent 并行搜索，给出结论而非文件堆。
 2. **涉及多文件/架构决策**？→ 先进 Plan 模式，产出计划并经确认。
-3. **有现成实现可复用**？→ 复用（查 `ui/index.js`、`workbench.js` re-export、`backend.js` normalize*）。
+3. **有现成实现可复用**？→ 复用（查 `ui/index.ts`、`workbench.ts` re-export、`backend.ts` normalize*）。
 4. **要改 Rust 命令**？→ 别忘了在 `generate_handler!` 注册。
-5. **要加跨 store 逻辑**？→ 加子 store action + `workbench.js` re-export，用 lazy bridge。
+5. **要加跨 store 逻辑**？→ 加子 store action + `workbench.ts` re-export，用 lazy bridge。
 6. **改完**？→ 跑 §5 的验证，如实报告 exit code。

@@ -10,11 +10,11 @@
 
 ## 高频踩坑点（Copilot 易出错处）
 
-1. **前端是 Vue 3 + Pinia**，不是 Vanilla JS（旧 README 曾写错，以 `AGENTS.md` / `package.json` 为准）。生成组件用 `<script setup>` + Composition API。
+1. **前端是 Vue 3 + TypeScript + Pinia**，不是 Vanilla JS（旧 README 曾写错，以 `AGENTS.md` / `package.json` 为准）。生成组件用 `<script setup lang="ts">` + Composition API。
 2. **样式用 SCSS 设计 token**：颜色/间距/z-index 用 `var(--token)`（`src/styles/_tokens.scss`），不要硬编码。不要建议引入 Tailwind。
 3. **图标统一 `lucide-vue-next`**，不要建议其他图标库。
 4. **新增 Tauri 命令**必须两步：`#[tauri::command]` + 在 `generate_handler![]` 注册。
-5. **跨 store 逻辑**：加子 store action + `workbench.js` re-export + lazy bridge，禁止循环 import。
+5. **跨 store 逻辑**：加子 store action + `workbench.ts` re-export + lazy bridge，禁止循环 import。
 6. **凭据红线**：密码/passphrase 只走 `SecretStore`，不进 JSON/日志/console。Copilot 生成示例时不要把明文密码写进资产对象。
 7. **路径别名** `@` → `src/`。
 
@@ -23,7 +23,7 @@
 **完整规则见 [`docs/llm-engineering-guidelines.md`](../docs/llm-engineering-guidelines.md)**（含本项目反模式实证）。Copilot 尤其易犯以下错误，务必避免：
 
 - **先搜后写**：生成新逻辑/样式/正则前先搜现有实现，已有就复用。本项目实证：tag 正则曾 ×3、`.dot` CSS ×4、`terminalController.js` 死代码。
-- **文件不过大**：Vue/store ≤500 行、Rust ≤800 行。`ssh.rs`(1548)、`sessions.js`(810)、`GlobalModals.vue`(512) 已超标，往里加功能前先评估拆分。
+- **文件不过大**：Vue/store ≤500 行、Rust ≤800 行。`ssh.rs`(2158)、`sessions.ts`(1311)、`GlobalModals.vue`(1182) 已超标，往里加功能前先评估拆分。
 - **禁空 catch / window.alert**：错误走 `announce` 或显式注释；校验/确认走 `GlobalModals`，不用浏览器原生弹窗。
 - **别用 switch 链**：新增分支 >5 个用注册表（`GlobalModals` 加 modal 曾要改 4 处）。
 - **死代码即删**：未被 import 的模块确认后删除。

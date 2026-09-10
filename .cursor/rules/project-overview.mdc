@@ -13,13 +13,13 @@ alwaysApply: true
 
 ## 核心约束（违反 = 破坏一致性）
 
-- **前端：Vue 3 `<script setup>` + Pinia setup store + SCSS 设计 token**。不是 Vanilla JS。
+- **前端：Vue 3 `<script setup lang="ts">` + TypeScript strict + Pinia setup store + SCSS 设计 token**。不是 Vanilla JS。
 - **样式**：颜色/间距/z-index 一律用 `var(--token)`（`src/styles/_tokens.scss`），禁止硬编码。组件 `<style scoped lang="scss">` 顶部 `@use '@/styles/_tokens' as *;`。
 - **路径别名** `@` → `src/`。
 - **图标**：统一 `lucide-vue-next`，不引其他图标库。
-- **基础组件**在 `src/components/ui/`（`App*` 命名，`index.js` barrel 导出），业务组件按域分目录。
+- **基础组件**在 `src/components/ui/`（`App*` 命名，`index.ts` barrel 导出），业务组件按域分目录。
 - **通用操作入口**：右键菜单用 `AppContextMenu`（`items:[{label,action,danger,separator,disabled}]`），弹窗走 `GlobalModals.vue`（`store.modal={type,...}`）。
-- **跨 store 逻辑**：加子 store action + `workbench.js` re-export + `attachWorkbench` lazy bridge，禁止循环 import。响应式 state 用 `computed()` 包裹暴露。
+- **跨 store 逻辑**：加子 store action + `workbench.ts` re-export + `attachWorkbench` lazy bridge，禁止循环 import。响应式 state 用 `computed()` 包裹暴露。
 - **新增 Tauri 命令**：`src-tauri/src/lib.rs` 加 `#[tauri::command]` **并**在 `generate_handler![]` 注册。
 - **凭据红线**：密码/passphrase 只走 `SecretStore`，不进 JSON/日志/console。
 
@@ -33,5 +33,5 @@ alwaysApply: true
 ## 工作流
 
 - 多文件/架构决策类任务：先规划（产出计划），确认后再实现。
-- 复用现成实现（查 `ui/index.js`、`workbench.js` re-export、`backend.js` 的 normalize*）。
+- 复用现成实现（查 `ui/index.ts`、`workbench.ts` re-export、`backend.ts` 的 normalize*）。
 - 不自动 commit/push。

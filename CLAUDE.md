@@ -16,7 +16,7 @@
 
 - **前端是 Vue 3 + Pinia**，不是 Vanilla JS（旧 README 曾写错）。
 - **新增 Tauri 命令**：`lib.rs` 加 `#[tauri::command]` **并**在 `generate_handler![]` 注册，漏注册会 "command not found"。
-- **跨 store 逻辑**：加子 store action + `workbench.js` re-export，用 `attachWorkbench` lazy bridge，**禁止循环 import**。`workbench.js` 暴露子 store 响应式 state 必须用 `computed()` 包裹。
+- **跨 store 逻辑**：加子 store action + `workbench.ts` re-export，用 `attachWorkbench` lazy bridge，**禁止循环 import**。`workbench.ts` 暴露子 store 响应式 state 必须用 `computed()` 包裹。
 - **样式**：硬编码颜色/z-index 会被 review 打回，用 `var(--token)`（见 `src/styles/_tokens.scss`）。
 - **凭据红线**：密码/passphrase 只走 `SecretStore`，不进 JSON/日志/console。
 - **Contributors 红线（Claude Code 专属）**：commit message 里**禁止**写 `Co-Authored-By: Claude`、`Generated-by: Claude` 等 trailer，也不用 AI 邮箱（如 `noreply@anthropic.com`）做 `git commit --author=`。**本仓库的 GitHub Contributors 列表不得出现 Claude / AI**——这是项目所有者的明确要求。Claude Code 默认会在 commit message 追加 `Co-Authored-By: Claude` trailer，**必须显式停用这个行为**（实现由 Claude 协助的事实可用自然语言写在正文，但不得使用会被 GitHub 解析为贡献者元数据的 trailer 语法）。
@@ -33,6 +33,6 @@
 
 高频踩坑（务必避免）：
 - **先搜后写**：写新逻辑/样式/正则前 grep 现有实现，已有就复用，不另写。
-- **文件不过大**：Vue/store ≤500 行、Rust ≤800 行；当前 `ssh.rs`/`sessions.js`/`FileColumn.vue`/`files.js`/`GlobalModals.vue` 已超标，往里加功能前先评估拆分。
+- **文件不过大**：Vue/store ≤500 行、Rust ≤800 行；当前 `ssh.rs`/`sessions.ts`/`files.ts`/`GlobalModals.vue` 已超标，往里加功能前先评估拆分。
 - **空 catch / window.alert 禁用**：错误走 `announce` 或显式注释，校验/确认走 `GlobalModals`。
 - **加功能改几处**：能注册表就别 switch 链（新增 modal 别只改一个 switch 漏了其他）。

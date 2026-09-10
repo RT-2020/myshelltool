@@ -14,7 +14,7 @@ alwaysApply: true
 ## 写代码前必须做的（强制）
 
 1. **先搜后写**：动笔前用 grep/Grep/Explore 搜索相似逻辑、同名工具、同类样式。已有则**复用**，不另写。
-   - 工具函数先查：`src/services/backend.js`（normalize*）、`src/lib/`、`src/composables/`。
+   - 工具函数先查：`src/services/backend.ts`（normalize*）、`src/lib/`、`src/composables/`。
    - 样式先查：`src/styles/_utilities.scss`、`src/styles/_tokens.scss`。
 2. **DRY 单位是「概念」**：一个正则、一个样式、一个状态映射，全仓库只允许一处权威实现。
    - 本项目实证（禁止重蹈）：tag 正则曾 ×3、`.dot` CSS 曾 ×4、`terminalController.js` 死代码与 sessions.js 内联重复。
@@ -31,4 +31,4 @@ alwaysApply: true
 
 - 被 ≥2 个组件用的 CSS → 抽到 `src/styles/_utilities.scss` 全局 class。
 - 被 ≥2 处用的纯函数 → 抽到 `src/lib/` 或 composable（`useXxx`）。
-- 某 domain 的 `invokeBackend` 调用 >5 处 → 抽 `src/services/<domain>.js`。
+- 某 domain 的 `invokeBackend` 调用 >5 处 → 抽 `src/services/<domain>.ts`。

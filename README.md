@@ -316,7 +316,7 @@ Claude 会调用 `list_assets` 返回你配置的服务器列表。
 myshelltool/
 ├── src/                          # 前端（Vite root）
 │   ├── index.html                # 主页面
-│   ├── main.js                   # 应用入口
+│   ├── main.ts                   # 应用入口
 │   ├── App.vue                   # 根组件：5 区域布局
 │   ├── components/
 │   │   ├── shell/                # 外壳布局 / 侧栏 / 弹窗中枢
@@ -327,7 +327,7 @@ myshelltool/
 │   ├── stores/                   # Pinia：7 领域 store + workbench 编排壳
 │   ├── composables/              # useTheme/useClipboard/...
 │   ├── lib/                      # terminalController/dangerousCommands
-│   ├── services/backend.js       # Tauri IPC 桥
+│   ├── services/backend.ts       # Tauri IPC 桥
 │   └── styles/                   # SCSS：_tokens/_base/_utilities
 ├── src-tauri/                    # Tauri/Rust 后端
 │   ├── Cargo.toml                # 单 binary（v0.4.0 取消双 exe）
