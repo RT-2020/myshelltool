@@ -3,6 +3,7 @@ use log::{error, info, warn};
 use russh::client;
 use russh::keys::PublicKeyBase64;
 use russh::ChannelMsg;
+use russh::Pty;
 use russh_sftp::client::SftpSession;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -330,8 +331,8 @@ pub struct RemoteFileEntry {
     pub kind: String,
     pub size: u64,
     pub modified: String,
-    /// 权限八进制串（如 "755"）。来自 SFTP FileAttributes.permissions 或 find %m。
-    /// None 表示后端未提供（老 SFTP server / find 不支持 %m）。
+    /// 权限八进制串（如 "755"）。来自 SFTP FileAttributes.permissions。
+    /// None 表示后端未提供（老 SFTP server）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<String>,
     /// 属主用户名（如 "root"）。None 表示未提供。
@@ -347,6 +348,35 @@ pub struct RemoteDirectoryList {
     pub host: String,
     pub path: String,
     pub entries: Vec<RemoteFileEntry>,
+}
+
+/// SFTP DirEntry → RemoteFileEntry 共享映射（sftp_list_dir 与
+/// ssh_list_directory 两处复用，保持字段语义一致）。
+fn dir_entry_to_remote_file_entry(entry: russh_sftp::client::fs::DirEntry) -> RemoteFileEntry {
+    let meta = entry.metadata();
+    let kind = if meta.is_dir() {
+        "directory"
+    } else if meta.is_symlink() {
+        "symlink"
+    } else {
+        "file"
+    }
+    .to_string();
+    // 权限 u32 → 八进制串（过滤文件类型位，只留权限位，如 "0755"）。
+    // user/group 来自 SFTP 长名解析，部分 server 不提供（None）。
+    let permissions = meta.permissions.map(|p| format!("{:04o}", p & 0o7777));
+    RemoteFileEntry {
+        name: entry.file_name(),
+        path: entry.path(),
+        kind,
+        size: meta.len(),
+        // Unix 秒字符串（复用 fs_local::format_modified）：Debug 格式会输出
+        // "Ok(SystemTime { .. })" 直接透给前端，两条路径必须一致。
+        modified: crate::fs_local::format_modified(meta.modified()),
+        permissions,
+        user: meta.user.clone(),
+        group: meta.group.clone(),
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -649,8 +679,13 @@ pub async fn ssh_connect(
 
     let pty_cols = if cols > 0 { cols } else { 80 };
     let pty_rows = if rows > 0 { rows } else { 24 };
+    // pty 以 ECHO=0 打开（SSH_TTY_OP_ECHO=53）：前端 OSC 7 cwd 上报注入
+    // （injectShellCwdIntegration）依赖远端回显从建连起关闭才能无痕——注入行在远端
+    // .bashrc 执行期就到达输入队列，回显开着会被 tty 提前回显成可见乱码（MOTD 横幅
+    // 是 sshd 在 shell 启动前打印的，前端无法用输出事件判断 shell 是否就绪）。
+    // 回显恢复由注入行内的 `stty echo` 完成（shell 就绪后随首条注入命令执行）。
     channel
-        .request_pty(false, "xterm-256color", pty_cols, pty_rows, 0, 0, &[])
+        .request_pty(false, "xterm-256color", pty_cols, pty_rows, 0, 0, &[(Pty::ECHO, 0)])
         .await
         .map_err(|e| format!("PTY request failed: {e}"))?;
 
@@ -892,11 +927,6 @@ pub async fn ssh_list_directory(
     private_key_credential_id: Option<String>,
     path: String,
 ) -> Result<RemoteDirectoryList, String> {
-    let requested_path = if path.trim().is_empty() {
-        ".".to_string()
-    } else {
-        path
-    };
     let handle = connect_authenticated(
         &state,
         &host,
@@ -912,43 +942,54 @@ pub async fn ssh_list_directory(
     )
     .await?;
 
-    let mut channel = handle
+    // 走 SFTP 子系统列目录（对齐 sftp_list_dir 通道），替代旧 exec
+    // `find -printf`：-printf 是 GNU 扩展，BusyBox/Alpine/BSD/macOS 上整个
+    // 目录列表直接失败；且 %TY-%Tm-%Td 时间格式与 SFTP 路径的 epoch 秒
+    // 不一致（前端按数字排序）。该连接本为一次性，SFTP 会话随连接丢弃。
+    let channel = handle
         .channel_open_session()
         .await
-        .map_err(|e| format!("Channel open failed: {e}"))?;
-    // %f 名 / %p 全路径 / %y 类型(d/l/f) / %s 大小 / %TY-%Tm-%Td %TH:%TM 修改时间 /
-    // %m 权限八进制 / %u 属主用户 / %g 属主组。字段以 \\t 分隔。
-    let command = format!(
-        "LC_ALL=C find {} -maxdepth 1 -mindepth 1 -printf '%f\\t%p\\t%y\\t%s\\t%TY-%Tm-%Td %TH:%TM\\t%m\\t%u\\t%g\\n'",
-        shell_quote(&requested_path)
-    );
+        .map_err(|e| format!("SFTP channel open failed: {e}"))
+        .inspect_err(|m| error!("ssh_list_directory (host {host}): {m}"))?;
     channel
-        .exec(true, command)
+        .request_subsystem(true, "sftp")
         .await
-        .map_err(|e| format!("Directory list failed: {e}"))?;
+        .map_err(|e| format!("SFTP subsystem request failed: {e}"))
+        .inspect_err(|m| error!("ssh_list_directory (host {host}): {m}"))?;
+    let sftp = SftpSession::new(channel.into_stream())
+        .await
+        .map_err(|e| format!("SFTP session init failed: {e}"))
+        .inspect_err(|m| error!("ssh_list_directory (host {host}): {m}"))?;
 
-    let mut output = Vec::new();
-    let mut errors = Vec::new();
-    while let Some(msg) = channel.wait().await {
-        match msg {
-            ChannelMsg::Data { data } => output.extend_from_slice(&data),
-            ChannelMsg::ExtendedData { data, ext: _ } => errors.extend_from_slice(&data),
-            ChannelMsg::Eof | ChannelMsg::ExitStatus { .. } => break,
-            _ => {}
-        }
-    }
+    // 空 path = 服务器默认目录：canonicalize(".") 解析出真实绝对路径
+    //（SFTP 服务进程 cwd 起始于登录用户家目录，与 sftp_list_dir 语义一致）。
+    let requested_path = if path.trim().is_empty() {
+        sftp.canonicalize(".")
+            .await
+            .map_err(|e| format!("SFTP canonicalize failed: {e}"))
+            .inspect_err(|m| error!("ssh_list_directory (host {host}): {m}"))?
+    } else {
+        path
+    };
 
-    if !errors.is_empty() {
-        let message = String::from_utf8_lossy(&errors).trim().to_string();
-        if !message.is_empty() {
-            return Err(message);
-        }
-    }
+    let mut entries: Vec<RemoteFileEntry> = sftp
+        .read_dir(&requested_path)
+        .await
+        .map_err(|e| format!("SFTP read_dir failed: {e}"))
+        .inspect_err(|m| {
+            error!("ssh_list_directory (host {host}, path {requested_path}): {m}")
+        })?
+        .into_iter()
+        .map(dir_entry_to_remote_file_entry)
+        .collect();
+
+    // 排序与 sftp_list_dir 一致：目录优先，同类型按名称字母序。
+    entries.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
 
     Ok(RemoteDirectoryList {
         host,
         path: requested_path,
-        entries: parse_remote_file_entries(&String::from_utf8_lossy(&output)),
+        entries,
     })
 }
 
@@ -1093,15 +1134,18 @@ async fn get_or_create_sftp(
     let channel = handle
         .channel_open_session()
         .await
-        .map_err(|e| format!("SFTP channel open failed: {e}"))?;
+        .map_err(|e| format!("SFTP channel open failed: {e}"))
+        .inspect_err(|m| error!("sftp init (session {session_id}): {m}"))?;
     channel
         .request_subsystem(true, "sftp")
         .await
-        .map_err(|e| format!("SFTP subsystem request failed: {e}"))?;
+        .map_err(|e| format!("SFTP subsystem request failed: {e}"))
+        .inspect_err(|m| error!("sftp init (session {session_id}): {m}"))?;
 
     let sftp = SftpSession::new(channel.into_stream())
         .await
-        .map_err(|e| format!("SFTP session init failed: {e}"))?;
+        .map_err(|e| format!("SFTP session init failed: {e}"))
+        .inspect_err(|m| error!("sftp init (session {session_id}): {m}"))?;
 
     info!("SFTP session initialized for session {session_id}");
 
@@ -1122,8 +1166,18 @@ pub async fn sftp_list_dir(
     let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
     let sftp = sftp_arc.lock().await;
 
+    // 空 path = 服务器默认目录：SFTP 服务进程 cwd 起始于登录用户家目录，
+    // canonicalize(".") 解析出真实绝对路径。此前前端猜 /home/<username>，
+    // 对 root（家在 /root）等非标准布局必错，报 "SFTP read_dir failed: No such file"。
     let requested_path = if path.trim().is_empty() {
-        ".".to_string()
+        match sftp.canonicalize(".").await {
+            Ok(resolved) => resolved,
+            Err(e) => {
+                let m = format!("SFTP canonicalize failed: {e}");
+                error!("sftp_list_dir (session {session_id}): {m}");
+                return Err(m);
+            }
+        }
     } else {
         path
     };
@@ -1131,39 +1185,12 @@ pub async fn sftp_list_dir(
     let raw_entries = sftp
         .read_dir(&requested_path)
         .await
-        .map_err(|e| format!("SFTP read_dir failed: {e}"))?;
+        .map_err(|e| format!("SFTP read_dir failed: {e}"))
+        .inspect_err(|m| error!("sftp_list_dir (session {session_id}, path {requested_path}): {m}"))?;
 
     let mut entries: Vec<RemoteFileEntry> = raw_entries
         .into_iter()
-        .map(|entry| {
-            let meta = entry.metadata();
-            let kind = if meta.is_dir() {
-                "directory"
-            } else if meta.is_symlink() {
-                "symlink"
-            } else {
-                "file"
-            }
-            .to_string();
-            // 权限 u32 → 八进制串（去掉类型位前缀，取末 4 位如 "0755"）。
-            // user/group 来自 SFTP 长名解析，部分 server 不提供（None）。
-            let permissions = meta.permissions.map(|p| {
-                let mode = p & 0o7777; // 过滤文件类型位，只留权限位
-                format!("{:04o}", mode)
-            });
-            RemoteFileEntry {
-                name: entry.file_name(),
-                path: entry.path(),
-                kind,
-                size: meta.len(),
-                // Unix 秒字符串（复用 fs_local::format_modified）：此前 format!("{:?}")
-                // 会输出 "Ok(SystemTime { tv_sec: ..., tv_nsec: 0 })" 直接透给前端。
-                modified: crate::fs_local::format_modified(meta.modified()),
-                permissions,
-                user: meta.user.clone(),
-                group: meta.group.clone(),
-            }
-        })
+        .map(dir_entry_to_remote_file_entry)
         .collect();
 
     entries.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
@@ -1833,52 +1860,6 @@ async fn handle_socks5_connection(
 struct KnownHostEntry {
     key_type: String,
     key_hex: String,
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-fn parse_remote_file_entries(output: &str) -> Vec<RemoteFileEntry> {
-    let mut entries = Vec::new();
-    for line in output.lines() {
-        let parts: Vec<&str> = line.split('\t').collect();
-        // 至少 5 个核心字段（name/path/kind/size/modified）；
-        // 权限/用户/组（parts[5..7]）可选，老 find 或 BusyBox 无 %m/%u/%g 时回落 None。
-        if parts.len() < 5 {
-            continue;
-        }
-        // 权限八进制补齐 4 位（find %m 输出如 "755"），缺失或解析失败 → None。
-        let permissions = parts.get(5).and_then(|s| {
-            let trimmed = s.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-            match u32::from_str_radix(trimmed, 8) {
-                Ok(mode) => Some(format!("{:04o}", mode & 0o7777)),
-                Err(_) => Some(trimmed.to_string()),
-            }
-        });
-        let user = parts.get(6).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-        let group = parts.get(7).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-        entries.push(RemoteFileEntry {
-            name: parts[0].to_string(),
-            path: parts[1].to_string(),
-            kind: match parts[2] {
-                "d" => "directory",
-                "l" => "symlink",
-                _ => "file",
-            }
-            .to_string(),
-            size: parts[3].parse().unwrap_or(0),
-            modified: parts[4].to_string(),
-            permissions,
-            user,
-            group,
-        });
-    }
-    entries.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
-    entries
 }
 
 fn bytes_to_hex(bytes: &[u8]) -> String {

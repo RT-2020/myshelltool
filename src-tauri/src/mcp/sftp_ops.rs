@@ -281,6 +281,44 @@ impl HeadlessSftpSession {
         Ok(String::from_utf8_lossy(&buf).to_string())
     }
 
+    /// rename 覆盖兜底（write_file_atomic / upload_stream 共用）。
+    ///
+    /// russh-sftp 只发标准 FXP_RENAME（无 posix-rename@openssh.com 扩展），
+    /// 规范严格的服务器（SFTP v3 语义）会拒绝覆盖已存在目标。兜底：rename
+    /// 失败时 stat 目标——存在则先 remove 目标再重试 rename 一次；目标不
+    /// 存在（rename 因其他原因失败）或重试仍失败才报错。remove 失败时把
+    /// 原 rename 错误一并带出。正常路径（首次 rename 成功）行为不变。
+    async fn rename_with_overwrite_fallback(&self, temp: &str, target: &str) -> Result<(), String> {
+        if let Err(rename_err) = self.sftp.rename(temp, target).await {
+            match self.sftp.metadata(target).await {
+                Ok(_) => {
+                    // 目标已存在 → 删除后重试一次（目标为目录时 remove_file
+                    // 会失败，原 rename 错误随错误信息带出，不静默）。
+                    if let Err(remove_err) = self.sftp.remove_file(target).await {
+                        return Err(format!(
+                            "原子替换失败 (rename to {target}): {rename_err}; \
+                             回退删除已存在目标也失败: {remove_err}"
+                        ));
+                    }
+                    log::warn!(
+                        "sftp rename 覆盖兜底: 目标 {target} 已存在，remove 后重试 rename"
+                    );
+                    if let Err(retry_err) = self.sftp.rename(temp, target).await {
+                        return Err(format!(
+                            "原子替换失败 (rename to {target}): 首次 {rename_err}; \
+                             删除目标重试后仍失败: {retry_err}"
+                        ));
+                    }
+                }
+                Err(_) => {
+                    // stat 失败视为目标不存在，rename 失败另有原因，直接报原错误。
+                    return Err(format!("原子替换文件失败 (rename to {target}): {rename_err}"));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// 原子写入文件（写入 `<path>.myshelltool.<uuid>.tmp` 后原子 rename）。
     pub async fn write_file_atomic(&self, path: &str, content: &[u8]) -> Result<usize, String> {
         let norm_path = normalize_remote_path(path);
@@ -301,11 +339,11 @@ impl HeadlessSftpSession {
             .await
             .map_err(|e| format!("刷新文件失败: {e}"))?;
 
-        // 原子重命名
-        if let Err(e) = self.sftp.rename(&temp_path, &norm_path).await {
+        // 原子重命名（含覆盖兜底，见 rename_with_overwrite_fallback）
+        if let Err(e) = self.rename_with_overwrite_fallback(&temp_path, &norm_path).await {
             // 失败时尽力清理临时文件
             let _ = self.sftp.remove_file(&temp_path).await;
-            return Err(format!("原子替换文件失败 (rename to {norm_path}): {e}"));
+            return Err(e);
         }
 
         Ok(content.len())
@@ -356,9 +394,10 @@ impl HeadlessSftpSession {
             .await
             .map_err(|e| format!("刷新远端文件失败: {e}"))?;
 
-        if let Err(e) = self.sftp.rename(&temp_remote, &norm_remote).await {
+        // rename（含覆盖兜底，见 rename_with_overwrite_fallback）
+        if let Err(e) = self.rename_with_overwrite_fallback(&temp_remote, &norm_remote).await {
             let _ = self.sftp.remove_file(&temp_remote).await;
-            return Err(format!("上传完成重命名失败 (rename to {norm_remote}): {e}"));
+            return Err(e);
         }
 
         let sha256_hex = format!("{:x}", hasher.finalize());

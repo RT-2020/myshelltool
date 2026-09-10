@@ -3,7 +3,8 @@
 //
 // 安全模型（评审修复）：
 // - 路径规范化（去 `..` / `.`）但**不**跟随 symlink（防穿越）
-// - 黑名单：拒绝系统目录（Windows: C:\Windows、Program Files、ProgramData；
+// - 黑名单：拒绝系统目录（Windows: 任意盘符的 Windows、Program Files、
+//   ProgramData、$Recycle.Bin 等；
 //   Unix: /etc、/usr、/var、/boot、/sys、/proc、/dev、/root、/bin、/sbin、/lib）
 // - 拒绝根目录（防止递归删除整盘）
 // - 删除时用 symlink_metadata 不跟随 symlink，防止"删 symlink → 删目标"
@@ -66,15 +67,30 @@ fn is_sensitive_path(abs: &Path) -> bool {
         return true;
     }
 
+    // Windows 系统目录：任意盘符（系统未必装在 C 盘，D:/E: 盘的 windows
+    // 同样必须受保护）。匹配「恰好等于目录本身」或以 `<盘符>:\dir\` 为前缀。
+    if s.len() > 3 {
+        let b = s.as_bytes();
+        if b[0].is_ascii_lowercase() && b[1] == b':' && b[2] == b'\\' {
+            let rest = &s[3..];
+            const WIN_SYSTEM_DIRS: &[&str] = &[
+                "windows",
+                "program files",
+                "program files (x86)",
+                "programdata",
+                "$recycle.bin",
+                "system volume information",
+            ];
+            for dir in WIN_SYSTEM_DIRS {
+                if rest == *dir || rest.starts_with(&format!("{dir}\\")) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // Unix 系统目录
     const BLOCKED: &[&str] = &[
-        // Windows 系统目录
-        "c:\\windows",
-        "c:\\program files",
-        "c:\\program files (x86)",
-        "c:\\programdata",
-        "c:\\$recycle.bin",
-        "c:\\system volume information",
-        // Unix 系统目录
         "\\etc", "\\usr", "\\var", "\\boot", "\\sys", "\\proc",
         "\\dev", "\\root", "\\sbin", "\\bin", "\\lib", "\\lib64",
         "\\system32",
@@ -227,9 +243,51 @@ pub fn fs_local_read_chunk(path: String, offset: u64, length: u64) -> Result<Vec
         .map_err(|e| format!("seek failed for {}: {e}", target.display()))?;
     let len = length.min(8 * 1024 * 1024) as usize;
     let mut buf = vec![0; len];
-    let read = file
-        .read(&mut buf)
-        .map_err(|e| format!("read failed for {}: {e}", target.display()))?;
-    buf.truncate(read);
+    // 读满请求长度或读到真 EOF（read 返回 0）为止。单次 read 不保证填满缓冲，
+    // 短读会让前端把「短块」误判为 EOF 提前终止上传循环。
+    // 契约：返回 Vec 长度 < 请求长度 ⟺ 真 EOF。
+    let mut filled = 0usize;
+    while filled < len {
+        let n = file
+            .read(&mut buf[filled..])
+            .map_err(|e| format!("read failed for {}: {e}", target.display()))?;
+        if n == 0 {
+            break; // 真 EOF
+        }
+        filled += n;
+    }
+    buf.truncate(filled);
     Ok(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sensitive_path_windows_dirs_any_drive() {
+        // C 盘系统目录（原有保护保持）
+        assert!(is_sensitive_path(Path::new("C:\\Windows")));
+        assert!(is_sensitive_path(Path::new("c:\\WINDOWS\\System32")));
+        assert!(is_sensitive_path(Path::new("C:\\Program Files\\App")));
+        assert!(is_sensitive_path(Path::new("C:\\Program Files (x86)\\App")));
+        assert!(is_sensitive_path(Path::new("C:\\ProgramData\\App")));
+        // 任意盘符（系统装在 D:/E: 时同样拦截）
+        assert!(is_sensitive_path(Path::new("D:\\Windows")));
+        assert!(is_sensitive_path(Path::new("e:\\program files\\app")));
+        assert!(is_sensitive_path(Path::new("F:\\ProgramData")));
+        // 正斜杠输入同样归一拦截
+        assert!(is_sensitive_path(Path::new("D:/Windows/System32")));
+    }
+
+    #[test]
+    fn test_sensitive_path_drive_root_and_normal_paths() {
+        // 盘符根 / 根目录
+        assert!(is_sensitive_path(Path::new("C:\\")));
+        assert!(is_sensitive_path(Path::new("D:\\")));
+        // 普通用户路径不拦截
+        assert!(!is_sensitive_path(Path::new("C:\\Users\\me\\file.txt")));
+        assert!(!is_sensitive_path(Path::new("D:\\MyData\\windows-backup")));
+        assert!(!is_sensitive_path(Path::new("E:\\myprogram files")));
+    }
 }

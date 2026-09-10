@@ -413,7 +413,7 @@ pub async fn sync_setup(
         let remote = gist_get(&pat, &existing_gist_id)
             .await?
             .ok_or_else(|| format!("Gist {existing_gist_id} 不存在"))?;
-        let (content, updated_at) = remote;
+        let (content, _) = remote;
         let payload: SyncPayload = serde_json::from_str(&content)
             .map_err(|e| format!("Gist 内容非合法同步载荷: {e}"))?;
         let vault = myshelltool_core::sync::unpack_vault(&payload, &master_password)?;
@@ -427,10 +427,12 @@ pub async fn sync_setup(
         // 资产文件直接就绪
         let _ = std::fs::write(&state.asset_store_path, &assets_json);
 
-        // 记录 sync state
+        // 记录 sync state。last_synced_at 记本地完成时刻（与刚落盘的资产文件
+        // mtime 同钟域）；记 Gist 的 updated_at（远端历史时刻）会让此后每次
+        // has_local_changes_since_last_sync 都误判「本地有变更」。
         sync_state.gist_id = Some(existing_gist_id.clone());
         sync_state.local_rev = Some(payload.remote_rev);
-        sync_state.last_synced_at = updated_at;
+        sync_state.last_synced_at = Some(chrono::Utc::now().to_rfc3339());
         save_sync_state(&state, &sync_state)?;
 
         Ok(SyncSetupResult::PulledRemote { assets_json })
@@ -438,11 +440,12 @@ pub async fn sync_setup(
         // 首次推送：全量打包当前本地资产与凭据 → 创建 Gist
         let payload = pack_local_vault(&state, &sync_state, &master_password, 1)?;
         let payload_json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-        let (new_gist_id, updated_at) = gist_create(&pat, &payload_json).await?;
+        let (new_gist_id, _) = gist_create(&pat, &payload_json).await?;
 
         sync_state.gist_id = Some(new_gist_id.clone());
         sync_state.local_rev = Some(1);
-        sync_state.last_synced_at = updated_at;
+        // 与 push 同理：记本地完成时刻，与本地文件 mtime 保持同钟域
+        sync_state.last_synced_at = Some(chrono::Utc::now().to_rfc3339());
         save_sync_state(&state, &sync_state)?;
 
         Ok(SyncSetupResult::Created {
@@ -524,10 +527,12 @@ pub async fn sync_push(
     let payload = pack_local_vault(&state, &sync_state, &master_password, new_rev)?;
     let payload_json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
 
-    let updated_at = gist_update(&pat, &gist_id, &payload_json).await?;
+    gist_update(&pat, &gist_id, &payload_json).await?;
 
     sync_state.local_rev = Some(new_rev);
-    sync_state.last_synced_at = updated_at;
+    // push 后本地文件 mtime ≤ 此刻；last_synced_at 记本地完成时刻与 mtime 同钟域，
+    // 才不会被 Gist 服务器钟与本机钟的偏差误报成「本地有变更」
+    sync_state.last_synced_at = Some(chrono::Utc::now().to_rfc3339());
     save_sync_state(&state, &sync_state)?;
 
     Ok(SyncPushResult {
@@ -572,7 +577,7 @@ pub async fn sync_pull(
     let remote_raw = gist_get(&pat, &gist_id)
         .await?
         .ok_or_else(|| "Gist 不存在（可能被手动删除）".to_string())?;
-    let (content, updated_at) = remote_raw;
+    let (content, _) = remote_raw;
     let remote_payload: SyncPayload = serde_json::from_str(&content)
         .map_err(|e| format!("Gist 内容非合法同步载荷: {e}"))?;
 
@@ -599,7 +604,10 @@ pub async fn sync_pull(
 
             let mut new_state = sync_state;
             new_state.local_rev = Some(remote_payload.remote_rev);
-            new_state.last_synced_at = updated_at;
+            // last_synced_at 记本地完成时刻（与刚落盘的资产文件 mtime 同钟域）：
+            // 记 Gist 的 updated_at（远端历史时刻）会导致此后每次
+            // has_local_changes_since_last_sync 都误判「本地有变更」
+            new_state.last_synced_at = Some(chrono::Utc::now().to_rfc3339());
             save_sync_state(&state, &new_state)?;
 
             Ok(SyncPullResult::Pulled {
@@ -649,11 +657,12 @@ pub async fn sync_resolve_conflict(
             let new_rev = remote_rev + 1;
             let payload = pack_local_vault(&state, &sync_state, &master_password, new_rev)?;
             let payload_json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-            let updated_at = gist_update(&pat, &gist_id, &payload_json).await?;
+            gist_update(&pat, &gist_id, &payload_json).await?;
 
             let mut new_state = sync_state;
             new_state.local_rev = Some(new_rev);
-            new_state.last_synced_at = updated_at;
+            // 与 sync_push 同理：记本地完成时刻，与 mtime 同钟域
+            new_state.last_synced_at = Some(chrono::Utc::now().to_rfc3339());
             save_sync_state(&state, &new_state)?;
         }
         "remote" => {
@@ -715,11 +724,12 @@ pub async fn sync_reset_master_password(
     let new_rev = sync_state.local_rev.unwrap_or(0) + 1;
     let new_payload = sync::pack(&assets_json, &new_password, new_rev)?;
     let payload_json = serde_json::to_string(&new_payload).map_err(|e| e.to_string())?;
-    let updated_at = gist_update(&pat, &gist_id, &payload_json).await?;
+    gist_update(&pat, &gist_id, &payload_json).await?;
 
     let mut new_state = sync_state;
     new_state.local_rev = Some(new_rev);
-    new_state.last_synced_at = updated_at;
+    // 与 sync_push 同理：记本地完成时刻，与 mtime 同钟域
+    new_state.last_synced_at = Some(chrono::Utc::now().to_rfc3339());
     // v1.6：若已启用自动同步，用新密码重新派生会话密钥（保持一致性，旧密钥失效）
     if new_state.auto_sync_enabled {
         save_session_key(&state, &new_password)?;
@@ -867,7 +877,8 @@ fn mask_gist_id(id: &str) -> String {
 ///
 /// **已知局限**（列为 follow-up，根治需改用 content hash 比较）：
 /// - 秒级粒度：同一秒内"保存→立即 pull"可能漏报（mtime 截到秒）
-/// - 钟差：last_synced_at 来自 GitHub 服务器钟，本地钟慢时可能误判
+/// - 钟差：last_synced_at 已统一记本地完成时刻（与 mtime 同钟域），不存在
+///   跨钟比较；但系统时钟被 NTP 回拨时仍可能短暂误判
 /// - rsync -p / 备份还原保留旧 mtime 会漏报
 ///
 /// **保守原则**：任何不确定（从没同步/时间解析失败/mtime 读失败）都返回 true
