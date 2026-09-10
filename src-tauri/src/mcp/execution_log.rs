@@ -123,16 +123,42 @@ pub fn execution_log_path(data_dir: &Path) -> PathBuf {
     data_dir.join("mcp-execution-log.json")
 }
 
-/// 读 store。文件不存在 / 损坏 / 空 → 重新开始（空 store，默认 lastCleanupMs=0
+/// 读 store。文件不存在 / 空内容 → 重新开始（空 store，默认 lastCleanupMs=0
 /// 会触发下次 append 时立即清理一次）。
+///
+/// **文件损坏 → 改名隔离保留证据**（`mcp-execution-log.corrupt-<unix秒>.json`）
+/// + log::error，再以空 store 继续：审计历史不能静默消失，隔离文件可供人工
+/// 抢救。已知边界：list_entries 不持写锁，隔离改名与并发 append 的原子替换
+/// 存在极窄竞窗——若此刻文件刚被替换，改名移走的是新内容（仍完整保留在
+/// 隔离文件中，且下一次 append 会重建），不丢数据，只错位。
 fn load_store(path: &Path) -> ExecutionLogStore {
     if !path.exists() {
         return ExecutionLogStore::default();
     }
     match std::fs::read_to_string(path) {
-        Ok(json) if !json.trim().is_empty() => {
-            serde_json::from_str(&json).unwrap_or_default()
-        }
+        Ok(json) if !json.trim().is_empty() => match serde_json::from_str(&json) {
+            Ok(store) => store,
+            Err(e) => {
+                let secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let quarantine = path.with_file_name(format!(
+                    "{}.corrupt-{secs}.json",
+                    path.file_stem().and_then(|s| s.to_str()).unwrap_or("mcp-execution-log")
+                ));
+                match std::fs::rename(path, &quarantine) {
+                    Ok(()) => log::error!(
+                        "mcp execution log 文件损坏（解析失败: {e}），原文件已隔离到 {}，从空日志重新开始",
+                        quarantine.display()
+                    ),
+                    Err(rename_err) => log::error!(
+                        "mcp execution log 文件损坏（解析失败: {e}），隔离改名失败: {rename_err}，从空日志重新开始（原损坏文件保留原地）"
+                    ),
+                }
+                ExecutionLogStore::default()
+            }
+        },
         _ => ExecutionLogStore::default(),
     }
 }

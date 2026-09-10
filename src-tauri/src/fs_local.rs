@@ -1,12 +1,15 @@
 // 本地文件系统命令（fs_local_*）。
 // 浏览器预览模式（npm run dev）调用会失败——前端 backend.js 在非 Tauri runtime 直接抛错。
 //
-// 安全模型（评审修复）：
-// - 路径规范化（去 `..` / `.`）但**不**跟随 symlink（防穿越）
-// - 黑名单：拒绝系统目录（Windows: 任意盘符的 Windows、Program Files、
-//   ProgramData、$Recycle.Bin 等；
+// 安全模型（评审修复 + v2.5 短名/UNC/verbatim 加固）：
+// - 路径规范化（去 `..` / `.`）；**返回值**不跟随 symlink（防穿越、不暴露物理路径），
+//   但**黑名单判定**在路径存在时补 canonicalize 归一（封 NTFS 8.3 短名绕过）
+// - 黑名单：拒绝系统目录（Windows: 任意盘符及 UNC share 内的 Windows、
+//   Program Files、ProgramData、$Recycle.Bin 等，判定前剥 `\\?\`/`\\.\`
+//   verbatim 前缀与 UNC `\\server\share` 两段；
 //   Unix: /etc、/usr、/var、/boot、/sys、/proc、/dev、/root、/bin、/sbin、/lib）
 // - 拒绝根目录（防止递归删除整盘）
+// - 删除类操作：路径存在但无法 canonicalize 时按拒绝处理（fail-secure）
 // - 删除时用 symlink_metadata 不跟随 symlink，防止"删 symlink → 删目标"
 // - list_dir 用 resolved.join(name) 返回 logical path，不暴露 symlink 物理路径
 
@@ -24,23 +27,30 @@ pub struct LocalDirectoryList {
     pub entries: Vec<RemoteFileEntry>,
 }
 
-fn home_dir_string() -> String {
-    if let Some(home) = std::env::var_os("USERPROFILE")
+fn home_dir_string() -> Result<String, String> {
+    std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
-    {
-        return PathBuf::from(home).to_string_lossy().into_owned();
-    }
-    ".".to_string()
+        .map(|home| PathBuf::from(home).to_string_lossy().into_owned())
+        // v2.5：不再静默回退 "."（进程 CWD）——文件面板会默默列出进程
+        // 工作目录，用户以为看到的是家目录。显式报错让前端引导指定路径。
+        .ok_or_else(|| {
+            "无法确定本机用户主目录（USERPROFILE/HOME 环境变量均未设置），请显式指定路径".to_string()
+        })
 }
 
 // 规范化路径（解析 ~ / home / 相对路径），但不 canonicalize（不跟随 symlink、不要求存在）。
 // 然后用 is_sensitive_path 黑名单拒绝系统目录。
+//
+// v2.5 短名归一：路径存在时补一次 std::fs::canonicalize 再判（NTFS 8.3 短名
+// 如 C:\PROGRA~1 经 canonicalize 还原为 C:\Program Files，字面比对封不住短名）。
+// canonicalize 返回 verbatim 形式（\\?\C:\...），由 is_sensitive_path 内部剥离。
+// 判定用 canonical 形态，返回值仍用 logical 路径（不暴露 symlink 物理路径）。
 fn resolve_input_path(input: &str) -> Result<PathBuf, String> {
     let trimmed = input.trim();
     let candidate: PathBuf = if trimmed.is_empty() || trimmed == "." || trimmed == "~" {
-        PathBuf::from(home_dir_string())
+        PathBuf::from(home_dir_string()?)
     } else if trimmed.starts_with('~') {
-        PathBuf::from(trimmed.replacen('~', &home_dir_string(), 1))
+        PathBuf::from(trimmed.replacen('~', &home_dir_string()?, 1))
     } else {
         PathBuf::from(trimmed)
     };
@@ -48,6 +58,20 @@ fn resolve_input_path(input: &str) -> Result<PathBuf, String> {
     // std::path::absolute 在 Rust 1.79+ 稳定：规范化 `..` / `.`，不解析 symlink，不要求存在。
     let abs = std::path::absolute(&candidate)
         .map_err(|e| format!("path normalization failed for {}: {e}", candidate.display()))?;
+
+    // 存在则用 canonicalize 归一形态再判（封 8.3 短名绕过）。解析失败
+    //（权限等）不视为敏感——删除类操作另有 fail-secure 拒绝（fs_local_delete）。
+    if abs.exists() {
+        if let Ok(canon) = std::fs::canonicalize(&abs) {
+            if is_sensitive_path(&canon) {
+                return Err(format!(
+                    "access to system path is not allowed: {}",
+                    abs.display()
+                ));
+            }
+            return Ok(abs);
+        }
+    }
 
     if is_sensitive_path(&abs) {
         return Err(format!(
@@ -59,32 +83,66 @@ fn resolve_input_path(input: &str) -> Result<PathBuf, String> {
 }
 
 // 系统敏感路径黑名单。canonical 后路径含 `..` 已被 absolute 规范化掉。
+//
+// v2.5 逃逸形态封堵（判定前先归一化）：
+// (a) verbatim 前缀 `\\?\C:\Windows` / device 前缀 `\\.\C:\`——Win32 原样
+//     透传，不剥则不满足「盘符+\」分支判断；canonicalize 的返回值必带
+//     `\\?\`，也依赖此剥离。
+// (b) UNC `\\server\share\Windows`——首字符 `\` 整个绕过盘符分支，剥掉
+//     `server\share` 两段后按盘内路径同样比对（share 根本身拒绝）。
+// (c) NTFS 8.3 短名 `C:\PROGRA~1`——字面不匹配目录名，由
+//     resolve_input_path 的 canonicalize 归一（见其注释）。
 fn is_sensitive_path(abs: &Path) -> bool {
     let s = abs.to_string_lossy().to_lowercase().replace('/', "\\");
+
+    // (a) 剥 verbatim / device 前缀
+    let s = s
+        .strip_prefix("\\\\?\\")
+        .or_else(|| s.strip_prefix("\\\\.\\"))
+        .unwrap_or(&s);
 
     // 根目录 / 盘符根
     if s == "\\" || s.len() == 3 && s.ends_with(":\\") {
         return true;
     }
 
-    // Windows 系统目录：任意盘符（系统未必装在 C 盘，D:/E: 盘的 windows
-    // 同样必须受保护）。匹配「恰好等于目录本身」或以 `<盘符>:\dir\` 为前缀。
-    if s.len() > 3 {
+    // (b) UNC：\\server\share\rest → rest 当作盘内路径比对。
+    // 提取「卷内路径」：盘符形态 c:\rest → rest；其余（Unix 绝对路径）→ None。
+    let volume_rest: Option<&str> = if let Some(tail) = s.strip_prefix("\\\\") {
+        // tail = server\share\rest...
+        let mut it = tail.splitn(3, '\\');
+        let _server = it.next();
+        match (it.next(), it.next()) {
+            // \\server 或 \\server\share（share 根）：整体拒绝
+            (None, _) | (Some(_), None) => return true,
+            (Some(_), Some(rest)) => Some(rest),
+        }
+    } else if s.len() > 3 {
         let b = s.as_bytes();
         if b[0].is_ascii_lowercase() && b[1] == b':' && b[2] == b'\\' {
-            let rest = &s[3..];
-            const WIN_SYSTEM_DIRS: &[&str] = &[
-                "windows",
-                "program files",
-                "program files (x86)",
-                "programdata",
-                "$recycle.bin",
-                "system volume information",
-            ];
-            for dir in WIN_SYSTEM_DIRS {
-                if rest == *dir || rest.starts_with(&format!("{dir}\\")) {
-                    return true;
-                }
+            Some(&s[3..])
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Windows 系统目录：任意盘符（系统未必装在 C 盘，D:/E: 盘的 windows
+    // 同样必须受保护）+ UNC share 内同名目录。匹配「恰好等于目录本身」或
+    // 以 `<dir>\` 为前缀。
+    if let Some(rest) = volume_rest {
+        const WIN_SYSTEM_DIRS: &[&str] = &[
+            "windows",
+            "program files",
+            "program files (x86)",
+            "programdata",
+            "$recycle.bin",
+            "system volume information",
+        ];
+        for dir in WIN_SYSTEM_DIRS {
+            if rest == *dir || rest.starts_with(&format!("{dir}\\")) {
+                return true;
             }
         }
     }
@@ -119,7 +177,7 @@ pub(crate) fn format_modified(modified: std::io::Result<std::time::SystemTime>) 
 }
 
 #[command]
-pub fn fs_local_home_dir() -> String {
+pub fn fs_local_home_dir() -> Result<String, String> {
     home_dir_string()
 }
 
@@ -201,6 +259,15 @@ pub fn fs_local_mkdir(path: String) -> Result<(), String> {
 #[command]
 pub fn fs_local_delete(path: String, kind: String) -> Result<(), String> {
     let target = resolve_input_path(&path)?;
+    // fail-secure（v2.5）：删除类操作在路径存在但无法 canonicalize（权限/句柄
+    // 占用）时按拒绝处理——黑名单判定依赖 canonicalize 归一（8.3 短名），
+    // 解析失败 = 无法确认目标不属系统目录，宁可误拒不可误删。
+    if target.exists() && std::fs::canonicalize(&target).is_err() {
+        return Err(format!(
+            "无法解析路径 {}（权限或句柄占用），为安全起见拒绝删除",
+            target.display()
+        ));
+    }
     // symlink_metadata 不跟随 symlink，防"删 symlink → 删目标"。
     let meta = std::fs::symlink_metadata(&target)
         .map_err(|e| format!("stat failed for {}: {e}", target.display()))?;
@@ -289,5 +356,45 @@ mod tests {
         assert!(!is_sensitive_path(Path::new("C:\\Users\\me\\file.txt")));
         assert!(!is_sensitive_path(Path::new("D:\\MyData\\windows-backup")));
         assert!(!is_sensitive_path(Path::new("E:\\myprogram files")));
+    }
+
+    // ─── v2.5 逃逸形态封堵：verbatim / UNC / 8.3 短名 ───
+
+    #[test]
+    fn test_sensitive_path_verbatim_prefix_blocked() {
+        // (a) verbatim 前缀：Win32 API 原样透传 `\\?\`，不剥离则不满足
+        // 「盘符+\」判断而绕过黑名单。canonicalize 的返回值必带 `\\?\`。
+        assert!(is_sensitive_path(Path::new("\\\\?\\C:\\Windows")));
+        assert!(is_sensitive_path(Path::new("\\\\?\\C:\\Windows\\System32")));
+        assert!(is_sensitive_path(Path::new("\\\\?\\C:\\Program Files\\App")));
+        // device 前缀同剥
+        assert!(is_sensitive_path(Path::new("\\\\.\\C:\\Windows")));
+        // verbatim 普通路径不误拦
+        assert!(!is_sensitive_path(Path::new("\\\\?\\C:\\Users\\me\\file.txt")));
+    }
+
+    #[test]
+    fn test_sensitive_path_unc_blocked() {
+        // (b) UNC：`\\server\share\windows` 首字符 `\` 原本整个绕过盘符分支；
+        // 剥掉 server\share 两段后按盘内路径同样比对。
+        assert!(is_sensitive_path(Path::new("\\\\fileserver\\share\\Windows")));
+        assert!(is_sensitive_path(Path::new("\\\\fileserver\\share\\Program Files\\App")));
+        assert!(is_sensitive_path(Path::new("\\\\nas\\public\\programdata")));
+        // share 根 / server 根整体拒绝；share 内普通目录不拦
+        assert!(is_sensitive_path(Path::new("\\\\fileserver\\share")));
+        assert!(!is_sensitive_path(Path::new("\\\\fileserver\\share\\data\\file.txt")));
+        assert!(!is_sensitive_path(Path::new("\\\\fileserver\\share\\windows-backup")));
+    }
+
+    #[test]
+    fn test_sensitive_path_short_name_via_canonical_form() {
+        // (c) NTFS 8.3 短名（C:\PROGRA~1）字面不匹配黑名单目录名，纯字面
+        // 判定拦不住（这是 resolve_input_path 补 canonicalize 的原因）。
+        // 短名在 canonicalize 后还原为 `\\?\C:\Program Files`——本测试锁定
+        // 「canonicalize 产物形态必被拦截」，即短名经归一后无路可逃：
+        //   C:\PROGRA~1 --canonicalize--> \\?\C:\Program Files --(a)剥离--> 命中
+        assert!(!is_sensitive_path(Path::new("C:\\PROGRA~1")), "字面形态本就不命中（归一由 resolve_input_path 负责）");
+        assert!(is_sensitive_path(Path::new("\\\\?\\C:\\Program Files")), "canonicalize 产物必须命中");
+        assert!(is_sensitive_path(Path::new("\\\\?\\C:\\PROGRA~1")) == false, "verbatim 短名仍需 canonicalize 归一，黑名单不做 8.3 展开");
     }
 }

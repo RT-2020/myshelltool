@@ -27,16 +27,6 @@ pub struct SftpListEntry {
     pub permissions: Option<String>,
 }
 
-/// 文件元数据简报（用于覆盖前检查等场景）。
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize)]
-pub struct SftpFileMeta {
-    pub exists: bool,
-    pub is_dir: bool,
-    pub size: u64,
-    pub modified: String,
-}
-
 /// Headless SFTP 会话上下文容器。
 pub struct HeadlessSftpSession {
     // 保持 handle 活跃，避免 session channel 提前关闭
@@ -99,28 +89,6 @@ impl HeadlessSftpSession {
             _handle: handle,
             sftp,
         })
-    }
-
-    /// 查询路径元数据（若不存在返回 Ok(None)）。
-    #[allow(dead_code)]
-    pub async fn stat(&self, path: &str) -> Result<Option<SftpFileMeta>, String> {
-        let norm_path = normalize_remote_path(path);
-        match self.sftp.metadata(&norm_path).await {
-            Ok(meta) => Ok(Some(SftpFileMeta {
-                exists: true,
-                is_dir: meta.is_dir(),
-                size: meta.len(),
-                modified: crate::fs_local::format_modified(meta.modified()),
-            })),
-            Err(e) => {
-                let err_str = e.to_string();
-                if err_str.contains("no such file") || err_str.contains("not found") {
-                    Ok(None)
-                } else {
-                    Err(format!("SFTP metadata failed: {e}"))
-                }
-            }
-        }
     }
 
     /// 遍历远程目录。
@@ -286,8 +254,17 @@ impl HeadlessSftpSession {
     /// russh-sftp 只发标准 FXP_RENAME（无 posix-rename@openssh.com 扩展），
     /// 规范严格的服务器（SFTP v3 语义）会拒绝覆盖已存在目标。兜底：rename
     /// 失败时 stat 目标——存在则先 remove 目标再重试 rename 一次；目标不
-    /// 存在（rename 因其他原因失败）或重试仍失败才报错。remove 失败时把
-    /// 原 rename 错误一并带出。正常路径（首次 rename 成功）行为不变。
+    /// 存在（rename 因其他原因失败）或重试仍失败才报错。
+    ///
+    /// **失败路径不删 temp**：重试 rename 失败时原目标已被 remove，temp 是
+    /// 新数据唯一副本——调用方若顺手删 temp 会造成「原文件 + 新数据」双重
+    /// 丢失。因此所有错误信息都带 temp 路径，指引用户手动恢复。
+    ///
+    /// **已知并发边界**：两个并发上传/写同一目标时，各自 temp 含随机 uuid
+    /// 不会互踩，但本兜底的「remove 目标」可能删掉对方刚 rename 过去的新
+    /// 文件（remove 与 retry rename 之间无跨连接锁，SFTP 协议也无原子
+    /// rename-overwrite）——后完成者胜出；被删一方的新数据按上段语义保留
+    /// 在它自己的 temp 中，不丢失。
     async fn rename_with_overwrite_fallback(&self, temp: &str, target: &str) -> Result<(), String> {
         if let Err(rename_err) = self.sftp.rename(temp, target).await {
             match self.sftp.metadata(target).await {
@@ -297,7 +274,8 @@ impl HeadlessSftpSession {
                     if let Err(remove_err) = self.sftp.remove_file(target).await {
                         return Err(format!(
                             "原子替换失败 (rename to {target}): {rename_err}; \
-                             回退删除已存在目标也失败: {remove_err}"
+                             回退删除已存在目标也失败（原文件未删除）: {remove_err}; \
+                             新数据保留在临时文件 {temp}，排除故障后可手动恢复或重试"
                         ));
                     }
                     log::warn!(
@@ -306,13 +284,17 @@ impl HeadlessSftpSession {
                     if let Err(retry_err) = self.sftp.rename(temp, target).await {
                         return Err(format!(
                             "原子替换失败 (rename to {target}): 首次 {rename_err}; \
-                             删除目标重试后仍失败: {retry_err}"
+                             删除目标后重试仍失败: {retry_err}; \
+                             原文件已删除，新数据保留在临时文件 {temp}，请手动恢复"
                         ));
                     }
                 }
                 Err(_) => {
                     // stat 失败视为目标不存在，rename 失败另有原因，直接报原错误。
-                    return Err(format!("原子替换文件失败 (rename to {target}): {rename_err}"));
+                    return Err(format!(
+                        "原子替换文件失败 (rename to {target}): {rename_err}; \
+                         新数据保留在临时文件 {temp}，排除故障后可手动恢复或重试"
+                    ));
                 }
             }
         }
@@ -339,10 +321,10 @@ impl HeadlessSftpSession {
             .await
             .map_err(|e| format!("刷新文件失败: {e}"))?;
 
-        // 原子重命名（含覆盖兜底，见 rename_with_overwrite_fallback）
+        // 原子重命名（含覆盖兜底）。失败时**不删 temp**：temp 是新数据唯一
+        // 副本（覆盖兜底失败时原文件可能已被 remove），删了就是双重丢失；
+        // temp 路径已写进错误信息，指引用户手动恢复。
         if let Err(e) = self.rename_with_overwrite_fallback(&temp_path, &norm_path).await {
-            // 失败时尽力清理临时文件
-            let _ = self.sftp.remove_file(&temp_path).await;
             return Err(e);
         }
 
@@ -394,9 +376,9 @@ impl HeadlessSftpSession {
             .await
             .map_err(|e| format!("刷新远端文件失败: {e}"))?;
 
-        // rename（含覆盖兜底，见 rename_with_overwrite_fallback）
+        // rename（含覆盖兜底）。失败时**不删 temp**（同 write_file_atomic：
+        // temp 是新数据唯一副本，路径已写进错误信息供手动恢复）。
         if let Err(e) = self.rename_with_overwrite_fallback(&temp_remote, &norm_remote).await {
-            let _ = self.sftp.remove_file(&temp_remote).await;
             return Err(e);
         }
 

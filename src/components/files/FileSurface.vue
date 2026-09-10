@@ -59,8 +59,25 @@ function onDrop(event: DragEvent) {
   event.preventDefault();
   dragging.value = false;
   if (dragLeaveTimer) { clearTimeout(dragLeaveTimer); dragLeaveTimer = null; }
+  if (remoteBusy.value) return;
+  // dataTransfer.files 对目录给出 size=0 的 File，直接上传会建出同名空文件还报
+  // 「已上传」。优先用 items 的 webkitGetAsEntry().isDirectory 过滤目录（必须在
+  // 同步阶段调用，事件结束后 items 失效）；能力不可用时回退 files。
+  const items = event.dataTransfer?.items;
+  if (items?.length && typeof items[0].webkitGetAsEntry === 'function') {
+    const files: File[] = [];
+    let dirCount = 0;
+    for (const item of Array.from(items)) {
+      if (item.webkitGetAsEntry()?.isDirectory) { dirCount++; continue; }
+      const file = item.getAsFile();
+      if (file) files.push(file);
+    }
+    if (dirCount) uiStore.notify(`已跳过 ${dirCount} 个目录（暂不支持目录上传）`, { level: 'warn' });
+    if (files.length) filesStore.uploadFiles(files);
+    return;
+  }
   const files = event.dataTransfer?.files;
-  if (files?.length && !remoteBusy.value) filesStore.uploadFiles(files);
+  if (files?.length) filesStore.uploadFiles(files);
 }
 function onDragOver(event: DragEvent) {
   // 必须 preventDefault 才能触发 drop；仅含 OS 文件时才整面放行并显提示。
@@ -210,9 +227,7 @@ const contextMenuItems = computed<FileMenuItem[]>(() => {
     items.push(make('重命名', () => { uiStore.modal = { type: 'localRename', entry } as ModalState; }));
     items.push(make('删除', () => filesStore.localDelete([entry.path]), { danger: true }));
     items.push({ separator: true });
-    items.push(make('复制路径', () => {
-      navigator.clipboard?.writeText(entry.path).catch(() => null);
-    }));
+    items.push(make('复制路径', () => { filesStore.copyRemotePath(entry); }));
     items.push({ separator: true });
   }
   // 目录级操作（下沉自原 toolbar）。本地浏览需桌面运行时。

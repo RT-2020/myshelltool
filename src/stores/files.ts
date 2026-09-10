@@ -23,6 +23,7 @@ import {
   remotePathForAsset
 } from './workbench';
 import { buildTransferItem } from '../lib/transferUtils';
+import { useClipboard } from '@/composables/useClipboard';
 
 // 事件 channel 常量（原 workbench.js:25）
 const TRANSFER_PROGRESS_EVENT = 'sftp-transfer-progress';
@@ -106,7 +107,6 @@ export const useFilesStore = defineStore('files', () => {
   // 初始空：真实路径由首次加载（服务器 canonicalize 家目录）或 OSC 7 上报写入
   const remotePath = ref('');
   const remoteEntries = ref<RemoteFileEntry[]>([]);
-  const remotePathHistory = ref<string[]>([]);
   const transferQueue = ref<QueueItem[]>([]);
   const localPath = ref('');
   const localEntries = ref<RemoteFileEntry[]>([]);
@@ -469,9 +469,6 @@ export const useFilesStore = defineStore('files', () => {
   }
 
   function applyRemoteListing(path: string, entries: RemoteFileEntry[]) {
-    if (remotePath.value !== path) {
-      remotePathHistory.value.push(remotePath.value);
-    }
     remotePath.value = path;
     remoteEntries.value = entries;
     remoteLoaded.value = true;
@@ -484,7 +481,13 @@ export const useFilesStore = defineStore('files', () => {
   //   终端 cd（OSC 7）→ 跟随切换远程目录。
   // 均只对「文件面板当前绑定的资产」（selectedAsset）生效。
   // ------------------------------------------------------------
+  // 自动加载退避重试的取消令牌（会话断开/新一轮自动加载时置 cancelled）。
+  let autoLoadRetryToken: { cancelled: boolean } | null = null;
+
   function handleSessionClosed(assetId?: string | null) {
+    // 取消在途自动加载退避链：不取消的话，断开 N 秒后的重试回调会把已清空的面板
+    // 重新填上目录（且回落独立连接分支）。
+    if (autoLoadRetryToken) autoLoadRetryToken.cancelled = true;
     const current = wb().selectedAsset;
     if (!current || current.id !== assetId) return;
     remoteEntries.value = [];
@@ -498,13 +501,25 @@ export const useFilesStore = defineStore('files', () => {
     if (!current || current.id !== assetId) return;
     // 已有列表（如切换回旧面板）不打扰；空态时自动加载，省一次手动刷新
     if (remoteLoaded.value || remoteEntries.value.length) return;
-    // 延迟触发：连接完成时后端 SFTP 通道可能尚未就绪，立即刷会抢跑失败
-    setTimeout(async () => {
-      const now = wb().selectedAsset;
-      if (!now || now.id !== assetId) return;
-      if (remoteLoaded.value || remoteEntries.value.length) return;
-      await refreshRemoteFiles(null, { silent: true }).catch(() => null);
-    }, 600);
+    // ssh_connect 返回时 SFTP 通道已可用（workbench status watcher 已无延迟刷新）：
+    // 立即加载，仅当失败（瞬时 SFTP 未就绪）才按 1s/2s/5s 退避重试，上限 3 次。
+    // 重试前必须确认该资产仍有活跃会话——禁止回落到 refreshRemoteFiles 内的
+    // ssh_list_directory 独立连接分支静默新开一条 SSH 连接。失败静默（空态已有
+    // 「加载失败 + 重试」，不弹错误打扰）。
+    if (autoLoadRetryToken) autoLoadRetryToken.cancelled = true;
+    const token = { cancelled: false };
+    autoLoadRetryToken = token;
+    await refreshRemoteFiles(null, { silent: true });
+    for (const delay of [1000, 2000, 5000]) {
+      if (token.cancelled || remoteLoaded.value) return;
+      const asset = wb().selectedAsset;
+      if (!asset || asset.id !== assetId || !resolveSessionForAsset(asset)) return;
+      await new Promise(resolve => setTimeout(resolve, delay));
+      if (token.cancelled || remoteLoaded.value) return;
+      const after = wb().selectedAsset;
+      if (!after || after.id !== assetId || !resolveSessionForAsset(after)) return;
+      await refreshRemoteFiles(null, { silent: true });
+    }
   }
 
   let lastCwdSyncAt = 0;
@@ -599,6 +614,14 @@ export const useFilesStore = defineStore('files', () => {
     wb().modal = { type: null };
   }
 
+  /** 远程写操作前置守卫：remotePath 未加载（空串）时 joinPath('', name) 会折叠到
+   * 文件系统根（`/name`），把文件传到 /. 未加载一律中止并提示，不猜测目标目录。 */
+  function requireRemotePath(): boolean {
+    if (remotePath.value) return true;
+    announce('远程目录尚未加载，请先刷新后再操作', { level: 'warn' });
+    return false;
+  }
+
   /** 上传浏览器 File（input/drag-drop）。顺序处理：每个文件先做覆盖检查，取消则跳过继续下一批。 */
   async function uploadFiles(fileList?: FileList | File[] | null) {
     const session = getActiveSession();
@@ -610,6 +633,7 @@ export const useFilesStore = defineStore('files', () => {
     }
     const files = Array.from(fileList || []);
     if (!files.length) return;
+    if (!requireRemotePath()) return;
     for (const file of files) {
       const remoteTarget = joinPath(remotePath.value, file.name);
       // null（无法确认）按「可能存在」处理：宁可多问一次，不无提示覆盖远端文件
@@ -643,20 +667,23 @@ export const useFilesStore = defineStore('files', () => {
         transferId
       });
       const CHUNK_SIZE = 8 * 1024 * 1024;
-      let transferred = 0;
-      while (transferred < item.total) {
+      // 以「短块(<CHUNK_SIZE)/0 字节」为真 EOF，不信任 drop 时刻的 file.size：
+      // 文件传输期间增长（日志/导出中）不截断，照 runLocalEntryUpload 契约。
+      let offset = 0;
+      while (true) {
         if (item.cancelled) break; // cancelTransfer 标记 → 停在当前 chunk 边界
-        const end = Math.min(transferred + CHUNK_SIZE, item.total);
-        const slice = uploadFile!.slice(transferred, end);
-        const chunk = new Uint8Array(await slice.arrayBuffer());
+        const bytes = new Uint8Array(await uploadFile!.slice(offset, offset + CHUNK_SIZE).arrayBuffer());
+        if (!bytes.length) break; // 0 字节 = 空文件或已读完
+        offset += bytes.length;
         await invokeBackend('sftp_upload_chunk', {
           sessionId: session.sessionId,
-          chunk,
+          chunk: bytes,
           transferId,
-          bytesTransferred: end,
-          totalBytes: item.total
+          bytesTransferred: offset,
+          // 进度条分母（item.total 仅作显示基准）：文件可能已增长，取 max 防超 100%
+          totalBytes: Math.max(item.total, offset)
         });
-        transferred = end;
+        if (bytes.length < CHUNK_SIZE) break; // 短块 = 真 EOF
       }
       if (item.cancelled) {
         item.status = 'cancelled';
@@ -676,7 +703,13 @@ export const useFilesStore = defineStore('files', () => {
       await invokeBackend('sftp_upload_finalize', { transferId });
       item.status = 'done';
       item.percent = 100;
-      item.transferred = item.total;
+      item.transferred = offset;
+      // 文件大小在 drop 后变化（增长/收缩）：内容已按实际读到的完整上传，状态仍
+      // done，仅 warn 对账差异（item.total > 0 时才比对，0 起步的增长不弹）
+      if (item.total > 0 && offset !== item.total) {
+        announce('文件在传输期间发生变化：预期 ' + item.total + ' 字节，实际 ' + offset + ' 字节：' + item.name, { level: 'warn' });
+      }
+      item.total = Math.max(item.total, offset);
       item.eta = null;
       item.finishedAt = Date.now();
       pruneFinishedTransfers();
@@ -707,6 +740,7 @@ export const useFilesStore = defineStore('files', () => {
       announce('只能上传本地文件', { level: 'warn' });
       return;
     }
+    if (!requireRemotePath()) return;
     const remoteTarget = joinPath(remotePath.value, entry.name);
     // null（无法确认）按「可能存在」处理：宁可多问一次，不无提示覆盖远端文件
     if ((await probeRemoteTarget(remoteTarget)) !== false) {
@@ -868,6 +902,7 @@ export const useFilesStore = defineStore('files', () => {
       announce('目录名不能为空', { level: 'warn' });
       return;
     }
+    if (!requireRemotePath()) return;
     try {
       await withFileOperation('remote', '正在创建远程目录...', async () => {
         const target = joinPath(remotePath.value, name.trim());
@@ -1190,11 +1225,16 @@ export const useFilesStore = defineStore('files', () => {
 
   async function copyRemotePath(entry?: RemoteFileEntry | null) {
     const target = entry?.path || remotePath.value;
-    try {
-      await navigator.clipboard.writeText(target);
+    if (!target) {
+      announce('路径为空，无法复制', { level: 'warn' });
+      return;
+    }
+    // 走 useClipboard 三级 fallback（navigator → Tauri 插件 → execCommand）：
+    // webview 非聚焦时裸用 navigator.clipboard 会静默失败（既没复制也没提示）
+    if (await useClipboard().copy(target)) {
       announce('已复制路径：' + target);
-    } catch {
-      announce('剪贴板不可用');
+    } else {
+      announce('剪贴板不可用', { level: 'warn' });
     }
   }
 
@@ -1216,7 +1256,6 @@ export const useFilesStore = defineStore('files', () => {
     // state
     remotePath,
     remoteEntries,
-    remotePathHistory,
     transferQueue,
     localPath,
     localEntries,

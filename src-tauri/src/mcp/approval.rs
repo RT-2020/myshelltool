@@ -343,7 +343,7 @@ mod tests {
     #[test]
     fn whitelist_command_auto_approved_under_both_levels() {
         for level in [McpInterceptLevel::Minimal, McpInterceptLevel::Strict] {
-            let d = evaluate("df -h", "查询磁盘", READONLY_WHITELIST, &[], level);
+            let d = evaluate("df -h", "查询磁盘", READONLY_WHITELIST, &[], level); // fact-guard:allow locale-pinned-df 单测样例数据（非实际执行）
             match d {
                 ApprovalDecision::AutoExecute(reason) => {
                     // 白名单命中两档均放行，且 reason 是 Whitelist（→ auto_approved）

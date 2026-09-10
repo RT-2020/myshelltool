@@ -3,11 +3,11 @@
   "version": "0.11.0",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@10.33.2",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "type-check": "vue-tsc --build",
-    "build": "npm run type-check && vite build",
+    "lint:facts": "node scripts/fact-guards.mjs",
+    "build": "npm run lint:facts && npm run type-check && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test:core": "cargo test --manifest-path crates/myshelltool-core/Cargo.toml",
     "test:ui": "node tests/ui-smoke.mjs && node tests/ui-host-key.mjs && node tests/ui-file-loading.mjs",

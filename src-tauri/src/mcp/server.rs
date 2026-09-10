@@ -332,7 +332,14 @@ async fn check_approval_needed(
                 });
             }
             let level = ctx.config.read().await.level;
-            let is_overwrite = local_path.exists();
+            // 三态探测（exists() 在权限/IO 错误时也返回 false，会把「实际会覆盖」
+            // 误报成「不存在」）：Ok=已存在 / NotFound=不存在 / 其他 Err=无法确认，
+            // 按「可能存在」给覆盖警告（保守，与前端 probeRemoteTarget 同哲学）。
+            let is_overwrite = match std::fs::metadata(local_path) {
+                Ok(_) => true,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                Err(_) => true,
+            };
             let warn = if is_overwrite {
                 "【注意】本机目标文件已存在，下载将覆盖本机旧文件！"
             } else {

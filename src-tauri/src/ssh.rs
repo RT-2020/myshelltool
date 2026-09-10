@@ -488,7 +488,7 @@ async fn connect_authenticated(
                 Ok(Some(content)) if !content.trim().is_empty() => content,
                 _ => {
                     let key_path = private_key_path.as_deref().unwrap_or("~/.ssh/id_ed25519");
-                    let expanded = expand_home_path(key_path);
+                    let expanded = expand_home_path(key_path)?;
                     let key_data = std::fs::read(&expanded)
                         .map_err(|e| format!("Failed to read key file '{}': {e}", expanded))?;
                     String::from_utf8_lossy(&key_data).to_string()
@@ -496,7 +496,7 @@ async fn connect_authenticated(
             }
         } else {
             let key_path = private_key_path.as_deref().unwrap_or("~/.ssh/id_ed25519");
-            let expanded = expand_home_path(key_path);
+            let expanded = expand_home_path(key_path)?;
             let key_data = std::fs::read(&expanded)
                 .map_err(|e| format!("Failed to read key file '{}': {e}", expanded))?;
             String::from_utf8_lossy(&key_data).to_string()
@@ -619,14 +619,21 @@ fn wrap_key_with_preferred_hash(
         .map_err(|e| format!("Key wrap failed: {e}"))
 }
 
-fn expand_home_path(path: &str) -> String {
+/// 展开 `~/` 前缀为本机家目录。
+///
+/// v2.5：USERPROFILE/HOME 均缺失时返回显式 Err（不再静默回退 `"."`——
+/// 那会把私钥读定向到进程 CWD，报错信息误导排查方向）。
+fn expand_home_path(path: &str) -> Result<String, String> {
     if path.starts_with("~/") {
-        let home = std::env::var("USERPROFILE")
-            .or_else(|_| std::env::var("HOME"))
-            .unwrap_or_else(|_| ".".to_string());
-        format!("{}{}", home, &path[1..])
+        let home = std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(|h| h.to_string_lossy().into_owned())
+            .ok_or_else(|| {
+                "无法确定本机用户主目录（USERPROFILE/HOME 均未设置），无法展开私钥路径 '~'，请改用绝对路径".to_string()
+            })?;
+        Ok(format!("{}{}", home, &path[1..]))
     } else {
-        path.to_string()
+        Ok(path.to_string())
     }
 }
 
@@ -821,6 +828,19 @@ pub async fn ssh_connect(
     })
 }
 
+/// 资源监控不可恢复错误事件（v2.5，事件名 `resource-monitor-error`）。
+///
+/// 触发场景：远端无 /proc（非 Linux 主机）导致快照主体不可信。emit 后该
+/// session 的轮询即被停止（前端同时会收到 resource-monitor-stopped）。
+/// 字段 camelCase 序列化（sessionId / reason），与 resource-monitor-snapshot
+/// 的 ResourceSnapshot 命名约定一致。
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResourceMonitorErrorEvent {
+    session_id: String,
+    reason: String,
+}
+
 /// Run a one-shot exec command on a fresh channel and parse the /proc/* output
 /// into a ResourceSnapshot. Used by the resource_monitor module's polling loop
 /// (via SshCommand::MonitorExec). Does NOT touch the interactive PTY channel.
@@ -834,6 +854,10 @@ pub async fn ssh_connect(
 ///    monitor handle to compute the CPU delta)
 /// 5. Emit "resource-monitor-snapshot" event with the parsed ResourceSnapshot
 /// 6. Record the snapshot + prev_cpu back into the monitor handle for next tick
+///
+/// v2.5 失败语义：build_snapshot 返回 Err（无 /proc，非 Linux）→ 停止该
+/// session 的轮询 + emit `resource-monitor-error`，绝不发全 0 假快照；
+/// 次要段失败时 snapshot 自带 `degraded` 字段，照常 emit（前端展示降级）。
 async fn handle_monitor_exec(
     session_id: String,
     command: String,
@@ -889,7 +913,31 @@ async fn handle_monitor_exec(
     };
 
     // Build snapshot (parses /proc/stat, /proc/meminfo, /proc/net/dev, /proc/diskstats).
-    let snapshot = crate::resource_monitor::build_snapshot(&session_id, &combined, prev_cpu);
+    // 主要段（stat/meminfo）失败 = 无 /proc（非 Linux 远端）→ 停轮询 + 错误事件，
+    // 不再发全 0 假快照（恒 0% 的图表伪装成「负载健康」）。
+    let snapshot = match crate::resource_monitor::build_snapshot(&session_id, &combined, prev_cpu)
+    {
+        Ok(s) => s,
+        Err(reason) => {
+            warn!(
+                "resource_monitor: session {session_id} snapshot aborted: {reason}, stopping monitor"
+            );
+            if let Ok(mut mgr) = resource_state.resource_monitors.lock() {
+                if let Some(handle) = mgr.handles.remove(&session_id) {
+                    // 轮询任务收到 cancel 后会自行 emit resource-monitor-stopped。
+                    let _ = handle.cancel.send(());
+                }
+            }
+            let _ = app.emit(
+                "resource-monitor-error",
+                ResourceMonitorErrorEvent {
+                    session_id: session_id.clone(),
+                    reason,
+                },
+            );
+            return;
+        }
+    };
 
     // Compute prev_cpu for the NEXT tick = (idle, total) from this sample.
     // We re-parse /proc/stat to get the current jiffies.
@@ -1714,6 +1762,16 @@ async fn handle_socks5_connection(
         .await
         .map_err(|e| format!("SOCKS5 read methods: {e}"))?;
 
+    // RFC 1928：必须校验客户端提供的方法列表。本实现只支持免认证（0x00），
+    // 客户端未提供 0x00 时回 0xFF（NO ACCEPTABLE METHODS）并断开——不能
+    // 不读不判就应答 0x00，那等于对要求认证的客户端谎报「无需认证」。
+    if !methods.contains(&0x00) {
+        let _ = tcp_write.write_all(&[0x05, 0xFF]).await;
+        return Err(
+            "SOCKS5 客户端未提供免认证方法（0x00），本服务端不支持认证，已按 RFC 1928 回 0xFF 断开".to_string(),
+        );
+    }
+
     // Reply: no auth required
     tcp_write
         .write_all(&[0x05, 0x00])
@@ -1994,7 +2052,7 @@ pub async fn connect_headless(
             .private_key_path
             .as_deref()
             .unwrap_or("~/.ssh/id_ed25519");
-        let expanded = expand_home_path(key_path);
+        let expanded = expand_home_path(key_path)?;
         let resolved_passphrase = if let Some(ref cred_id) = params.passphrase_credential_id {
             myshelltool_core::SecretStore::new(&params.secret_store_dir, Box::new(crate::dpapi_codec::DpapiCodec))
                 .read(cred_id.as_str())

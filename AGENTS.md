@@ -42,7 +42,7 @@
 - ❌ 硬编码颜色/z-index/间距：用 `var(--token)`（见 `src/styles/_tokens.scss`）。
 - ❌ 同一概念多份实现：连接状态等用权威定义点（见指南 §5）。
 - ❌ 死代码：未被 import 的模块确认后删除。
-- ❌ 靠猜测代替事实：对外部环境（家目录/工具链/locale/时钟域/就绪信号/身份键）不做臆断——协议求证（SFTP canonicalize/stat、pty 终端模式）、解析命令输出加 `LC_ALL=C` + POSIX 选项、比较同钟域、身份用完整键、探测三态（真/假/未知按保守处理）。详见指南 §7。
+- ❌ 靠猜测代替事实：对外部环境（家目录/工具链/locale/时钟域/就绪信号/身份键）不做臆断——协议求证（SFTP canonicalize/stat、pty 终端模式）、解析命令输出加 `LC_ALL=C` + POSIX 选项、比较同钟域、身份用完整键、探测三态（真/假/未知按保守处理）。详见指南 §7；**机械门禁**：`npm run lint:facts`（`scripts/fact-guards.mjs`，随 build/CI/发版强制执行）。新增远程能力**默认走 SFTP/协议**，确需 exec 解析输出时注释平台假设与降级策略。
 
 ---
 
@@ -195,12 +195,16 @@ npm run dev          # Vite 浏览器预览（127.0.0.1:41234）。无 SSH/文�
 npm run tauri:dev    # Tauri 桌面开发模式（完整功能）。SSH 类功能只能在此验证
 
 # —— 构建 ——
-npm run build        # 前端构建 = 先 vue-tsc 类型检查（type-check）再 Vite 构建（验证 TS/Vue/SCSS 编译）
-npm run tauri:build  # 完整桌面安装包（Windows NSIS），beforeBuildCommand 走 npm run build 自动含类型门禁
+npm run build        # 前端构建 = 事实门禁（lint:facts）→ vue-tsc 类型检查 → Vite 构建
+npm run tauri:build  # 完整桌面安装包（Windows NSIS），beforeBuildCommand 走 npm run build 自动含门禁
 
 # —— 测试 ——
 npm run test:core    # Rust core 单元测试：cargo test --manifest-path crates/myshelltool-core/Cargo.toml
-npm run test:ui      # UI 冒烟：node tests/ui-smoke.mjs && node tests/ui-host-key.mjs（需先 npm run dev 起服务）
+npm run test:ui      # UI 冒烟：node tests/ui-smoke.mjs && node tests/ui-host-key.mjs && node tests/ui-file-loading.mjs（需先 npm run dev 起服务）
+
+# —— 静态检查（各自单跑）——
+npm run lint:facts   # 「靠猜测代替事实」门禁：scripts/fact-guards.mjs（指南 §7）；build 首步即跑，CI/发版同步生效
+npm run type-check   # vue-tsc --build，strict 全量；build 亦含此步
 
 # —— 后端单独验证 ——
 cd src-tauri && cargo build       # 验证 Rust 编译
@@ -271,6 +275,7 @@ npm run type-check   # vue-tsc --build，strict 全量；build 亦含此步
 
 ### 事件（Rust → 前端，`listenBackendEvent`）
 - `sftp-transfer-progress`、`ssh-host-key-verify`、`ssh-keyboard-interactive`、`ssh-session-status`
+- 【v2.5】`resource-monitor-error`（payload camelCase `sessionId`/`reason`）：远端无 /proc（非 Linux）等不可恢复采样失败，emit 后该会话轮询即停止，前端展示错误态
 - 【v1.4 已删】`mcp-approval-verify`（原 v1.1 pipe 审批委托事件，内嵌后无 pipe）
 
 ---
@@ -320,9 +325,9 @@ credential_id(Option), passphrase_credential_id(Option)
 
 - `sftp_download_with_progress` 仍返回整块 `Vec<u8>`（upload 已分块，download 待改造）。
 - `start_remote_forward` 是返回 Err 的桩（local/dynamic SOCKS5 已实现）。
-- `sanitize_credential_id` 过滤 `:` 和 `.`（如 `192.168.2.2:password` → `192-168-2-2password`）。
+- `sanitize_credential_id` 是**删除式清洗**：仅保留字母数字与 `-`/`_`，其余字符直接删除（`192.168.2.2:password` → `19216822password`）。已知限制：清洗不可逆、不同 id 可能碰撞（`a:b` 与 `ab` 写同一个 `<id>.cred` 文件）；若改映射规则需迁移既有凭据文件（暂不改）。
 - Windows 上 `cargo build` 偶因 build script（windres）阻断，用 `cargo check` 兜底；`cargo test` 的 src-tauri 测试二进制会因 Tauri runtime DLL 缺失报 `STATUS_ENTRYPOINT_NOT_FOUND`，用 `cargo check --tests` 验证测试可编译。
-- `workbench.ts` 仍是 re-export 壳（Wave 5+ 计划精简）。
+- `workbench.ts`（实测 507 行）是编排壳而非纯 re-export 壳：实例化 7 个子 store + `initialize()` 启动编排，另含 5 个真实路径 helper（`remotePathForAsset`/`parentPath`/`joinPath`/`joinLocalPath`/`parentLocalPath`），return 块 re-export 子 store 的 state/actions。
 - **【v1.4】MCP 内嵌 GUI（Streamable HTTP）**：MCP server 跑在 GUI 进程内，绑定 `127.0.0.1:41235/mcp`（占用则 +1，写 `<data_dir>/mcp-endpoint.json`）。取消双二进制（删 `bin/mcp.rs` + `pipe.rs`），根治 v1.2 的僵尸进程 + os error 32 + NSIS 打包缺口。MCP server 随 GUI 启停（`CancellationToken` 控制 graceful shutdown）。
 - **【v1.4】MCP 端口策略**：默认 41235，被占用则 +1 重试最多 10 次，**只监听 localhost**（§8 安全红线）。实际端口写 mcp-endpoint.json，前端 `mcp_status.endpoint` 返回。
 - **【v1.4 follow-up】会话复用**：`tools.rs::exec_on_asset` 当前直走 headless 建连（删了 v1.1 pipe 复用分支）。后续可注入 GUI 的 `Arc<AsyncMutex<SshSessionManager>>` 到 McpToolContext，命中已建立会话时直接复用（同进程访问，比 pipe 更简单）。
@@ -332,6 +337,14 @@ credential_id(Option), passphrase_credential_id(Option)
 - **【多窗口】资产独立工作台窗口（Tauri 2 多 WebviewWindow）**：侧栏资产**拖出主窗口边界**释放或右键「在独立窗口打开」→ 创建独立 OS 窗口（label=`asset-<sanitized assetId>`，重复开聚焦已有窗口），加载 `/index.html?win=asset&assetId=`，App.vue 按 query 分支渲染 `AssetWindowShell`（标题栏 + 上终端/下文件 + 完整可收起右栏监控，无左栏）。**每窗口独立 webview/Pinia 实例、共享 Rust 后端**（Rust 零改动）；侧栏拖出/右键入口新建自己的会话。关键约束：① `resourceMonitor.applySnapshot` 按 sessionId 过滤（全局广播事件防双窗口串流）；② sessions 的 host-key/keyboard handler 有 `ownsConnectingSession` 守卫（防跨窗口弹错资产名的确认框）；③ asset 模式 `initialize({mode:'asset'})` 跳过 MCP/sync 初始化（MCP 审批弹窗只在主窗口）；④ 关窗走 onCloseRequested 确认（connecting 会话先等 settle ≤10s）→ 断开本窗口会话 → destroy；⑤ asset 窗口布局用独立 storageKey（`myshelltool:layout-asset:v1`）、右栏折叠不写共享 localStorage。capabilities windows 含 `asset-*` glob。已知限制：窗口不持久化恢复、资产删除不跨窗口同步、主题跨窗口不实时同步、Esc 取消的窗外拖拽可能误开窗（待实测）。
 - **【多窗口·tab 迁移】终端 tab 跨窗口拖出/合并（会话所有权迁移）**：主窗口 connected 终端 tab 拖出窗外释放 → **迁移会话**（不重连）到该资产独立窗口：`src/lib/sessionHandoff.ts` 导出 scrollback（**@xterm/addon-serialize 序列化，带 SGR 颜色/样式**——`exportTerminalScrollback`，末 2000 行、1M 字符预算，超预算头部截断后 prepend `\x1b[0m` 防 delta 式 SGR 断链错色；addon 不可用时回退 `exportTerminalText` 纯文本。曾长期纯文本导出，迁移后历史整体褪成默认前景色、蓝色 prompt 变白，v2.4 修复）经 **Rust 内存中转**（`session_handoff_put`/`session_handoff_take` 命令，AppState `Mutex<HashMap>` + TTL 60s，take 即原子删除——曾用 localStorage 中转但 WebView2 跨窗口不实时共享导致 adopt 恒失败，已废弃）→ `await session.unlisten()`（先解绑防双写）→ `removeSessionEntry`（仅移 UI，不 ssh_disconnect，会话在后端存活）→ 新窗口 URL 带 `&adopt=<sessionId>`，boot 经 `sessionsStore.adoptSession` 重建 xterm（`createTerminalForAsset` 与 connectSelected 共用 helper，每 session 挂 SerializeAddon）+ `registerSessionStream` + 100 行分块 rAF 回放。**独立窗口无 tab 条**（TerminalSurface `showTabs` prop，窗口即会话），回迁主窗口走**标题栏「移回主窗口」按钮**（`pushSessionToMainWindow` push 协议：迁移 + MERGE_PUSH 事件 + 主窗口 adopt，迁移后空窗自动关窗；主窗口已关则拒绝迁移防会话无主）。协议剩两事件（`session-handoff-tearoff`/`-merge-push`，`sourceWindowId` 防自吞，TEAROFF 仅 asset 窗口且 assetId 匹配、MERGE_PUSH 仅主窗口监听）；跨窗口 drop 合并（pull 协议）已随 tab 条删除而移除（WebView2 跨窗口自定义 MIME 不可靠，按钮替代）。已知限制：回放不含 alt 屏与软换行（vim/less 中拖出只还原进 alt 前内容、超宽行拆行）、颜色状态在极端截断时回落默认色；迁移瞬间输出丢失；Esc 取消的窗外拖拽会误触发拆出；溢出折叠 tab 不可拖。
 - **【v2.3】文件面板与终端会话生命周期联动**：sessions store 断开/关闭/连接成功时经 workbench bridge 通知 files store（`handleSessionClosed` 清空面板 / `handleSessionConnected` 延迟 600ms 静默自动加载——SFTP 通道就绪前抢跑会报错）。终端 cd 跟随：连接后注入 bash 专属 OSC 7 上报。**无痕注入三件套**：① Rust 端 pty 建连即以 ECHO=0 打开（`ssh.rs` request_pty `Pty::ECHO`），注入行全程不可见——早期「`stty -echo` 两段式」与「等首段输出再注入」闸门在慢 .bashrc 机器都会产生可见噪音/双重回显（MOTD 横幅是 sshd 在 shell 启动前打印的，不能作 shell 就绪信号）；② 单行注入：payload 经 `eval '...'` 包裹、行尾 ` stty echo` 恢复回显（置于 eval 之外，fish 拒Parse 也不丢回显恢复）、`test -n "$BASH_VERSION" && printf '%b' '\e[1A\e[G\e[J'` 擦除多余提示符行（bash 专属：交互 bash 每执行一行命令重画一次 PS1，readline accept 必输出换行故上移一行精确落回提示符行）；③ 前导空格不进 HISTCONTROL=ignoreboth 历史、case 幂等守卫、BASH_VERSION 门控（zsh 跳过）。局限：擦除仅对 bash 启用（zsh/dash/fish 留一个空提示符，宁留不冒险擦真实内容）；多行 PS1 擦除会留残片（已知未修）；`createOscParser` 解析 OSC 7 → `syncTerminalCwd` 跟随切换（400ms 节流、仅面板当前绑定资产生效；跟随加载为 silent——失败仅空态展示+重试，不弹 toast）。注意：Tauri 后端 `Err(String)` 在前端以**字符串** reject（无 `Error.message`），错误处理必须显式取字符串，否则任何后端失败都显示成「未知错误」；SFTP 初始化/read_dir 失败已落 error 日志（`sftp init`/`sftp_list_dir` 前缀）。
+- **【v2.5】资源监控失败态（不再发假快照）**：`build_snapshot` 返回 Result——远端无 /proc（非 Linux）导致主体不可信时停止该会话轮询并 emit `resource-monitor-error`（前端 `resourceMonitor.ts` 展示错误态）；次要段（net/diskstats/df）失败则快照照发、`degraded` 字段标注失败段（serde skip，None 不序列化）；`resource_monitor_snapshot` 命令无 handle/无可信快照时返回 None。
+- **【v2.5】MCP 系统类工具逐段 rc 回声**：`disk_usage`/`system_status`/`service_status`/`resource_monitor_snapshot` 的命令串在每个子命令后附 `echo rc_<段名>=$?`——复合命令 shell 退出码只反映最后一条子命令（echo），管道段（如 `top | head`）的 rc 反映管道末端，POSIX 无可移植 PIPESTATUS，AI 宿主须按 `rc_*` 行逐段定位真实失败。
+- **【v2.5】chmod -R 危险判定统一口径**：`/home`、`/Users` 递归 chmod 不再免拦截（`dangerous_commands.rs` 与前端 `dangerousCommands.ts` 同步收紧，GUI 终端守卫与 MCP 审批同一判定）——安全前缀仅 `/tmp`、`/var/tmp`；毁灭层豁免表另含 `/home`、`/Users`（家目录数据可恢复，走审批链而非两档恒拦）。前缀判定用 `under_safe_prefix`（相等或以 `<safe>/` 开头），`/home2` 等同前缀目录不再误判为安全。
+- **【v2.5】同步安全加固**：本地资产 JSON 可读但损坏 → 中止同步并报错（不再静默折叠成空 vault 推 Gist 覆盖远端备份）；资产文件写回失败 → 报错且不推进 `last_synced_at`（防后续 pull 以「安全拉取」误判覆盖）；MCP 执行日志文件损坏 → 改名 `mcp-execution-log.corrupt-<unix秒>.json` 隔离保留证据后从空日志继续。
+- **【v2.5】MCP SFTP 原子写兜底**：临时文件 rename 覆盖失败时**保留**临时文件（路径写入错误信息），供人工恢复，不静默丢数据。
+- **【v2.5】本地系统目录黑名单加固（fs_local.rs）**：支持 UNC（`\\server\share`）与 `\\?\` verbatim 前缀；路径存在时先 canonicalize 归一再判（封 NTFS 8.3 短名如 `C:\PROGRA~1` 绕过）；家目录不可得时显式报错，不再回退 `.`（工作目录冒充家目录）。
+- **【v2.5】事实门禁与 CI**：`npm run lint:facts` 扩为 7 条规则（新增 `no-fixed-wait-in-tests`；`no-blocking-sleep` 扩含 `tokio::time::sleep`），覆盖 `src`、`src-tauri/src`、`crates/myshelltool-core/src`、`src-tauri/build.rs`、`tests`、`scripts`（fact-guards.mjs 自身除外）；任一 root 扫到 0 文件即 exit 1（防空集合假通过）。豁免语法：行尾 `// fact-guard:allow <rule-id> <理由≥8字符>`。CI（ci.yml）用 Node 22；release.yml 校验 tag 名与 package.json / tauri.conf.json 版本一致，不一致当场失败（防忘 bump 就打 tag）。
+- **【v2.5】前端事实驱动改造**：连接后文件面板自动加载改 1s/2s/5s 退避重试（重试前校验该资产仍有活跃会话，会话断开可取消退避链，失败静默展示空态+重试）；File 直传以短块（< CHUNK_SIZE / 0 字节）为真 EOF + 上传后字节对账（仅 warn 差异），不信任列表时刻的 file.size；`remotePath` 未加载（空串）时禁止上传/建目录等远程写操作（防折叠到根路径）；AssetWindowShell 删主窗存活探测的 3 次重试门（改挂载 + 焦点/可见事件各探测一次，成败以点击时刻真实探测为准）、关窗等 connecting 会话 settle 上限 65s（后端 60s 超时 + 5s 缓冲）且超时**不销毁窗口**（防 destroy 把孤儿 SSH 会话留在后端）；`assetWindows` label sanitize 发生字符替换时追加 id 的 djb2 短哈希后缀防不同 id 碰撞；终端字号/行高读取路径 clamp（字号 9-28、行高 1-2，手改 localStorage 坏值不再越界渲染）。
 
 ---
 
@@ -350,4 +363,5 @@ credential_id(Option), passphrase_credential_id(Option)
 3. **有现成实现可复用**？→ 复用（查 `ui/index.ts`、`workbench.ts` re-export、`backend.ts` normalize*）。
 4. **要改 Rust 命令**？→ 别忘了在 `generate_handler!` 注册。
 5. **要加跨 store 逻辑**？→ 加子 store action + `workbench.ts` re-export，用 lazy bridge。
-6. **改完**？→ 跑 §5 的验证，如实报告 exit code。
+6. **涉及外部环境**（远端路径/命令输出解析/locale/时钟/身份键/就绪信号）？→ 先按指南 §7 逐项想清求证方式：能协议求证（SFTP canonicalize/stat/read_dir、pty 模式）就不猜；确需 exec 解析必须 `LC_ALL=C` + POSIX 选项 + 注释平台假设。新硬编码写进代码前自问「换个合理环境还成立吗」。
+7. **改完**？→ 跑 §5 的验证（build 首步即含 lint:facts 门禁），如实报告 exit code。

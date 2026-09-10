@@ -296,7 +296,6 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     // --- files re-export ---
     remotePath: computed(() => filesStore.remotePath),
     remoteEntries: computed(() => filesStore.remoteEntries),
-    remotePathHistory: computed(() => filesStore.remotePathHistory),
     transferQueue: computed(() => filesStore.transferQueue),
     localPath: computed(() => filesStore.localPath),
     localEntries: computed(() => filesStore.localEntries),

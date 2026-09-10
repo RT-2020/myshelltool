@@ -21,7 +21,9 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Vite 7 engines 要求 ^20.19.0 || >=22.12.0，且 Node 20 已 EOL；
+          # 用 22 与本地 24 同处兼容区间，避免浮动 20.x 恰好命中过旧小版本。
+          node-version: 22
           cache: npm
 
       - name: Setup Rust
@@ -30,7 +32,11 @@ jobs:
       - name: Cache Rust target
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri -> target
+          # test:core 用 --manifest-path 跑，其 target 在 core 自己目录下，
+          # 不补这一行则 core 的编译产物从未被缓存（每次 CI 全量重编）。
+          workspaces: |
+            src-tauri -> target
+            crates/myshelltool-core -> crates/myshelltool-core/target
 
       - name: Install JS deps
         run: npm ci

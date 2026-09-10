@@ -179,11 +179,6 @@ async function main() {
   await page.screenshot({ path: sourcePngPath, omitBackground: true });
   console.log('Saved source icon PNG to:', sourcePngPath);
 
-  // 同时复制一份到 scratch 目录供查看与评估
-  const scratchDir = 'C:\\Users\\lenovo\\.gemini\\antigravity\\brain\\37f9748e-ea1d-42c4-912b-5c276ca78c55';
-  const artifactPngPath = path.join(scratchDir, 'myshelltool_app_icon_v2.png');
-  fs.copyFileSync(sourcePngPath, artifactPngPath);
-
   await browser.close();
   console.log('Icon rendering complete!');
 }

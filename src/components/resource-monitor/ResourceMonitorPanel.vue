@@ -33,6 +33,8 @@ onBeforeUnmount(() => {
 const placeholder = computed(() => {
   if (!rm.isDesktopRuntime) return 'desktop-required';
   if (!sessions.activeSessionId) return 'no-session';
+  // 后端推送的采样失败（resource-monitor-error）：比前端调用失败更具体，优先展示
+  if (rm.monitorError) return 'monitor-error';
   if (rm.error && !rm.snapshot) return 'error';
   if (!rm.snapshot) return 'waiting';
   return '';
@@ -58,7 +60,16 @@ async function onRetry() {
       <span class="rs-section-title">资源监控</span>
     </div>
 
-    <div v-if="placeholder === 'error'" class="rm-error-banner" role="alert">
+    <div v-if="placeholder === 'monitor-error'" class="rm-error-banner" role="alert">
+      <AlertTriangle :size="14" />
+      <div class="rm-error-body">
+        <span class="rm-error-title">资源监控不可用</span>
+        <span class="rm-error-msg">{{ rm.monitorError }}</span>
+      </div>
+      <button type="button" class="rm-retry-btn" @click="onRetry">重试</button>
+    </div>
+
+    <div v-else-if="placeholder === 'error'" class="rm-error-banner" role="alert">
       <AlertTriangle :size="14" />
       <div class="rm-error-body">
         <span class="rm-error-title">监控异常</span>
@@ -70,6 +81,10 @@ async function onRetry() {
     <div v-else-if="placeholder" class="rs-empty-banner">
       <MonitorOff />
       <span>{{ emptyText }}</span>
+    </div>
+
+    <div v-if="!placeholder && rm.degradedNotice" class="rm-degraded-note" role="status">
+      部分指标不可用：{{ rm.degradedNotice }}
     </div>
 
     <div class="metric-grid">
@@ -200,6 +215,17 @@ async function onRetry() {
   background: var(--app-panel-2);
   color: var(--app-subtle);
   font: 11px var(--font-display);
+}
+
+// 降级轻提示（快照 degraded，如磁盘数据不可用）：非错误，指标继续展示
+.rm-degraded-note {
+  margin-bottom: var(--space-3);
+  padding: 6px 10px;
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--app-panel-2);
+  color: var(--app-muted);
+  font: 10.5px var(--font-display);
 }
 
 .rs-empty-banner svg {

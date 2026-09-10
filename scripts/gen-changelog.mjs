@@ -45,8 +45,15 @@ if (!fromTag) {
     fromTag = execSync(`git describe --tags --abbrev=0 ${forVersion ? forVersion + '^' : 'HEAD^'}`, {
       cwd: root, encoding: 'utf8'
     }).trim();
-  } catch {
-    // 没有 tag 的情况：从仓库起点开始
+  } catch (e) {
+    if (forVersion) {
+      // 显式指定的 --for tag 必须真实存在且有自己的上一个 tag——否则把「全历史」
+      // 当成发布说明输出还 exit 0，等于静默给错误内容盖章。
+      console.error(`❌ 无法解析 --for ${forVersion} 的上一个 tag（tag 不存在，或它就是仓库第一个 tag）：${e.message.split('\n')[0]}`);
+      console.error('   如确需从仓库起点生成全历史，请去掉 --for 参数显式确认。');
+      process.exit(1);
+    }
+    // 无显式参数时的隐含回退（新仓库没有任何 tag）：从仓库起点开始
     fromTag = null;
   }
 }
