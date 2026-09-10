@@ -22,6 +22,8 @@ interface TauriEventNamespace {
 
 /** getTauriWindow 返回的窗口对象并集：成员全部可选，匹配 backend.ts 的 typeof 防御式调用。 */
 interface TauriWindowLike {
+  /** 窗口 label（跨窗口握手就绪判定用：`main` / `asset-<sanitized id>`）。 */
+  label?: string;
   listen?: (event: string, handler: TauriEventHandler) => Promise<TauriUnlistenFn>;
   minimize?: () => Promise<void>;
   toggleMaximize?: () => Promise<void>;

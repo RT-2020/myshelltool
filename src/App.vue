@@ -5,7 +5,7 @@ import { isTauriRuntime } from './services/backend';
 import { usePanelResize } from './composables/usePanelResize';
 import { useAutoUpdate } from './composables/useAutoUpdate';
 import { bootAssetWindow } from './lib/assetWindowBoot';
-import { setupHandoffListeners } from './lib/sessionHandoff';
+import { announceHandoffReady, setupHandoffListeners } from './lib/sessionHandoff';
 import { useSessionsStore } from './stores/sessions';
 import WorkbenchShell from './components/workbench/WorkbenchShell.vue';
 import AssetWindowShell from './components/workbench/AssetWindowShell.vue';
@@ -50,6 +50,9 @@ onMounted(() => {
     workbenchStore: store,
     assetId: params.get('assetId') as string | undefined
   });
+  // 就绪上报（v2.6）：监听注册完成后广播本窗口 label，供源窗口在拖出前判断
+  // 「目标窗口是否已能接 TEAROFF」——否则刚开窗未 boot 完时拖出会静默丢会话。
+  announceHandoffReady(params.get('assetId') as string | undefined).catch(() => null);
 });
 
 onBeforeUnmount(() => {

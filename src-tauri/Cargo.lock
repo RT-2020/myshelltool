@@ -2811,6 +2811,7 @@ dependencies = [
  "aes-gcm",
  "argon2",
  "rand 0.8.6",
+ "regex",
  "serde",
  "serde_json",
 ]

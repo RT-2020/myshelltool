@@ -227,27 +227,16 @@ pub fn parse_proc_net_dev(content: &str) -> Result<(u64, u64), String> {
     Ok((rx, tx))
 }
 
-/// Parse /proc/diskstats: sum read_sectors * 512 and write_sectors * 512
-/// across all real block devices (skip loop*, ram*, sr*, fd*).
-/// Returns `(read_bytes, write_bytes)` cumulative since boot.
+/// 从 /proc/diskstats 文本累加 IO 字节（纯函数，可单测）。
 ///
-/// 分区去重：内核把 IO 在父设备与分区上各记一份（sda 与 sda1、nvme0n1 与
-/// nvme0n1p1），全部累加会让磁盘 IO 近双倍虚高。因此「分区」在同一样本中
-/// 存在**有活动的父设备**时跳过、只计父设备：
-/// - 父设备 B 以非数字结尾：分区 P == B + 纯数字后缀（sda→sda1 ✓，sda→sdab ✗）
-/// - 父设备 B 以数字结尾：分区 P == B + "p" + 纯数字（nvme0n1→nvme0n1p1 ✓；
-///   nvme0n1→nvme0n10 ✗——后者是独立盘）
-/// - 父设备不在样本或零活动时，分区照常计入（不静默丢数据）
-///
-/// /proc/diskstats line format (17 fields):
-/// `major minor name reads_completed reads_merged sectors_read ms_reading
-///  writes_completed writes_merged sectors_written ms_writing ...`
-/// field indices (0-based after the leading 3): reads_completed=3, sectors_read=5,
-/// writes_completed=7, sectors_written=9.
-///
-/// We use sectors_read (field 5) and sectors_written (field 9); each sector = 512 bytes
-/// per Linux kernel docs regardless of actual hardware block size.
-pub fn parse_proc_diskstats(content: &str) -> Result<(u64, u64), String> {
+/// 判据（每条都对应一次「换个环境就炸」）：
+/// - 过滤虚拟/光学/内存盘（loop/ram/sr/fd）；
+/// - 过滤**栈式设备** dm-*（LVM）/ md*（软 RAID）/ nbd*/zd*/drbd*：它们与底层
+///   物理设备记同一份 IO（一次写 LVM 卷同时记在 dm-0 与 PV 整盘，RAID1 记在
+///   md0 与每块成员盘），累加会虚高 2-3 倍。物理设备始终在样本里，跳过不丢数据；
+/// - 分区去重：同一 IO 在内核里同时记在父设备与分区上（sda 与 sda1），仅当父设备
+///   在本样本中**有活动**时跳过分区（父设备缺失/零活动则照常计入，不静默丢数据）。
+pub fn sum_proc_diskstats(content: &str) -> (u64, u64) {
     // 第一遍：收集本样本全部候选设备（已过滤 loop/ram/sr/fd）。
     // 元组：(name, reads_completed, writes_completed, sectors_read, sectors_written)
     let mut devices: Vec<(&str, u64, u64, u64, u64)> = Vec::new();
@@ -268,6 +257,21 @@ pub fn parse_proc_diskstats(content: &str) -> Result<(u64, u64), String> {
             || name.starts_with("ram")
             || name.starts_with("sr")
             || name.starts_with("fd")
+        {
+            continue;
+        }
+
+        // 栈式设备（LVM 的 dm-*、软 RAID 的 md*、网络块设备 nbd*/zd*/drbd*）
+        // 与底层物理设备**记同一份 IO**：一次写 LVM 卷会同时记在 dm-0、PV 分区
+        // 与整盘三处，RAID1 写还会记在 md0 与每块成员盘上。名字后缀规则
+        //（is_partition_suffix）只能识别「整盘↔分区」，识别不了这种栈式关系，
+        // 全部累加会让磁盘 IO 虚高 2-3 倍（Linux 上 iostat 对 dm 设备同样双计）。
+        // 物理设备始终在样本中，跳过栈式设备不会丢数据。
+        if name.starts_with("dm-")
+            || name.starts_with("md")
+            || name.starts_with("nbd")
+            || name.starts_with("zd")
+            || name.starts_with("drbd")
         {
             continue;
         }
@@ -303,7 +307,23 @@ pub fn parse_proc_diskstats(content: &str) -> Result<(u64, u64), String> {
         write_bytes += sectors_written.saturating_mul(512);
     }
 
-    Ok((read_bytes, write_bytes))
+    (read_bytes, write_bytes)
+}
+
+/// Parse /proc/diskstats: sum read_sectors * 512 and write_sectors * 512
+/// across all real block devices. 去重规则见 `sum_proc_diskstats`（可单测纯函数）。
+/// Returns `(read_bytes, write_bytes)` cumulative since boot.
+///
+/// /proc/diskstats line format (17 fields):
+/// `major minor name reads_completed reads_merged sectors_read ms_reading
+///  writes_completed writes_merged sectors_written ms_writing ...`
+/// field indices (0-based after the leading 3): reads_completed=3, sectors_read=5,
+/// writes_completed=7, sectors_written=9.
+///
+/// We use sectors_read (field 5) and sectors_written (field 9); each sector = 512 bytes
+/// per Linux kernel docs regardless of actual hardware block size.
+pub fn parse_proc_diskstats(content: &str) -> Result<(u64, u64), String> {
+    Ok(sum_proc_diskstats(content))
 }
 
 /// `part` 是否是 `base` 的分区名（仅名字规则判断，规则见 parse_proc_diskstats 文档）。
@@ -323,7 +343,7 @@ fn is_partition_suffix(base: &str, part: &str) -> bool {
     }
 }
 
-/// Parse `LC_ALL=C df -P -k /` output to extract root filesystem capacity.
+/// Parse `env LC_ALL=C df -P -k /` output to extract root filesystem capacity.
 ///
 /// `-P` = POSIX format (one line per FS, no wrapping); `-k` = 1024-byte blocks
 /// （POSIX 通用，BusyBox 亦支持；`-B1` 是 GNU 扩展，BusyBox 下整条 df 会失败）。
@@ -391,7 +411,7 @@ pub fn parse_df(content: &str) -> Result<(u64, u64), String> {
 // ---------------------------------------------------------------------------
 
 /// Build a ResourceSnapshot from the combined stdout of:
-///   cat /proc/stat; cat /proc/meminfo; cat /proc/net/dev; cat /proc/diskstats; LC_ALL=C df -P -k /
+///   cat /proc/stat; cat /proc/meminfo; cat /proc/net/dev; cat /proc/diskstats; env LC_ALL=C df -P -k /
 ///
 /// We split the combined output by looking for known section anchors
 /// ("cpu " for stat, "MemTotal:" for meminfo, "Inter-|" for net/dev,
@@ -468,7 +488,7 @@ fn compute_cpu_usage(prev: Option<(u64, u64)>, idle: u64, total: u64) -> f32 {
 }
 
 /// Split the combined `cat /proc/stat; cat /proc/meminfo; cat /proc/net/dev;
-/// cat /proc/diskstats; LC_ALL=C df -P -k /` output into 5 sections. Parsers tolerate
+/// cat /proc/diskstats; env LC_ALL=C df -P -k /` output into 5 sections. Parsers tolerate
 /// sections that contain unrelated lines, so we use generous anchor-based splitting.
 fn split_proc_output(combined: &str) -> (String, String, String, String, String) {
     // Find anchor byte offsets
@@ -625,7 +645,9 @@ fn spawn_monitor_task(
 ) {
     // LC_ALL=C：强制英文表头，"Filesystem" 锚点在任何 locale 下都能命中；
     // -P -k：POSIX 格式 + 1K 块（-B1 是 GNU 扩展，BusyBox 不支持）。
-    let cmd = "cat /proc/stat; cat /proc/meminfo; cat /proc/net/dev; cat /proc/diskstats; LC_ALL=C df -P -k /";
+    // `env LC_ALL=C`（而非 `LC_ALL=C` 前缀）：远端登录 shell 可能是 csh/tcsh
+    // （FreeBSD root 默认），那里 `VAR=值 命令` 不是赋值语法，df 段整条不执行。
+    let cmd = "cat /proc/stat; cat /proc/meminfo; cat /proc/net/dev; cat /proc/diskstats; env LC_ALL=C df -P -k /";
 
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
@@ -891,6 +913,31 @@ tmpfs             1638400      1205   1637195   1% /dev/shm
         let (read_bytes, write_bytes) = parse_proc_diskstats(sample).expect("diskstats parse");
         assert_eq!(read_bytes, (500000 + 100000) * 512);
         assert_eq!(write_bytes, (600000 + 200000) * 512);
+    }
+
+    #[test]
+    fn test_proc_diskstats_lvm_and_raid_not_double_counted() {
+        // LVM：一次写 LV 同时记在 dm-0 与 PV 整盘/分区上（三者名字互不构成
+        // 「整盘↔分区」关系，旧实现全计 → 磁盘 IO 虚高 2-3 倍）。
+        let lvm = "\
+   8       0 sda 54321 876 7654321 43210 12345 678 9234567 89012 0 123456 132222
+   8       2 sda2 54321 876 7654321 43210 12345 678 9234567 89012 0 123456 132222
+ 253       0 dm-0 54321 876 7654321 43210 12345 678 9234567 89012 0 123456 132222
+";
+        let (read_bytes, write_bytes) = sum_proc_diskstats(lvm);
+        // 只算一次物理 IO（sda 整盘），dm-0 与 sda2 不叠加
+        assert_eq!(read_bytes, 7654321 * 512);
+        assert_eq!(write_bytes, 9234567 * 512);
+
+        // 软 RAID1：写 md0 会同时记在 md0 与每块成员盘上 → 只计成员盘
+        let raid1 = "\
+   8       0 sda 100 10 100000 100 200 20 200000 200 0 300 300
+   8      16 sdb 100 10 100000 100 200 20 200000 200 0 300 300
+   9       0 md0 100 10 100000 100 200 20 200000 200 0 300 300
+";
+        let (read_bytes, write_bytes) = sum_proc_diskstats(raid1);
+        assert_eq!(read_bytes, (100000 + 100000) * 512);
+        assert_eq!(write_bytes, (200000 + 200000) * 512);
     }
 
     #[test]

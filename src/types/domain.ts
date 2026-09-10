@@ -277,7 +277,13 @@ export interface SyncPushResult {
 /** sync_pull 返回（serde tag="decision"）。 */
 export type SyncPullResult =
   | { decision: 'NoChange' }
-  | { decision: 'Pulled'; assets_json?: string; new_rev?: number }
+  | {
+      decision: 'Pulled';
+      assets_json?: string;
+      new_rev?: number;
+      /** v2.6：本次有 N 项凭据未能写入本机（资产已拉取但密码/私钥不可用）——必须提示用户。 */
+      credentials_failed?: number;
+    }
   | { decision: 'LocalNewer' }
   | { decision: 'Conflict'; local_json?: string; remote_json?: string; remote_rev?: number };
 

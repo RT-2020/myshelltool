@@ -123,62 +123,76 @@ pub fn execution_log_path(data_dir: &Path) -> PathBuf {
     data_dir.join("mcp-execution-log.json")
 }
 
-/// 读 store。文件不存在 / 空内容 → 重新开始（空 store，默认 lastCleanupMs=0
-/// 会触发下次 append 时立即清理一次）。
+/// `load_store` 的读取结果（**三态**，见函数注释）。
+enum LoadOutcome {
+    /// 文件不存在或为空内容 → 空 store（首次使用，合法）。
+    Fresh,
+    /// 读到且解析成功（含损坏已隔离后的空 store）。
+    Loaded(ExecutionLogStore),
+    /// 文件**存在但读不出来**（非 UTF-8 / 权限 / 被独占）→ 带原因。
+    Unreadable(String),
+}
+
+/// 把不可用的日志文件改名隔离为 `<name>.corrupt-<unix秒>.json`，返回隔离路径
+/// 的展示串（成功＝新路径，失败＝原路径 + 原因）。
 ///
-/// **文件损坏 → 改名隔离保留证据**（`mcp-execution-log.corrupt-<unix秒>.json`）
-/// + log::error，再以空 store 继续：审计历史不能静默消失，隔离文件可供人工
-/// 抢救。已知边界：list_entries 不持写锁，隔离改名与并发 append 的原子替换
-/// 存在极窄竞窗——若此刻文件刚被替换，改名移走的是新内容（仍完整保留在
-/// 隔离文件中，且下一次 append 会重建），不丢数据，只错位。
-fn load_store(path: &Path) -> ExecutionLogStore {
-    if !path.exists() {
-        return ExecutionLogStore::default();
-    }
-    match std::fs::read_to_string(path) {
-        Ok(json) if !json.trim().is_empty() => match serde_json::from_str(&json) {
-            Ok(store) => store,
-            Err(e) => {
-                let secs = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                let quarantine = path.with_file_name(format!(
-                    "{}.corrupt-{secs}.json",
-                    path.file_stem().and_then(|s| s.to_str()).unwrap_or("mcp-execution-log")
-                ));
-                match std::fs::rename(path, &quarantine) {
-                    Ok(()) => log::error!(
-                        "mcp execution log 文件损坏（解析失败: {e}），原文件已隔离到 {}，从空日志重新开始",
-                        quarantine.display()
-                    ),
-                    Err(rename_err) => log::error!(
-                        "mcp execution log 文件损坏（解析失败: {e}），隔离改名失败: {rename_err}，从空日志重新开始（原损坏文件保留原地）"
-                    ),
-                }
-                ExecutionLogStore::default()
-            }
-        },
-        _ => ExecutionLogStore::default(),
+/// 隔离而非删除：损坏/读不出的文件是排查依据（磁盘问题 / 旧版本写坏 / 被独占），
+/// 改名后下一次 append 会重建全新文件。改名失败也不阻断（原文件留原地）。
+fn quarantine_file(path: &Path, reason: &str) -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let quarantine = path.with_file_name(format!(
+        "{}.corrupt-{secs}.json",
+        path.file_stem().and_then(|s| s.to_str()).unwrap_or("mcp-execution-log")
+    ));
+    match std::fs::rename(path, &quarantine) {
+        Ok(()) => quarantine.display().to_string(),
+        Err(rename_err) => format!(
+            "{}（隔离改名失败: {rename_err}，{reason}）",
+            path.display()
+        ),
     }
 }
 
-/// 原子写：先写 `<path>.tmp` 再 fs::rename 替换（Windows 上 std rename 语义为
-/// 覆盖已存在目标），读方不会见到半截文件。
-fn save_store_atomic(path: &Path, store: &ExecutionLogStore) -> Result<(), String> {
-    let tmp_path = {
-        let mut s = path.as_os_str().to_os_string();
-        s.push(".tmp");
-        PathBuf::from(s)
+/// 读 store。三态分明，**「读失败」绝不与「不存在」合并**：
+/// - 不存在 / 空内容 → 空 store 继续（首次使用合法）；
+/// - JSON 解析失败 → 改名隔离保留证据（`mcp-execution-log.corrupt-<unix秒>.json`）
+///   + log::error，再以空 store 继续：审计历史不能静默消失，隔离文件可供人工抢救。
+///   已知边界：list_entries 不持写锁，隔离改名与并发 append 的原子替换存在极窄
+///   竞窗——若此刻文件刚被替换，改名移走的是新内容（仍完整保留在隔离文件中，
+///   且下一次 append 会重建），不丢数据，只错位。
+/// - **读取失败 → `Unreadable`（区别于前两者）**：曾把读取失败也折叠成空 store，
+///   紧接着 append 原子覆盖 → 整份审计历史被「仅含 1 条」的新文件替换、无隔离
+///   无日志（v2.5 只修了「解析失败」这一半）。
+fn load_store(path: &Path) -> LoadOutcome {
+    let json = match std::fs::read_to_string(path) {
+        Ok(json) => json,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return LoadOutcome::Fresh,
+        Err(e) => return LoadOutcome::Unreadable(e.to_string()),
     };
+    if json.trim().is_empty() {
+        return LoadOutcome::Fresh;
+    }
+    match serde_json::from_str::<ExecutionLogStore>(&json) {
+        Ok(store) => LoadOutcome::Loaded(store),
+        Err(e) => {
+            let target = quarantine_file(path, &format!("解析失败: {e}"));
+            log::error!(
+                "mcp execution log 文件损坏（解析失败: {e}），原文件已隔离到 {target}，从空日志重新开始"
+            );
+            LoadOutcome::Loaded(ExecutionLogStore::default())
+        }
+    }
+}
+
+/// 原子写：委托 `myshelltool_core::write_atomic`（同目录临时文件 + rename；临时名带
+/// pid+序号，多实例/并发不会互踩，失败保留原文件并清理临时文件）。
+fn save_store_atomic(path: &Path, store: &ExecutionLogStore) -> Result<(), String> {
     let json = serde_json::to_string(store)
         .map_err(|e| format!("序列化 mcp-execution-log.json: {e}"))?;
-    std::fs::write(&tmp_path, json).map_err(|e| format!("写日志临时文件: {e}"))?;
-    std::fs::rename(&tmp_path, path).map_err(|e| {
-        // 失败时尽力清掉 tmp，避免残留占用。
-        let _ = std::fs::remove_file(&tmp_path);
-        format!("原子替换 mcp-execution-log.json: {e}")
-    })
+    myshelltool_core::write_atomic(path, json).map_err(|e| format!("写执行日志: {e}"))
 }
 
 /// 惰性清理：距上次清理 >24h 时删 30 天前条目，再按条数截断保留最新 1000 条。
@@ -198,11 +212,26 @@ fn maybe_cleanup(store: &mut ExecutionLogStore, now_ms: u64) {
 // ─── 对外 API ───
 
 /// 追加一条执行日志。锁内 load→push→惰性清理→原子 save。
-/// 落盘失败 best-effort（log::warn 后正常返回），不阻断工具调用。
+///
+/// 两条 best-effort 语义（都不阻断工具调用本身）：
+/// - 落盘失败 → `log::warn` 后返回；
+/// - **读取失败**（文件存在但读不出来）→ 隔离原文件保留证据 + `log::error`，
+///   本次**不写盘**。绝不能像早期实现那样把「读不出来」当「空日志」，
+///   否则这次 append 会把整份审计历史替换成仅含 1 条的新文件（形态 C 事故）。
 pub async fn append_entry(data_dir: &Path, entry: ExecutionLogEntry) {
     let _guard = write_lock().lock().await;
     let path = execution_log_path(data_dir);
-    let mut store = load_store(&path);
+    let mut store = match load_store(&path) {
+        LoadOutcome::Fresh => ExecutionLogStore::default(),
+        LoadOutcome::Loaded(store) => store,
+        LoadOutcome::Unreadable(reason) => {
+            let quarantine = quarantine_file(&path, &format!("读取失败: {reason}"));
+            log::error!(
+                "mcp execution log 读取失败（{reason}），已隔离到 {quarantine}；本次条目未落盘，避免覆盖原有审计历史"
+            );
+            return;
+        }
+    };
     let now_ms = entry.timestamp_ms;
     store.entries.push(entry);
     maybe_cleanup(&mut store, now_ms);
@@ -213,8 +242,13 @@ pub async fn append_entry(data_dir: &Path, entry: ExecutionLogEntry) {
 
 /// 读最近条目：timestampMs 倒序（同时间戳按 id 倒序 tie-break），最多 limit 条。
 /// 只读不改盘上数据，无需拿写锁（rename 原子性保证读到完整文件）。
+/// 读取失败 → 空列表（GUI 显示「暂无执行日志」），原因已由 load_store 记日志。
 pub fn list_entries(data_dir: &Path, limit: usize) -> Vec<ExecutionLogEntry> {
-    let mut store = load_store(&execution_log_path(data_dir));
+    let mut store = match load_store(&execution_log_path(data_dir)) {
+        LoadOutcome::Fresh => ExecutionLogStore::default(),
+        LoadOutcome::Loaded(store) => store,
+        LoadOutcome::Unreadable(_) => return Vec::new(),
+    };
     store.entries.sort_by(|a, b| {
         b.timestamp_ms
             .cmp(&a.timestamp_ms)
@@ -225,10 +259,24 @@ pub fn list_entries(data_dir: &Path, limit: usize) -> Vec<ExecutionLogEntry> {
 }
 
 /// 清空全部条目并重置 lastCleanupMs（下次 append 重新计时）。
+///
+/// 读取失败时**拒绝清空**并回报原因：此时无法确认盘上历史内容，直接原子写空
+/// store 等于把一份读不出来的审计历史静默抹掉（用户以为「清空成功」）。
+/// 需用户显式处理（隔离/修复文件）后再清。
 pub async fn clear_entries(data_dir: &Path) -> Result<(), String> {
     let _guard = write_lock().lock().await;
     let path = execution_log_path(data_dir);
-    let mut store = load_store(&path);
+    let mut store = match load_store(&path) {
+        LoadOutcome::Fresh => ExecutionLogStore::default(),
+        LoadOutcome::Loaded(store) => store,
+        LoadOutcome::Unreadable(reason) => {
+            return Err(format!(
+                "执行日志文件读取失败（{reason}），已拒绝清空以免抹掉无法确认的历史内容；\
+                 文件路径 {}，请先手动处理（重命名/删除）后重试",
+                path.display()
+            ));
+        }
+    };
     store.entries.clear();
     store.last_cleanup_ms = now_ms();
     save_store_atomic(&path, &store)

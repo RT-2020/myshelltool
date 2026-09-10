@@ -27,7 +27,7 @@ import {
   invokeBackend,
   listenBackendEvent
 } from '../services/backend';
-import { openAssetWindow } from './assetWindows';
+import { assetWindowLabel, openAssetWindow } from './assetWindows';
 
 export const HANDOFF_EVENTS = {
   TEAROFF: 'session-handoff-tearoff',
@@ -281,6 +281,22 @@ export async function tearOffSession({ sessionsStore, workbenchStore, sessionId 
   if (!session) return;
   const asset = session.asset;
   try {
+    // v2.6 就绪门（D-6 修复）：目标窗口**已存在**时，它可能仍在加载/boot（TEAROFF
+    // 监听尚未注册）。旧实现照样迁移+广播 → 事件无人接、会话从源窗口消失、后端留
+    // 孤儿连接，且没有任何提示。现在：已存在但未上报就绪 → 先等它 ready（≤3s）；
+    // 等不到就放弃本次拖出并说明，不迁移（会话原地不动，用户可重试）。
+    // 目标窗口不存在（首次开窗）时无此问题：URL 自带 adopt= 参数，boot 直接接管。
+    if (asset) {
+      const targetLabel = assetWindowLabel(asset);
+      const existing = await getExistingTauriWebviewWindow(targetLabel);
+      if (existing) {
+        const ready = await waitHandoffReady(targetLabel, 3000);
+        if (!ready) {
+          workbenchStore?.announce?.('目标窗口正在启动，请稍后重试拖出', { level: 'warn' });
+          return;
+        }
+      }
+    }
     const ok = await migrateSessionOut({ sessionsStore, workbenchStore, sessionId });
     if (!ok) return;
     await emitBackendEvent(HANDOFF_EVENTS.TEAROFF, {
@@ -299,6 +315,69 @@ export async function tearOffSession({ sessionsStore, workbenchStore, sessionId 
 }
 
 // ============================================================
+// 目标窗口就绪握手（v2.6，D-6）
+//
+// `getByLabel` 查得到窗口 ≠ 该窗口的 webview 已跑到注册监听那一步——页面加载 +
+// onMounted 之间有数百毫秒到数秒的空窗期（慢机器更久）。源窗口在此刻迁移会话，
+// TEAROFF 就没人接。故让每个窗口 boot 后广播 `handoff-ready`（带自己的 label），
+// 源窗口在迁移前据此确认目标已就绪。
+// ============================================================
+
+const HANDOFF_READY_EVENT = 'handoff-ready';
+/** 已上报就绪的窗口 label（本进程内）。 */
+const readyWindows = new Set<string>();
+
+function waitHandoffReady(label: string, timeoutMs: number): Promise<boolean> {
+  if (readyWindows.has(label)) return Promise.resolve(true);
+  return new Promise(resolve => {
+    let done = false;
+    const finish = (ok: boolean) => {
+      if (done) return;
+      done = true;
+      clearInterval(poll);
+      clearTimeout(giveUp);
+      resolve(ok);
+    };
+    // 事件驱动的登记（onHandoffReadyEvent）+ 轮询兜底：ready 事件可能在 setup 时就
+    // 已到达而本函数尚未调用（注册与查询时序无关，读 Set 即可）。
+    const poll = setInterval(() => {
+      if (readyWindows.has(label)) finish(true);
+    }, 100);
+    const giveUp = setTimeout(() => finish(false), timeoutMs);
+  });
+}
+
+/** 收到任何窗口的 `handoff-ready` 广播：登记该 label 已可接管。 */
+function onHandoffReadyEvent(event: TauriEvent) {
+  const payload = event?.payload as { windowLabel?: string; role?: string; assetId?: string } | undefined;
+  const label = payload?.windowLabel;
+  if (typeof label === 'string' && label) readyWindows.add(label);
+}
+
+/** 本窗口 boot 完成、监听已就位后广播就绪（主窗口与 asset 窗口都要发）。 */
+export async function announceHandoffReady(assetId?: string): Promise<void> {
+  // 自己的 label 也登记：同一进程内查询无需等事件回来
+  try {
+    const current = getTauriWindow() as TauriWindowLike | null;
+    const label = current?.label;
+    if (typeof label === 'string' && label) readyWindows.add(label);
+  } catch {
+    // 非 Tauri runtime（浏览器预览）：无窗口标签可登记，跳过即可
+    return;
+  }
+  await emitBackendEvent(HANDOFF_READY_EVENT, {
+    windowLabel: (getTauriWindow() as TauriWindowLike | null)?.label,
+    role: getWindowRole(),
+    assetId
+  }).catch(() => null);
+}
+
+/** 测试/诊断用：当前已知就绪的窗口 label。 */
+export function listReadyWindows(): string[] {
+  return [...readyWindows];
+}
+
+// ============================================================
 // MERGE_ACK 等待（asset 窗口侧）：push 后挂起等主窗口回执，超时兜底
 // ============================================================
 interface MergeAckResult {
@@ -313,7 +392,19 @@ interface PendingAckEntry {
 
 const pendingAcks = new Map<string, PendingAckEntry>(); // sessionId -> { resolve, timer }
 
-function waitMergeAck(sessionId: string, timeoutMs = 6000): Promise<MergeAckResult> {
+/**
+ * 主窗口接管回执的等待上限（v2.6：6s → 20s，另加 10s 宽限轮询）。
+ *
+ * 旧值 6000ms 把「ACK 还没来」当成「主窗口没接管」：主窗口最小化时
+ * `adoptSession` 里的 requestAnimationFrame 被节流、首次 adopt 还要冷加载 xterm 与
+ * 分帧回放，很容易超过 6s → 弹「移回失败」但主窗口稍后**仍然接管成功**，变成两个窗口
+ * 同时监听同一会话（用户之后关 asset 窗口还会把主窗口正在用的连接断掉）。
+ * 20s + 宽限轮询覆盖冷启动与节流场景；已知残留：ACK 在宽限期之后才到时本窗口不会
+ * 自动移交（超时文案已改为「尚未确认」并说明可从主窗口继续使用，不再谎报失败）。
+ */
+const MERGE_ACK_TIMEOUT_MS = 20000;
+
+async function waitMergeAck(sessionId: string, timeoutMs = MERGE_ACK_TIMEOUT_MS): Promise<MergeAckResult> {
   return new Promise(resolve => {
     const entry: PendingAckEntry = { resolve, timer: null };
     entry.timer = setTimeout(() => {
@@ -331,6 +422,36 @@ function settleMergeAck(sessionId: string, result: MergeAckResult): boolean {
   clearTimeout(entry.timer!);
   entry.resolve(result);
   return true;
+}
+
+/** 是否仍在等这条会话的 MERGE_ACK（未超时/未被 settle）。 */
+export function isMergeAckPending(sessionId: string): boolean {
+  return pendingAcks.has(sessionId);
+}
+
+/**
+ * 等待 ACK 的 Promise **或** 一个宽限轮询（谁先有结果用谁）。
+ *
+ * 为什么需要轮询：ACK 到达时 `settleMergeAck` 会 resolve 原 Promise；但如果上游因
+ * 别的原因提前放弃了那个 Promise（旧实现的 6s 超时即如此），late ACK 就没人接。
+ * 宽限期版本让「主窗口慢但在推进」的场景能自我纠正。
+ */
+function waitMergeAckWithGrace(sessionId: string, primary: Promise<MergeAckResult>, graceMs = 10000): Promise<MergeAckResult> {
+  return new Promise(resolve => {
+    let done = false;
+    const finish = (result: MergeAckResult) => {
+      if (done) return;
+      done = true;
+      clearInterval(poll);
+      resolve(result);
+    };
+    const poll = setInterval(() => {
+      // ACK 在宽限期内到达 → 主窗口确实接管了；原 Promise 可能已被超时弃用
+      if (!pendingAcks.has(sessionId)) finish({ ok: true, reason: 'late-ack' });
+    }, 250);
+    void primary.then(finish);
+    setTimeout(() => finish({ ok: false, reason: 'timeout' }), graceMs);
+  });
 }
 
 // asset 窗口标题栏「移回主窗口」（v2.4 ACK 协议）：
@@ -367,11 +488,19 @@ export async function pushSessionToMainWindow({ sessionsStore, workbenchStore, s
       assetId: session.asset?.id,
       sourceWindowId: getMyWindowId()
     });
-    const ack = await ackPromise;
+    // 宽限对账：主窗口慢（最小化时 rAF 被节流、首次 adopt 冷加载）也不会被误判失败。
+    // 旧实现 6s 超时后弹「未确认」而主窗口稍后照样接管 → 双窗口共持同一会话。
+    const ack = await waitMergeAckWithGrace(sessionId, ackPromise);
     if (!ack.ok) {
-      console.warn('[sessionHandoff] 移回主窗口未确认（' + (ack.reason || 'adopt 失败') + '），会话保留在本窗口', { sessionId });
-      workbenchStore?.announce?.('移回主窗口失败：主窗口未确认接管，会话已保留', { level: 'error' });
+      // 超时不再说成「失败」——事实是「还没收到回执」，会话仍在本窗口可用。
+      // 不做本地 detach（主窗口可能已经在 adopt，移交所有权会造成会话无主）。
+      console.warn('[sessionHandoff] 移回主窗口未在宽限期内确认（' + (ack.reason || 'unknown') + '），会话保留在本窗口', { sessionId });
+      workbenchStore?.announce?.('移回主窗口尚未确认（主窗口可能仍在接管），会话暂时保留在本窗口', { level: 'warn' });
       return false;
+    }
+    if (ack.reason === 'late-ack') {
+      // 迟到的 ACK：主窗口已接管，但原 Promise 已被超时弃用——这里补做移交
+      console.warn('[sessionHandoff] 收到迟到的 MERGE_ACK，补做本窗口移交', { sessionId });
     }
     await detachSessionLocal({ sessionsStore, workbenchStore, session });
     if (!sessionsStore.sessions.length) {
@@ -422,6 +551,11 @@ export function setupHandoffListeners({ sessionsStore, workbenchStore, assetId }
   const on = (eventName: string, handler: TauriEventHandler) => {
     listenBackendEvent(eventName, handler).then(track).catch(() => null);
   };
+
+  // handoff-ready：所有窗口都监听（登记别的窗口就绪，供拖出前的就绪门使用）。
+  // 必须在其它监听之后注册也无妨——tearOffSession 是轮询 + Set 判定，
+  // 事件比查询早到也不会漏（见 waitHandoffReady）。
+  on(HANDOFF_READY_EVENT, onHandoffReadyEvent);
 
   // TEAROFF：仅 asset 窗口监听；assetId 匹配本窗口资产（另一资产的窗口忽略），
   // sourceWindowId 防自吞。

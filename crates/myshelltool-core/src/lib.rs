@@ -1,5 +1,17 @@
 // v1.3 Gist 同步加密内核（独立模块，纯函数可单测）
 pub mod crypto;
+// v2.6 危险命令分类（白/黄/黑/Unknown 四层）+ shell 命令分段：GUI 终端守卫与
+// MCP 审批共享的单点真相。原在 src-tauri/src/，迁入 core 以便 `cargo test` 真正
+// 执行（src-tauri 的测试二进制因 Tauri runtime DLL 缺失跑不起来，安全判据不可测）。
+pub mod dangerous_commands;
+// v2.6 命令文本脱敏（执行日志/应用日志落盘前的凭据红线，见模块注释）
+pub mod redact;
+// v2.6 远端文件内容编码判定（拒绝 lossy「解码」二进制/非 UTF-8，见模块注释）
+pub mod remote_text;
+pub mod shell;
+
+// 便捷再导出：调用方写 `myshelltool_core::redact_command(...)`（日志落盘点最常用）
+pub use redact::redact_command;
 // v1.3 Gist 同步引擎（载荷结构 + 加解密封装 + 冲突检测，纯逻辑无 HTTP）
 pub mod sync;
 
@@ -343,6 +355,46 @@ pub fn load_connection_asset_store(path: impl AsRef<Path>) -> Result<ConnectionA
     Ok(store)
 }
 
+/// 原子写：先写**同目录**临时文件再 `fs::rename` 替换目标。
+///
+/// 为什么必须：`fs::write` 语义是 truncate + write_all，就地覆盖。磁盘满、断电、
+/// 进程被杀、AV 扫描的瞬间会留下半截或 0 字节文件——`connection-assets.json` 是
+/// 用户资产的**本地唯一副本**，半截后 `load_connection_asset_store` 直接 Err，
+/// 整个资产列表不可读；`sync-state.json` 截成 0 字节还会被当「首次运行」静默清零。
+/// rename 在同一文件系统内是原子的：读方只会看到「完整旧文件」或「完整新文件」。
+///
+/// 失败语义（fail-secure）：临时文件写失败或 rename 失败都返回 Err 并**保留原文件**；
+/// 失败路径尽力清理临时文件（清理失败无副作用，故可忽略）。
+///
+/// 临时文件带进程 id + 计数后缀：多实例/多线程并发写同一目标时不会互相覆盖对方的
+/// 临时文件（用固定 `.tmp` 名会）。
+pub fn write_atomic(path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> Result<(), String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|e| format!("创建目录 {}: {e}", parent.display()))?;
+        }
+    }
+    let tmp_path = {
+        let mut s = path.as_os_str().to_os_string();
+        s.push(format!(
+            ".tmp-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::path::PathBuf::from(s)
+    };
+    fs::write(&tmp_path, contents.as_ref())
+        .map_err(|e| format!("写临时文件 {}: {e}", tmp_path.display()))?;
+    fs::rename(&tmp_path, path).map_err(|e| {
+        let _ = fs::remove_file(&tmp_path); // best-effort 清理，失败无副作用
+        format!("原子替换 {} 失败（原文件保留）: {e}", path.display())
+    })
+}
+
 pub fn save_connection_asset_store(
     path: impl AsRef<Path>,
     store: &ConnectionAssetStore,
@@ -350,12 +402,9 @@ pub fn save_connection_asset_store(
     for asset in &store.assets {
         validate_connection_asset(asset)?;
     }
-    let path = path.as_ref();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
     let json = serde_json::to_string_pretty(store).map_err(|error| error.to_string())?;
-    fs::write(path, json).map_err(|error| error.to_string())
+    // 原子写：资产 JSON 是本地唯一副本，截断即全部资产不可读（见 write_atomic 注释）
+    write_atomic(path, json)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -457,7 +506,8 @@ impl SecretStore {
         let mut payload = Vec::with_capacity(MAGIC_DPAPI.len() + encrypted.len());
         payload.extend_from_slice(MAGIC_DPAPI);
         payload.extend_from_slice(&encrypted);
-        fs::write(path, payload).map_err(|e| e.to_string())
+        // 原子写：凭据文件半截会被后续读取判为「损坏/不存在」，用户表现为认证失败
+        write_atomic(path, payload)
     }
 
     pub fn get_status(&self, id: &str) -> Result<CredentialStatus, String> {
@@ -545,7 +595,7 @@ impl SecretStore {
         let mut payload = Vec::with_capacity(MAGIC_DPAPI.len() + encrypted.len());
         payload.extend_from_slice(MAGIC_DPAPI);
         payload.extend_from_slice(&encrypted);
-        fs::write(path, payload).map_err(|e| e.to_string())
+        write_atomic(path, payload)
     }
 }
 
@@ -964,6 +1014,58 @@ mod tests {
         let dir = temp_secret_dir("invalid");
         let store = SecretStore::new(&dir, Box::new(PlaintextCodec));
         assert!(store.save("!@#$%", "secret").is_err());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    // ─── v2.6 原子写（write_atomic）───
+
+    #[test]
+    fn write_atomic_replaces_content_and_leaves_no_temp() {
+        let dir = temp_secret_dir("atomic-ok");
+        let path = dir.join("payload.json");
+        write_atomic(&path, "first").expect("first write");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "first");
+        write_atomic(&path, "second").expect("overwrite");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "second");
+        // 不留临时文件残留（读方看到的是完整文件）
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "临时文件未清理: {leftovers:?}");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn write_atomic_failure_preserves_previous_file() {
+        // rename 的目标是一个**已存在的目录** → rename 必然失败；此时原文件不得被破坏。
+        // 这是 write_atomic 的核心价值：写失败绝不能让用户丢失唯一的本地副本。
+        let dir = temp_secret_dir("atomic-fail");
+        let parent_file = dir.join("target");
+        fs::create_dir_all(&parent_file).expect("create dir as rename target");
+        // 先写一份可读数据到另一个文件，再验证失败路径不触碰它
+        let keep = dir.join("keep.json");
+        write_atomic(&keep, "important").unwrap();
+        let err = write_atomic(&parent_file, "boom");
+        assert!(err.is_err(), "向目录 rename 必须报错");
+        assert_eq!(fs::read_to_string(&keep).unwrap(), "important");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn save_connection_asset_store_is_atomic_and_readable() {
+        let dir = temp_secret_dir("assets-atomic");
+        let path = dir.join("connection-assets.json");
+        let mut store = default_asset_store();
+        save_connection_asset_store(&path, &store).expect("save");
+        let loaded = load_connection_asset_store(&path).expect("load");
+        assert_eq!(loaded.assets.len(), store.assets.len());
+        // 第二次保存（覆盖已有文件）同样成功且可读
+        store.assets.clear();
+        save_connection_asset_store(&path, &store).expect("overwrite");
+        assert!(load_connection_asset_store(&path).unwrap().assets.is_empty());
         let _ = fs::remove_dir_all(dir);
     }
 }

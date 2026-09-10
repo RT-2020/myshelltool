@@ -395,7 +395,11 @@ async fn append_execution_log(
         host,
         port,
         username,
-        command: scope.command.clone(),
+        // 脱敏后落盘：命令原文可能含明文口令（`mysql -pP@ss`、`curl -u u:p`、
+        // `--password=x`），而执行日志是**长期保留**的审计文件（30 天 / 1000 条），
+        // 且会在 GUI 面板回显——违反 AGENTS.md §8「凭据不进日志」（形态 C 变体：
+        // 不是折叠错误，而是把敏感值当普通文本落盘）。
+        command: myshelltool_core::redact_command(&scope.command),
         intent: scope.intent.clone(),
         decision: decision_str.to_string(),
         outcome: outcome_str.to_string(),
@@ -445,9 +449,12 @@ async fn degrade_to_pipe_or_reject(
         let mut map = ctx.approval_pending.lock().await;
         map.insert(request_id.clone(), tx);
     }
+    // 命令文本在**日志**里脱敏（§8 凭据红线）；下面 emit 给 GUI 弹窗的仍是原命令——
+    // 审批透明性优先：用户必须看到真实要执行的东西（含其中的口令）才能判断。
     log::info!(
         "mcp approval: emitting GUI prompt request_id={}, command={}",
-        request_id, info.command
+        request_id,
+        myshelltool_core::redact_command(&info.command)
     );
 
     let event = McpApprovalEvent {

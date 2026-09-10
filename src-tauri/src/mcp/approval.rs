@@ -134,20 +134,21 @@ pub fn evaluate(
     let wl: Vec<String> = whitelist.iter().map(|s| s.to_string()).collect();
     match dangerous_commands::classify_command(command, &wl, yellow_list) {
         CommandRisk::Safe => {
-            log::info!("approval: command approved (whitelist)");
+            log::info!("approval: command approved (whitelist)"); // fact-guard:allow no-unredacted-command-in-log 本条只记白名单放行事实，不含命令文本
             ApprovalDecision::AutoExecute(AutoApproveReason::Whitelist)
         }
         CommandRisk::Allowed | CommandRisk::Unknown => match level {
             McpInterceptLevel::Minimal => {
                 // v2 用户明确选择的低摩擦默认：放行 + 执行日志留痕（minimal_allowed）。
+                // 命令文本先脱敏再进应用日志（§8 凭据红线；`mysql -pP@ss` 明文落盘事故）。
                 log::info!(
                     "approval: command allowed under minimal level (yellow/unknown): {:?}",
-                    command
+                    myshelltool_core::redact_command(command)
                 );
                 ApprovalDecision::AutoExecute(AutoApproveReason::MinimalFallback)
             }
             McpInterceptLevel::Strict => {
-                log::warn!("approval: unknown/yellow command, requesting elicitation under strict level (user decides)");
+                log::warn!("approval: unknown/yellow command, requesting elicitation under strict level (user decides)"); // fact-guard:allow no-unredacted-command-in-log 本条只记转人工确认事实，不含命令文本
                 ApprovalDecision::RequestElicitation(ElicitationInfo {
                     intent: intent.to_string(),
                     command: command.to_string(),
@@ -162,7 +163,7 @@ pub fn evaluate(
             McpInterceptLevel::Minimal => {
                 log::warn!(
                     "approval: dangerous (non-catastrophic) command allowed under minimal level: {:?}",
-                    command
+                    myshelltool_core::redact_command(command)
                 );
                 ApprovalDecision::AutoExecute(AutoApproveReason::MinimalFallback)
             }

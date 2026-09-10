@@ -15,3 +15,6 @@ aes-gcm = "0.10"
 argon2 = "0.5"
 # 加密所需的 CSPRNG（生成 salt / AES-GCM nonce）
 rand = "0.8"
+# v2.6 危险命令分类 + shell 分段（纯逻辑，从 src-tauri 迁入以便独立 cargo test ——
+# src-tauri 测试二进制受 Tauri runtime DLL 限制在本机跑不起来，安全判据必须可测）
+regex = "1"

@@ -10,9 +10,11 @@ import type {
 } from '@/types/domain';
 import { invokeBackend, isTauriRuntime } from '../services/backend';
 
-/** sync store 实际消费的 workbench bridge 最小结构（仅 announce）。 */
+/** sync store 实际消费的 workbench bridge 最小结构。
+ *  assetsStore：拉取/冲突解决后必须重载前端资产内存态（见 reloadAssetsFromBackend）。 */
 interface SyncWorkbenchBridge {
   announce?(message: string): unknown;
+  assetsStore?(): { reloadAssets(): Promise<void> } | null;
 }
 
 /**
@@ -63,6 +65,30 @@ export const useSyncStore = defineStore('sync', () => {
   // Actions
   // ============================================================
 
+  /**
+   * 后端已把 connection-assets.json 整体改写（pull / 远端覆盖本地冲突 / setup 拉取
+   * 远端）后，重载前端资产内存态——**后端写盘 ≠ 前端状态已同步**。
+   *
+   * 不重载的后果不只是「列表显示旧数据」：uniqueAssetId 在旧列表里查重，会生成
+   * 一个磁盘上已存在的 id，随后的 save_connection_asset upsert 会静默覆盖刚拉取
+   * 来的资产（主机/用户名被改，凭据引用也可能错位）。
+   *
+   * 桥未注入时（单元测试/启动序列未完成）不静默吞：打日志留痕，且不假装成功。
+   */
+  async function reloadAssetsFromBackend() {
+    const assetsStore = workbenchBridge?.assetsStore?.();
+    if (!assetsStore) {
+      // 不静默吞：toast 已说「拉取成功」而列表是旧的，正是本轮要修的缺陷形态
+      flashMessage('✗ 已拉取远端数据，但资产列表未重载（assets bridge 未注入），请重新打开应用', true);
+      return;
+    }
+    try {
+      await assetsStore.reloadAssets();
+    } catch (error) {
+      flashMessage(`✗ 已拉取远端数据，但本地资产列表重载失败：${(error as Error | undefined)?.message || error}`, true);
+    }
+  }
+
   /** 刷新同步状态（sync_status）。浏览器预览模式静默跳过。 */
   async function refreshStatus() {
     if (!isTauriRuntime()) return;
@@ -90,6 +116,8 @@ export const useSyncStore = defineStore('sync', () => {
         gistId: gistId || null
       });
       await refreshStatus();
+      // PulledRemote：后端已用远端数据覆盖本地 connection-assets.json，必须重载前端列表
+      if (result.kind === 'PulledRemote') await reloadAssetsFromBackend();
       flashMessage(result.kind === 'Created' ? '✓ 同步已配置（新 Gist）'
         : result.kind === 'PulledRemote' ? '✓ 已拉取远端数据'
         : '同步已配置，无需重复设置');
@@ -144,7 +172,19 @@ export const useSyncStore = defineStore('sync', () => {
           remoteHasUpdates.value = false;
           break;
         case 'Pulled':
-          flashMessage(`✓ 已拉取远端数据（rev ${result.new_rev}）`);
+          // 后端已写盘（connection-assets.json = 远端数据），必须重载前端内存态，
+          // 否则「✓ 已拉取」toast 与陈旧列表并存，后续 upsert 会覆盖刚拉取的资产
+          await reloadAssetsFromBackend();
+          // 凭据未完全恢复时不能只说「已拉取」：用户会以为可以直接连，
+          // 实际连接以「认证失败」表现（后端已在日志写明是哪几项）。
+          if (result.credentials_failed) {
+            flashMessage(
+              `✓ 已拉取远端数据（rev ${result.new_rev}），但 ${result.credentials_failed} 项凭据未能恢复到本机（这些资产连接时会认证失败，请重新输入密码）`,
+              true
+            );
+          } else {
+            flashMessage(`✓ 已拉取远端数据（rev ${result.new_rev}）`);
+          }
           remoteHasUpdates.value = false;
           break;
         case 'LocalNewer':
@@ -186,6 +226,9 @@ export const useSyncStore = defineStore('sync', () => {
       });
       conflict.value = null;
       await refreshStatus();
+      // 选「远端覆盖本地」时后端已改写 connection-assets.json：必须重载前端列表。
+      // （choice='local' 时本地数据未变，重载是幂等的，不做分支以免漏掉未来语义变化）
+      await reloadAssetsFromBackend();
       flashMessage(choice === 'local' ? '✓ 已用本地覆盖远端' : '✓ 已用远端覆盖本地');
     } catch (error) {
       flashMessage(`✗ 冲突解决失败：${(error as Error | undefined)?.message || error}`, true);
@@ -301,24 +344,51 @@ export const useSyncStore = defineStore('sync', () => {
   /**
    * 资产写操作后自动推送（v1.6 核心：经 workbench bridge 由 assets store 调用）。
    *
-   * - 仅在 autoSyncEnabled 且无 pending 操作时触发
-   * - 走会话密钥路径（masterPassword 留空）
-   * - **不弹窗、不阻塞**：失败仅静默 announce，不打断用户资产操作
-   * - 防抖：若已在 loading，跳过（避免连续保存触发并发 push）
+   * - 仅在 autoSyncEnabled 时触发；走会话密钥路径（masterPassword 留空）
+   * - **不弹窗、不阻塞**：不 await（调用方 fire-and-forget），不打断用户资产操作
+   * - 串行化（enqueueAutoPush）：并发 push 会让后端各自 load_sync_state 算出**同一个
+   *   new_rev**（sync.rs 无 CAS，Gist PATCH 也无），晚到的旧载荷覆盖新载荷 → 远端
+   *   少一次保存，而本地 local_rev/last_synced_at 已记为「已同步」，换机器也看不出冲突。
+   *   因此自动 push 绝不并发：在途时只置 pending 标记，当前 push 结束后重放一次
+   *   （合并多次资产写为一次 push）。
    */
   async function autoPushIfEnabled() {
     if (!isTauriRuntime()) return;
     if (!autoSyncEnabled.value) return;
-    if (loading.value) return; // 防并发：上一次操作未完成
-    if (conflict.value) return; // 有未解决冲突，不自动 push（避免覆盖）
-    try {
-      await invokeBackend('sync_push', { masterPassword: '' });
-      await refreshStatus();
-      remoteHasUpdates.value = false;
-    } catch (error) {
-      // 自动同步失败静默 announce，不打断用户（典型：冲突，让用户手动处理）
-      workbenchBridge?.announce?.('自动同步失败：' + ((error as Error | undefined)?.message || error) + '（请到同步面板处理）');
+    if (conflict.value) return; // 有未解决冲突，不自动 push（避免覆盖用户待决策的数据）
+    enqueueAutoPush();
+  }
+
+  /** auto-push 在途标记 + 重放标记（本 store 内串行队列，见 autoPushIfEnabled 注释）。 */
+  let autoPushInFlight = false;
+  let autoPushPending = false;
+
+  function enqueueAutoPush() {
+    if (autoPushInFlight) {
+      // 合并：在途 push 结束后重放一次，不并发、也不静默丢弃
+      autoPushPending = true;
+      return;
     }
+    autoPushInFlight = true;
+    void (async () => {
+      try {
+        let rerun = true;
+        while (rerun) {
+          rerun = false;
+          try {
+            await invokeBackend('sync_push', { masterPassword: '' });
+            await refreshStatus();
+            remoteHasUpdates.value = false;
+          } catch (error) {
+            // 自动同步失败 announce，不打断用户（典型：冲突，让用户手动处理）
+            workbenchBridge?.announce?.('自动同步失败：' + ((error as Error | undefined)?.message || error) + '（请到同步面板处理）');
+          }
+          if (autoPushPending) { autoPushPending = false; rerun = true; }
+        }
+      } finally {
+        autoPushInFlight = false;
+      }
+    })();
   }
 
   // ============================================================

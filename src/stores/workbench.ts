@@ -234,6 +234,14 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     saveAsset: assetsStore.saveAsset
   });
 
+  // v1.3：sync store 拉取/冲突解决后需重载资产内存态（后端已改写
+  // connection-assets.json）。按 §4.2 走 lazy bridge 注入 assets store，
+  // 不让 sync 直接 import assets（会成环：assets → workbench → sync → assets）。
+  syncStore.attachWorkbench({
+    announce,
+    assetsStore: () => assetsStore
+  });
+
   return {
     // --- workbench-owned computed ---
     warningCount,
@@ -342,6 +350,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     // --- assets re-export actions ---
     saveAsset: assetsStore.saveAsset,
     deleteAsset: assetsStore.deleteAsset,
+    // sync 成功后重载资产内存态（资产载入逻辑归属 assets store，此处负责桥接）
+    reloadAssets: assetsStore.reloadAssets,
     duplicateAsset: assetsStore.duplicateAsset,
     moveAsset: assetsStore.moveAsset,
     renameGroup: assetsStore.renameGroup,

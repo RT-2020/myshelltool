@@ -1,14 +1,17 @@
 // 本地文件系统命令（fs_local_*）。
 // 浏览器预览模式（npm run dev）调用会失败——前端 backend.js 在非 Tauri runtime 直接抛错。
 //
-// 安全模型（评审修复 + v2.5 短名/UNC/verbatim 加固）：
+// 安全模型（评审修复 + v2.5 短名/UNC/verbatim 加固 + v2.6 verbatim 等价形态）：
 // - 路径规范化（去 `..` / `.`）；**返回值**不跟随 symlink（防穿越、不暴露物理路径），
 //   但**黑名单判定**在路径存在时补 canonicalize 归一（封 NTFS 8.3 短名绕过）
-// - 黑名单：拒绝系统目录（Windows: 任意盘符及 UNC share 内的 Windows、
-//   Program Files、ProgramData、$Recycle.Bin 等，判定前剥 `\\?\`/`\\.\`
-//   verbatim 前缀与 UNC `\\server\share` 两段；
+// - 黑名单：拒绝系统目录（Windows: 任意盘符、UNC share、verbatim UNC
+//   `\\?\UNC\server\share` 内的 Windows、Program Files、ProgramData、
+//   $Recycle.Bin 等，判定前剥 `\\?\`/`\\.\` verbatim 前缀与 UNC `\\server\share`
+//   两段；`\\?\Volume{…}` / `\\?\GLOBALROOT\…` 这类没有盘符结构的卷形态一律拒绝；
 //   Unix: /etc、/usr、/var、/boot、/sys、/proc、/dev、/root、/bin、/sbin、/lib）
-// - 拒绝根目录（防止递归删除整盘）
+// - 拒绝根目录 / 盘符根（防止递归删除整盘）
+// - is_sensitive_path 是本机系统目录判定的**单一事实源**：MCP 本机写保护
+//   （mcp::file_policy::is_protected_local_write_path）复用本函数，不再另存一份清单
 // - 删除类操作：路径存在但无法 canonicalize 时按拒绝处理（fail-secure）
 // - 删除时用 symlink_metadata 不跟随 symlink，防止"删 symlink → 删目标"
 // - list_dir 用 resolved.join(name) 返回 logical path，不暴露 symlink 物理路径
@@ -50,7 +53,20 @@ fn resolve_input_path(input: &str) -> Result<PathBuf, String> {
     let candidate: PathBuf = if trimmed.is_empty() || trimmed == "." || trimmed == "~" {
         PathBuf::from(home_dir_string()?)
     } else if trimmed.starts_with('~') {
-        PathBuf::from(trimmed.replacen('~', &home_dir_string()?, 1))
+        // `~` 仅在**开头**时表示家目录（`~user` 形态不支持，按「家目录 + user 子路径」
+        // 处理会得到不存在的路径并显式报错，不静默落到别处）。
+        // 曾写 `trimmed.replacen('~', &home, 1)`：replacen 替换的是**全串第一个** `~`，
+        // 与 strip_prefix 语义容易混淆——若将来有人放宽守卫，`C:\tmp\~backup` 会被
+        // 替换成 `C:\tmp\C:\Users\me\backup` 这种荒谬路径。改成显式拼接，语义只看开头。
+        let rest = trimmed
+            .trim_start_matches('~')
+            .trim_start_matches(['/', '\\']);
+        let home = home_dir_string()?;
+        if rest.is_empty() {
+            PathBuf::from(home)
+        } else {
+            PathBuf::from(home).join(rest)
+        }
     } else {
         PathBuf::from(trimmed)
     };
@@ -82,9 +98,17 @@ fn resolve_input_path(input: &str) -> Result<PathBuf, String> {
     Ok(abs)
 }
 
-// 系统敏感路径黑名单。canonical 后路径含 `..` 已被 absolute 规范化掉。
+// 系统敏感路径黑名单（本机系统目录判定的**单一事实源**：GUI 本地面板经
+// resolve_input_path 调用，MCP 本机写保护经 mcp::file_policy 调用）。
+// canonical 后路径含 `..` 已被 absolute 规范化掉。
 //
-// v2.5 逃逸形态封堵（判定前先归一化）：
+// 为什么 verbatim / UNC / 卷根三类必须**分别**显式处理：Windows 上同一条路径有
+// 多种等价写法，判定只认其中一种就等于放行其余写法，而两个入口的输入形态都不受
+// 我们控制（前端字符串 / MCP 宿主）。三类的差别在于剥掉 `\\?\` 前缀后剩余串的
+// 结构不同——UNC 同义写法以 `unc\` 开头（既不是 `\\` 也不是 `X:`），卷形态则
+// 根本没有盘符结构可换算。漏掉哪一类，那一类就整段跳过下面的系统目录黑名单。
+//
+// v2.5/v2.6 逃逸形态封堵（判定前先归一化）：
 // (a) verbatim 前缀 `\\?\C:\Windows` / device 前缀 `\\.\C:\`——Win32 原样
 //     透传，不剥则不满足「盘符+\」分支判断；canonicalize 的返回值必带
 //     `\\?\`，也依赖此剥离。
@@ -92,7 +116,7 @@ fn resolve_input_path(input: &str) -> Result<PathBuf, String> {
 //     `server\share` 两段后按盘内路径同样比对（share 根本身拒绝）。
 // (c) NTFS 8.3 短名 `C:\PROGRA~1`——字面不匹配目录名，由
 //     resolve_input_path 的 canonicalize 归一（见其注释）。
-fn is_sensitive_path(abs: &Path) -> bool {
+pub(crate) fn is_sensitive_path(abs: &Path) -> bool {
     let s = abs.to_string_lossy().to_lowercase().replace('/', "\\");
 
     // (a) 剥 verbatim / device 前缀
@@ -106,9 +130,28 @@ fn is_sensitive_path(abs: &Path) -> bool {
         return true;
     }
 
-    // (b) UNC：\\server\share\rest → rest 当作盘内路径比对。
-    // 提取「卷内路径」：盘符形态 c:\rest → rest；其余（Unix 绝对路径）→ None。
-    let volume_rest: Option<&str> = if let Some(tail) = s.strip_prefix("\\\\") {
+    // (c) verbatim 卷根/设备路径：`\\?\Volume{GUID}\…`、`\\?\GLOBALROOT\…`
+    //     这类路径**没有**「盘符+盘内路径」结构，下面两条分支都提取不出卷内
+    //     路径 → 会被整段跳过（曾放行 `\\?\UNC\…`、`\\?\Volume{…}\`）。无法
+    //     按盘内路径比对的形态一律保守拒绝（fail-secure）：卷根相等或以其为
+    //     前缀都拒，防递归删除整卷/整个共享。
+    let lower_s = s.to_lowercase();
+    if lower_s.starts_with("volume{") || lower_s.starts_with("globalroot") {
+        return true;
+    }
+
+    // (d) UNC，含 verbatim 同义写法 `\\?\UNC\server\share\rest`。
+    //     verbatim 前缀已由 (a) 剥离，于是 UNC 路径在此可能以 `unc\` 开头
+    //     （**不是** `\\`）——不显式识别就会掉进「盘符形态」分支并得到 None，
+    //     整个系统目录黑名单被跳过。
+    let unc_tail: Option<&str> = if let Some(tail) = s.strip_prefix("\\\\") {
+        Some(tail)
+    } else {
+        s.strip_prefix("unc\\")
+    };
+    // 提取「卷内路径」：盘符形态 c:\rest → rest；UNC share 内 → share 之后的
+    // 部分；其余（Unix 绝对路径 / 无法解析的形态）→ None。
+    let volume_rest: Option<&str> = if let Some(tail) = unc_tail {
         // tail = server\share\rest...
         let mut it = tail.splitn(3, '\\');
         let _server = it.next();
@@ -369,6 +412,8 @@ mod tests {
         assert!(is_sensitive_path(Path::new("\\\\?\\C:\\Program Files\\App")));
         // device 前缀同剥
         assert!(is_sensitive_path(Path::new("\\\\.\\C:\\Windows")));
+        // verbatim 的**任意盘符**形态同样按盘内路径比对（不是只认 C:）
+        assert!(is_sensitive_path(Path::new("\\\\?\\D:\\Windows")));
         // verbatim 普通路径不误拦
         assert!(!is_sensitive_path(Path::new("\\\\?\\C:\\Users\\me\\file.txt")));
     }
@@ -384,6 +429,29 @@ mod tests {
         assert!(is_sensitive_path(Path::new("\\\\fileserver\\share")));
         assert!(!is_sensitive_path(Path::new("\\\\fileserver\\share\\data\\file.txt")));
         assert!(!is_sensitive_path(Path::new("\\\\fileserver\\share\\windows-backup")));
+    }
+
+    #[test]
+    fn test_sensitive_path_verbatim_unc_and_volume_root_blocked() {
+        // (c)(d) verbatim UNC 是同义写法：`\\?\UNC\srv\share\…` ≡ `\\srv\share\…`。
+        // 剥 `\\?\` 后剩余串以 `unc\` 开头（不是 `\\`），若不显式识别就会掉进
+        // 「盘符形态」分支得到 None，整个系统目录黑名单被跳过——曾放行，随后
+        // fs_local_delete 的 remove_dir_all 会递归清空共享目录。
+        assert!(is_sensitive_path(Path::new("\\\\?\\UNC\\fileserver\\share\\Windows")));
+        assert!(is_sensitive_path(Path::new("\\\\?\\UNC\\fileserver\\share\\Windows\\System32")));
+        assert!(is_sensitive_path(Path::new("\\\\?\\UNC\\fileserver\\share\\Program Files\\App")));
+        // share 根 / server 根（verbatim 形态）整体拒绝
+        assert!(is_sensitive_path(Path::new("\\\\?\\UNC\\fileserver\\share")));
+        assert!(is_sensitive_path(Path::new("\\\\?\\UNC\\fileserver")));
+        // share 内普通目录不误拦
+        assert!(!is_sensitive_path(Path::new("\\\\?\\UNC\\fileserver\\share\\data\\file.txt")));
+        assert!(!is_sensitive_path(Path::new("\\\\?\\UNC\\fileserver\\share\\windows-backup")));
+        // verbatim 卷根 / GLOBALROOT：无「盘符+盘内路径」结构，无法比对 → 保守拒绝
+        assert!(is_sensitive_path(Path::new("\\\\?\\Volume{12345678-1234-1234-1234-123456789abc}\\")));
+        assert!(is_sensitive_path(Path::new(
+            "\\\\?\\Volume{12345678-1234-1234-1234-123456789abc}\\Windows"
+        )));
+        assert!(is_sensitive_path(Path::new("\\\\?\\GLOBALROOT\\Device\\HarddiskVolume1")));
     }
 
     #[test]

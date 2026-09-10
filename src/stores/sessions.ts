@@ -60,6 +60,11 @@ interface AutoReconnectController {
   schedule(reconnectFn: (attempt: number) => void): void;
   cancel(): void;
   reset(): void;
+  /**
+   * 连接/重连成功后调用：启动「稳定窗口」，窗口内不再断开才把重连计数归零
+   * （v2.6：`ssh_connect` 成功 ≠ 会话能维持，建连即断的服务器曾导致无限重连）。
+   */
+  markConnected(): number;
 }
 
 /**
@@ -225,25 +230,65 @@ export const useSessionsStore = defineStore('sessions', () => {
   // ============================================================
   // Listeners — 三个 unlisten 句柄（CRITICAL Critic 改进 2/4）
   // ============================================================
+  // 一次性的「非会话连接」登记表（assetId → 在途请求）。
+  //
+  // 为什么需要：`ssh_list_directory`（文件面板在资产无活跃会话时的回落通道）
+  // 走的是 ssh.rs 里**同一个交互式 handler**，未知/变更主机密钥同样会 emit
+  // `ssh-host-key-verify` 并等 60s。这类连接不在 `sessions` 里（用户不应看到
+  // 一个没有终端的会话条目），因此只按 `sessions.status === 'connecting'`
+  // 路由的守卫会把确认请求整条丢弃——确认框永不出现、后端空等 60s，用户只
+  // 看到与真实原因无关的「SSH connect failed」。
+  //
+  // 为什么用独立登记表而不是塞一个「虚拟 connecting 会话」进 public state：
+  // `sessions` 是所有窗口共享语义的 UI 权威状态（tab 条 / 侧栏圆点 / 状态栏
+  // 都由它派生），幽灵条目会污染这些视图，也会被其他窗口当成真实会话。登记表
+  // 与 sessions 完全隔离，且由发起方在 finally 中登记/注销，天然是一次性作用域。
+  interface EphemeralConnection {
+    host: string;
+    port?: number;
+    /** 发起该连接的资产（映射用；确认弹窗展示资产名也来自它）。 */
+    asset: NormalizedConnectionAsset;
+  }
+  const ephemeralConnections = new Map<string, EphemeralConnection>();
+
+  /** 登记一条在途的一次性连接（跨窗口路由守卫据此认领 host key 事件）。 */
+  function registerEphemeralConnection(asset: NormalizedConnectionAsset) {
+    const key = asset.id || `${asset.host}:${asset.port}`;
+    ephemeralConnections.set(key, { host: asset.host, port: asset.port, asset });
+    // 返回注销函数（注意：Map.set 本身返回 Map，不能直接当返回值用）
+    return () => { ephemeralConnections.delete(key); };
+  }
+
+  /** 查在途一次性连接（供 host key handler 取展示用资产）；无则 null。 */
+  function findEphemeralConnection(hostPort?: string | null): EphemeralConnection | null {
+    if (!hostPort) return null;
+    for (const entry of ephemeralConnections.values()) {
+      if (entry.port && hostPort === `${entry.host}:${entry.port}`) return entry;
+      if (String(hostPort).replace(/:\d+$/, '') === entry.host) return entry;
+    }
+    return null;
+  }
+
   // 跨窗口事件路由守卫（多 WebviewWindow / 每窗口独立 Pinia 实例）：
   // Rust 侧 app.emit 是全局广播，所有窗口都会收到同一份 host key /
-  // keyboard 事件。只有「本窗口存在 status==='connecting' 的会话」时
-  // 该事件才可能属于本窗口——否则静默忽略（有意路由守卫，非可忽略错误）。
-  // 守卫对本窗口 connecting 会话恒通过，单窗口使用路径行为不变。
-  function ownsConnectingSession(hostPort?: string | null) {
-    const connecting = sessions.value.filter(s => s.status === 'connecting');
-    if (!connecting.length) return false;
+  // keyboard 事件。认领条件 = 本窗口「有 status==='connecting' 的会话」或
+  // 「有在途的一次性连接」——**不认领即代表事件属于别的窗口**，静默跳过是
+  // 正确的路由行为（不是吞错误）。守卫对本窗口 connecting 会话恒通过，
+  // 单窗口使用路径行为不变。
+  function ownsConnectPrompt(hostPort?: string | null) {
     if (!hostPort) {
-      // keyboard 事件 payload 无 host 字段，无法精确路由：本窗口有
-      // connecting 会话即认领。残留边界：两窗口同时 connecting（尤其同
+      // keyboard 事件 payload 无 host 字段，无法精确路由：本窗口有 connecting
+      // 会话或在途一次性连接即认领。残留边界：两窗口同时 connecting（尤其同
       // 一 host）时无法区分归属，可能双弹框——已知边界，暂不修。
-      return true;
+      return sessions.value.some(s => s.status === 'connecting') || ephemeralConnections.size > 0;
     }
     // host key 事件按主机路由：payload.host_port 形如 "host:port"（Rust
     // HostKeyVerifyEvent 无 rename_all，序列化字段名即 host_port）。优先
     // host:port 全等（asset.port 经 normalizeAsset 默认 22），回退去端口
     // 等值比较。
-    return connecting.some(s => {
+    if (findEphemeralConnection(hostPort)) return true;
+    return sessions.value.some(s => {
+      if (s.status !== 'connecting') return false;
       const a = s.asset;
       if (!a?.host) return false;
       if (a.port && hostPort === `${a.host}:${a.port}`) return true;
@@ -255,13 +300,16 @@ export const useSessionsStore = defineStore('sessions', () => {
   // setupEventListeners 两个注册点引用同一份，路由守卫只写一处。
   function onHostKeyVerifyEvent(event: TauriEvent) {
     const payload = (event?.payload || null) as HostKeyVerifyPayload | null;
-    if (!ownsConnectingSession(payload?.host_port)) return;
+    if (!ownsConnectPrompt(payload?.host_port)) return;
     hostKeyPrompt.value = payload;
-    wb().modal = { type: 'hostKeyVerify', asset: wb().selectedAsset };
+    // 展示用资产：在途一次性连接优先（多窗口下 selectedAsset 可能属于别的窗口
+    // 的选中项，弹窗会指错资产）。该连接不在 sessions 里，故从登记表取原资产。
+    const ephemeral = findEphemeralConnection(payload?.host_port);
+    wb().modal = { type: 'hostKeyVerify', asset: ephemeral ? ephemeral.asset : wb().selectedAsset };
   }
 
   function onKeyboardInteractiveEvent(event: TauriEvent) {
-    if (!ownsConnectingSession()) return;
+    if (!ownsConnectPrompt()) return;
     keyboardPrompt.value = event.payload as KeyboardInteractivePayload;
     wb().modal = { type: 'keyboardInteractive', asset: wb().selectedAsset };
   }
@@ -438,8 +486,10 @@ export const useSessionsStore = defineStore('sessions', () => {
         // 第二帧元素已有真实尺寸，fit() 才能测准（20ms 定时器测到中间态）。
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
-            try { session.fit.fit(); } catch {}
-            try { session.term.focus(); } catch {}
+            // xterm fit()/focus() 在元素不可见或已 dispose 时抛错，属可忽略：
+            // 这里只做「布局稳定后测量」，抛错时下一帧/下一次 resize 会再测。
+            try { session.fit.fit(); } catch { /* 见上：测量失败无副作用，后续 resize 会重测 */ }
+            try { session.term.focus(); } catch { /* 同上：不可见时 focus 失败无副作用 */ }
           });
         });
       }
@@ -480,7 +530,7 @@ export const useSessionsStore = defineStore('sessions', () => {
       rafId = 0;
       try {
         session.fit.fit();
-      } catch {}
+      } catch { /* 元素不可见时 fit() 抛错，尺寸保持上次值即可，不阻断后续 resize 逻辑 */ }
       // 仅当 xterm 实际尺寸变化时才让 onResize 链路生效（见下方 onResize 守卫，
       // 这里只负责稳定测量，不再直接触发 ssh_resize）。
       const c = session.term.cols;
@@ -511,7 +561,7 @@ export const useSessionsStore = defineStore('sessions', () => {
       // tearoff / disconnect 后补刷 DOM 可见性，与 setActiveSession 行为对齐
       showOnlyActiveTerminal();
     }
-    try { session.term.dispose(); } catch {}
+    try { session.term.dispose(); } catch { /* 已 dispose 的 xterm 重复 dispose 抛错，销毁流程继续 */ }
     session.termDiv?.remove();
   }
 
@@ -529,7 +579,7 @@ export const useSessionsStore = defineStore('sessions', () => {
   function updateAllTerminalThemes() {
     const next = getTerminalTheme();
     for (const session of sessions.value) {
-      try { session.term.options.theme = next; } catch {}
+      try { session.term.options.theme = next; } catch { /* 已销毁实例改 theme 抛错，主题由下次重建生效 */ }
     }
   }
 
@@ -542,7 +592,7 @@ export const useSessionsStore = defineStore('sessions', () => {
         session.term.options.fontSize = terminalFontSize.value;
         if (session.term.rows > 0) session.term.refresh(0, session.term.rows - 1);
         session.fit.fit();
-      } catch {}
+      } catch { /* 字号已写入 options，fit 失败只影响当前帧测量 */ }
     }
   }
 
@@ -572,7 +622,7 @@ export const useSessionsStore = defineStore('sessions', () => {
         session.term.options.lineHeight = terminalLineHeight.value;
         if (session.term.rows > 0) session.term.refresh(0, session.term.rows - 1);
         session.fit.fit();
-      } catch {}
+      } catch { /* 字号已写入 options，fit 失败只影响当前帧测量 */ }
     }
   }
 
@@ -765,7 +815,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     if (typeof session.unlisten === 'function') session.unlisten().catch(() => null);
     if (session.resizeObserver) session.resizeObserver.disconnect();
     try { session.searchResultsDisposable?.dispose(); } catch (_) { /* noop */ }
-    try { session.term.dispose(); } catch {}
+    try { session.term.dispose(); } catch { /* 已 dispose 的 xterm 重复 dispose 抛错，销毁流程继续 */ }
     session.termDiv?.remove();
     sessions.value = sessions.value.filter(item => item.sessionId !== sessionId);
     activeSessionId.value = sessions.value.at(-1)?.sessionId || null;
@@ -871,6 +921,9 @@ export const useSessionsStore = defineStore('sessions', () => {
     try {
       const ok = await attachSessionStream(session);
       if (!ok) return; // 失败已置 status='error' + connectError，错误卡片展示
+      // v2.6：首次连接成功同样启动稳定窗口——建连后立刻被关的服务器不该被当成
+      // 「稳定连接」（否则用户看到一次成功提示后立刻又断，重连计数也不准）。
+      session.autoReconnect?.markConnected();
     } finally {
       connectingAssetIds.delete(asset.id);
     }
@@ -928,7 +981,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     }
     // 等一帧让浏览器完成布局后立即 fit，拿到准确的 cols/rows。
     await new Promise(resolve => requestAnimationFrame(resolve));
-    try { fit.fit(); } catch {}
+    try { fit.fit(); } catch { /* 首帧不可见时 fit 抛错，后续 resize 事件会重测 */ }
 
     // 用 reactive() 包裹 session 对象：创建方后续会通过本地 session 变量多次
     // 修改其属性（status / sessionId / oscTitle / unlisten 等）。若 push 的是普通
@@ -961,7 +1014,9 @@ export const useSessionsStore = defineStore('sessions', () => {
       decoder: new TextDecoder('utf-8', { stream: true } as unknown as TextDecoderOptions),
       ...overrides
     });
-    // 每个 session 一个自动重连实例（退避 1s/2s/5s/15s 共 4 次）
+    // 每个 session 一个自动重连实例（退避 1s/2s/5s/15s 共 4 次）。
+    // v2.6：计数不再「连接一成功就清零」，改由 markConnected() 启动稳定窗口——
+    // 见 useAutoReconnect 头部注释（建连即断的服务器曾导致无限重连风暴）。
     session.autoReconnect = useAutoReconnect({
       onAttempt: ({ attempt, total, delay }) => {
         session.reconnectAttempt = attempt;
@@ -1230,9 +1285,20 @@ export const useSessionsStore = defineStore('sessions', () => {
       if (session.manualDisconnect || !sessions.value.includes(session)) return;
       const ok = await attachSessionStream(session);
       if (ok) {
-        autoReconnect.reset();
+        // v2.6：**不立即清零计数**。建连成功 ≠ 会话能维持——认证通过但随即被关的
+        // 服务器（nologin / shell 立即退出 / 建连后数秒断网）会让「成功→清零→又断」
+        // 无限循环（1s 一次登录风暴）。改为启动稳定窗口：窗口内不再断开才归零，
+        // 窗口内又断则计数保留、退避继续往后走，4 次后如实报「请手动重连」。
+        const windowMs = autoReconnect.markConnected();
         session.reconnectAttempt = 0;
         announce('已恢复连接：' + session.asset.name, { level: 'success' });
+        // 稳定窗口结束后再确认一次（用户能据此区分「真的稳了」与「又掉了」）
+        setTimeout(() => {
+          if (session.manualDisconnect || !sessions.value.includes(session)) return;
+          if (session.status === 'connected') {
+            announce('连接已稳定：' + session.asset.name, { level: 'success' });
+          }
+        }, windowMs);
       } else if (!session.manualDisconnect && sessions.value.includes(session)) {
         // 本次失败 → 排队下一次尝试（onAttempt 更新计数，4 次后 onExhausted）
         autoReconnect.schedule(doReconnect);
@@ -1277,6 +1343,9 @@ export const useSessionsStore = defineStore('sessions', () => {
     activeSessions,
     // bridge
     attachWorkbench,
+    // 一次性（非会话）连接的 host key 路由登记——files store 的
+    // ssh_list_directory 回落分支使用，见 registerEphemeralConnection 注释
+    registerEphemeralConnection,
     // lifecycle
     setupEventListeners,
     disposeEventListeners,
@@ -1309,7 +1378,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     // host key / keyboard
     resolveHostKeyPrompt,
     resolveKeyboardPrompt,
-    ownsConnectingSession,
+    ownsConnectPrompt,
     // exposed helpers（部分 internal 供 workbench 复用）
     createOscParser,
     applyTerminalFontSizeAll,

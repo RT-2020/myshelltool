@@ -1,4 +1,10 @@
-mod dangerous_commands;
+// v2.6：危险命令分类与 shell 分段已迁入 core（crates/myshelltool-core），
+// 使 `npm run test:core` 能真正执行这批安全判据的单测（src-tauri 测试二进制
+// 受 Tauri runtime DLL 限制在本机跑不起来）。此处 re-export 保持内部调用点
+// （`crate::dangerous_commands::*` / `crate::shell::*`）不变——`shell` 只经
+// `crate::shell::` 路径引用，无需在本文件按名导入。
+pub(crate) use myshelltool_core::dangerous_commands;
+
 mod dpapi_codec;
 pub(crate) mod fs_local; // format_modified 被 ssh.rs 复用（SFTP mtime → Unix 秒）
 mod mcp;
@@ -666,9 +672,30 @@ pub fn run() {
 /// 是两套来源，APPDATA 缺失时会落到相对 CWD `"."` 写配置，identifier 改名时
 /// 两者分叉。单一来源：setup 解析一次，经 AppState.mcp_data_dir 全程复用
 /// （mcp_status 命令直接读 state，不再重复解析）。
+/// v2.6：环境变量值必须过三关——**区分「未设置」与「空串/纯空白」**（`var_os`，
+/// 空值不算配置：`Path::new("").join(..)` 会落成相对 CWD 路径，正是 v2.5 删掉
+/// `%APPDATA%` 重建分支要防的形态）、**必须是绝对路径**（相对值锚在进程 CWD，
+/// 重启后路径随快捷方式的「起始位置」漂移，mcp-config.json 找不到 → 拦截等级
+/// 静默回落默认档）、非 UTF-8 值不当作「未设置」丢弃（`var` 对非 UTF-8 直接 Err，
+/// 会把用户显式配置误判成缺失）。不满足即记 warn 后回退 app_data_dir——本函数
+/// 在 setup 里解析一次即写入 AppState，没有可承接 Err 的调用方（失败会让 GUI
+/// 起不来），而 app_data_dir 是稳定且确定的来源，回退只是忽略一个无效覆盖值，
+/// 不会写错位置，warn 保证用户看得见。
 fn mcp_data_dir(app_data: &std::path::Path) -> std::path::PathBuf {
-    if let Ok(dir) = std::env::var("MYSHELLTOOL_DATA_DIR") {
-        return std::path::PathBuf::from(dir);
+    match std::env::var_os("MYSHELLTOOL_DATA_DIR") {
+        // 纯空白（"   "）与空串同待遇：都不是可用的目录值，按未设置回退
+        Some(v) if !v.to_string_lossy().trim().is_empty() => {
+            let dir = std::path::PathBuf::from(&v);
+            if dir.is_absolute() {
+                return dir;
+            }
+            log::warn!(
+                "MYSHELLTOOL_DATA_DIR 不是绝对路径（{:?}），已忽略并回退 app_data_dir——相对路径会随进程工作目录漂移",
+                dir
+            );
+        }
+        Some(_) => log::warn!("MYSHELLTOOL_DATA_DIR 存在但为空/纯空白，已忽略并回退 app_data_dir"),
+        None => {}
     }
     app_data.to_path_buf()
 }

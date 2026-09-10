@@ -70,6 +70,13 @@ interface FilesSessionsStoreLike {
   activeSession: FilesSessionLike | null;
   sessions: FilesSessionLike[];
   connectSelected(): Promise<unknown>;
+  /**
+   * 登记一次性的「非会话连接」（ssh_list_directory 回落分支），返回注销函数。
+   * 该连接走 ssh.rs 的同一交互式 handler，未知主机密钥会 emit
+   * ssh-host-key-verify；不登记的话跨窗口路由守卫认不出它属于本窗口，确认
+   * 请求被丢弃、后端空等 60s。可选：旧注入方缺该方法时降级为「不登记」。
+   */
+  registerEphemeralConnection?(asset: NormalizedConnectionAsset): () => void;
 }
 
 /** files store 实际消费的 workbench bridge 最小结构。 */
@@ -437,18 +444,31 @@ export const useFilesStore = defineStore('files', () => {
           applyRemoteListing(result.path || targetPath, result.entries || []);
           return;
         }
-        const result = await invokeBackend<RemoteDirectoryListResult>('ssh_list_directory', {
-          host: asset.host,
-          port: asset.port,
-          username: asset.username,
-          password: '',
-          credential_id: asset.credential_id || null,
-          auth_method: asset.auth_method,
-          private_key_path: asset.private_key_path,
-          passphrase: null,
-          passphrase_credential_id: asset.passphrase_credential_id || null,
-          path: targetPath
-        });
+        // 无活跃会话 → 回落一次性 SSH 连接（ssh_list_directory）。
+        // 该连接不在 sessions 里（用户不该看到一个没有终端的会话条目），但它走
+        // ssh.rs 同一个交互式 handler，未知/变更主机密钥同样会 emit
+        // ssh-host-key-verify 并等 60s。因此在途期间必须在 sessions store 登记，
+        // 否则跨窗口路由守卫认不出事件归属，确认框永不出现。
+        const unregister = wb().sessionsStore()?.registerEphemeralConnection?.(asset);
+        let result: RemoteDirectoryListResult;
+        try {
+          result = await invokeBackend<RemoteDirectoryListResult>('ssh_list_directory', {
+            host: asset.host,
+            port: asset.port,
+            username: asset.username,
+            password: '',
+            credential_id: asset.credential_id || null,
+            auth_method: asset.auth_method,
+            private_key_path: asset.private_key_path,
+            passphrase: null,
+            passphrase_credential_id: asset.passphrase_credential_id || null,
+            path: targetPath
+          });
+        } finally {
+          // 一次性连接结束（成功/失败/超时）即注销：不能留下幽灵会话，否则之后
+          // 别的路径产生的主机密钥确认会被本窗口误认领。
+          unregister?.();
+        }
         applyRemoteListing(result.path || targetPath, Array.isArray(result.entries) ? result.entries : []);
         announce('远程文件已刷新：' + asset.name);
       });
