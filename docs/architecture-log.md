@@ -59,12 +59,14 @@ Files currently over hard limit 鈥?refactor candidates (real numbers, not estim
 
 | File | Lines | Limit | Multiple | Note |
 |---|---|---|---|---|
-| `src-tauri/src/ssh.rs` | 2097 | 800 | 2.62脳 | 4 domains fused: session/terminal, SFTP, tunnel (local+remote+SOCKS5), headless. **cycle-tier** (1874鈫?097 since 06-22 RESET). Highest priority to split. |
-| `src/components/files/FileColumn.vue` | 1123 | 500 | 2.25脳 | **cycle-tier 瑙﹀彂**锛?68鈫?123, +355, 1脳鈫?.25脳 鑷?06-22 RESET锛夈€倂1.4銆屾枃浠剁鐞嗗尯绮剧畝閲嶆瀯銆峜ommit 8fa14a0 鍚庡弽鑰屾毚娑ㄣ€傛渶楂樹紭鍏堢骇鎷嗗垎銆?|
-| `src/stores/sessions.js` | 858 | 500 | 1.72脳 | terminal lifecycle + session mgmt |
-| `src/components/shell/ConnectionSidebar.vue` | 842 | 500 | 1.68脳 | tree + menu + drag mixed锛?6-29 +131 鎷栨嫿閫昏緫锛?drag mixed" 鍧愬疄锛涗笅娆℃媶鍒嗭細鎶?drag state/handlers 鎶?useAssetDnd composable锛?|
-| `src/components/shell/GlobalModals.vue` | 694 | 500 | 1.39脳 | all modals centralized |
-| `src/stores/files.js` | 688 | 500 | 1.38脳 | SFTP + transfer queue |
+| `src-tauri/src/ssh.rs` | 2158 | 800 | 2.70脳 | 4 domains fused: session/terminal, SFTP, tunnel (local+remote+SOCKS5), headless. **cycle-tier** (1874鈫?097 since 06-22 RESET). Highest priority to split. |
+| `src/components/files/FileColumn.vue` | 493 | 500 | 0.99脳 | **cycle-tier 瑙﹀彂**锛?68鈫?123, +355, 1脳鈫?.25脳 鑷?06-22 RESET锛夈€倂1.4銆屾枃浠剁鐞嗗尯绮剧畝閲嶆瀯銆峜ommit 8fa14a0 鍚庡弽鑰屾毚娑ㄣ€傛渶楂樹紭鍏堢骇鎷嗗垎銆?|
+| `src/stores/sessions.ts` | 1311 | 500 | 2.62脳 | terminal lifecycle + session mgmt |
+| `src/components/shell/ConnectionSidebar.vue` | 977 | 500 | 1.95脳 | tree + menu + drag mixed锛?6-29 +131 鎷栨嫿閫昏緫锛?drag mixed" 鍧愬疄锛涗笅娆℃媶鍒嗭細鎶?drag state/handlers 鎶?useAssetDnd composable锛?|
+| `src/components/shell/GlobalModals.vue` | 1182 | 500 | 2.36脳 | all modals centralized |
+| `src/stores/files.ts` | 1287 | 500 | 2.57脳 | SFTP + transfer queue |
+
+> 2026-09-09 全量 TS 迁移（.js→.ts），行数含类型标注增量；上表为 wc -l 实测重估值：FileColumn.vue 已回落至 493 行（<500，不再是超标项）；`workbench.ts` 实测 509、`src-tauri/src/sync.rs` 实测 894、`crates/myshelltool-core/src/lib.rs` 实测 969 均已超各自 hard limit（见下方 soft-warn 表）；soft-warn 表中未超标项行数未重测。
 
 ### 螖 vs previous baseline (2026-06-20)
 
@@ -124,21 +126,21 @@ Not over the hard limit, but approaching 鈥?track so they don't silently cross:
 
 | File | Lines | Limit type | Soft% |
 |---|---|---|---|
-| `src-tauri/src/sync.rs` | ~830 | .rs (soft 400 / hard 800) | **104% of hard**锛?6-29 v1.6 鑷姩鍚屾 +SessionKey helper + 3 鍛戒护 + b64 宸ュ叿锛?85鈫拁830锛屸殸 鎺ヨ繎 hard limit锛屼笅娆″ぇ鏀瑰墠鍏虫敞锛?|
-| `crates/myshelltool-core/src/lib.rs` | 891 | .rs (soft 400 / hard 800) | 鈿?**111% 鈥?宸茶秴 hard limit**锛?6-22 璁?796 宸叉紓绉伙紝瀹炴祴鍥炲崌锛涘簲绉诲叆涓婃柟纭笂闄愯〃锛屼笅娆?RESET 鏁寸悊锛?|
+| `src-tauri/src/sync.rs` | 894 | .rs (soft 400 / hard 800) | **104% of hard**锛?6-29 v1.6 鑷姩鍚屾 +SessionKey helper + 3 鍛戒护 + b64 宸ュ叿锛?85鈫拁830锛屸殸 鎺ヨ繎 hard limit锛屼笅娆″ぇ鏀瑰墠鍏虫敞锛?|
+| `crates/myshelltool-core/src/lib.rs` | 969 | .rs (soft 400 / hard 800) | 鈿?**111% 鈥?宸茶秴 hard limit**锛?6-22 璁?796 宸叉紓绉伙紝瀹炴祴鍥炲崌锛涘簲绉诲叆涓婃柟纭笂闄愯〃锛屼笅娆?RESET 鏁寸悊锛?|
 | `src-tauri/src/resource_monitor.rs` | 875 | .rs (soft 400 / hard 800) | 鈿?**109% 鈥?宸茶秴 hard limit**锛堝悓涓婏紝06-22 璁?792 宸叉紓绉伙級 |
-| `src/stores/workbench.js` | ~460 | store .js (soft 300 / hard 500) | 92% of hard锛?6-29 v1.6 +syncStore bridge + 鎺㈡祴 + 5 re-export锛?32鈫拁460锛岃创纭笂闄愶級 |
-| `src/stores/sync.js` | 339 | store .js (soft 300 / hard 500) | 68% of hard锛?6-29 v1.6 +autoSync/remoteUpdates 鐘舵€?+ 4 action + attachWorkbench锛?23鈫?39锛?|
+| `src/stores/workbench.ts` | 509 | store .js (soft 300 / hard 500) | 92% of hard锛?6-29 v1.6 +syncStore bridge + 鎺㈡祴 + 5 re-export锛?32鈫拁460锛岃创纭笂闄愶級 |
+| `src/stores/sync.ts` | 339 | store .js (soft 300 / hard 500) | 68% of hard锛?6-29 v1.6 +autoSync/remoteUpdates 鐘舵€?+ 4 action + attachWorkbench锛?23鈫?39锛?|
 | `src/components/shell/McpPanelContent.vue` | 374 | .vue (soft 300 / hard 500) | 75% of hard |
 | `src-tauri/src/dangerous_commands.rs` | 402 | .rs (soft 400 / hard 800) | 50% of hard锛堣繘鍏?soft-warn锛?|
 | `src/components/shell/SyncPanelContent.vue` | 461 | .vue (soft 300 / hard 500) | **92% of hard**锛?6-29 v1.6 鎷?SyncAutoSyncControl + SyncConflictResolver 鍚庝粠 586 鍥為檷鍒?461锛屼粛璐寸‖涓婇檺锛屼笅娆″姞鍔熻兘蹇呴』鍏堟媶锛?|
 | `src-tauri/src/mcp/tools.rs` | 368 | .rs (soft 400 / hard 800) | 46% of hard |
-| `src/stores/ui.js` | 344 | store .js (soft 300 / hard 500) | 69% of hard |
+| `src/stores/ui.ts` | 344 | store .js (soft 300 / hard 500) | 69% of hard |
 | `src/components/terminal/TerminalTabs.vue` | 338 | .vue (soft 300 / hard 500) | 68% of hard |
 | `src/components/shell/AppTitleBar.vue` | 334 | .vue (soft 300 / hard 500) | 67% of hard锛堟柊杩涘叆锛?|
 | `src/components/shell/AssetGroupNode.vue` | 324 | .vue (soft 300 / hard 500) | 65% of hard锛堟柊杩涘叆锛?|
 | `src/components/terminal/TerminalSurface.vue` | 323 | .vue (soft 300 / hard 500) | 65% of hard |
-| `src/stores/assets.js` | ~365 | store .js (soft 300 / hard 500) | 73% of hard锛?6-29 v1.6 +maybeAutoPush helper + 6 鎸傝浇鐐癸紝323鈫拁365锛?|
+| `src/stores/assets.ts` | ~365 | store .js (soft 300 / hard 500) | 73% of hard锛?6-29 v1.6 +maybeAutoPush helper + 6 鎸傝浇鐐癸紝323鈫拁365锛?|
 | `src-tauri/src/mcp/server.rs` | 339 | .rs (soft 400 / hard 800) | 42% of hard |
 | `src/components/shell/SyncPatGuide.vue` | 206 | .vue (soft 300 / hard 500) | 41% of hard锛?6-29 v1.6 鏂板缓锛孭AT 寮曞瀛愮粍浠讹級 |
 | `src/components/shell/SyncAutoSyncControl.vue` | 156 | .vue (soft 300 / hard 500) | 31% of hard锛?6-29 v1.6 鏂板缓锛岃嚜鍔ㄥ悓姝ュ紑鍏冲瓙缁勪欢锛?|
