@@ -64,14 +64,10 @@ const canSetup = computed(() =>
 // ─── 操作 ───
 async function onSetup() {
   if (!canSetup.value) return;
+  // PulledRemote 的资产列表重载在 store.syncSetup 内部完成（后端已写盘，
+  // 必须重载前端内存态）——组件只负责表单状态与提示，不再自行"刷新"。
   const result = await store.syncSetup(setupPassword.value, setupGistId.value.trim());
   if (!result) return; // 失败：flashMessage 已在 store 通知用户
-  if (result.kind === 'PulledRemote') {
-    // 拉取成功后刷新资产列表（后端已写入本地 connection-assets.json）。
-    // 事实备注：workbench store 未导出 listAssets（迁移前即如此，运行时该调用抛
-    // TypeError 未捕获）。按「行为零变化」保留原调用。
-    await (store as unknown as { listAssets: () => Promise<unknown> }).listAssets();
-  }
   setupPassword.value = '';
   setupPasswordConfirm.value = '';
   setupGistId.value = '';
@@ -95,12 +91,7 @@ async function onPull() {
   }
   const result = await store.syncPull(opPassword.value);
   if (!result) return;
-  // pull 成功（含 PullRemote/Conflict 解决后）刷新资产列表。
-  // 事实备注：workbench store 未导出 listAssets（迁移前即如此，运行时该调用抛
-  // TypeError 未捕获）。按「行为零变化」保留原调用。
-  if (result.decision === 'Pulled') {
-    await (store as unknown as { listAssets: () => Promise<unknown> }).listAssets();
-  }
+  // decision==='Pulled' 时的资产列表重载在 store.pull 内部完成（后端已写盘）。
   opPassword.value = '';
 }
 

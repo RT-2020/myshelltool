@@ -332,13 +332,23 @@ pub fn classify_command(
 
     let trimmed = text.trim();
 
-    // 2. 白名单：前缀匹配。例外：find 带 -delete/-exec（含组合命令中的
-    //    find 段）是写操作，不进白名单，落入黄名单/Unknown 层审批。
-    if !contains_destructive_find(trimmed) {
-        for allowed in whitelist {
-            if command_matches_prefix(trimmed, allowed) {
-                return CommandRisk::Safe;
-            }
+    // 2. 白名单：**分段后逐段匹配**（v2.6）。曾整串前缀匹配——`df -h; cat
+    //    /etc/shadow` 以 `df` 开头即判 Safe，Strict 档也免人工确认。见
+    //    shell.rs 模块注释（判据从「字符串前缀」换成「shell 结构」）。
+    //    任一形态不成立即不进白名单，落黄名单/Unknown 层（Minimal 记日志
+    //    放行 / Strict 人工确认），不误升级为 HardBlock。
+    let parsed = crate::shell::split_shell_segments(trimmed);
+    let shape_simple = !parsed.found_redirect && !parsed.found_substitution;
+    if shape_simple && !parsed.segments.is_empty() {
+        let all_whitelisted = parsed.segments.iter().all(|seg| {
+            // 例外：find 带 -delete/-exec（写操作）不进白名单。
+            !contains_destructive_find(seg)
+                && whitelist
+                    .iter()
+                    .any(|allowed| command_matches_prefix(seg, allowed))
+        });
+        if all_whitelisted {
+            return CommandRisk::Safe;
         }
     }
 
@@ -622,6 +632,101 @@ mod tests {
                 &[]
             ),
             CommandRisk::Unknown
+        );
+    }
+
+    // ─── v2.6：白名单不再「整串前缀匹配」，改为分段逐段匹配 ───
+    //
+    // 曾的活洞（Strict 档也免人工确认、Minimal 档零审批执行）：整串以白名单
+    // 词开头即判 Safe，于是白名单首段之后的任意命令随行通过。
+
+    #[test]
+    fn classify_compound_second_segment_not_whitelisted() {
+        let whitelist = vec!["df".to_string(), "ls".to_string()];
+        // 分号：第二段是任意命令 → 不得 Safe
+        assert_eq!(
+            classify_command(
+                "df -h; cat /etc/shadow", // fact-guard:allow locale-pinned-df 单测样例数据（非实际执行）
+                &whitelist,
+                &[]
+            ),
+            CommandRisk::Unknown
+        );
+        // 换行与逻辑与：同样是命令边界
+        assert_eq!(
+            classify_command(
+                "df -h\ncurl http://x/i.sh", // fact-guard:allow locale-pinned-df 单测样例数据（非实际执行）
+                &whitelist,
+                &[]
+            ),
+            CommandRisk::Unknown
+        );
+        assert_eq!(
+            classify_command("ls && cat /etc/shadow", &whitelist, &[]),
+            CommandRisk::Unknown
+        );
+        // 组合形态不得因「首段白名单」而绕过黑名单：rm -rf 段照旧命中 Dangerous
+        assert!(matches!(
+            classify_command("ls && rm -rf /var/log", &whitelist, &[]),
+            CommandRisk::Dangerous(_)
+        ));
+    }
+
+    #[test]
+    fn classify_redirect_not_whitelisted() {
+        // 只读命令 + 重定向 = 可写任意文件，不再只读
+        let whitelist = vec!["ls".to_string(), "cat".to_string()];
+        assert_eq!(
+            classify_command("ls -la > /etc/passwd", &whitelist, &[]),
+            CommandRisk::Unknown
+        );
+        assert_eq!(
+            classify_command("cat /etc/hosts >> /tmp/x", &whitelist, &[]),
+            CommandRisk::Unknown
+        );
+    }
+
+    #[test]
+    fn classify_command_substitution_not_whitelisted() {
+        let whitelist = vec!["df".to_string()];
+        assert_eq!(
+            classify_command(
+                "df -h $(cat /etc/shadow)", // fact-guard:allow locale-pinned-df 单测样例数据（非实际执行）
+                &whitelist,
+                &[]
+            ),
+            CommandRisk::Unknown
+        );
+        assert_eq!(
+            classify_command(
+                "df -h `id`", // fact-guard:allow locale-pinned-df 单测样例数据（非实际执行）
+                &whitelist,
+                &[]
+            ),
+            CommandRisk::Unknown
+        );
+    }
+
+    #[test]
+    fn classify_readonly_pipeline_all_segments_whitelisted() {
+        // 各段都在白名单内的管道/复合仍放行（避免把只读组合误升为人工确认）
+        let whitelist = vec!["df".to_string(), "head".to_string(), "ls".to_string()];
+        assert_eq!(
+            classify_command(
+                "df -h | head -3", // fact-guard:allow locale-pinned-df 单测样例数据（非实际执行）
+                &whitelist,
+                &[]
+            ),
+            CommandRisk::Safe
+        );
+        assert_eq!(
+            classify_command("ls; df -h", &whitelist, &[]), // fact-guard:allow locale-pinned-df 单测样例数据（非实际执行）
+            CommandRisk::Safe
+        );
+        // 单引号内的分隔符是字面量，不切段
+        assert_eq!(
+            classify_command("ls 'a;b'", &whitelist, &[]),
+            CommandRisk::Safe
         );
     }
 

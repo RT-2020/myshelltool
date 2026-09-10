@@ -22,7 +22,6 @@ interface AssetsWorkbenchBridge {
   clearFileSelection(): void;
   autoPushIfEnabled(): void | Promise<void>;
 }
-
 /**
  * useAssetsStore — Wave 2 Step 2.2
  *
@@ -274,6 +273,29 @@ export const useAssetsStore = defineStore('assets', () => {
   }
 
   // ------------------------------------------------------------
+  // 外部（当前唯一调用方：sync store 的 pull / resolveConflict / setup）把
+  // connection-assets.json 整体改写成另一份数据后，前端内存态**必须重载**：
+  // 后端已写盘 ≠ 前端列表已同步。不重载的后果不是「显示旧数据」这么轻——
+  // uniqueAssetId 是在旧列表里查重的，会生成一个磁盘上已存在的 id，
+  // save_connection_asset 以 upsert 静默覆盖刚拉取来的资产。
+  //
+  // 归属层说明：资产生命周期（assets/declaredGroups/assetSource）的 owner 是
+  // 本 store，故载入逻辑写在这里；sync store 经 workbench bridge 注入调用，
+  // 不直接 import（AGENTS.md §4.2 禁止循环 import）。
+  // ------------------------------------------------------------
+  async function reloadAssets() {
+    const result = await invokeBackend<AssetListResult>('list_connection_assets');
+    assets.value = (result.assets || []).map(normalizeAsset);
+    declaredGroups.value = result.groups || [];
+    assetSource.value = { ...result, count: result.count ?? result.assets?.length ?? assets.value.length };
+    // 选中项若在拉取后的列表里已不存在，回落到首项（与 deleteAsset 的回退口径一致）；
+    // 仍存在则保持用户当前选择。
+    if (!selectedAssetId.value || !assets.value.some(asset => asset.id === selectedAssetId.value)) {
+      selectedAssetId.value = assets.value[0]?.id || null;
+    }
+  }
+
+  // ------------------------------------------------------------
   // 复制连接资产：生成新 id（原名加 -copy 后缀），不带凭据（安全），
   // 重置 last_connected。直接落库，不开编辑器。
   // ------------------------------------------------------------
@@ -408,6 +430,7 @@ export const useAssetsStore = defineStore('assets', () => {
     uniqueAssetId,
     saveAsset,
     deleteAsset,
+    reloadAssets,
     duplicateAsset,
     moveAsset,
     renameGroup,

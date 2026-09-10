@@ -240,13 +240,27 @@ impl HeadlessSftpSession {
             .await
             .map_err(|e| format!("读取文件内容失败: {e}"))?;
 
-        // 探测前 512 字节是否包含 NUL 字符
-        let sniff_len = buf.len().min(512);
-        if buf[..sniff_len].contains(&0) {
-            return Err("检测到目标文件为二进制内容（包含空字节 NUL），文本读取工具不支持，请改用 sftp_download 下载到本地。".to_string());
+        // 编码判定放在 core（`decode_remote_text`）：旧实现直接 `from_utf8_lossy`，
+        // GBK/GB18030 内容被静默换成 U+FFFD **且返回成功**，前 512 字节无 NUL 的
+        // 二进制也被当文本「成功」读出——用户/审计拿到的是看起来正常、实则损坏的内容。
+        // 现在三态：文本 / 二进制（引导用下载工具）/ 非 UTF-8（报首个非法字节位置）。
+        match myshelltool_core::remote_text::decode_remote_text(&buf) {
+            myshelltool_core::remote_text::RemoteTextOutcome::Text { text, has_bom } => {
+                if has_bom {
+                    // BOM 会破坏下游 JSON/YAML 解析，这里剥掉但留日志（不静默改变内容语义）
+                    log::debug!("sftp_read_file: 目标文件带 UTF-8 BOM，已剥离首部 U+FEFF");
+                    return Ok(text.trim_start_matches('\u{feff}').to_string());
+                }
+                Ok(text)
+            }
+            myshelltool_core::remote_text::RemoteTextOutcome::Binary(reason) => Err(format!(
+                "检测到目标文件为二进制内容（{reason}），文本读取工具不支持，请改用 sftp_download 下载到本地处理。"
+            )),
+            myshelltool_core::remote_text::RemoteTextOutcome::NotUtf8(reason) => Err(format!(
+                "目标文件不是 UTF-8 文本（{reason}）。文本工具不做有损替换——直接替换会把内容读成乱码却报告成功。\
+                 请改用 sftp_download 下载后按源编码处理，或先转码（如 iconv -f GBK -t UTF-8）再读取。"
+            )),
         }
-
-        Ok(String::from_utf8_lossy(&buf).to_string())
     }
 
     /// rename 覆盖兜底（write_file_atomic / upload_stream 共用）。

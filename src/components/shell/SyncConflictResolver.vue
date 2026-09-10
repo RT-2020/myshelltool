@@ -25,10 +25,9 @@ const { syncConflict, syncLoading, syncAutoSyncEnabled } = storeToRefs(store);
 const opPassword = ref('');
 
 async function onResolve(choice: string) {
+  // 冲突解决后的资产列表重载在 store.resolveConflict 内部完成（后端已写盘，
+  // 选「远端覆盖本地」时列表必须跟着换）。
   await store.syncResolveConflict(opPassword.value, choice);
-  // 事实备注：workbench store 未导出 listAssets（迁移前即如此，运行时该调用抛
-  // TypeError 未捕获；资产列表实际由 store 内部刷新兜底）。按「行为零变化」保留原调用。
-  await (store as unknown as { listAssets: () => Promise<unknown> }).listAssets();
   opPassword.value = '';
 }
 

@@ -43,12 +43,21 @@ pub type ApprovalPending = Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>;
 /// disk_usage 工具实际执行的命令。
 /// MCP 命令统一锁 C locale：输出（含列头）不随服务器 locale 变化，
 /// 保证 AI 消费与执行日志稳定可解析（指南 §7 形态 B）。
-pub const CMD_DISK_USAGE: &str = "LC_ALL=C df -h; echo rc_df=$?";
+///
+/// **为什么是 `env LC_ALL=C` 而不是 `LC_ALL=C df …`**：sshd 用 `$SHELL -c '<cmd>'`
+/// 执行 exec 串，远端登录 shell 未必是 POSIX sh——FreeBSD 的 root 默认就是
+/// csh/tcsh，而 csh/fish 里 `VAR=value cmd` **不是赋值语法**，会被当命令名
+/// （`LC_ALL=C: Command not found.`），本条命令整条不执行、工具完全取不到数据。
+/// `env` 是 POSIX 且 BusyBox/BSD 均自带，两种 shell 下语义一致。
+pub const CMD_DISK_USAGE: &str = "env LC_ALL=C df -h; echo rc_df=$?";
 /// system_status 工具实际执行的命令。
-pub const CMD_SYSTEM_STATUS: &str = "export LC_ALL=C; uptime; echo rc_uptime=$?; echo '---'; free -h; echo rc_free=$?; echo '---'; top -bn1 | head -20; echo rc_top=$?";
+/// top 段先落临时文件再截断：`top … | head` 的 `$?` 是 **head** 的退出码（恒 0），
+/// 会把「top 不存在」伪装成该段成功（rc_top 语义失真）。`mktemp` 在 GNU/BSD
+/// 与 BusyBox 上均可用；失败时退化为空文件（rc_top 反映真实失败）。
+pub const CMD_SYSTEM_STATUS: &str = "env LC_ALL=C uptime; echo rc_uptime=$?; echo '---'; env LC_ALL=C free -h; echo rc_free=$?; echo '---'; __t=$(mktemp 2>/dev/null || echo /tmp/.myshelltool-top.$$); env LC_ALL=C top -bn1 >\"$__t\" 2>&1; echo rc_top=$?; head -20 \"$__t\"; rm -f \"$__t\"";
 /// service_status 工具实际执行的命令（按服务名拼接）。
 pub fn service_status_command(service: &str) -> String {
-    format!("LC_ALL=C systemctl status {service}; echo rc_systemctl=$?")
+    format!("env LC_ALL=C systemctl status {service}; echo rc_systemctl=$?")
 }
 
 // ─── v2.1 ssh_exec 返回截断保护（exec_on_asset 组装结构化返回时用）───
@@ -159,7 +168,7 @@ pub fn list_all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "system_status",
-            "查询指定资产的系统状态：uptime / 内存 / 负载 / top 进程。仅支持 Linux（依赖 /proc 与 systemd）主机，其他平台命令会失败。stdout 含 rc_uptime/rc_free/rc_top=N 行标注各子命令真实退出码（勿只看首行 exit_code，它只反映最后的 echo）",
+            "查询指定资产的系统状态：uptime / 内存 / 负载 / top 进程。仅支持 Linux（依赖 /proc、procps 与 systemd）主机，其他平台命令会失败。stdout 含 rc_uptime/rc_free/rc_top=N 行标注各子段真实退出码（勿只看首行 exit_code，它只反映最后的 echo）；rc_top 由「先落临时文件再 head」取得，可信——top 不存在（slim 容器）时 rc_top≠0 且 stderr 带 not found",
             schema_with_required_session(),
         ),
         Tool::new(
@@ -206,6 +215,31 @@ pub fn list_all_tools() -> Vec<Tool> {
     tools
 }
 
+/// 把工具参数表序列化成**可安全落日志**的摘要。
+///
+/// `command` 字段走 `redact_command`（值里常带 `-p<口令>`）；名字像凭据的字段
+/// （password/token/secret…）整体遮蔽。其余字段原样保留——日志的排查价值在于
+/// 「谁对哪台机器做了什么」，不依赖口令明文。
+fn redacted_args_summary(args: &Map<String, serde_json::Value>) -> String {
+    let mut safe = args.clone();
+    for (key, value) in safe.iter_mut() {
+        let lower = key.to_ascii_lowercase();
+        if lower == "command" {
+            if let Some(text) = value.as_str() {
+                *value = serde_json::Value::String(myshelltool_core::redact_command(text));
+            }
+        } else if lower.contains("password")
+            || lower.contains("secret")
+            || lower.contains("token")
+            || lower.contains("passphrase")
+            || lower.contains("credential")
+        {
+            *value = serde_json::Value::String("<redacted>".to_string());
+        }
+    }
+    serde_json::to_string(&safe).unwrap_or_else(|_| "<unserializable args>".to_string())
+}
+
 /// 分发工具调用。返回 CallToolResult（成功用 text content，失败用 is_error）。
 pub async fn call_tool(
     name: &str,
@@ -214,7 +248,10 @@ pub async fn call_tool(
 ) -> Result<CallToolResult, String> {
     let arguments: Map<String, serde_json::Value> = params.arguments.unwrap_or_default();
 
-    log::info!("MCP call_tool: {} args={}", name, serde_json::to_string(&arguments).unwrap_or_default());
+    // 参数表里可能含 `command`（其值常带 `-p<口令>`）与 `intent` 文本——整表序列化
+    // 落日志等于把凭据写进 myshelltool.log（§8 红线）。故：
+    // 命令值单独脱敏；其余字段照打（排查需要：哪个工具、哪个资产、哪个路径）。
+    log::info!("MCP call_tool: {} args={}", name, redacted_args_summary(&arguments));
 
     match name {
         "list_assets" => tool_list_assets(ctx).await,
@@ -239,7 +276,9 @@ pub async fn call_tool(
             exec_on_asset(
                 ctx,
                 &arguments,
-                "export LC_ALL=C; uptime; echo rc_uptime=$?; echo '--- Memory ---'; free -m; echo rc_free=$?; echo '--- Disk ---'; df -h; echo rc_df=$?",
+                // 全程 env 前缀（不用 `export`）：csh/tcsh/fish 无 POSIX `export`，
+                // 该赋值会以 `export: Command not found.` 失败并使 locale 未锁定。
+                "env LC_ALL=C uptime; echo rc_uptime=$?; echo '--- Memory ---'; env LC_ALL=C free -m; echo rc_free=$?; echo '--- Disk ---'; env LC_ALL=C df -h; echo rc_df=$?",
             )
             .await
         }
@@ -341,12 +380,9 @@ async fn tool_ssh_exec(
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    log::info!(
-        "ssh_exec: asset={} intent={:?} command={:?}",
-        asset_id,
-        intent,
-        command
-    );
+    // 命令文本在应用日志里脱敏（§8 凭据红线）：`mysql -pP@ss` 这类明文不该进
+    // myshelltool.log。审批弹窗仍展示原命令（透明性优先），见 server.rs。
+    log::info!("ssh_exec: asset={} intent={:?} command={:?}", asset_id, intent, myshelltool_core::redact_command(command));
 
     // v1.1：审批已移至 server.rs call_tool 的 elicitation 拦截层。
     // 能走到这里说明命令已被审批通过（白名单自动放行 / 用户 elicitation 确认）。
@@ -382,13 +418,7 @@ async fn exec_on_asset(
         .find(|a| a.id == asset_id)
         .ok_or_else(|| format!("资产 {} 不存在", asset_id))?;
 
-    log::info!(
-        "exec_on_asset: {}@{}:{} cmd={}",
-        asset.username,
-        asset.host,
-        asset.port,
-        command
-    );
+    log::info!("exec_on_asset: {}@{}:{} cmd={}", asset.username, asset.host, asset.port, myshelltool_core::redact_command(command));
 
     // headless 建连（密码为空，从凭据存储读；host key 未信任会被拒绝）
     let params = HeadlessConnectParams {

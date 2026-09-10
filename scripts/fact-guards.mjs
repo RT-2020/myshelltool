@@ -166,6 +166,126 @@ const RULES = [
         "await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');"
       ]
     }
+  },
+  {
+    id: 'no-csh-hostile-env-prefix',
+    title: '命令串禁止 `VAR=值 命令` / `export VAR=值` 形态（csh/tcsh/fish 下不是赋值，整条命令失败）',
+    fix: '改用 `env LC_ALL=C <命令>`（POSIX，BusyBox/BSD 自带，两种 shell 语义一致）。事故：FreeBSD（root 默认 /bin/csh）上 `LC_ALL=C df -h` 报 "LC_ALL=C: Command not found."，df 根本没运行、工具完全取不到数据。',
+    targets: ['rust'],
+    // 段起始锚定（行首/引号后/分号管道后）：同段已有 `env LC_ALL=C` 时不命中；
+    // 注释行由 judgeLine 统一跳过（文档里引用旧写法不误报）。
+    pattern: /(?:^|["'`;|&])\s*(?:(?:LC_ALL|LANG|LC_NUMERIC|TZ)=|export\s+(?:LC_ALL|LANG|LC_NUMERIC|TZ)=)/,
+    unless: /env\s+(?:LC_ALL|LANG|LC_NUMERIC|TZ)=/,
+    skipLine: /\bassert/,
+    samples: {
+      bad: [
+        'pub const CMD_DISK_USAGE: &str = "LC_ALL=C df -h; echo rc_df=$?";',
+        'let x = "export LC_ALL=C; uptime";'
+      ],
+      good: [
+        'pub const CMD_DISK_USAGE: &str = "env LC_ALL=C df -h; echo rc_df=$?";',
+        '/// Parse `LC_ALL=C df -P -k /` output (comment)'
+      ]
+    }
+  },
+  {
+    id: 'no-pipeline-rc-echo',
+    title: '管道后紧跟 echo rc_*=$? 的「逐段退出码」是假的（rc 恒为管道末端命令的码）',
+    fix: '先把该段落到临时文件再截断：`__t=$(mktemp); cmd >"$__t" 2>&1; echo rc_x=$?; head -N "$__t"`（POSIX 无 PIPESTATUS，pipefail 又是 bash 专有）。事故：`top -bn1 | head -20; echo rc_top=$?` 在无 procps 的容器上 rc_top=0，把「top 不存在」伪装成该段成功。',
+    targets: ['rust'],
+    pattern: /["'`][^"'`\n]{0,200}?\|[^"'`\n]{0,200}?echo\s+rc_\w+=\$\?/,
+    samples: {
+      bad: ['pub const CMD: &str = "top -bn1 | head -20; echo rc_top=$?";'],
+      good: [
+        'pub const CMD: &str = "uptime; echo rc_uptime=$?";',
+        'let c = "__t=$(mktemp); top -bn1 >\\"$__t\\"; echo rc_top=$?; head -20 \\"$__t\\"";'
+      ]
+    }
+  },
+  {
+    id: 'no-fake-type-cast-call',
+    title: '禁止「把对象断言成它没有的形状再调用方法」（类型系统被谎报绕过，运行时必炸）',
+    fix: '调用真实存在的方法：查 store/模块是否已导出，没有就在归属层补上（跨 store 走 lazy bridge，见 AGENTS.md §4.2）。事故：三处 SyncPanel 组件写 `(store as unknown as { listAssets }).listAssets()`，而 workbench 从未导出 listAssets——「刷新资产列表」这条唯一路径每次必抛 TypeError 且被异步处理器吞掉，pull 成功后列表永不更新。',
+    targets: ['app'],
+    // 只拦「断言后调用方法」；属性读取（(x as unknown as { value?: string }).value）是合法收窄，不拦
+    pattern: /as\s+unknown\s+as\s*\{[^}]*\}\s*\)?\s*\.\s*\w+\s*\(/,
+    samples: {
+      bad: [
+        'await (store as unknown as { listAssets: () => Promise<unknown> }).listAssets();'
+      ],
+      good: [
+        'const v = (effectiveTheme() as unknown as { value?: string }).value;',
+        'await store.reloadAssets();'
+      ]
+    }
+  },
+  {
+    id: 'no-empty-catch-block',
+    title: '空 catch 块必须写明「为何可忽略」（否则错误被折叠成「什么也没发生」）',
+    fix: '补一行理由注释：`catch { /* xterm 销毁阶段 runtime 可能已不可用 */ }`，或改为可见反馈（announce / 错误态 / 日志）。事故：跨窗口 ACK、传输失败、持久化失败都曾长在「静默 catch」这个习惯上。',
+    targets: ['app'],
+    // 行内空块；跨行空块（catch { 换行 + 注释 + }）不误伤——带注释的写法是本规则要求的形态
+    pattern: /catch\s*(?:\([^)]*\))?\s*\{\s*\}\s*$/,
+    samples: {
+      bad: ['try { session.term.dispose(); } catch {}'],
+      good: [
+        'try { session.term.dispose(); } catch { /* 销毁阶段 runtime 可能已不可用，无可补救动作 */ }',
+        "} catch (error) { announce('取消失败：' + String(error)); }"
+      ]
+    }
+  },
+  {
+    id: 'no-drive-root-fallback',
+    title: '禁止把字面盘符根（`C:\\tmp` 之类）当回退/临时目录（系统盘未必是 C:，根目录通常不可写）',
+    fix: '用 `std::env::temp_dir()` / app_data_dir / 用户目录等**运行时解析**的位置；确需固定路径时先探测可用性并给出显式报错。事故：build.rs 在 TEMP 缺失时回退 `C:\\tmp`，标准用户对 C:\\ 无写权限 → `create_dir_all().ok()` 吞掉失败 → 后续 `expect` 抛在图标拷贝处，报错与真实原因（权限/TEMP）无关。',
+    targets: ['rust'],
+    pattern: /PathBuf::from\(\s*r?["'][A-Za-z]:[\\/]/,
+    skipLine: /\bassert/,
+    samples: {
+      bad: ['let tmp = PathBuf::from("C:\\\\tmp");', 'let p = PathBuf::from(r"D:/cache");'],
+      good: [
+        'let tmp = std::env::temp_dir().join(format!("myshelltool-icon-{}.ico", std::process::id()));',
+        'let p = app_data_dir.join("cache");'
+      ]
+    }
+  },
+  {
+    id: 'no-env-path-without-absolute-check',
+    title: '环境变量当路径根时必须区分「缺失/空串」并校验绝对性（空值与相对值都是猜测）',
+    fix: '用 `var_os` + 空值过滤 + `Path::is_absolute()` 校验，不满足即显式回退并留痕。事故：`MYSHELLTOOL_DATA_DIR=""`（变量存在但为空）或相对值 → 配置/日志落到进程 CWD，重启后路径漂移、mcp-config.json 找不到 → 拦截等级静默回落默认档。',
+    targets: ['rust'],
+    pattern: /env::var\(\s*"[A-Z_]*(?:DIR|PATH|HOME|TEMP|APPDATA)[A-Z_]*"\s*\)/,
+    unless: /var_os|is_empty|is_absolute/,
+    skipLine: /\bassert/,
+    samples: {
+      bad: ['if let Ok(dir) = std::env::var("MYSHELLTOOL_DATA_DIR") {'],
+      good: [
+        'let dir = std::env::var_os("MYSHELLTOOL_DATA_DIR").filter(|v| !v.is_empty());',
+        'let ok = std::env::var("DATA_DIR").ok().filter(|d| std::path::Path::new(d).is_absolute());'
+      ]
+    }
+  },
+  {
+    id: 'no-unredacted-command-in-log',
+    title: '命令文本落日志前必须过 `redact_command`（`mysql -pP@ss` 明文进日志 = 凭据红线）',
+    fix: '日志参数里用 `myshelltool_core::redact_command(command)`；整参数表用 `redacted_args_summary(&args)`。事故：审计日志 `mcp-execution-log.json`（30 天/1000 条长期保留）与应用日志 `myshelltool.log` 曾记录命令原文，AI 宿主执行的 `mysql -uroot -pP@ss`、`curl -u user:pass` 于是以明文落盘并回显。',
+    targets: ['rust'],
+    // 形态：整条日志语句里出现 command/cmd/args 标识符（行尾收束），且**没有**脱敏调用。
+    // 已知边界：日志文案本身含英文单词 "command"/"args" 时会命中——这是有意的「宁可误报」，
+    // 用行尾 `// fact-guard:allow no-unredacted-command-in-log <理由>` 豁免（本项目现有 1 处）。
+    pattern: /\blog::(?:info|warn|error|debug)!\([^\n]*\b(?:command|cmd|args)\b[^\n]*\),?\s*;?\s*$/,
+    unless: /redact_command|redacted_args_summary|\b(?:redacted|masked|safe)\w*(?:command|cmd|args)/,
+    samples: {
+      bad: [
+        'log::info!("ssh_exec: command={:?}", command);',
+        'log::warn!("exec_on_asset: cmd={}", cmd);'
+      ],
+      good: [
+        'log::info!("ssh_exec: command={:?}", myshelltool_core::redact_command(command));',
+        'log::info!("MCP call_tool: {} args={}", name, redacted_args_summary(&arguments));',
+        'log::info!("approval: command allowed under minimal level: {:?}", myshelltool_core::redact_command(command));'
+      ]
+    }
   }
 ];
 

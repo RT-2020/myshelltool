@@ -68,10 +68,14 @@ pub fn get_prompt(
             format!(
                 "请对资产 {asset_id} 进行安全审计，依次执行以下检查：\n\n\
                  1. 用 ssh_exec 执行 `last -20` 查看最近 20 次登录记录，留意异常 IP/时间\n\
-                 2. 用 ssh_exec 执行 `ss -tlnp` 查看监听端口，留意非预期端口\n\
-                 3. 用 ssh_exec 执行 `ps aux --sort=-%cpu | head -10` 查看 CPU 占用最高的进程\n\
+                 2. 查看监听端口：Linux 用 `ss -tlnp`；BSD/macOS 用 `netstat -an -p tcp | head -30`；\
+                 两者都不可用时用 `lsof -nP -iTCP -sTCP:LISTEN`。留意非预期端口\n\
+                 3. 用 ssh_exec 执行 `ps aux | sort -k3 -rn | head -10` 查看 CPU 占用最高的进程\
+                 （`sort -k3 -rn` 是 POSIX 通用写法；GNU 专有的 `ps --sort=`/`sort -h` 在 BSD/macOS 上直接报错）\n\
                  4. 汇总结论，标注可疑项（陌生登录 IP、异常监听端口、可疑进程）\n\n\
-                 注意：所有命令均为只读查询，ssh_exec 中只读命令会自动放行。"
+                 注意：所有命令均为只读查询，ssh_exec 中只读命令会自动放行。\
+                 **某步的命令不存在或报错（如非 Linux 主机无 ss）时，必须如实报告该步未取得数据，\
+                 不得据此判定「无异常」**——假阴性的安全结论比查不到更危险。"
             ),
         ),
         "cleanup_disk" => (
@@ -79,10 +83,12 @@ pub fn get_prompt(
             format!(
                 "请帮资产 {asset_id} 分析磁盘占用并提出清理建议，依次执行：\n\n\
                  1. 调用 disk_usage 查看整体磁盘占用\n\
-                 2. 用 ssh_exec 执行 `du -sh /var/log/* 2>/dev/null | sort -rh | head -10` 查看日志目录占用\n\
+                 2. 用 ssh_exec 执行 `du -sk /var/log/* 2>/dev/null | sort -rn | head -10` 查看日志目录占用\
+                 （`du -sk` + 数字排序是 POSIX 通用写法；GNU 专有的 `sort -h` 在 BSD/macOS 上报错）\n\
                  3. 用 ssh_exec 执行 `find /tmp -type f -mtime +7 -size +10M 2>/dev/null | head -20` 查找旧大文件\n\
                  4. 汇总占用情况，给出清理建议（如可安全清理的日志/临时文件），但**不要自动执行删除**——删除需用户确认\n\n\
-                 注意：删除操作（rm）属于高危命令，会被审批拦截。仅提供分析建议。"
+                 注意：删除操作（rm）属于高危命令，会被审批拦截。仅提供分析建议。\
+                 命令失败时如实标注该步未取得数据，不要用「无占用」代替「没查到」。"
             ),
         ),
         other => return Err(format!("未知 prompt: {}", other)),

@@ -117,11 +117,18 @@ export function usePanelResize(options: UsePanelResizeOptions = {}) {
   // 从 localStorage 恢复 + 应用内联变量。
   // sidebarW/rightW 恢复时套与拖拽相同的 MIN/MAX clamp——旧 key/坏数据的越界值
   // （如 0 或超大）会导致启动侧栏被压没/占满；terminalRatio 原有 clamp 对齐。
+  // centerTopH 同款处理：它是 legacy JSON 才有的字段（persist 不再写），只做
+  // typeof 收窄等于信任外部数据——100000 会让终端撑爆视口把文件区挤出去，
+  // NaN/Infinity 会写进 --terminal-h 变成无效值。
   const stored = readStoredLayout(storageKey);
   if (stored) {
     if (typeof stored.sidebarW === 'number') sidebarW.value = clamp(stored.sidebarW, SIDEBAR_MIN, SIDEBAR_MAX);
     if (typeof stored.rightW === 'number') rightW.value = clamp(stored.rightW, RIGHT_MIN, RIGHT_MAX);
-    if (typeof stored.centerTopH === 'number') centerTopH.value = stored.centerTopH;
+    if (typeof stored.centerTopH === 'number' && Number.isFinite(stored.centerTopH)) {
+      // 上限与拖拽路径同源（onPointerMove 的 maxTop）：可视高度 - 文件区最小值，
+      // 保证终端高度挤不掉文件区。非有限数直接当「未设置」→ 回落 terminalRatio。
+      centerTopH.value = clamp(stored.centerTopH, CENTER_TOP_MIN, getMaxTopHeight());
+    }
     if (typeof stored.terminalRatio === 'number') terminalRatio.value = clamp(stored.terminalRatio, 0.18, 0.85);
     else if (typeof stored.centerTopH === 'number') {
       terminalRatio.value = clamp(stored.centerTopH / getMainHeight(), 0.18, 0.85);
@@ -134,6 +141,18 @@ export function usePanelResize(options: UsePanelResizeOptions = {}) {
 
   function getTerminalHeightFromRatio(): number {
     return Math.round(getMainHeight() * terminalRatio.value);
+  }
+
+  /**
+   * 终端区高度上限（px）：主区可视高度 - 文件区最小高度。
+   * 拖拽路径与 localStorage 恢复路径共用同一口径——上限必须参考容器**实际**
+   * 高度，否则越界的持久化值（或拖完后窗口变小）会把文件区挤出视口。
+   */
+  function getMaxTopHeight(viewportH?: number): number {
+    const mainH = viewportH != null
+      ? Math.max(CENTER_TOP_MIN + CENTER_BOTTOM_MIN, viewportH - 52 /*titlebar*/ - 28 /*statusbar*/)
+      : getMainHeight();
+    return mainH - CENTER_BOTTOM_MIN;
   }
 
   function setTerminalHeight(height: number, root: HTMLElement = document.documentElement) {
@@ -183,8 +202,7 @@ export function usePanelResize(options: UsePanelResizeOptions = {}) {
     } else if (which === 'center-row') {
       // 向下拖 → 终端区变高。clamp 保证文件区至少 CENTER_BOTTOM_MIN。
       const mainH = Math.max(CENTER_TOP_MIN + CENTER_BOTTOM_MIN, viewportH - 52 /*titlebar*/ - 28 /*statusbar*/);
-      const maxTop = mainH - CENTER_BOTTOM_MIN;
-      const h = clamp(startVal + (event.clientY - startY), CENTER_TOP_MIN, maxTop);
+      const h = clamp(startVal + (event.clientY - startY), CENTER_TOP_MIN, getMaxTopHeight(viewportH));
       centerTopH.value = h;
       terminalRatio.value = clamp(h / mainH, 0.18, 0.85);
       setTerminalHeight(h);

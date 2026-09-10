@@ -40,7 +40,16 @@ fn load_sync_state(state: &AppState) -> Result<SyncState, String> {
     }
     let json = std::fs::read_to_string(&path).map_err(|e| format!("读 sync-state.json: {e}"))?;
     if json.trim().is_empty() {
-        return Ok(SyncState::default());
+        // v2.6：**存在但为空 = 损坏**，不再当「首次运行」静默清零。旧实现把 0 字节
+        // 文件折叠成默认值，于是 gist_id / last_synced_at / auto_sync_enabled 全部
+        // 无声丢失（下次保存还把这份空状态写回，等于确认丢失）。与 read_local_assets
+        // 的三态判据保持一致：NotFound 才是首次运行，其余按损坏显式报错。
+        return Err(format!(
+            "sync-state.json 存在但为空（{}）——疑为上次写入被截断。已停止同步操作以免把空状态写回；\
+             请删除该文件重新配置同步（或从 {}.tmp-* 残留中恢复）",
+            path.display(),
+            path.display()
+        ));
     }
     serde_json::from_str(&json).map_err(|e| format!("解析 sync-state.json: {e}"))
 }
@@ -48,7 +57,8 @@ fn load_sync_state(state: &AppState) -> Result<SyncState, String> {
 fn save_sync_state(state: &AppState, sync_state: &SyncState) -> Result<(), String> {
     let path = sync_state_path(state)?;
     let json = serde_json::to_string_pretty(sync_state).map_err(|e| e.to_string())?;
-    std::fs::write(path, json).map_err(|e| format!("写 sync-state.json: {e}"))
+    // 原子写：sync-state 截断会被下次读取判为损坏并中止同步（见 load_sync_state）
+    myshelltool_core::write_atomic(path, json).map_err(|e| format!("写 sync-state.json: {e}"))
 }
 
 /// 读 GitHub PAT（从 SecretStore，credential id = "github-pat"）。
@@ -346,10 +356,12 @@ pub async fn sync_status(state: State<'_, AppState>) -> Result<SyncStatusResult,
         store.get_status("github-pat")?.exists
     };
     let gist_id_masked = sync_state.gist_id.as_ref().map(|id| {
-        if id.len() <= 6 {
+        // 按字符切片（同 mask_gist_id）：字节切片遇多字节 id 会 panic
+        if id.chars().count() <= 6 {
             id.clone()
         } else {
-            format!("...{}", &id[id.len() - 6..])
+            let tail: String = id.chars().skip(id.chars().count() - 6).collect();
+            format!("...{tail}")
         }
     });
     Ok(SyncStatusResult {
@@ -421,17 +433,30 @@ pub async fn sync_setup(
             .map_err(|e| format!("序列化资产失败: {e}"))?;
 
         // 换机拉取：自动将远端解密出的密码与私钥通过本机 DPAPI 写入本地 SecretStore。
-        // 恢复失败不阻断导入（资产 JSON 已就绪返回前端），但必须留日志痕迹。
+        // 恢复失败不阻断导入（资产 JSON 已就绪、必须返回前端），但**逐个失败都要有痕**：
+        // 曾只打一条 warn，用户看到「已拉取」却连不上（认证失败），归因成本极高。
         if !vault.credentials.is_empty() {
-            if let Err(e) =
-                crate::sync_credentials::restore_sync_credentials(&state, &vault.credentials)
-            {
-                log::warn!("sync_setup: 恢复同步凭据到本机 SecretStore 失败: {e}");
+            match crate::sync_credentials::restore_sync_credentials(&state, &vault.credentials) {
+                Ok((restored, failed)) => {
+                    if !failed.is_empty() {
+                        log::warn!(
+                            "sync_setup: {} 项凭据恢复失败（成功 {restored} 项）：{}",
+                            failed.len(),
+                            failed
+                                .iter()
+                                .map(|(id, r)| format!("{id}: {r}"))
+                                .collect::<Vec<_>>()
+                                .join("；")
+                        );
+                    }
+                }
+                Err(e) => log::warn!("sync_setup: 恢复同步凭据到本机 SecretStore 失败: {e}"),
             }
         }
         // 资产文件写回失败必须中止（对照 sync_pull 的写法）：否则本地仍是旧内容，
         // 而下方 last_synced_at 照常前移，此后 pull 会以「安全拉取」误判并覆盖。
-        std::fs::write(&state.asset_store_path, &assets_json).map_err(|e| {
+        // 原子写：资产 JSON 是本地唯一副本，半截即整个列表不可读。
+        myshelltool_core::write_atomic(&state.asset_store_path, &assets_json).map_err(|e| {
             format!(
                 "写回 connection-assets.json（{}）失败: {e}",
                 state.asset_store_path.display()
@@ -495,7 +520,26 @@ fn pack_local_vault(
         })?;
 
     let credentials = if sync_state.sync_credentials {
-        crate::sync_credentials::collect_sync_credentials(state, &store.assets).unwrap_or_default()
+        // 三态处置（v2.6）：读到 → 上传；**读失败 → 中止本次推送**；本地缺失 → 提示但继续。
+        // 曾用 `unwrap_or_default()` + 内部 warn-and-skip：读不出的凭据被静默丢弃，
+        // 却仍把「不完整的 vault」推上 Gist 覆盖完整备份并报「已推送」——换机恢复后
+        // 该资产没密码且无从归因。宁可本次不同步，也不能用残缺备份覆盖好备份。
+        let outcome = crate::sync_credentials::collect_sync_credentials(state, &store.assets)?;
+        if outcome.has_failures() {
+            return Err(format!(
+                "同步已中止：{} 项凭据读取失败（{}）。这些凭据不会进入备份，若继续推送会用不完整的备份覆盖 Gist 上的完整备份。\
+                 请先修复（例如确认以同一 Windows 账户运行、凭据文件未被占用）后重试。",
+                outcome.failed.len(),
+                outcome.failure_summary()
+            ));
+        }
+        if !outcome.missing.is_empty() {
+            log::warn!(
+                "sync_push: 资产引用了本地不存在的凭据 {} 项（可能已被清理），本次备份不含这些项",
+                outcome.missing.len()
+            );
+        }
+        outcome.items
     } else {
         vec![]
     };
@@ -544,6 +588,43 @@ pub async fn sync_push(
         .ok_or_else(|| "未配置同步（请先 sync_setup）".to_string())?;
     let pat = read_github_pat(&state)?;
 
+    // v2.6：推送前先读远端 rev，与本地记录的 local_rev 对齐（乐观并发检查）。
+    //
+    // 事故形态：两台机器共用同一 Gist，A 推 rev5 后 B 推自己的 rev5'，`gist_update`
+    // 是无条件 PATCH → **A 的改动在远端被静默抹掉**，而双方都显示「已推送」；此后
+    // B 再 pull 时 decide() 见 rev 相等 → NoChange「已是最新」，两边都以为同步健康。
+    // 这里不引入强制冲突弹窗（推送语义就是「让远端等于本地」），但**不允许在不知情
+    // 的情况下覆盖别人的提交**：远端 rev 与本地认知不一致即中止并给出可操作提示。
+    match gist_get(&pat, &gist_id).await? {
+        Some((content, _updated_at)) => {
+            let local_rev = sync_state.local_rev.unwrap_or(0);
+            // 远端 rev 在载荷里（明文元数据，无需解密）。解析失败说明远端不是本应用的
+            // 载荷格式 → 同样不能盲推覆盖，按「状态异常」中止。
+            let remote_rev = match serde_json::from_str::<myshelltool_core::sync::SyncPayload>(&content) {
+                Ok(payload) => payload.remote_rev,
+                Err(e) => {
+                    return Err(format!(
+                        "推送已中止：远端备份内容不是可识别的同步载荷（解析失败: {e}）。\
+                         继续推送会覆盖远端文件，请先确认该 Gist 是否被其他工具/版本改写。"
+                    ));
+                }
+            };
+            if remote_rev != local_rev {
+                return Err(format!(
+                    "推送已中止：远端备份已被其他设备/会话更新（远端 rev {remote_rev}，本地记录 rev {local_rev}）。\
+                     继续推送会用本地内容覆盖数据、丢掉远端那次保存。请先执行「拉取」确认远端改动后再推送。"
+                ));
+            }
+        }
+        None => {
+            // Gist 被删（手动清理/权限变化）：不是「远端为空可以随便写」，而是状态异常。
+            return Err(
+                "推送已中止：Gist 不存在（可能已被手动删除或失去访问权限）。请重新配置同步（sync_setup）后再推送。"
+                    .to_string(),
+            );
+        }
+    }
+
     let new_rev = sync_state.local_rev.unwrap_or(0) + 1;
     let payload = pack_local_vault(&state, &sync_state, &master_password, new_rev)?;
     let payload_json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
@@ -570,7 +651,15 @@ pub enum SyncPullResult {
     /// 无需操作（双方都没变）。
     NoChange,
     /// 安全拉取：远端更新，本地没变。assets_json 是解密后的资产，前端直接导入。
-    Pulled { assets_json: String, new_rev: u64 },
+    /// `credentials_failed`（v2.6）：本次有 N 项凭据未能写入本机 SecretStore——
+    /// 资产已拉取成功，但这些资产的密码/私钥仍不可用，前端必须提示（曾静默只 warn，
+    /// 用户看到「已拉取」却连不上，归因困难）。
+    Pulled {
+        assets_json: String,
+        new_rev: u64,
+        #[serde(default)]
+        credentials_failed: usize,
+    },
     /// 本地比远端新，建议 push 而非 pull。
     LocalNewer,
     /// 冲突：双方都变了。返回本地+远端资产 JSON，前端弹窗让用户选。
@@ -615,16 +704,33 @@ pub async fn sync_pull(
             let vault = decrypt_vault(&state, &master_password, &remote_payload)?;
             let remote_json = serde_json::to_string_pretty(&vault.assets_store)
                 .map_err(|e| format!("序列化资产失败: {e}"))?;
-            std::fs::write(&state.asset_store_path, &remote_json)
+            myshelltool_core::write_atomic(&state.asset_store_path, &remote_json)
                 .map_err(|e| format!("写回 connection-assets.json: {e}"))?;
 
             // 自动将远端解密的密码与托管私钥存入本地 SecretStore（DPAPI 重新加密）。
-            // 恢复失败不阻断 pull 结果（资产已落盘），但留日志供排查。
+            // 资产已落盘 → 不阻断 pull；但失败项数要回传前端（toast 里显式提示），
+            // 否则用户看到「已拉取」却连不上（凭据没恢复），归因困难。
+            let mut credentials_failed = 0usize;
             if !vault.credentials.is_empty() {
-                if let Err(e) =
-                    crate::sync_credentials::restore_sync_credentials(&state, &vault.credentials)
-                {
-                    log::warn!("sync_pull: 恢复同步凭据到本机 SecretStore 失败: {e}");
+                match crate::sync_credentials::restore_sync_credentials(&state, &vault.credentials) {
+                    Ok((restored, failed)) => {
+                        credentials_failed = failed.len();
+                        if credentials_failed > 0 {
+                            log::warn!(
+                                "sync_pull: {} 项凭据恢复失败（成功 {restored} 项）：{}",
+                                credentials_failed,
+                                failed
+                                    .iter()
+                                    .map(|(id, r)| format!("{id}: {r}"))
+                                    .collect::<Vec<_>>()
+                                    .join("；")
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        credentials_failed = vault.credentials.len();
+                        log::warn!("sync_pull: 恢复同步凭据到本机 SecretStore 失败: {e}");
+                    }
                 }
             }
 
@@ -639,6 +745,7 @@ pub async fn sync_pull(
             Ok(SyncPullResult::Pulled {
                 assets_json: remote_json,
                 new_rev: remote_payload.remote_rev,
+                credentials_failed,
             })
         }
         SyncDecision::PushLocal => Ok(SyncPullResult::LocalNewer),
@@ -693,7 +800,7 @@ pub async fn sync_resolve_conflict(
         }
         "remote" => {
             // 用远端覆盖本地：写入资产文件，并尝试解密远端凭据恢复
-            std::fs::write(&state.asset_store_path, &remote_json)
+            myshelltool_core::write_atomic(&state.asset_store_path, &remote_json)
                 .map_err(|e| format!("写回 connection-assets.json: {e}"))?;
 
             // 尽力恢复远端凭据（remote_json 只含资产，凭据在 Gist 载荷里）。
@@ -705,11 +812,23 @@ pub async fn sync_resolve_conflict(
                         Ok(payload) => match decrypt_vault(&state, &master_password, &payload) {
                             Ok(vault) => {
                                 if !vault.credentials.is_empty() {
-                                    if let Err(e) = crate::sync_credentials::restore_sync_credentials(
+                                    match crate::sync_credentials::restore_sync_credentials(
                                         &state,
                                         &vault.credentials,
                                     ) {
-                                        log::warn!("sync_resolve_conflict: 恢复同步凭据失败: {e}");
+                                        Ok((_, failed)) if !failed.is_empty() => log::warn!(
+                                            "sync_resolve_conflict: {} 项凭据恢复失败：{}",
+                                            failed.len(),
+                                            failed
+                                                .iter()
+                                                .map(|(id, r)| format!("{id}: {r}"))
+                                                .collect::<Vec<_>>()
+                                                .join("；")
+                                        ),
+                                        Ok(_) => {}
+                                        Err(e) => log::warn!(
+                                            "sync_resolve_conflict: 恢复同步凭据失败: {e}"
+                                        ),
                                     }
                                 }
                             }
@@ -797,8 +916,16 @@ pub async fn sync_clear(state: State<'_, AppState>) -> Result<(), String> {
     if path.exists() {
         std::fs::remove_file(path).map_err(|e| format!("删除 sync-state.json: {e}"))?;
     }
-    // v1.6：连同会话密钥一起清（容错：可能不存在）
-    let _ = delete_session_key(&state);
+    // v1.6：连同会话密钥一起清。
+    // 失败必须可见：曾用 `let _ =` 吞掉删除错误，UI 显示「已清空同步」而等价于
+    // 主密码的会话密钥仍留在 credentials/ 里——用户以为这个「忘了主密码的逃生口」
+    // 已生效（形态 C 静默兜底）。delete_session_key 内部已把「本来就不存在」当成功。
+    if let Err(e) = delete_session_key(&state) {
+        log::warn!("sync_clear: 会话密钥删除失败: {e}");
+        return Err(format!(
+            "sync-state 已清除，但会话密钥删除失败：{e}。请手动删除 credentials/sync-session-key.cred 后重试"
+        ));
+    }
     Ok(())
 }
 
