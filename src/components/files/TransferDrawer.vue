@@ -11,13 +11,14 @@
  * Store-bound: 订阅 useFilesStore.transferQueue。每行显示方向 / 名称 / 大小比 /
  * 状态药丸 + 细线性进度。
  */
-import { onBeforeUnmount, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import type { Component } from 'vue';
 import { storeToRefs } from 'pinia';
 import { Upload, Download, ChevronDown, AlertCircle, CheckCircle2, Loader2, XCircle, X, RotateCcw, ArrowUpDown } from 'lucide-vue-next';
 import { useFilesStore } from '@/stores/files';
 import { formatSpeed, formatEta } from '@/lib/transferUtils';
 import type { TransferQueueItem } from '@/lib/transferUtils';
+import AppTabGroup from '@/components/ui/AppTabGroup.vue';
 
 const props = withDefaults(defineProps<{
   open?: boolean;
@@ -27,7 +28,30 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{ toggle: [] }>();
 
 const filesStore = useFilesStore();
-const { transferQueue, activeTransfers, completedTransfers, failedTransfers } = storeToRefs(filesStore);
+const { transferQueue, completedTransfers, failedTransfers } = storeToRefs(filesStore);
+
+// 分类 tab（FinalShell 式：传输中/队列中/已完成/已失败 带计数）。
+// 归类口径与 store getter 对齐：已完成 = done；已失败 = error + cancelled
+// （取消是需用户注意的终结态，归入失败 tab 以便找到；药丸文字仍显示「已取消」可区分）。
+type TransferTabId = 'running' | 'pending' | 'done' | 'failed';
+const activeTab = ref<TransferTabId>('running');
+const runningCount = computed(() => transferQueue.value.filter(i => i.status === 'running').length);
+const pendingCount = computed(() => transferQueue.value.filter(i => i.status === 'pending').length);
+const transferTabs = computed(() => [
+  { id: 'running' as const, label: `传输中 ${runningCount.value}` },
+  { id: 'pending' as const, label: `队列中 ${pendingCount.value}` },
+  { id: 'done' as const, label: `已完成 ${completedTransfers.value.length}` },
+  { id: 'failed' as const, label: `已失败 ${failedTransfers.value.length}` }
+]);
+const filteredQueue = computed(() => {
+  const q = transferQueue.value;
+  switch (activeTab.value) {
+    case 'running': return q.filter(i => i.status === 'running');
+    case 'pending': return q.filter(i => i.status === 'pending');
+    case 'done': return q.filter(i => i.status === 'done');
+    case 'failed': return q.filter(i => i.status === 'error' || i.status === 'cancelled');
+  }
+});
 
 function formatBytes(bytes: number | null | undefined) {
   const size = Number(bytes) || 0;
@@ -51,13 +75,18 @@ function pillLabel(item: TransferQueueItem) {
   return (item.percent || 0) + '%';
 }
 
-// 抽屉打开时注册 Escape 关闭，关闭/卸载时移除
+// 抽屉打开时注册 Escape 关闭，关闭/卸载时移除；打开瞬间做一次智能默认 tab
+// （有传输看传输，无传输看队列，否则看完成——只定初始值，不抢用户后续切换）
 function onDrawerKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') emit('toggle');
 }
 watch(() => props.open, open => {
-  if (open) window.addEventListener('keydown', onDrawerKeydown);
-  else window.removeEventListener('keydown', onDrawerKeydown);
+  if (open) {
+    window.addEventListener('keydown', onDrawerKeydown);
+    activeTab.value = runningCount.value > 0 ? 'running' : pendingCount.value > 0 ? 'pending' : 'done';
+  } else {
+    window.removeEventListener('keydown', onDrawerKeydown);
+  }
 });
 onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
 </script>
@@ -77,10 +106,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
         <div class="transfer-sheet-head">
           <div class="transfer-sheet-title">
             <strong>传输队列</strong>
-            <span class="transfer-sheet-sub">
-              {{ activeTransfers.length }} 进行中 · {{ completedTransfers.length }} 完成 ·
-              {{ failedTransfers.length }} 失败
-            </span>
           </div>
           <button
             class="transfer-sheet-close"
@@ -92,14 +117,22 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
           </button>
         </div>
 
+        <!-- 分类 tab（FinalShell 式表头）：计数随队列实时刷新，列表按 tab 过滤 -->
+        <AppTabGroup
+          class="transfer-tabs"
+          :tabs="transferTabs"
+          :active="activeTab"
+          @update:active="id => (activeTab = id as TransferTabId)"
+        />
+
         <div class="transfer-sheet-body" aria-live="polite">
-          <div v-if="!transferQueue.length" class="transfer-empty">
+          <div v-if="!filteredQueue.length" class="transfer-empty">
             <ArrowUpDown :size="20" class="transfer-empty-icon" />
-            <span>暂无传输任务</span>
+            <span>{{ transferQueue.length ? '该分类暂无任务' : '暂无传输任务' }}</span>
           </div>
           <ul v-else class="transfer-list">
             <li
-              v-for="item in transferQueue"
+              v-for="item in filteredQueue"
               :key="item.id"
               class="transfer-row"
               :class="`is-${item.status}`"
@@ -211,7 +244,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
   align-items: center;
   justify-content: space-between;
   padding: var(--space-2) var(--space-3);
-  border-block-end: 1px solid var(--app-border);
+}
+// 分类 tab 条：左右留白与 head 对齐（AppTabGroup 自带底部分隔线，head 不再画线防双线）
+.transfer-tabs {
+  margin: 0 var(--space-3);
 }
 .transfer-sheet-title {
   display: inline-flex;
@@ -222,10 +258,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
 .transfer-sheet-title strong {
   font-size: var(--text-sm);
   font-weight: 600;
-}
-.transfer-sheet-sub {
-  font-size: var(--text-xs);
-  color: var(--app-muted);
 }
 .transfer-sheet-close {
   display: inline-flex;
