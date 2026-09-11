@@ -195,12 +195,15 @@ const assetCredentialHint = computed(() => {
   return '尚未存储密码';
 });
 
-// 可选分组建议列表（资产编辑器与移动分组共用）：显式声明 ∪ 资产现有 group，去重，含「未分组」。
+// 可选分组列表（资产编辑器与移动分组共用）：显式声明 ∪ 资产现有 group，去重，含「未分组」。
+// AppSelect 选项形态：value 即分组路径（含多级「生产/数据库」），label 同值。
+// 曾用原生 input+datalist：预填当前值时建议被前缀过滤只剩一项，且 WebView2 里
+// 选择后弹层不自动收起——统一换 AppSelect（选择即收起、全量列出已有分组）。
 const groupOptions = computed(() => {
   const set = new Set(['未分组']);
   for (const g of (store.declaredGroups || [])) set.add(g);
   for (const a of (store.assets || [])) if (a.group) set.add(a.group);
-  return [...set];
+  return [...set].map(g => ({ label: g, value: g }));
 });
 
 // 删除确认弹窗：names 最多展示前 5 个，超出显示「等 N 项」。
@@ -223,6 +226,11 @@ watch(() => modal.value.type, type => {
     Object.assign(editingAsset, modal.value.asset ? cloneAsset(modal.value.asset) : emptyAsset());
     Object.assign(editingCredential, emptyCredential());
     assetFormError.value = '';
+    // 分组头「+」快捷新增：预填目标分组（仅新建态生效，编辑态以资产自身分组为准）
+    if (!modal.value.asset) {
+      const presetGroup = modal.value.payload?.presetGroup;
+      if (typeof presetGroup === 'string' && presetGroup) editingAsset.group = presetGroup;
+    }
   }
   if (type === 'reauthPassword') {
     reauthForm.password = '';
@@ -368,6 +376,8 @@ async function submitModal() {
           // 表单态（port/auth_method 可能被输入控件回传 string）按 saveAsset 入参契约断言透传，与迁移前运行时行为一致
           {
             ...editingAsset,
+            // 未选分组统一归「未分组」（normalizeAsset 亦兜底，此处显式表达产品语义）
+            group: String(editingAsset.group || '').trim() || '未分组',
             private_key_path: String(editingAsset.private_key_path || '').trim() || null,
             tags: splitTags(editingAsset.tags)
           } as ConnectionAssetInput,
@@ -623,19 +633,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydownEsc));
               <AppInput :model-value="editingAsset.username" @update:model-value="v => editingAsset.username = v" data-asset-field="username" />
             </label>
             <label class="stack"><span class="muted">分组</span>
-              <!-- 用原生 input 而非 AppInput：AppInput 不透传 list 属性，
-                   分组需 datalist 自动补全（选已有）+ 允许输入新路径（新建），故用裸 input。 -->
-              <input
-                class="native-input"
-                :value="editingAsset.group"
-                @input="e => editingAsset.group = (e.target as HTMLInputElement).value"
-                list="group-list-editor"
-                placeholder="未分组 或 生产/数据库"
+              <AppSelect
+                :model-value="editingAsset.group || '未分组'"
+                :options="groupOptions"
+                @update:model-value="v => editingAsset.group = String(v)"
                 data-asset-field="group"
               />
-              <datalist id="group-list-editor">
-                <option v-for="g in groupOptions" :key="g" :value="g"></option>
-              </datalist>
             </label>
             <label class="stack"><span class="muted">标签</span>
               <AppInput :model-value="editingAsset.tags" placeholder="prod, app" @update:model-value="v => editingAsset.tags = v" data-asset-field="tags" />
@@ -859,18 +862,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydownEsc));
         <!-- moveAsset -->
         <div v-else-if="modal.type === 'moveAsset'" class="stack">
           <p>移动连接「<strong>{{ modal.asset?.name }}</strong>」到分组：</p>
-          <label class="stack"><span>目标分组（可输入新路径或选已有）</span>
-            <!-- 用原生 input 而非 AppInput：AppInput 不透传 list 属性，
-                 移动分组需要 datalist 自动补全 + 允许输入新路径，故此处用裸 input。 -->
-            <input
-              class="native-input"
-              v-model="moveGroupInput"
-              list="group-list-move"
-              placeholder="未分组 或 生产/数据库"
+          <label class="stack"><span>目标分组</span>
+            <AppSelect
+              :model-value="moveGroupInput || '未分组'"
+              :options="groupOptions"
+              @update:model-value="v => moveGroupInput = String(v)"
             />
-            <datalist id="group-list-move">
-              <option v-for="g in groupOptions" :key="g" :value="g"></option>
-            </datalist>
           </label>
           <p v-if="groupFormError" class="form-error">{{ groupFormError }}</p>
         </div>

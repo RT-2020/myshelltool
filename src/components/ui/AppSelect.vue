@@ -169,8 +169,12 @@ onBeforeUnmount(() => {
       </span>
       <ChevronDown :size="14" class="app-select-caret" />
     </button>
+    <!-- .prevent/.stop 必须加在菜单根上：弹窗里的 AppSelect 常被 <label> 包裹，选项点击若
+         进入 label 的默认动作，label 会把 click 转发给关联控件（trigger）→ toggle 又把刚
+         关掉的菜单弹开（表现为"选完不收起"）。Chromium 里该转发走默认动作阶段，
+         stopPropagation 拦不住、必须 preventDefault；.stop 一并拦掉向上冒泡。 -->
     <Transition name="app-select-menu">
-      <ul v-if="open" ref="menuRef" class="app-select-menu" role="listbox">
+      <ul v-if="open" ref="menuRef" class="app-select-menu" role="listbox" @click.prevent.stop>
         <li
           v-for="opt in options"
           :key="opt.value"

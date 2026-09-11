@@ -69,6 +69,8 @@ const emit = defineEmits<{
   'quick-connect': [target: QuickConnectTarget];
   'toggle-collapse': [];
   'create-asset': [];
+  // 分组头悬停「+」：在该分组内快捷新增（父级打开预填分组的资产编辑器）
+  'create-asset-in-group': [group: string];
   'create-group': [];
   // 以下事件 payload 均为 asset 对象或 group path 字符串
   'edit-asset': [asset: NormalizedConnectionAsset];
@@ -533,6 +535,7 @@ provide('connectionSidebar', {
   onEditAsset: (asset: NormalizedConnectionAsset) => emit('edit-asset', asset),
   onDeleteAsset: (asset: NormalizedConnectionAsset) => emit('delete-asset', asset),
   onDuplicateAsset: (asset: NormalizedConnectionAsset) => emit('duplicate-asset', asset),
+  onAddAssetToGroup: (path: string) => emit('create-asset-in-group', path),
   registerAssetEl
 });
 </script>
