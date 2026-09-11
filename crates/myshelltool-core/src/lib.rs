@@ -6,12 +6,20 @@ pub mod crypto;
 pub mod dangerous_commands;
 // v2.6 命令文本脱敏（执行日志/应用日志落盘前的凭据红线，见模块注释）
 pub mod redact;
+// v2.7 GitHub Device Flow 轮询判定（传输抖动 vs 授权被拒必须分开：前者退避重试、
+// 后者立即停止。见模块注释的事故说明）
+pub mod oauth_flow;
 // v2.6 远端文件内容编码判定（拒绝 lossy「解码」二进制/非 UTF-8，见模块注释）
 pub mod remote_text;
+// v2.7 恢复密码生成（同步备份的"可带走凭据"：应用生成高熵随机密码，用户零输入即可用，
+// 换机时可在应用内查看/复制带走。见模块注释的安全定位说明）
+pub mod recovery_code;
 pub mod shell;
 
 // 便捷再导出：调用方写 `myshelltool_core::redact_command(...)`（日志落盘点最常用）
 pub use redact::redact_command;
+// v2.7 外部响应正文的脱敏摘录（回显/落日志前遮蔽调用方声明的秘密字面量）
+pub use redact::redact_excerpt;
 // v1.3 Gist 同步引擎（载荷结构 + 加解密封装 + 冲突检测，纯逻辑无 HTTP）
 pub mod sync;
 

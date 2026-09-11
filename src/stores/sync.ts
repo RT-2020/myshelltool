@@ -35,6 +35,12 @@ export const useSyncStore = defineStore('sync', () => {
   // ============================================================
   const status = ref<SyncStatusResult | null>(null); // sync_status 返回
   const loading = ref(false); // 操作进行中（防重复）
+  /**
+   * 【v2.7】当前在跑的是哪个动作（'push' | 'pull' | null）。
+   * 面板据此把进行方向画出来（rail 上箭头朝外/朝内）并给对应按钮"推送中…"文案 ——
+   * 只有一个 loading 布尔值时，界面只能含糊地说「同步中…」，用户看不出数据在往哪走。
+   */
+  const activeOp = ref<'push' | 'pull' | null>(null);
   const lastMessage = ref(''); // 最近操作结果文案（成功/失败）
   // 冲突暂存：pull 返回 Conflict 时存，冲突框据此展示 + 用户选择后清空
   const conflict = ref<SyncConflictStash | null>(null);
@@ -50,6 +56,10 @@ export const useSyncStore = defineStore('sync', () => {
   const gistIdMasked = computed(() => status.value?.gist_id_masked ?? null);
   // v1.6：是否启用自动同步（会话密钥已派生）
   const autoSyncEnabled = computed(() => Boolean(status.value?.auto_sync_enabled));
+  // 【v2.7】本机是否有未推送改动（后端保守判定）——面板据此决定"该按哪个按钮"
+  const localHasChanges = computed(() => Boolean(status.value?.local_has_changes));
+  // 【v2.7】本机是否保存了自动生成的恢复密码（用户手输的密码一律不保存）
+  const recoveryPasswordSaved = computed(() => Boolean(status.value?.recovery_password_saved));
   // 是否同步凭据与私钥（默认 true）
   const syncCredentialsEnabled = computed(() => status.value?.sync_credentials ?? true);
   // 状态栏同步文案：优先真实同步状态，回退 PAT 配置状态
@@ -137,6 +147,7 @@ export const useSyncStore = defineStore('sync', () => {
   async function push(masterPassword = ''): Promise<SyncPushResult | null> {
     if (loading.value) return null;
     loading.value = true;
+    activeOp.value = 'push';
     lastMessage.value = '';
     try {
       const result = await invokeBackend<SyncPushResult>('sync_push', { masterPassword });
@@ -150,6 +161,7 @@ export const useSyncStore = defineStore('sync', () => {
       return null;
     } finally {
       loading.value = false;
+      activeOp.value = null;
     }
   }
 
@@ -162,6 +174,7 @@ export const useSyncStore = defineStore('sync', () => {
   async function pull(masterPassword = ''): Promise<SyncPullResult | null> {
     if (loading.value) return null;
     loading.value = true;
+    activeOp.value = 'pull';
     lastMessage.value = '';
     try {
       const result = await invokeBackend<SyncPullResult>('sync_pull', { masterPassword });
@@ -205,6 +218,7 @@ export const useSyncStore = defineStore('sync', () => {
       return null;
     } finally {
       loading.value = false;
+      activeOp.value = null;
     }
   }
 
@@ -279,11 +293,18 @@ export const useSyncStore = defineStore('sync', () => {
   }
 
   // ============================================================
-  // v1.6 自动同步 actions
+  // v1.6 自动同步 actions（恢复密码的生成/查看在 useSyncRecoveryPassword：
+  // 那两个动作只服务首次设置与换机恢复两处界面，且要保证明文不常驻 store）
   // ============================================================
 
   /**
    * 启用自动同步：验证主密码 → 派生会话密钥 → DPAPI 加密存盘。
+   *
+   * 【v2.7】启用成功后**立即用会话密钥推送一次**：把远端载荷升级成「带派生 salt」的新格式，
+   * 主密码于是能在任何机器上恢复这份备份（v2.7 之前自动同步推的载荷 salt 缺省，只有
+   * 原机那个 Windows 用户能解 —— 备份实为不可恢复）。推送失败**不阻断启用**（可稍后在
+   * 「立即同步」里手动推），但必须如实告知，不能让「已启用自动同步」掩盖一份解不开的备份。
+   *
    * @param masterPassword 主密码（一次性，验证后派生密钥即丢弃）
    * @returns 是否成功
    */
@@ -294,7 +315,19 @@ export const useSyncStore = defineStore('sync', () => {
     try {
       await invokeBackend('sync_enable_auto_sync', { masterPassword });
       await refreshStatus();
-      flashMessage('✓ 自动同步已启用');
+      let note = '';
+      if (configured.value) {
+        try {
+          // 不调 push()：loading 已置位，push() 会在「操作进行中」守卫处直接返回 null
+          await invokeBackend('sync_push', { masterPassword: '' });
+          await refreshStatus();
+          remoteHasUpdates.value = false;
+          note = '，并已把云端备份升级为主密码可恢复的格式';
+        } catch (error) {
+          note = `；但升级云端备份失败（${(error as Error | undefined)?.message || error}），请稍后在「立即同步」里手动推送一次`;
+        }
+      }
+      flashMessage('✓ 自动同步已启用' + note);
       return true;
     } catch (error) {
       flashMessage(`✗ ${(error as Error | undefined)?.message || error}`, true);
@@ -304,6 +337,7 @@ export const useSyncStore = defineStore('sync', () => {
     }
   }
 
+  // ============================================================
   /** 关闭自动同步：删除会话密钥。 */
   async function disableAutoSync() {
     if (loading.value) return false;
@@ -421,9 +455,9 @@ export const useSyncStore = defineStore('sync', () => {
 
   return {
     // state
-    status, loading, lastMessage, conflict, remoteHasUpdates,
+    status, loading, lastMessage, conflict, remoteHasUpdates, activeOp,
     // computed
-    configured, patConfigured, lastSyncedAt, gistIdMasked, autoSyncEnabled, syncCredentialsEnabled, syncText,
+    configured, patConfigured, lastSyncedAt, gistIdMasked, autoSyncEnabled, localHasChanges, recoveryPasswordSaved, syncCredentialsEnabled, syncText,
     // bridge
     attachWorkbench,
     // actions

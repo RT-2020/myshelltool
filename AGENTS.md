@@ -108,7 +108,8 @@ myshelltool/
 │   │   ├── mcp.ts              # 【v1.2】MCP 探测状态 + 配置引导（refresh 触发探测，无事件监听）
 │   │   └── sync.ts             # 【v1.3】Gist 资产同步（push/pull/冲突解决/状态展示）
 │   ├── composables/            # useTheme / useClipboard / useTerminalConfig /
-│   │                           # useAutoReconnect / usePanelResize / useAutoUpdate
+│   │                           # useAutoReconnect / usePanelResize / useAutoUpdate /
+│   │                           # useGithubDeviceLogin（Device Flow 状态机 + 传输故障退避重试）
 │   ├── lib/                    # terminalThemes / dangerousCommands / terminalGuards /
 │   │                           # transferUtils / assetWindows+assetWindowBoot（资产独立窗口纯函数模块）
 │   ├── services/
@@ -125,6 +126,7 @@ myshelltool/
 │   │   ├── resource_monitor.rs # 远程 CPU/mem/net/disk 轮询（SshCommand::MonitorExec）
 │   │   ├── fs_local.rs         # 本地文件系统命令
 │   │   ├── sync.rs             # 【v1.3】Gist 同步命令层（push/pull/conflict，粘合 core sync + reqwest）
+│   │   ├── sync_oauth.rs       # 【v1.3】GitHub OAuth Device Flow 登录（v2.7 抗抖动：单例客户端 + 结构化可重试判定）
 │   │   ├── dpapi_codec.rs      # 【v1.3】DPAPI 凭据编解码（Windows CryptProtectData，cfg(windows)）
 │   │   ├── bin/mcp.rs          # 【v1.4 已删】原 myshelltool-mcp 独立 console bin，内嵌后取消双二进制
 │   │   └── mcp/                # MCP server 接入模块（v1.4 内嵌 GUI / Streamable HTTP transport）
@@ -145,7 +147,8 @@ myshelltool/
 │       └── src/
 │           ├── lib.rs          # ConnectionAsset / SecretStore / 资产持久化 / 资产校验
 │           ├── dangerous_commands.rs # 【v2.6 迁入】白/黄/黑/Unknown 四层命令分类 + 毁灭层（GUI 与 MCP 共享单点真相，fail-secure 默认拒）
-│           ├── redact.rs       # 【v2.6】命令文本脱敏（`mysql -pP@ss` 等落日志前的凭据红线，`redact_command` 从 crate 根再导出）
+│           ├── redact.rs       # 【v2.6】命令文本脱敏（`mysql -pP@ss` 等落日志前的凭据红线，`redact_command`/`redact_excerpt` 从 crate 根再导出）
+│           ├── oauth_flow.rs   # 【v2.7】GitHub Device Flow 轮询判定（传输故障/429/5xx/非 JSON = 可重试，协议拒绝 = 终止；纯函数可单测）
 │           ├── remote_text.rs  # 【v2.6】远端文件内容编码判定（二进制/非 UTF-8/UTF-8 三态，拒绝对内容做 lossy「解码」）
 │           └── shell.rs        # 【v2.6 迁入】shell 命令分段器（引号感知；命令层安检的结构判据，替代整串前缀匹配）
 ├── tests/
@@ -245,11 +248,18 @@ npm run type-check   # vue-tsc --build，strict 全量；build 亦含此步
 - 凭据 id 约定：`<assetId>:<kind>`（kind = `password` | `passphrase`）
 
 **Gist 资产同步**（`sync.rs`，v1.3）
-- `sync_status` → 同步配置状态（是否已配置 / 上次同步时间 / gist_id 掩码）
-- `sync_setup({ masterPassword, gistId? })` → 首次设置（主密码派生密钥 + 可选拉取已有 Gist）
-- `sync_push({ masterPassword })` / `sync_pull({ masterPassword })` → 加密推送 / 拉取解密（pull 返回 Conflict 时前端弹框）
+- `sync_status` → 同步配置状态（是否已配置 / 上次同步时间 / gist_id 掩码 / `auto_sync_enabled`＝本机已记住免密密钥 / **`local_has_changes`【v2.7】＝本机有未推送改动**，面板据此决定「推送到云端 / 从云端拉取」谁是主按钮）
+- `sync_setup({ masterPassword, gistId? })` → 首次设置（主密码派生密钥 + 可选拉取已有 Gist）。**【v2.7】成功后自动调用 `remember_session_key`**：按该载荷的 salt 重建 key、DPAPI 存盘并置 `auto_sync_enabled = true` —— 主密码只输这一次（或换机时），此后 push/pull 与自动同步全免密
+- `sync_push({ masterPassword })` / `sync_pull({ masterPassword })` → 加密推送 / 拉取解密（pull 返回 Conflict 时前端弹框）。`masterPassword` **留空 = 走本机会话密钥**（免密路径，需已启用）；**带密码且本机还没有密钥时顺手记住**（`remember_session_key`，按该载荷的 salt）——「输一次密码」就够开启免密
 - `sync_resolve_conflict({ masterPassword, choice })` → 冲突解决（local_overwrite / remote_overwrite）
 - `sync_reset_master_password({ old, new })` / `sync_clear`
+- **`sync_generate_recovery_password()`**【v2.7】→ 生成 24 位高熵恢复密码（去歧义字符集，`core::recovery_code`）→ 存 SecretStore（id `sync-recovery-password`，DPAPI）→ **返回明文**供界面填入并明示一次。让用户"零输入"也能建备份，且换机时有据可依（不依赖外部密码管理器）
+- **`sync_reveal_recovery_password()`**【v2.7】→ 读回已保存的恢复密码（供「换机恢复 → 查看这台电脑的恢复密码」）；用户手输的密码从未保存，此处返回 None 时前端如实说明"应用没有保存它"
+
+**GitHub Device Flow 登录**（`sync_oauth.rs`，v1.3；【v2.7】抗抖动改造）
+- `sync_oauth_start({ provider })` → `{ userCode, verificationUri, expiresIn, interval }`（`Err` = 请求设备码失败/未注册 client_id）
+- `sync_oauth_poll()` → tag enum `status`：`pending` / `slow_down`（带 `user_code`、【`interval`】）| `denied` | `expired` | `success` | **`unstable{user_code, reason}`**（本次没问到：网络/代理抖动、429/5xx、非 JSON 响应 → 前端退避重试，**设备码仍有效**）| `superseded`（后端已无本流程 session → 前端静默回 idle）| **`failed{reason}`**（GitHub 明确报错 / token 落库失败 → 终态）。`Err` 只留给后端内部错误（锁中毒）
+- `sync_oauth_cancel()` → 清内存槽（单槽：新 start 覆盖旧 start）
 
 **SSH 会话/终端**（`ssh.rs`）
 - `ssh_connect({...})` → 返回 `session_id`；参数含 host/port/username/authMethod/credentialId/privateKeyPath 等
@@ -302,6 +312,9 @@ credential_id(Option), passphrase_credential_id(Option)
 ### 持久化分层
 - **资产元数据** → `connection-assets.json`（JSON-on-disk，无密钥）
 - **凭据** → `credentials/<id>.cred`（弱 XOR 混淆，非加密）
+- **同步状态 / 会话密钥** → `sync-state.json`（gist_id / local_rev / auto_sync_enabled / last_synced_at，无秘密）+ `credentials/sync-session-key.cred`（payload = `base64(key):base64(salt)`，DPAPI 保护）。**【v2.7】`sync_setup` 成功即写入**（免密默认化），salt 必须与「该次载荷的 salt」一致（`core::sync::session_key_for_payload`），否则免密路径与主密码路径拿到两把不同的 key
+- **恢复密码** → `credentials/sync-recovery-password.cred`（DPAPI）。**【v2.7】只保存应用生成的那份**（用户点「生成强密码」时写入）；用户手输的密码一律不落盘（§8 凭据红线的范围）。`sync_setup` / `sync_reset_master_password` 成功后若发现保存值与本次使用的主密码不同 → **删除**（那份已打不开当前备份，留着会让「查看」给出错值）
+- **Gist 同步载荷** → `SyncPayload { version, blob{salt,nonce,ciphertext}, remote_rev }`。**【v2.7】`blob.salt` 必须非空**：会话密钥 = `Argon2id(主密码, salt)`，salt 不随载荷上传时换机后主密码无法重建同一把 key（备份永久解不开）。会话密钥路径与主密码路径共用同一 salt，故**同一份密文两条路都能解**；`crypto::encrypt_with_key` 对空 salt 直接返回 Err（fail-closed，杜绝再产出「只有本机能解」的载荷）。**【v2.7】只支持这一种格式**：`parse_vault_plaintext` 只认 `SyncVaultData`（不再兼容旧版「纯 assets JSON」），`crypto::decrypt` / `decrypt_with_key` 对空 salt 统一返回 `LEGACY_PAYLOAD_REJECTED`（明确说「旧格式不再支持，请重推一次」）——不允许出现「密码路径报错、会话密钥路径却能悄悄解开」的半支持状态
 - **known_hosts** → `known_hosts.json`
 - **MCP 拦截等级** → `mcp-config.json`（【v2】minimal/strict，缺省 Minimal；与 endpoint 同目录，经 mcp_data_dir() 解析）
 - **MCP 执行日志** → `mcp-execution-log.json`（【v2】30 天惰性清理 + 上限 1000 条，append 时触发；tokio Mutex 串行化 + `.tmp`/rename 原子写；不含任何凭据字段）
@@ -323,7 +336,11 @@ credential_id(Option), passphrase_credential_id(Option)
 - 危险文件操作（删除、覆盖）**必须弹窗确认**。
 - Host key 变更默认**阻止连接并警告**。
 - 远程命令执行/隧道监听 `0.0.0.0` 需安全审视。
-- **【v1.6】同步主密码绝不落盘**：资产同步的主密码（master password）在派生 AES 密钥后即丢弃，绝不存盘。自动同步功能用「会话密钥 + DPAPI 保护」绕过每次输密码：首次启用时用主密码派生固定 AES key（Argon2id，确定性），该 key 经 DPAPI（User scope，绑定 Windows 用户登录态）加密后存 SecretStore（credential id = `sync-session-key`）。离机即失效，非 Windows 或 DPAPI 失败时降级为手动主密码模式（不静默失败）。
+- **【v1.6】同步主密码绝不落盘**：资产同步的主密码（master password）在派生 AES 密钥后即丢弃，绝不存盘。自动同步功能用「会话密钥 + DPAPI 保护」绕过每次输密码：首次启用时用主密码派生固定 AES key（Argon2id，确定性），该 key 经 DPAPI（User scope，绑定 Windows 用户登录态）加密后存 SecretStore（credential id = `sync-session-key`）。离机即失效，非 Windows 或 DPAPI 失败时降级为手动主密码模式（不静默失败）。**【v2.7】该 key 的派生 salt 随载荷上传**（`blob.salt`，salt 本身不敏感），于是「离机即失效」只针对会话密钥本身，**备份仍可用主密码在任意机器恢复**——修复前 salt 只存本机，自动同步过的备份换机后连主密码都解不开（详见 §9 v2.7 续修）。
+- **【v2.7】上述红线的边界（一次有理由的例外）**：`credentials/sync-recovery-password.cred` 会保存**应用自己生成**的高熵恢复密码（用户点「生成强密码」时）。判据是**谁选的秘密**：
+  - 应用生成的 24 位随机串**只服务这一份备份**，不存在"复用别处口令"的泄漏面；而它防护的风险（"用户想不出强密码 / 忘了 / 把恢复凭据押在外部密码管理器上"）是真实且更常见的失败。落盘经 DPAPI，且注意：**免密功能本来就已经把由它派生的密钥存在本机**了，多存一份明文密码只多出"可跨机使用"这一项能力 —— 而这正是换机恢复的定义。
+  - **用户手输的密码一律不保存**（可能是他别处复用的口令）：`sync_reveal_recovery_password` 在那种情况下返回 None，界面如实说"应用没有保存它，请自行记牢"。
+  - 一致性：保存值与实际使用的主密码不符时必须**删除**（否则「查看恢复密码」给出打不开备份的错值，用户抄走后换机报"密码错误"且无从归因）。
 
 ---
 
@@ -349,7 +366,7 @@ credential_id(Option), passphrase_credential_id(Option)
 - **【v2.5】同步安全加固**：本地资产 JSON 可读但损坏 → 中止同步并报错（不再静默折叠成空 vault 推 Gist 覆盖远端备份）；资产文件写回失败 → 报错且不推进 `last_synced_at`（防后续 pull 以「安全拉取」误判覆盖）；MCP 执行日志文件损坏 → 改名 `mcp-execution-log.corrupt-<unix秒>.json` 隔离保留证据后从空日志继续。
 - **【v2.5】MCP SFTP 原子写兜底**：临时文件 rename 覆盖失败时**保留**临时文件（路径写入错误信息），供人工恢复，不静默丢数据。
 - **【v2.5】本地系统目录黑名单加固（fs_local.rs）**：支持 UNC（`\\server\share`）与 `\\?\` verbatim 前缀；路径存在时先 canonicalize 归一再判（封 NTFS 8.3 短名如 `C:\PROGRA~1` 绕过）；家目录不可得时显式报错，不再回退 `.`（工作目录冒充家目录）。
-- **【v2.6】事实门禁扩充到 14 条 + 安全判据可测化**：`scripts/fact-guards.mjs` 在 v2.5 的 7 条之上新增 6 条——`no-csh-hostile-env-prefix`（`VAR=值 命令`/`export VAR=值` 在 csh/tcsh 下不是赋值，整条命令失败；统一写 `env LC_ALL=C <cmd>`）、`no-pipeline-rc-echo`（管道后的 `echo rc_*=$?` 是管道末端的码，恒 0，会把「命令不存在」伪装成成功）、`no-fake-type-cast-call`（`(x as unknown as { m() }).m()` 断言后调用不存在的方法，TS 迁移后的新形态）、`no-empty-catch-block`（空 `catch {}` 必须带理由注释）、`no-drive-root-fallback`（字面盘符根当回退/临时目录）、`no-env-path-without-absolute-check`（环境变量当路径根须过 `var_os` + 非空 + 绝对三关）；第二轮又加 `no-unredacted-command-in-log`（命令文本落日志必须过 `redact_command`，见下）。同时把 `dangerous_commands.rs`、`shell.rs`（命令分段器）与 `redact.rs`（命令脱敏）放进 `crates/myshelltool-core`（`src-tauri` 侧 re-export 保持调用点不变）——src-tauri 的测试二进制受 Tauri runtime DLL 限制跑不起来，**安全判据必须在 `npm run test:core` 里真跑**（现 128 项，含白名单绕过/重定向/命令替换/verbatim UNC/私钥相对路径/脱敏正反例/原子写失败保留原文件/远端内容编码三态的回归用例）。
+- **【v2.6】事实门禁扩充到 14 条 + 安全判据可测化**：`scripts/fact-guards.mjs` 在 v2.5 的 7 条之上新增 6 条——`no-csh-hostile-env-prefix`（`VAR=值 命令`/`export VAR=值` 在 csh/tcsh 下不是赋值，整条命令失败；统一写 `env LC_ALL=C <cmd>`）、`no-pipeline-rc-echo`（管道后的 `echo rc_*=$?` 是管道末端的码，恒 0，会把「命令不存在」伪装成成功）、`no-fake-type-cast-call`（`(x as unknown as { m() }).m()` 断言后调用不存在的方法，TS 迁移后的新形态）、`no-empty-catch-block`（空 `catch {}` 必须带理由注释）、`no-drive-root-fallback`（字面盘符根当回退/临时目录）、`no-env-path-without-absolute-check`（环境变量当路径根须过 `var_os` + 非空 + 绝对三关）；第二轮又加 `no-unredacted-command-in-log`（命令文本落日志必须过 `redact_command`，见下）。同时把 `dangerous_commands.rs`、`shell.rs`（命令分段器）与 `redact.rs`（命令脱敏）放进 `crates/myshelltool-core`（`src-tauri` 侧 re-export 保持调用点不变）——src-tauri 的测试二进制受 Tauri runtime DLL 限制跑不起来，**安全判据必须在 `npm run test:core` 里真跑**（现 138 项，含白名单绕过/重定向/命令替换/verbatim UNC/私钥相对路径/脱敏正反例/原子写失败保留原文件/远端内容编码三态的回归用例）。
 - **【v2.6】审批白名单不再「整串前缀匹配」（形态 E 事故）**：`classify_command` 曾对整串做前缀匹配，`df -h; cat /etc/shadow` 以 `df` 开头即判 `Safe` → Minimal 零审批执行、**Strict 档也免人工确认**。现按 `shell::split_shell_segments` 的词法分段（引号感知、转义分隔符不切段）**逐段**判定：每段都要命中白名单，且出现重定向（`>`/`<`）或命令替换（`$`/反引号）一律不进白名单（落黄层/Unknown → Minimal 记日志 / Strict 人工确认，不误升级为 HardBlock）。只读管道组合（`df -h | head -3`）在各段都在白名单内时仍放行。
 - **【v2.6】敏感远端路径的相对形态漏判**：`file_policy::is_sensitive_remote_path` 按 `/.ssh/` 等**段**匹配，而 `sftp_list(path=".")` 返回的条目形如 `./.ssh/id_rsa`，归一后是 `.ssh/id_rsa`（无前导斜杠）→ 整类相对路径漏判、私钥可免审批读取（违反 §8 凭据红线）。现统一补前导 `/` 作为段边界哨兵（绝对路径幂等），并有相对/绝对两套回归用例。
 - **【v2.6】MCP 拦截等级与执行日志的 fail-closed 化**：`load_mcp_config` 原先对「读失败/空文件/JSON 非法/未知 level」一律 `unwrap_or_default()` → **Minimal（零审批档）**，用户显式设的 Strict 会因一次断电或手改而静默降级。现三态分明：文件不存在 = 产品默认 Minimal（用户无偏好）；**存在但不可信 = `McpConfig::strict()` + log::error + 改名隔离 `mcp-config.corrupt-<秒>.json`**；写入改 `.tmp`+rename 原子替换（写侧不再自造损坏）。执行日志同理由「读失败当空日志」改为三态（NotFound/Loaded/Unreadable）：**读取失败时 append 拒绝落盘**并把原文件隔离，`clear_entries` 直接返回 Err——避免「读不出来 → 下一次 append 把整份审计历史覆盖成 1 条」。
@@ -372,6 +389,26 @@ credential_id(Option), passphrase_credential_id(Option)
   4. **[展示 · 低] `format_modified` 把「早于 UNIX_EPOCH」与「取 mtime 失败」都折叠成空串**：NTFS 支持 1601 起的任意时间戳（归档解包/安装器会写 1601），显示层与「无 mtime」不可区分（前端已把空串显示为 `—`，故仅显示层问题）。
   5. **[一致性 · 低] `MCP call_tool` 的 `output_summary` 未脱敏**：命令文本已脱敏（见上），但远端 stdout 里若含口令（如 `mysql -e "show create user"` 的明文、`env` 输出）仍会进审计日志。修法：对摘要复用 `redact` 的赋值/`-p` 规则或按行过滤敏感键。
   6. **[边界 · 低] MERGE_ACK 在宽限期之后才到达**：本窗口不自动移交（超时文案已改为「尚未确认」并说明可从主窗口继续使用，不再谎报失败）；彻底解决需把「路径 A 未确认即视为失败」改成可续期的等待，或让主窗口在 adopt 前先回一个 `accepted` 两段式回执。
+- **【v2.7】GitHub 登录链路抗抖动（系统代理特性 + 判定分层 + 前端退避重试）**：用户报「偶尔登录失败：轮询 GitHub 授权状态失败: error sending request for url (…/login/oauth/access_token)」。三条并存的根因（都要修，缺一条仍会偶发）：① **`src-tauri/Cargo.toml` 的 `reqwest` 是 `default-features = false`，顺带把默认特性里的 `system-proxy` 关掉了**——`Proxy::system()` 于是只读 `HTTP(S)_PROXY` 环境变量、**完全不读 Windows 系统代理**（`HKCU\...\Internet Settings` 的 `ProxyEnable`/`ProxyServer`/`ProxyOverride`，Clash/v2rayN/SSRUNCore 的「系统代理」模式写的就是这里），而 GUI 从资源管理器启动时没有 `*_PROXY` 环境变量 → 所有 GitHub 请求直连（已用 `cargo tree -f "{p} {f}"` 证实特性集为 `__tls,default-tls,json,native-tls`，`hyper-util/client-proxy-system` 未启用）；② `sync_oauth_poll` **每次轮询新建 `reqwest::Client`**，连接池随之丢弃 → 900s 内最多 ~180 次轮询 = 180 次全新 DNS+TCP+TLS 握手（每次都是独立的失败机会），且只有单个 10s 整体超时（无 connect 超时），跨网络/经代理时一次握手就能吃光预算；③ 传输故障与「授权被拒」都折成 `Err`，前端 `catch` 里直接 `stopTimers(); phase='error'` → **一次瞬时抖动作废整个登录**（设备码在 GitHub 端仍有效 900s，用户却要重新走浏览器授权）。修法：Cargo 显式加 `system-proxy`（随之 `mcp/probe.rs` 的 127.0.0.1 健康检查补 `.no_proxy()`，防 MCP 状态灯被送去代理）；`sync_oauth.rs` 改单例客户端（keep-alive + connect 10s / 整体 20s + tcp_keepalive 30s，`OnceLock<Result<Client,String>>` 缓存），`Err` 只留给内部错误（锁中毒），业务结论走 tag enum：`unstable{user_code, reason}`（传输故障/429/5xx/非 JSON 响应）、`superseded`（session 已被覆盖/取消）、`failed{reason}`（GitHub 明确报错 / token 落库失败）；判定逻辑抽到 `crates/myshelltool-core/src/oauth_flow.rs`（纯函数，`npm run test:core` 真跑——铁律：**传输故障一律可重试、协议拒绝一律终止**，未知 error 码是终止不是重试）；前端 `unstable`/IPC 失败 → 5/10/20/30s 退避重发轮询并显示降级提示，**不设重试次数上限**（权威边界是设备码有效期/倒计时，重试不会重复消费设备码），另修两处竞态：poll 响应加 epoch 快照（旧流程的响应不再改新流程状态、不再排野 timer）+ 响应处理前校验 `phase==='pending'`（倒计时归零后到达的响应当前会把它打回 pending 并继续轮询）。错误文案改带 reqwest 的 `source()` 链（`error sending request for url (...)` 只是最外层笼统描述，真原因——超时/连接被拒/读取中断——在链里）；**2xx 正文绝不回显**（可能含 access_token），非 2xx 正文经 `myshelltool_core::redact_excerpt(text, &[device_code], 200)` 先遮设备码再按字符截断。已知边界：`sync_oauth_start` 与 `sync.rs` 的三处 `reqwest::Client::new()`（**无任何超时**）仍是单次尝试，属同源问题，待单独处理。
+- **【v2.7 续修】同步加密层四个真问题（主密码可恢复性 + 重置密码丢凭据）**：用户问「登录成功了同步还要再输之前的密码吗」——**要**（账号层 token 与加密层主密码互不替代，这是端到端加密的前提），但顺着这条链查出四处缺陷，均已修：
+  - **① 备份不可恢复（高）**：`encrypt_with_key` 把 `blob.salt` 留空，而会话密钥 = `Argon2id(主密码, salt)`、`salt` 只存本机 SecretStore —— 开过「自动同步」的备份换机/重装/换 Windows 用户后**连主密码都解不开**（任何密码都派生不出那把 key），而 UI 明写「主密码解密即可恢复全部资产」。修法：会话密钥的 salt 随载荷写进 `blob.salt`（salt 本就不敏感，password 路径一向公开随密文存），于是**同一份密文既可由本机会话密钥解、也可由主密码在任意机器重建同一 key 解开**；`encrypt_with_key` 对空 salt 直接 Err（fail-closed，杜绝再产出「只有本机能解」的载荷）。**旧格式已整体移除（用户决定：项目仅一位用户，不做适配）**：`decrypt_vault` 不再有 salt 缺省的回退分支、`LEGACY_PAYLOAD_HINT` 与 `decrypt_vault_verified` 已删除（新格式下「解密成功」本身就证明了旧密码正确），core 的 `crypto::decrypt` / `decrypt_with_key` 与 `parse_vault_plaintext` 统一明确拒绝旧载荷（文案指路「在本机点一次『推送到云端』用本地资产重建备份」——push 不做解密，所以这条出路总是可行）。回归防线：`crypto.rs` 的 `key_based_blob_carries_salt_and_master_password_can_decrypt_it`、`legacy_payload_without_salt_is_rejected_on_both_paths`、`key_based_encryption_rejects_empty_salt` + `sync.rs` 的 `key_based_pack_unpack_vault_roundtrip`（含「错误主密码仍解不开」的认证性断言）、`unpack_vault_rejects_legacy_assets_only_payload`。
+  - **② 重置主密码丢凭据（高）**：`sync_reset_master_password` 用 `sync::unpack()` 取明文再 `sync::pack()` 回写，而 `unpack()` 在明文是 `SyncVaultData` 时**只返回 `assets_store`、丢弃 `credentials`** → 重打包覆盖 Gist 后备份里的密码/私钥整段永久消失，UI 还只提示「✓ 主密码已重置」。修法：改走保管库级 `unpack_vault` / `pack_vault`（原样搬运凭据），新增核心回归用例 `vault_roundtrip_preserves_credentials`（含「资产-only 路径必然丢凭据」的反面断言）。
+  - **③ 假「旧主密码错误」（中）**：同一函数对旧格式载荷（salt 缺省）恒报「旧主密码错误」（正确密码也判错，用户会误以为记错密码，进而点「清空同步」）→ 新增 `decrypt_vault_verified`：新格式走密码路径；旧格式改为**比对** `Argon2id(旧密码, 本机 salt)` 与本机会话密钥（既验证密码又能取出完整保管库），无会话密钥时给可操作提示。
+  - **④ 表单语义混淆（低）**：视图 B 的表单是「**新建**主密码」语义（主密码 + 确认），却出现在「刚登录成功」之后，看起来像「再输一次登录密码」；真正「输入之前的主密码」只发生在填 Gist ID 的换机场景。现按 `isRestoring`（是否填了 Gist ID）分流标题/说明/字段标签，并把「每次 push/pull 需重新输入」与「自动同步可免输」的矛盾文案一并说清。
+  - **配套行为（用户选定）**：启用「自动同步」成功后**立即用会话密钥推送一次**（`stores/sync.ts::enableAutoSync`，直接 invoke 而非 `push()`——loading 已置位会被守卫挡掉），把远端升级为主密码可恢复格式；推送失败**不阻断启用**但如实提示，避免「已启用自动同步」掩盖一份解不开的备份。`sync_enable_auto_sync` 对旧格式载荷不再假装验证过，落 warn 说明「首次推送会升级格式」。
+- **【v2.7 续修·二】「登录一次就能用」：账号持久化真相 + 免密默认化**：用户反馈「每次打开都感觉要重新登录、推拉还要输密码」。实测取证（`%APPDATA%\com.redtei.myshelltool`）：`credentials/github-pat.cred` **一直存在**（今天才写过）→ **token 持久化本来就是好的**，问题有两处：① **UI 假象**：`PatConfigCard` 只按本次会话的 `phase` 显示，重启后 phase 回到 `idle` 就摆出主按钮「登录 GitHub」，用户以为掉登录了 —— 现以**本地安全存储里的 token 为权威**（`loggedIn = phase==='success' || (phase==='idle' && githubPatConfigured)`），已登录时只留次级「重新登录」并明说「重启无需再登录」；② **真摩擦**：该机没有 `sync-session-key.cred`（`sync-state.json` 里也没有 `auto_sync_enabled`），所以每次 push/pull 都要主密码 —— 现 `sync_setup` 成功后**自动** `remember_session_key`（按**载荷自己的 salt** 重建 key → `store_session_key` → `auto_sync_enabled = true`），主密码一台机器只输这一次（或换机恢复时），此后推拉与自动推送全免密；存盘失败**不阻断 setup**、不置 flag（前端退回输密码模式并可手动重试，不静默糊弄）。关键不变量：**会话密钥的 salt 必须与载荷的 salt 一致**，否则免密路径与主密码路径得到两把 key、免密拉取会莫名失败 —— 由 `core::sync::session_key_for_payload` + 单测 `session_key_for_payload_rebuilds_the_encrypting_key` 固化。UI 文案统一为「本机免密 & 自动同步」（`SyncAutoSyncControl`）、「立即同步」密码框在免密时提示「留空即可（已免密）」。**已知边界**：主密码仍是唯一的跨机恢复凭据（不落盘的代价），DPAPI 失效/换 Windows 用户时自动退回「输主密码」模式。
+- **【v2.7 续修·三】「改了代码但界面没变」的时序坑 + 灰按钮死胡同**：用户报「UI 似乎还没更改，我已登录但还是不能点同步」。**诊断手法（可复用）**：① 查正在跑的进程与产物 —— `Get-Process myshelltool` 拿到 exe 路径与启动时刻，比对 `target\debug\myshelltool.exe` 的构建时刻与源文件 mtime；② **直接在二进制里搜字符串**判版本（`Select-String -Path <exe> -Pattern '新函数名/新文案' -Encoding utf8 -List`）：本次实测 exe 里**有**新 Rust 字符串（`session_key_for_payload`、`已记住本机会话密钥`）却**没有**新前端文案，反而还留着旧文案「启用自动同步」；③ （**该步曾误判，纠正如下**）请求 dev server 的模块 URL 时**必须用 root 相对路径** —— `vite.config.ts` 的 `root=src`，所以正确 URL 是 `http://127.0.0.1:41234/components/shell/Xxx.vue`；写 `/src/components/...` 会命中 **SPA 回退页**（HTTP 200 + index.html），把它当"dev server 在供旧模块"是错的（本次就是这么误判的）。**结论（修正后）**：真正站得住的证据是②——那个 debug 产物里是**新 Rust + 旧前端包**，说明它编译时 `dist` 已过期/编译先于 UI 改动。**项目级教训**：`tauri.conf.json` 的 `frontendDist=../dist` 会在 **Rust 构建阶段（build script）**被打进二进制，所以**改完前端必须先 `npm run build`，再编译 Rust**；调试期优先用 `npm run tauri:dev`（前端走 devUrl，改完刷新窗口即可）。**同时修掉 UX 缺陷**：`SyncPanelContent` 的推送/拉取按钮原先在「密码框为空且未启用免密」时**置灰**——灰按钮不给任何解释，用户只会得到「点不动」的死胡同；现改为**始终可点**（仅 `syncLoading` 时禁用），点击后由 `onPush`/`onPull` 明确提示「请先输入主密码（只需这一次：成功后本机记住密钥，之后免密并自动推送）」。安全档位经用户确认：**保持 DPAPI 持久免密**（已说明"同 Windows 账号下的程序可解密备份"这一攻击面扩大，并保留一键「关闭（取消本机免密）」）。
+- **【v2.7 续修·四】同步页重设计（用户："还是很难用"）**：按 `frontend-design` 流程做的（定方向 → token 计划 → 自我批判 → 实现 → 截图复核）。**诊断**（旧版为什么难用）：① 主密码框占据日常视图 C 位，每次同步前都要先判断"要不要输"；② **没有任何"该推还是该拉"的信号**——`has_local_changes_since_last_sync` 只服务于后端 pull 判定，前端看不到，两个按钮等重，用户得回忆上次做了什么；③ 免密/凭据/账号/重置/换机/清空 = 5-6 张并列卡片，把主任务淹在配置里；④ 说明当正文写（推送=…/拉取=…/想免密？…）撑高面板。**改法**：
+  - **签名元素 = 方向性管线** `SyncStatusRail`：`本机 N 台 ─▶ 加密(含密码/仅资产) ─▶ Gist …尾号`，三段取代原来无状态的 flow-line；**需要动的那一段亮起**（本机有改动 / 云端有新版本），状态词 + 上次同步为 mono 读数。节点不可点（不做 tab 陷阱）。
+  - **读数与操作合成一块面板**：`SyncPanelContent` 提供唯一外框 `.sync-surface`，内部 `SyncStatusRail`（灰底读数）+ `SyncActionBar`（白底操作）用 hairline 分隔；两个子组件不再各自带卡片边框（此前是两张无关的卡）。
+  - **`SyncActionBar`**：主密码行**仅在未免密时出现**（且说明"输一次即可"）；按钮主次由状态决定（本机有改动→推送实心；云端有新版本→拉取实心；两边都有→拉取实心；已同步→两个都安静，不制造假紧迫）；**不因"没输密码"置灰**（灰按钮=无解释的死胡同）。
+  - **`SyncAdvancedSettings`**：一个折叠入口装下免密 / 密码与密钥 / GitHub 账号与主密码 / 换机恢复 / 清空（按改动风险排序，清空永远最后且二次确认）；`SyncAutoSyncControl` 与 `SyncSecurityOptionsCard` 由"卡片"改写为**设置行**（说人话：这台电脑免密 / 密码与密钥一并备份），`PatConfigCard` 新增 `flat` prop 消除折叠区里的卡片套卡片。
+  - **`SyncSetupForm` 一次只问一件事**：默认只问主密码（+确认）→「创建备份」；点「从已有备份恢复」才出现 Gist ID 并改问"原来那台电脑上的主密码"，**恢复模式不显示确认字段**（解密成功本身就是校验）。
+  - **后端新增 `sync_status.local_has_changes`**（复用 `has_local_changes_since_last_sync`；未配置时恒 false，避免"待推送"歧义）；`sync.ts` 新增 `activeOp: 'push'|'pull'|null`，让 rail 的方向动效与按钮进行中文案（推送中…/拉取中…）有真实依据，而不是含糊的"同步中"。
+  - **设计约束（可复用）**：只用既有 token；状态色**只由左边线 + 圆点承担**（同一个状态不上三遍色，且彩色小字对比度更差）；唯一动效 = rail 箭头行进（`prefers-reduced-motion` 下关闭）；`Gist` **不做 `text-transform: uppercase`**（全大写读成缩写 GIST）；窄列（设置弹窗 max-width 580px）优先，不做宽屏 dashboard。
+  - **复核方式**：临时 Playwright harness（mock `window.__TAURI__`）渲染 5 种状态截图逐一批判后迭代（含一个真 bug：rail 在 surface 内外各渲染一次）；用完即删，不留仓库。已知瑕疵：2× 截图里中文段落首字看似被切，DOM 实测内缩正常（13px = padding+border），属渲染瑕疵。
+  - **架构备注**：`SyncStatusRail` / `SyncActionBar` 直接 `useSyncStore()`（先例：resourceMonitor panel、useGithubDeviceLogin），避免继续往已超硬上限（517 行）的 workbench 编排壳里加 re-export。新增组件 `SyncStatusRail.vue` / `SyncActionBar.vue` / `SyncAdvancedSettings.vue`。
+- **【v2.7 续修·五】零输入建备份：应用生成恢复密码（用户问"新用户能不能只登录一下"）**：用户提出目标「方便用户使用的同时还安全」，并质疑上一轮的"提示存进密码管理器"——**那等于把能否恢复押在用户装没装某个外部软件上**。改法：`core::recovery_code::generate_recovery_password`（24 位、去 `0/O/1/l/I` 歧义字符，供人眼抄写）+ 两个命令 `sync_generate_recovery_password`（生成→DPAPI 存盘→返回明文填入表单并明示一次）/`sync_reveal_recovery_password`（「换机恢复」里查看/复制）；`sync_status.recovery_password_saved` 决定入口显隐。新用户路径因此是：**登录 → （可选）点一下生成强密码 → 创建备份 → 之后全自动免密**。三条工程纪律：① 只保存应用生成的密码，用户手输的不保存（§8 边界）；② `sync_setup`/`sync_reset_master_password` 后发现保存值与本次主密码不同即**删除**（防"查看"给出打不开备份的错值）；③ 明文只回本机 webview、不进 store/localStorage/日志（前端 `reveal` 也是点一次读一次）。**同时按用户要求删掉界面上"旧版备份不再支持"的迁移提示**（唯一用户，全力维护新版；后端那条明确拒绝仍保留 —— 那是 fail-closed 报错不是迁移文案）。设计复核仍走截图：新增的生成结果块与恢复密码明文块各截一张，修掉"按钮被 stretch 居中""密码块缺一句它是什么"。
 - **【v2.5】前端事实驱动改造**：连接后文件面板自动加载改 1s/2s/5s 退避重试（重试前校验该资产仍有活跃会话，会话断开可取消退避链，失败静默展示空态+重试）；File 直传以短块（< CHUNK_SIZE / 0 字节）为真 EOF + 上传后字节对账（仅 warn 差异），不信任列表时刻的 file.size；`remotePath` 未加载（空串）时禁止上传/建目录等远程写操作（防折叠到根路径）；AssetWindowShell 删主窗存活探测的 3 次重试门（改挂载 + 焦点/可见事件各探测一次，成败以点击时刻真实探测为准）、关窗等 connecting 会话 settle 上限 65s（后端 60s 超时 + 5s 缓冲）且超时**不销毁窗口**（防 destroy 把孤儿 SSH 会话留在后端）；`assetWindows` label sanitize 发生字符替换时追加 id 的 djb2 短哈希后缀防不同 id 碰撞；终端字号/行高读取路径 clamp（字号 9-28、行高 1-2，手改 localStorage 坏值不再越界渲染）。
 
 ---

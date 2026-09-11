@@ -180,6 +180,27 @@ pub fn redact_command(command: &str) -> String {
     out
 }
 
+/// 把外部响应文本裁成可安全回显/落日志的摘录。
+///
+/// 为什么需要：诊断网络故障时最有价值的信息往往在**对端返回的正文**里（代理节点
+/// 挂掉时返回的错误页、网关的 502 页面），但正文可能夹带凭据类字面量——OAuth
+/// 场景里 `device_code` 就是换 token 的两要素之一（client_id 是公开值）。所以
+/// 「原样回显正文」违反 §8 凭据红线，「完全不回显」又让用户只能看到一句
+/// 「请求失败」。此处按**调用方声明的秘密字面量**先遮蔽、再按**字符**截断。
+///
+/// - 逐字符截断：不会切在 UTF-8 边界上 panic（`&s[..n]` 会）；
+/// - 秘密替换在截断之前做：短摘录里也不能出现明文；
+/// - 空秘密串忽略（`replace("")` 会在每字符间插入标记）。
+pub fn redact_excerpt(text: &str, secrets: &[&str], max_chars: usize) -> String {
+    let mut masked = text.to_string();
+    for secret in secrets {
+        if !secret.is_empty() {
+            masked = masked.replace(secret, MASK);
+        }
+    }
+    masked.chars().take(max_chars).collect()
+}
+
 /// 长选项名（去掉 `--` 后的部分）是否属于敏感参数。
 fn is_sensitive_long_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
@@ -291,5 +312,29 @@ mod tests {
         ] {
             assert_eq!(redact_command(cmd), cmd, "无害命令被改动: {cmd}");
         }
+    }
+
+    #[test]
+    fn excerpt_masks_declared_secrets() {
+        let out = redact_excerpt("error=bad_verification_code&device_code=abc123XYZ", &["abc123XYZ"], 200);
+        assert!(!out.contains("abc123XYZ"), "设备码泄露: {out}");
+        assert!(out.contains(MASK));
+        assert!(out.contains("bad_verification_code"), "非敏感诊断信息应保留: {out}");
+    }
+
+    #[test]
+    fn excerpt_truncates_by_chars_not_bytes() {
+        // 多字节字符上按字节切会 panic：这里必须按字符数截断且不 panic
+        let text = "中文错误页".repeat(20);
+        let out = redact_excerpt(&text, &[], 5);
+        assert_eq!(out.chars().count(), 5);
+        assert_eq!(out, "中文错误页");
+    }
+
+    #[test]
+    fn excerpt_ignores_empty_secret() {
+        // 空秘密串不能参与替换（否则每个字符之间都会被插入标记）
+        let out = redact_excerpt("abc", &[""], 10);
+        assert_eq!(out, "abc");
     }
 }
