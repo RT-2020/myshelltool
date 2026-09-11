@@ -2787,7 +2787,7 @@ dependencies = [
 
 [[package]]
 name = "myshelltool"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -2818,7 +2818,7 @@ dependencies = [
 
 [[package]]
 name = "myshelltool-core"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "aes-gcm",
  "argon2",
