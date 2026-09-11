@@ -22,7 +22,7 @@
  * 这样避免了递归 emit 层层透传，组件树更简洁。
  */
 import { inject } from 'vue';
-import { ChevronDown, ChevronRight, Pencil, Trash2 } from 'lucide-vue-next';
+import { ChevronDown, ChevronRight, Pencil, Plus, Trash2 } from 'lucide-vue-next';
 import type { GroupTreeNode, NormalizedConnectionAsset } from '@/types/domain';
 
 defineOptions({ name: 'AssetGroupNode' });
@@ -64,6 +64,8 @@ interface SidebarContext {
   onEditAsset(asset: NormalizedConnectionAsset): void;
   onDeleteAsset(asset: NormalizedConnectionAsset): void;
   onDuplicateAsset(asset: NormalizedConnectionAsset): void;
+  /** 分组头悬停「+」：在该分组内快捷新增资产（打开预填分组的资产编辑器）。 */
+  onAddAssetToGroup(path: string): void;
   registerAssetEl(id: string, el: unknown): void;
 }
 
@@ -81,32 +83,45 @@ function assetIndicatorClasses(asset: NormalizedConnectionAsset) {
 
 <template>
   <div class="sb-group group-node">
-    <button
-      type="button"
-      class="sb-group-head group-header"
-      :class="sidebar.groupHeaderClass(node.path)"
-      :style="{ 'padding-inline-start': 8 + depth * 12 + 'px' }"
-      :aria-expanded="!sidebar.isCollapsed(node.path) ? 'true' : 'false'"
-      :draggable="!sidebar.isUngrouped(node.path) ? 'true' : 'false'"
-      @click="sidebar.toggleGroup(node.path)"
-      @contextmenu.prevent="sidebar.onGroupContextMenu($event, node.path)"
-      @dragstart="sidebar.onGroupDragStart($event, node.path, node.parent)"
-      @dragend="sidebar.onGroupDragEnd($event)"
-      @dragover="sidebar.onGroupDragOver($event, node.path, node.parent)"
-      @dragenter.prevent="sidebar.onGroupDragEnter($event, node.path)"
-      @dragleave="sidebar.onGroupDragLeave($event, node.path)"
-      @drop.prevent="sidebar.onGroupDrop($event, node.path, node.parent, node.name)"
-    >
-      <span class="sb-group-left">
-        <component
-          :is="sidebar.isCollapsed(node.path) ? ChevronRight : ChevronDown"
-          :size="12"
-          class="sb-group-chevron group-chevron"
-        />
-        <span class="sb-group-name group-name">{{ node.name }}</span>
-      </span>
-      <span class="sb-group-count group-count">{{ node.items.length + node.children.length }}</span>
-    </button>
+    <div class="sb-group-head-row group-head-row">
+      <button
+        type="button"
+        class="sb-group-head group-header"
+        :class="sidebar.groupHeaderClass(node.path)"
+        :style="{ 'padding-inline-start': 8 + depth * 12 + 'px' }"
+        :aria-expanded="!sidebar.isCollapsed(node.path) ? 'true' : 'false'"
+        :draggable="!sidebar.isUngrouped(node.path) ? 'true' : 'false'"
+        @click="sidebar.toggleGroup(node.path)"
+        @contextmenu.prevent="sidebar.onGroupContextMenu($event, node.path)"
+        @dragstart="sidebar.onGroupDragStart($event, node.path, node.parent)"
+        @dragend="sidebar.onGroupDragEnd($event)"
+        @dragover="sidebar.onGroupDragOver($event, node.path, node.parent)"
+        @dragenter.prevent="sidebar.onGroupDragEnter($event, node.path)"
+        @dragleave="sidebar.onGroupDragLeave($event, node.path)"
+        @drop.prevent="sidebar.onGroupDrop($event, node.path, node.parent, node.name)"
+      >
+        <span class="sb-group-left">
+          <component
+            :is="sidebar.isCollapsed(node.path) ? ChevronRight : ChevronDown"
+            :size="12"
+            class="sb-group-chevron group-chevron"
+          />
+          <span class="sb-group-name group-name">{{ node.name }}</span>
+        </span>
+        <span class="sb-group-count group-count">{{ node.items.length + node.children.length }}</span>
+      </button>
+      <!-- 悬停快捷「+」：在该分组内快捷新增资产（含「未分组」）。分组头本身是
+           <button>，不可嵌套交互元素，故作为兄弟节点放在行容器里。 -->
+      <button
+        type="button"
+        class="sb-group-add group-add-btn"
+        :title="`新增连接到「${node.name}」`"
+        :aria-label="`新增连接到「${node.name}」`"
+        @click.stop="sidebar.onAddAssetToGroup(node.path)"
+      >
+        <Plus :size="12" />
+      </button>
+    </div>
 
     <div v-show="!sidebar.isCollapsed(node.path)" class="group-body">
       <!-- 递归子分组 -->
@@ -177,12 +192,21 @@ function assetIndicatorClasses(asset: NormalizedConnectionAsset) {
   margin-block-end: var(--space-1);
 }
 
+// 分组头行容器：分组头按钮 + 悬停「+」并排（「+」是兄弟节点而非子节点，
+// button 内不可嵌套交互元素）
+.group-head-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .group-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 34px;
   padding-block: 0;
   padding-inline-end: 8px;
@@ -203,6 +227,44 @@ function assetIndicatorClasses(asset: NormalizedConnectionAsset) {
 .group-header:hover {
   color: var(--app-strong);
   background: var(--app-hover);
+}
+
+// 悬停快捷「+」：默认隐藏，行悬停/键盘聚焦时显示（与资产行快捷按钮同款交互）
+.group-add-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-inline-end: 4px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--app-muted);
+  cursor: pointer;
+  padding: 0;
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--ease-standard),
+    background var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard);
+}
+
+.group-head-row:hover .group-add-btn,
+.group-add-btn:focus-visible {
+  opacity: 1;
+}
+
+.group-add-btn:hover {
+  background: var(--app-control);
+  color: var(--app-strong);
+  border-color: var(--app-border);
+}
+
+.group-add-btn:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
 }
 
 .sb-group-left {

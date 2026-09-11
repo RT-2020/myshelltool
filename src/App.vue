@@ -87,6 +87,11 @@ function createAsset() {
   store.modal = { type: 'assetEditor', asset: null };
 }
 
+// 分组头「+」快捷新增：打开资产编辑器并预填目标分组（payload 契约，GlobalModals 消费）
+function createAssetInGroup(group: string) {
+  store.modal = { type: 'assetEditor', asset: null, payload: { presetGroup: group } };
+}
+
 function createGroup() {
   store.modal = { type: 'createGroup' };
 }
@@ -133,6 +138,7 @@ function toggleRight() {
       :panel-resize="panelResize"
       :auto-update="autoUpdate"
       @create-asset="createAsset"
+      @create-asset-in-group="createAssetInGroup"
       @create-group="createGroup"
       @connect-selected="connectSelected"
       @open-settings="openSettings"

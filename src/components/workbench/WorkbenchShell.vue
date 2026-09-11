@@ -45,6 +45,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   'create-asset': [];
+  'create-asset-in-group': [group: string];
   'create-group': [];
   'connect-selected': [];
   'open-settings': [];
@@ -336,6 +337,7 @@ onMounted(() => {
         @quick-connect="quickConnectAsset"
         @toggle-collapse="emit('toggle-assets')"
         @create-asset="emit('create-asset')"
+        @create-asset-in-group="emit('create-asset-in-group', $event)"
         @create-group="emit('create-group')"
         @edit-asset="editAsset"
         @delete-asset="deleteAsset"
