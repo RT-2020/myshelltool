@@ -29,6 +29,15 @@ use crate::AppState;
 // Snapshot + state types
 // ---------------------------------------------------------------------------
 
+/// 单个挂载点的容量信息（df 全量输出的过滤产物）。单位字节。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiskMountInfo {
+    pub mount: String,
+    pub total: u64,
+    pub used: u64,
+}
+
 /// One sampling of remote resource usage. All byte fields are cumulative
 /// (since boot) unless otherwise noted; CPU is instantaneous percent.
 //
@@ -47,8 +56,13 @@ pub struct ResourceSnapshot {
     pub net_tx_bytes: u64,
     pub disk_read_bytes: u64,
     pub disk_write_bytes: u64,
+    /// 根分区容量（diskTotal/diskUsed 曲线与兜底单行展示沿用；多挂载点明细见 disks）。
     pub disk_total: u64,
     pub disk_used: u64,
+    /// 全部真实文件系统挂载点（伪文件系统已过滤）。空 = df 段失败或无可展示行，
+    /// 前端回退到 diskTotal/diskUsed 单行。serde 缺省不序列化，兼容旧载荷消费方。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disks: Vec<DiskMountInfo>,
     pub timestamp: u64,
     /// 次要段（net/diskstats/df）解析失败时的降级说明（如 "df 解析失败"）。
     /// None = 全部段正常。前端读 `degraded` 字段展示降级提示（事件契约 v2.5 冻结）。
@@ -343,31 +357,42 @@ fn is_partition_suffix(base: &str, part: &str) -> bool {
     }
 }
 
-/// Parse `env LC_ALL=C df -P -k /` output to extract root filesystem capacity.
-///
-/// `-P` = POSIX format (one line per FS, no wrapping); `-k` = 1024-byte blocks
-/// （POSIX 通用，BusyBox 亦支持；`-B1` 是 GNU 扩展，BusyBox 下整条 df 会失败）。
-/// `LC_ALL=C` 强制英文表头，保证 split_proc_output 的 "Filesystem" 锚点在
-/// 任何远端 locale 下都能命中（否则磁盘段静默切分失败 → 容量显示 0）。
-///
-/// Output shape:
-/// ```text
-/// Filesystem     1024-blocks      Used  Available Use% Mounted on
-/// /dev/sda1        51475040  29655014   21820026  58% /
-/// ```
-///
-/// 数值列单位为 1K 块，×1024 换算成字节。Returns `(disk_total_bytes,
-/// disk_used_bytes)` from the line whose last field is `/` (the root mount).
-/// Falls back to the first data row if no root line is found.
-pub fn parse_df(content: &str) -> Result<(u64, u64), String> {
-    let mut total: u64 = 0;
-    let mut used: u64 = 0;
-    let mut picked = false;
-    let mut first_data: Option<(u64, u64)> = None;
+/// 伪文件系统设备名黑名单：内核/容器运行时挂的虚拟 FS，容量对运维无意义，
+/// 不过滤会把磁盘列表刷成 tmpfs/overlay 噪音（FinalShell 同样隐藏这类行）。
+/// 判据按 df 第一列的**完整设备名**精确匹配（除 `fuse.`/`/dev/loop` 前缀外），
+/// 不做子串匹配——`/dev/sda1` 不因含 "a" 之类被误杀。
+fn is_pseudo_fs_device(dev: &str) -> bool {
+    const NAMES: &[&str] = &[
+        "tmpfs", "devtmpfs", "overlay", "squashfs", "shm", "efivarfs", "iso9660",
+        "cgroup", "cgroup2", "none", "fusectl", "mqueue", "hugetlbfs", "nsfs",
+        "proc", "sysfs", "devpts", "binfmt_misc", "configfs", "pstore",
+        "securityfs", "debugfs", "tracefs", "autofs", "rpc_pipefs", "sunrpc",
+        "bpf", "tracefs", "devfs", "fdescfs", "linprocfs", "linsysfs",
+    ];
+    NAMES.contains(&dev) || dev.starts_with("fuse.")
+}
 
+/// 虚拟挂载点前缀黑名单：/proc /sys /dev /run /snap 下的挂载（tmpfs/devtmpfs/
+/// loop 快照等）与设备名黑名单双保险——按**路径段边界**判断（"/devx" 不算 "/dev" 下）。
+fn is_virtual_mount_point(mount: &str) -> bool {
+    const PREFIXES: &[&str] = &["/proc", "/sys", "/dev", "/run", "/snap"];
+    PREFIXES
+        .iter()
+        .any(|&p| mount == p || mount.starts_with(&format!("{}/", p)))
+}
+
+/// Parse `env LC_ALL=C df -P -k`（无参数 = 全部挂载）为挂载点容量列表。
+///
+/// 过滤伪文件系统（设备名 + 挂载点双黑名单）后按 df 输出顺序返回，
+/// 上限 [`MAX_DF_MOUNTS`] 行（防异常远端冒出成百行把 IPC 载荷撑爆；根分区
+/// 通常在最前，截断只影响尾部）。数值 1K 块 × 1024 = 字节。
+pub fn parse_df_mounts(content: &str) -> Vec<DiskMountInfo> {
+    /// 多挂载点列表上限（FinalShell 同款信息密度；正常服务器过滤后 < 8 行）
+    const MAX_DF_MOUNTS: usize = 12;
+
+    let mut out = Vec::new();
     for line in content.lines() {
         let line = line.trim();
-        // 跳过空行
         if line.is_empty() {
             continue;
         }
@@ -376,34 +401,27 @@ pub fn parse_df(content: &str) -> Result<(u64, u64), String> {
         if fields.len() < 6 {
             continue;
         }
+        // 挂载点是最后一列（-P 保证单行，含空格的挂载点 POSIX 下不存在——
+        // `-P` 本身就是为防换行而设，空格路径需转义，df -P 不会输出）
+        let mount = fields[fields.len() - 1];
         // 数值列解析失败 → 表头行（"1024-blocks"）或畸形行，跳过
         let (total_kb, used_kb): (u64, u64) = match (fields[1].parse(), fields[2].parse()) {
             (Ok(t), Ok(u)) => (t, u),
             _ => continue,
         };
-        // -k 输出单位是 1K 块，换算成字节
-        let (total_b, used_b) = (total_kb.saturating_mul(1024), used_kb.saturating_mul(1024));
-        if first_data.is_none() {
-            first_data = Some((total_b, used_b));
+        if is_pseudo_fs_device(fields[0]) || is_virtual_mount_point(mount) {
+            continue;
         }
-        // 优先取挂载点为 / 的根分区
-        if fields.last() == Some(&"/") {
-            total = total_b;
-            used = used_b;
-            picked = true;
+        out.push(DiskMountInfo {
+            mount: mount.to_string(),
+            total: total_kb.saturating_mul(1024),
+            used: used_kb.saturating_mul(1024),
+        });
+        if out.len() >= MAX_DF_MOUNTS {
             break;
         }
     }
-    if !picked {
-        if let Some((t, u)) = first_data {
-            total = t;
-            used = u;
-        }
-    }
-    if total == 0 && used == 0 {
-        return Err("df: no usable capacity line".to_string());
-    }
-    Ok((total, used))
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -411,7 +429,7 @@ pub fn parse_df(content: &str) -> Result<(u64, u64), String> {
 // ---------------------------------------------------------------------------
 
 /// Build a ResourceSnapshot from the combined stdout of:
-///   cat /proc/stat; cat /proc/meminfo; cat /proc/net/dev; cat /proc/diskstats; env LC_ALL=C df -P -k /
+///   cat /proc/stat; cat /proc/meminfo; cat /proc/net/dev; cat /proc/diskstats; env LC_ALL=C df -P -k
 ///
 /// We split the combined output by looking for known section anchors
 /// ("cpu " for stat, "MemTotal:" for meminfo, "Inter-|" for net/dev,
@@ -445,10 +463,15 @@ pub fn build_snapshot(
         degraded_parts.push("diskstats");
         (0, 0)
     });
-    let (disk_total, disk_used) = parse_df(&df_section).unwrap_or_else(|_| {
+    let mounts = parse_df_mounts(&df_section);
+    let (disk_total, disk_used) = if mounts.is_empty() {
         degraded_parts.push("df");
         (0, 0)
-    });
+    } else {
+        // 根分区优先，无 / 行（chroot/容器极端场景）回退首个真实挂载点
+        let root = mounts.iter().find(|m| m.mount == "/").unwrap_or(&mounts[0]);
+        (root.total, root.used)
+    };
     let degraded = (!degraded_parts.is_empty()).then(|| format!("{} 解析失败", degraded_parts.join("/")));
 
     let cpu_usage = compute_cpu_usage(prev_cpu, idle, total);
@@ -465,6 +488,7 @@ pub fn build_snapshot(
         disk_write_bytes: disk_write,
         disk_total,
         disk_used,
+        disks: mounts,
         timestamp: unix_millis(),
         degraded,
     })
@@ -488,7 +512,7 @@ fn compute_cpu_usage(prev: Option<(u64, u64)>, idle: u64, total: u64) -> f32 {
 }
 
 /// Split the combined `cat /proc/stat; cat /proc/meminfo; cat /proc/net/dev;
-/// cat /proc/diskstats; env LC_ALL=C df -P -k /` output into 5 sections. Parsers tolerate
+/// cat /proc/diskstats; env LC_ALL=C df -P -k` output into 5 sections. Parsers tolerate
 /// sections that contain unrelated lines, so we use generous anchor-based splitting.
 fn split_proc_output(combined: &str) -> (String, String, String, String, String) {
     // Find anchor byte offsets
@@ -647,7 +671,7 @@ fn spawn_monitor_task(
     // -P -k：POSIX 格式 + 1K 块（-B1 是 GNU 扩展，BusyBox 不支持）。
     // `env LC_ALL=C`（而非 `LC_ALL=C` 前缀）：远端登录 shell 可能是 csh/tcsh
     // （FreeBSD root 默认），那里 `VAR=值 命令` 不是赋值语法，df 段整条不执行。
-    let cmd = "cat /proc/stat; cat /proc/meminfo; cat /proc/net/dev; cat /proc/diskstats; env LC_ALL=C df -P -k /";
+    let cmd = "cat /proc/stat; cat /proc/meminfo; cat /proc/net/dev; cat /proc/diskstats; env LC_ALL=C df -P -k";
 
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
@@ -988,32 +1012,69 @@ tmpfs             1638400      1205   1637195   1% /dev/shm
     }
 
     #[test]
-    fn test_parse_df_picks_root_mount() {
-        let (total, used) = parse_df(DF_SAMPLE).expect("df parse");
-        // 必须取挂载点 / 的行（KB × 1024 换算字节），而非 tmpfs 或 /boot
-        assert_eq!(total, 51475040 * 1024);
-        assert_eq!(used, 29655014 * 1024);
-        // 不应是 /boot 的值
-        assert_ne!(total, 102400 * 1024);
-    }
-
-    #[test]
-    fn test_parse_df_falls_back_to_first_row_without_root() {
-        // 无 / 挂载点时，取第一行数据
+    fn test_parse_df_mounts_filters_pseudo_filesystems() {
+        // 设备黑名单（tmpfs/overlay）+ 挂载点前缀黑名单（/run /snap /dev /proc /sys）
+        // 双保险；真实分区（/、/boot、/data）必须保留
         let df = "\
 Filesystem     1024-blocks      Used  Available Use% Mounted on
-/dev/xvda1        100000     400000       600000  40% /mnt/data
+/dev/sda1        51475040  29655014   21820026  58% /
+tmpfs             1638400      1205   1637195   1% /dev/shm
+/dev/sda2          102400     51200     51200  50% /boot
+tmpfs             1638400         0   1638400   0% /run/user/1000
+/dev/sdb1       103080888  51475040  51475040  50% /data
+overlay           1030808  1030808         0 100% /var/lib/docker/overlay2/x/merged
+/dev/loop0          65536     65536         0 100% /snap/core22/1380
 ";
-        let (total, used) = parse_df(df).expect("df fallback");
-        assert_eq!(total, 100000 * 1024);
-        assert_eq!(used, 400000 * 1024);
+        let mounts = parse_df_mounts(df);
+        let got: Vec<&str> = mounts.iter().map(|m| m.mount.as_str()).collect();
+        assert_eq!(got, vec!["/", "/boot", "/data"], "伪文件系统行必须被过滤");
+        // 数值换算：1K 块 × 1024
+        assert_eq!(mounts[0].total, 51475040 * 1024);
+        assert_eq!(mounts[2].used, 51475040 * 1024);
     }
 
     #[test]
-    fn test_parse_df_rejects_empty() {
-        assert!(parse_df("").is_err());
-        // 只有表头（数值列 "1024-blocks" 解析失败 → 无数据行）
-        assert!(parse_df("Filesystem     1024-blocks      Used  Available Use% Mounted on\n").is_err());
+    fn test_build_snapshot_df_fallback_to_first_mount_without_root() {
+        // df 无 / 挂载点（chroot/容器极端场景）：diskTotal/diskUsed 回退首个真实挂载点
+        let df = "Filesystem     1024-blocks      Used  Available Use% Mounted on
+/dev/xvda1        100000     40000       60000  40% /mnt/data
+";
+        let combined = format!(
+            "{}
+{}
+{}
+{}
+{}
+",
+            PROC_STAT_SAMPLE, PROC_MEMINFO_SAMPLE, PROC_NET_DEV_SAMPLE, PROC_DISKSTATS_SAMPLE, df
+        );
+        let snap = build_snapshot("test-session", &combined, None).expect("snapshot");
+        assert_eq!(snap.disk_total, 100000 * 1024);
+        assert_eq!(snap.disk_used, 40000 * 1024);
+        assert_eq!(snap.disks.len(), 1);
+        assert_eq!(snap.disks[0].mount, "/mnt/data");
+    }
+
+    #[test]
+    fn test_parse_df_mounts_caps_at_12_rows() {
+        // 异常远端冒出大量挂载点时截断到上限，防 IPC 载荷膨胀
+        let mut df = String::from("Filesystem     1024-blocks      Used  Available Use% Mounted on\n");
+        for i in 0..20 {
+            df.push_str(&format!("/dev/sd{}1        100000     40000       60000  40% /vol{}\n", char::from(b'a' + i), i));
+        }
+        assert_eq!(parse_df_mounts(&df).len(), 12);
+    }
+
+    #[test]
+    fn test_parse_df_mounts_segment_boundary_not_prefix_match() {
+        // 挂载点黑名单按路径段判断：/devx、/procfs 不是 /dev、/proc 下的挂载
+        let df = "\
+Filesystem     1024-blocks      Used  Available Use% Mounted on
+/dev/sdz1          100000     40000       60000  40% /devx
+/dev/sdy1          100000     40000       60000  40% /procfs
+";
+        let mounts = parse_df_mounts(df);
+        assert_eq!(mounts.len(), 2, "同前缀路径不得被误杀（形态 E）");
     }
 
     #[test]
@@ -1028,6 +1089,9 @@ Filesystem     1024-blocks      Used  Available Use% Mounted on
         // disk_total/used 必须来自 df 根分区（KB×1024），而非写死 0
         assert_eq!(snap.disk_total, 51475040 * 1024);
         assert_eq!(snap.disk_used, 29655014 * 1024);
+        // 多挂载点明细：DF_SAMPLE 的 / 与 /boot 保留，tmpfs(/dev/shm) 过滤
+        let mounts: Vec<&str> = snap.disks.iter().map(|m| m.mount.as_str()).collect();
+        assert_eq!(mounts, vec!["/", "/boot"]);
         // 其余字段也应正常填充（serde 字段名是 camelCase，但 struct 字段名仍是 snake）
         assert_eq!(snap.mem_total, 16266984 * 1024);
         assert!(snap.disk_read_bytes > 0);
@@ -1086,6 +1150,7 @@ Filesystem     1024-blocks      Used  Available Use% Mounted on
             disk_write_bytes: 40,
             disk_total: 1000,
             disk_used: 600,
+            disks: Vec::new(),
             timestamp: 12345,
             degraded: None,
         };
@@ -1096,6 +1161,8 @@ Filesystem     1024-blocks      Used  Available Use% Mounted on
         assert!(!json.contains("\"cpu_usage\""), "snake_case must not leak: {json}");
         // degraded = None 时不出现（skip_serializing_if）
         assert!(!json.contains("degraded"), "None 不应序列化: {json}");
+        // disks 空 Vec 不出现（skip_serializing_if）
+        assert!(!json.contains("disks"), "空 disks 不应序列化: {json}");
         // degraded = Some 时必须以 camelCase 字段名序列化（前端契约字段）
         let snap_degraded = ResourceSnapshot { degraded: Some("df 解析失败".into()), ..snap };
         let json = serde_json::to_string(&snap_degraded).expect("serialize");
