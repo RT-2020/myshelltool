@@ -56,10 +56,6 @@ async function onRetry() {
 
 <template>
   <section class="rs-section rm-section" data-region="resource-monitor">
-    <div class="rs-section-head">
-      <span class="rs-section-title">资源监控</span>
-    </div>
-
     <div v-if="placeholder === 'monitor-error'" class="rm-error-banner" role="alert">
       <AlertTriangle :size="14" />
       <div class="rm-error-body">
@@ -113,6 +109,7 @@ async function onRetry() {
         :write-rate="rm.diskWriteRate"
         :disk-total="snapshot?.diskTotal || 0"
         :disk-used="snapshot?.diskUsed || 0"
+        :disks="snapshot?.disks || []"
         :has-data="hasData"
       />
     </div>
@@ -235,59 +232,35 @@ async function onRetry() {
   flex-shrink: 0;
 }
 
+// 纵排单列仪表带（参考 FinalShell 信息层级 × 本项目 token 纪律）：
+// 右栏窄（~280px），2×2 网格把曲线压到 ~120px 宽；单列让每张图全宽。
+// 区块不再各自带卡框——直接坐在右栏 panel 底上，hairline 分隔（见 .metric-row）。
+// head/读数/图高的样式回归各 Chart 组件自治，这里只管布局与分隔。
 .metric-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
 }
 
 :deep(.metric-card) {
   min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--app-border);
-  border-radius: 7px;
-  background: var(--app-panel);
+  padding: 10px 2px 12px;
+  border: none;
+  border-bottom: 1px solid var(--app-border-soft);
+  border-radius: 0;
+  background: transparent;
 }
 
-:deep(.metric-head) {
-  display: flex;
-  min-width: 0;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-:deep(.metric-name) {
-  flex: 0 0 auto;
-  font: 500 9.5px var(--font-display);
-  letter-spacing: 0.06em;
-}
-
-:deep(.metric-value) {
-  flex: 1 1 auto;
-  justify-content: flex-end;
-  min-width: 0;
-  overflow: visible;
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0;
-  text-align: right;
-  text-overflow: clip;
-  white-space: nowrap;
-}
-
-:deep(.metric-value.compact-rate) {
-  font-size: 10px;
-}
-
-:deep(.metric-value.compact-rate .num) {
-  font-size: inherit;
+:deep(.metric-card:last-child) {
+  border-bottom: none;
+  padding-bottom: 2px;
 }
 
 :deep(.spark) {
-  height: 36px;
+  height: 44px;
 }
 
 :deep(.spark.network) {
-  height: 40px;
+  height: 48px;
 }
 </style>

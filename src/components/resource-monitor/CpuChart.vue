@@ -22,7 +22,7 @@ const valueText = computed(() => (props.hasData ? props.current.toFixed(1) : '�
   <article class="metric-card">
     <div class="metric-head">
       <span class="metric-name">CPU</span>
-      <span class="metric-value">
+      <span class="metric-readout">
         <span class="num">{{ valueText }}</span>
         <span v-if="hasData" class="unit">%</span>
       </span>
@@ -53,25 +53,32 @@ const valueText = computed(() => (props.hasData ? props.current.toFixed(1) : '�
   display: flex;
   align-items: baseline;
   justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
   margin-bottom: 6px;
 }
 
 .metric-name {
+  flex: 0 0 auto;
   color: var(--app-muted);
   font: 500 9.5px var(--font-mono);
   letter-spacing: 0.06em;
 }
 
-.metric-value {
+// 大读数是区块的视觉主角（FinalShell 式信息层级）；数字用近白强色，
+// 颜色只留给曲线/面积做数据编码，不在数字上再上色
+.metric-readout {
   display: inline-flex;
   align-items: baseline;
-  gap: 3px;
-  color: var(--app-subtle);
-  font: 500 13px var(--font-mono);
+  gap: 2px;
+  min-width: 0;
+  color: var(--app-strong);
+  font: 500 16px/1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
-.metric-value .num { font-size: 14px; }
-.metric-value .unit {
+.metric-readout .unit {
   color: var(--app-subtle);
   font-size: 10.5px;
 }
@@ -79,7 +86,7 @@ const valueText = computed(() => (props.hasData ? props.current.toFixed(1) : '�
 .spark {
   display: block;
   width: 100%;
-  height: 48px;
+  height: 44px;
 }
 
 .grid-line {

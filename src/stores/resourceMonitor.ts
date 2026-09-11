@@ -32,11 +32,6 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
   let errorUnlisten: TauriUnlistenFn | null = null;
   // 最近一次尝试采样的 sessionId：stop() 清空 activeSessionId 后 retry() 仍可重连
   let lastSessionId: string | null = null;
-  const prevNetRx = ref(0);
-  const prevNetTx = ref(0);
-  const prevDiskRead = ref(0);
-  const prevDiskWrite = ref(0);
-  const prevTimestamp = ref(0);
 
   const isDesktopRuntime = computed(() => isTauriRuntime());
 
@@ -46,26 +41,21 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
     return Math.round((delta / dtMs) * 1000);
   }
 
-  const netRxRate = computed(() => {
-    const s = snapshot.value;
-    if (!s) return 0;
-    return computeRate(s.netRxBytes, prevNetRx.value, s.timestamp - prevTimestamp.value);
-  });
-  const netTxRate = computed(() => {
-    const s = snapshot.value;
-    if (!s) return 0;
-    return computeRate(s.netTxBytes, prevNetTx.value, s.timestamp - prevTimestamp.value);
-  });
-  const diskReadRate = computed(() => {
-    const s = snapshot.value;
-    if (!s) return 0;
-    return computeRate(s.diskReadBytes, prevDiskRead.value, s.timestamp - prevTimestamp.value);
-  });
-  const diskWriteRate = computed(() => {
-    const s = snapshot.value;
-    if (!s) return 0;
-    return computeRate(s.diskWriteBytes, prevDiskWrite.value, s.timestamp - prevTimestamp.value);
-  });
+  // 当前速率 = history 最后两点差值——与 historyPoints 曲线末点同源同值。
+  // 旧实现用 prev* ref 链，但 applySnapshot 在快照落位前就把 prevTimestamp
+  // 更新为当前快照时间戳，渲染时 dt = s.timestamp - s.timestamp 恒 0，
+  // 网络与磁盘速率读数自始至终显示 0B/s（曲线正常，因其逐点独立计算）。
+  function lastRateOf(pick: (s: ResourceSnapshot) => number): number {
+    const h = history.value;
+    const n = h.length;
+    if (n < 2) return 0;
+    return computeRate(pick(h[n - 1]), pick(h[n - 2]), h[n - 1].timestamp - h[n - 2].timestamp);
+  }
+
+  const netRxRate = computed(() => lastRateOf(s => s.netRxBytes));
+  const netTxRate = computed(() => lastRateOf(s => s.netTxBytes));
+  const diskReadRate = computed(() => lastRateOf(s => s.diskReadBytes));
+  const diskWriteRate = computed(() => lastRateOf(s => s.diskWriteBytes));
 
   const memUsedPct = computed(() => {
     const s = snapshot.value;
@@ -125,20 +115,8 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
     // rename_all=camelCase 后的字段名）；activeSessionId 为 null（stop 后
     // 残留事件）时一并拦截，防污染下一次 start 的历史。
     if (!s || !s.sessionId || s.sessionId !== activeSessionId.value) return;
-    if (prevTimestamp.value) {
-      prevNetRx.value = snapshot.value?.netRxBytes ?? 0;
-      prevNetTx.value = snapshot.value?.netTxBytes ?? 0;
-      prevDiskRead.value = snapshot.value?.diskReadBytes ?? 0;
-      prevDiskWrite.value = snapshot.value?.diskWriteBytes ?? 0;
-    } else {
-      prevNetRx.value = s.netRxBytes;
-      prevNetTx.value = s.netTxBytes;
-      prevDiskRead.value = s.diskReadBytes;
-      prevDiskWrite.value = s.diskWriteBytes;
-    }
-    prevTimestamp.value = s.timestamp;
     snapshot.value = s;
-    // 降级提示（非错误）：随最新快照更新/清除，数据继续正常展示
+    // 降级提示（非错误）：随最新快照更新/清除，数据继续展示
     degradedNotice.value = s.degraded || null;
     history.value.push(s);
     if (history.value.length > MAX_HISTORY) history.value.shift();
@@ -234,11 +212,6 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
     enabled.value = false;
     monitorError.value = null;
     degradedNotice.value = null;
-    prevNetRx.value = 0;
-    prevNetTx.value = 0;
-    prevDiskRead.value = 0;
-    prevDiskWrite.value = 0;
-    prevTimestamp.value = 0;
   }
 
   async function snapshotOnce(sessionId: string): Promise<ResourceSnapshot | null> {
