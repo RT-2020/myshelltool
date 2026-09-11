@@ -153,6 +153,13 @@ export interface TransferProgressPayload {
 // 资源监控（resource_monitor.rs，rename_all=camelCase）
 // ============================================================
 
+/** 单个挂载点容量（resource_monitor.rs DiskMountInfo，伪文件系统已过滤）。 */
+export interface DiskMountInfo {
+  mount: string;
+  total: number;
+  used: number;
+}
+
 export interface ResourceSnapshot {
   sessionId: string;
   timestamp: number;
@@ -166,6 +173,8 @@ export interface ResourceSnapshot {
   diskWriteBytes: number;
   diskTotal?: number;
   diskUsed?: number;
+  /** 多挂载点容量明细；空/缺省（df 段失败或旧后端）时前端回退 diskTotal/diskUsed 单行。 */
+  disks?: DiskMountInfo[];
   /** 次要段（net/diskstats/df）解析失败时的降级说明；Rust 侧 serde skip_serializing_if=None，全部正常时字段缺省。 */
   degraded?: string;
 }
@@ -259,6 +268,12 @@ export interface SyncStatusResult {
   pat_configured?: boolean;
   auto_sync_enabled?: boolean;
   sync_credentials?: boolean;
+  /** 【v2.7】本机资产自上次同步后是否有改动（保守判定：读不出 mtime/时间一律 true）。
+   *  面板据此显示「有改动待推送」并让「推送到云端」成为主操作——此前这个信号只有
+   *  后端 pull 判定用，前端看不到，用户不知道该按哪个按钮。 */
+  local_has_changes?: boolean;
+  /** 【v2.7】本机是否保存了自动生成的恢复密码（决定「查看恢复密码」入口显隐）。 */
+  recovery_password_saved?: boolean;
 }
 
 /** sync_setup 返回（serde tag="kind"）。 */

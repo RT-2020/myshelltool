@@ -66,11 +66,28 @@ pub fn derive_session_key(master_password: &str, salt: &[u8]) -> Result<[u8; KEY
 
 /// 用现成 key 加密明文（v1.6 自动同步路径）。
 ///
-/// 与 `encrypt` 的区别：跳过 Argon2id 派生（key 已由调用方提供），
-/// 直接用 key 做 AES-256-GCM 加密。每次生成新随机 nonce（防 nonce 复用灾难）。
-/// blob.salt 字段留空——key-based 路径下 salt 已随 key 持久化在 SecretStore，
-/// 解密时不需要再从 salt 派生。
-pub fn encrypt_with_key(plaintext: &[u8], key: &[u8; KEY_LEN]) -> Result<EncryptedBlob, String> {
+/// 与 `encrypt` 的区别：跳过 Argon2id 派生（key 由调用方提供——会话密钥已由
+/// `derive_session_key(主密码, salt)` 派生并用 DPAPI 加密存盘）。
+///
+/// **`salt` 必须随载荷写进 `blob.salt`（v2.7 修复）**：会话密钥 = Argon2id(主密码, salt)。
+/// v2.7 之前这里把 salt 留空、salt 只存在本机 SecretStore，后果是换机/重装/换 Windows
+/// 用户后**即使主密码正确也无法重建同一把 key** —— Gist 备份永久解不开，而 UI 明写
+/// 「主密码解密即可恢复全部资产」，承诺被打破。salt 本身不敏感（password-based 路径本来
+/// 就把它随密文公开存储，`decrypt` 直接从 `blob.salt` 读），写进去只是让**同一份密文**
+/// 同时可由「本机会话密钥」与「主密码 + salt」两条路解开：安全强度不变（都取决于
+/// 主密码的 Argon2id 代价）。
+///
+/// 空 salt 直接拒绝：那会静默产出「只有本机能解」的载荷，正是本函数要根治的缺陷形态。
+pub fn encrypt_with_key(
+    plaintext: &[u8],
+    key: &[u8; KEY_LEN],
+    salt: &[u8],
+) -> Result<EncryptedBlob, String> {
+    if salt.is_empty() {
+        return Err(
+            "会话密钥加密必须带上派生 salt：缺了它，备份将无法用主密码在其它机器恢复".to_string(),
+        );
+    }
     let mut nonce_bytes = [0u8; NONCE_LEN];
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
 
@@ -82,16 +99,37 @@ pub fn encrypt_with_key(plaintext: &[u8], key: &[u8; KEY_LEN]) -> Result<Encrypt
         .map_err(|e| format!("AES-GCM encrypt failed: {e}"))?;
 
     Ok(EncryptedBlob {
-        salt: String::new(), // key-based 路径无 salt（key 已持久化）
+        salt: base64_encode(salt),
         nonce: base64_encode(&nonce_bytes),
         ciphertext: base64_encode(&ciphertext),
     })
 }
 
+/// 旧格式载荷（缺派生 salt）的统一拒绝文案。
+///
+/// v2.7 起只支持「salt 随载荷」的格式：项目仅一位用户，明确放弃旧版适配。
+/// 宁可明确报错并指导重建，也不留「密码路径报错、会话密钥路径却能悄悄解开」的半支持状态。
+pub const LEGACY_PAYLOAD_REJECTED: &str =
+    "载荷缺少派生 salt（v2.7 之前的旧格式备份，已不再支持）：请在本机执行一次「推送到云端」重建备份";
+
+/// 取载荷里的 Argon2 派生 salt（base64 解码）。空 salt（旧格式）直接拒绝。
+///
+/// 供「按载荷的 salt 重建会话密钥」使用（见 `sync::session_key_for_payload`）。
+pub fn salt_bytes(blob: &EncryptedBlob) -> Result<Vec<u8>, String> {
+    if blob.salt.is_empty() {
+        return Err(LEGACY_PAYLOAD_REJECTED.to_string());
+    }
+    base64_decode(&blob.salt)
+}
+
 /// 用现成 key 解密（v1.6 自动同步路径）。
 ///
-/// 配合 `encrypt_with_key`。salt 字段被忽略（key-based 路径不用）。
+/// 配合 `encrypt_with_key`。`salt` 不参与解密（key 由调用方提供），但**必须非空**：
+/// 空 salt 一律判为旧格式载荷并拒绝，见 `LEGACY_PAYLOAD_REJECTED`。
 pub fn decrypt_with_key(blob: &EncryptedBlob, key: &[u8; KEY_LEN]) -> Result<Vec<u8>, String> {
+    if blob.salt.is_empty() {
+        return Err(LEGACY_PAYLOAD_REJECTED.to_string());
+    }
     let nonce_bytes = base64_decode(&blob.nonce)?;
     let ciphertext = base64_decode(&blob.ciphertext)?;
 
@@ -136,7 +174,13 @@ pub fn encrypt(plaintext: &[u8], master_password: &str) -> Result<EncryptedBlob,
 ///
 /// 用 blob 里的 salt 重新派生 key（同一主密码 → 同一 key），
 /// AES-256-GCM 解密 + 完整性校验。密文被篡改或主密码错误 → Err。
+///
+/// 空 salt = v2.7 之前的旧格式载荷（会话密钥的派生 salt 当时不随载荷走）→ 明确拒绝，
+/// 而不是让 Argon2 抛「salt is too short」这种看不出所以然的错。
 pub fn decrypt(blob: &EncryptedBlob, master_password: &str) -> Result<Vec<u8>, String> {
+    if blob.salt.is_empty() {
+        return Err(LEGACY_PAYLOAD_REJECTED.to_string());
+    }
     let salt = base64_decode(&blob.salt)?;
     let nonce_bytes = base64_decode(&blob.nonce)?;
     let ciphertext = base64_decode(&blob.ciphertext)?;
@@ -329,18 +373,20 @@ mod tests {
 
     #[test]
     fn encrypt_decrypt_with_key_roundtrip() {
-        let key = derive_session_key("pw", &[0u8; SALT_LEN]).expect("derive");
+        let salt = [0x11u8; SALT_LEN];
+        let key = derive_session_key("pw", &salt).expect("derive");
         let plaintext = br#"{"assets":[{"id":"x","host":"10.0.0.1"}]}"#;
-        let blob = encrypt_with_key(plaintext, &key).expect("encrypt_with_key");
+        let blob = encrypt_with_key(plaintext, &key, &salt).expect("encrypt_with_key");
         let decrypted = decrypt_with_key(&blob, &key).expect("decrypt_with_key");
         assert_eq!(decrypted, plaintext);
     }
 
     #[test]
     fn decrypt_with_wrong_key_fails() {
-        let key1 = derive_session_key("pw1", &[0u8; SALT_LEN]).expect("derive 1");
-        let key2 = derive_session_key("pw2", &[0u8; SALT_LEN]).expect("derive 2");
-        let blob = encrypt_with_key(b"secret", &key1).expect("encrypt");
+        let salt = [0x11u8; SALT_LEN];
+        let key1 = derive_session_key("pw1", &salt).expect("derive 1");
+        let key2 = derive_session_key("pw2", &salt).expect("derive 2");
+        let blob = encrypt_with_key(b"secret", &key1, &salt).expect("encrypt");
         // 用错误的 key 解密应失败（AES-GCM 认证校验）
         let result = decrypt_with_key(&blob, &key2);
         assert!(result.is_err(), "错误 key 应解密失败");
@@ -348,8 +394,9 @@ mod tests {
 
     #[test]
     fn key_based_tampered_ciphertext_fails() {
-        let key = derive_session_key("pw", &[0u8; SALT_LEN]).expect("derive");
-        let blob = encrypt_with_key(b"secret", &key).expect("encrypt");
+        let salt = [0x11u8; SALT_LEN];
+        let key = derive_session_key("pw", &salt).expect("derive");
+        let blob = encrypt_with_key(b"secret", &key, &salt).expect("encrypt");
         let mut tampered = blob.clone();
         // 篡改密文首字符
         let mut chars: Vec<char> = tampered.ciphertext.chars().collect();
@@ -360,33 +407,53 @@ mod tests {
     }
 
     #[test]
-    fn key_based_blob_has_empty_salt() {
-        // key-based 路径的 blob.salt 应为空（salt 已随 key 持久化，不重复存）
-        let key = derive_session_key("pw", &[0u8; SALT_LEN]).expect("derive");
-        let blob = encrypt_with_key(b"data", &key).expect("encrypt");
-        assert!(blob.salt.is_empty(), "key-based blob 的 salt 应为空");
-        assert!(!blob.nonce.is_empty(), "nonce 应非空");
-        assert!(!blob.ciphertext.is_empty(), "密文应非空");
+    fn key_based_blob_carries_salt_and_master_password_can_decrypt_it() {
+        // 【v2.7 关键回归】会话密钥加密的载荷必须能被**主密码**解开：
+        // 会话密钥 = Argon2id(主密码, salt)，salt 随载荷存 → 换机后主密码可重建同一 key。
+        // （修复前 salt 留空，换机后任何密码都解不开 → 备份不可恢复。）
+        let salt = [0x2Au8; SALT_LEN];
+        let key = derive_session_key("master-pw", &salt).expect("derive");
+        let blob = encrypt_with_key(b"vault", &key, &salt).expect("encrypt_with_key");
+
+        assert!(!blob.salt.is_empty(), "salt 必须随载荷存（否则换机不可恢复）");
+        assert_eq!(decrypt_with_key(&blob, &key).expect("会话密钥路径"), b"vault");
+        assert_eq!(decrypt(&blob, "master-pw").expect("主密码路径"), b"vault");
+        // 仍然是「认证加密」：密码错误 → 解不开（不是 fail-open）
+        assert!(decrypt(&blob, "wrong-pw").is_err(), "错误主密码不应解开");
     }
 
     #[test]
-    fn key_based_and_password_based_are_incompatible() {
-        // key-based 加密的 blob 无法用 password-based 解密（反之亦然），
-        // 因为 password-based 解密会尝试用 blob.salt（空）派生 key，必然失败。
-        // 这验证了两条路径的隔离性——自动同步的密文只有会话密钥能解。
-        let key = derive_session_key("master-pw", &[0u8; SALT_LEN]).expect("derive");
-        let blob = encrypt_with_key(b"secret", &key).expect("encrypt_with_key");
-        // 用 password-based decrypt 解 key-based blob（salt 空 → 派生出另一个 key → 失败）
-        let result = decrypt(&blob, "master-pw");
-        assert!(result.is_err(), "password-based 不应能解 key-based 密文");
+    fn key_based_encryption_rejects_empty_salt() {
+        // 缺 salt 的载荷 = 只有本机能解，必须当场失败而不是静默产出
+        let key = derive_session_key("pw", &[0u8; SALT_LEN]).expect("derive");
+        let result = encrypt_with_key(b"data", &key, &[]);
+        assert!(result.is_err(), "空 salt 应被拒绝");
+    }
+
+    #[test]
+    fn legacy_payload_without_salt_is_rejected_on_both_paths() {
+        // v2.7：旧格式（salt 缺省）不再适配 —— 两条解密路径都必须**明确拒绝**，
+        // 不能出现「密码路径报错、会话密钥路径却能悄悄解开」的半支持状态。
+        let salt = [0x3Bu8; SALT_LEN];
+        let key = derive_session_key("master-pw", &salt).expect("derive");
+        let blob = encrypt_with_key(b"secret", &key, &salt).expect("encrypt_with_key");
+        let legacy = EncryptedBlob { salt: String::new(), ..blob };
+
+        for err in [
+            decrypt(&legacy, "master-pw").expect_err("密码路径应拒绝旧格式"),
+            decrypt_with_key(&legacy, &key).expect_err("会话密钥路径应拒绝旧格式"),
+        ] {
+            assert!(err.contains("不再支持"), "文案要说清旧格式不再支持: {err}");
+        }
     }
 
     #[test]
     fn each_encrypt_with_key_uses_random_nonce() {
         // 同一 key 加密同一明文两次，nonce/ciphertext 应不同
-        let key = derive_session_key("pw", &[0u8; SALT_LEN]).expect("derive");
-        let blob1 = encrypt_with_key(b"same", &key).expect("encrypt 1");
-        let blob2 = encrypt_with_key(b"same", &key).expect("encrypt 2");
+        let salt = [0x11u8; SALT_LEN];
+        let key = derive_session_key("pw", &salt).expect("derive");
+        let blob1 = encrypt_with_key(b"same", &key, &salt).expect("encrypt 1");
+        let blob2 = encrypt_with_key(b"same", &key, &salt).expect("encrypt 2");
         assert_ne!(blob1.nonce, blob2.nonce, "nonce 应随机");
         assert_ne!(blob1.ciphertext, blob2.ciphertext, "密文应不同");
         // 但都能用同一 key 解出

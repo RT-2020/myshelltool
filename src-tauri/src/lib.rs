@@ -614,6 +614,9 @@ pub fn run() {
             sync::sync_disable_auto_sync,
             sync::sync_check_remote_updates,
             sync::sync_set_credentials_enabled,
+            // v2.7：恢复密码（应用生成高熵密码 → DPAPI 保存 → 换机时可查看/复制带走）
+            sync::sync_generate_recovery_password,
+            sync::sync_reveal_recovery_password,
             // GitHub Device Flow 登录（替代手动粘贴 PAT；provider 参数预留多服务）
             sync_oauth::sync_oauth_start,
             sync_oauth::sync_oauth_poll,

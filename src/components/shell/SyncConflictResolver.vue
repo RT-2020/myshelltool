@@ -4,7 +4,7 @@
  *
  * 在 SyncPanelContent 检测到 syncConflict（pull 返回 Conflict）时渲染（独占面板）。
  * 抽成独立组件因 SyncPanelContent.vue 超 500 行 SFC 硬上限（AGENTS.md 红线），
- * 参照 SyncPatGuide / SyncAutoSyncControl 的拆分先例。
+ * 参照 SyncAutoSyncControl / McpCapabilityList 的拆分先例。
  *
  * 单一职责：展示本地/远端摘要 + 让用户选择保留哪一方。
  * 子组件自管主密码输入（与父组件的 opPassword 解耦），直接调 store.syncResolveConflict。

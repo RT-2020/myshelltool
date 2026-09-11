@@ -44,7 +44,13 @@ tokio-util = "0.7"
 # 而 mingw gcc 在被 cargo spawn 时 cc1 解析失败。native-tls 零 C 编译，绕开整个工具链问题。
 # 注：sync_oauth.rs 的 .form() 是 reqwest 核心能力（serde_urlencoded 非可选依赖），
 # 0.12 无 `form` feature，无需声明——别试图加，会断 feature 解析。
-reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
+# 【v2.7】必须显式加 system-proxy：reqwest 的 default features 里有它，而本行
+# default-features = false 把它关掉了——关掉后 `Proxy::system()` 只读 HTTP(S)_PROXY
+# 环境变量，**完全不读 Windows 系统代理设置**（HKCU\...\Internet Settings，Clash/
+# v2rayN/SSRUNCore 的「系统代理」模式写的就是这里）。结果是 GUI 进程（从资源管理器
+# 启动、没有 *_PROXY 环境变量）对所有 GitHub 请求直连，正是「登录/同步偶发
+# error sending request」的根因之一。probe.rs 的 127.0.0.1 健康检查已显式 no_proxy()。
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls", "system-proxy"] }
 # 剪贴板插件（v2 原生 clipboard，替代 v1 的 window.__TAURI__.clipboard 注入——
 # navigator.clipboard 在 Tauri v2 webview 非聚焦时不稳，走原生插件最可靠）
 tauri-plugin-clipboard-manager = "2"

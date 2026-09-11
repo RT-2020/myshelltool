@@ -75,10 +75,81 @@ fn read_github_pat(state: &AppState) -> Result<String, String> {
 /// 会话密钥 credential id（v1.6 自动同步）。
 const SESSION_KEY_ID: &str = "sync-session-key";
 
+/// 【v2.7】自动生成的恢复密码 credential id。
+///
+/// 只保存**应用自己生成**的恢复密码（见 `recovery_code` 模块的安全定位）：
+/// 用户手输的主密码一律不落盘 —— 那可能是他在别处复用的口令，属于 §8 凭据红线的范围。
+const RECOVERY_PASSWORD_ID: &str = "sync-recovery-password";
+
+/// 生成一个高熵恢复密码并存进本机安全存储（DPAPI），返回明文供界面填入。
+///
+/// 为什么返回明文：用户需要**看到**它（并在换机时能抄/能复制），否则"自动生成"等于
+/// 给他一个他自己都不知道的密钥 —— 换机恢复能力就静默消失了。明文只回到本机 webview，
+/// 不落日志、不进资产 JSON。
+#[tauri::command]
+pub async fn sync_generate_recovery_password(state: State<'_, AppState>) -> Result<String, String> {
+    let password = myshelltool_core::recovery_code::generate_recovery_password(
+        myshelltool_core::recovery_code::DEFAULT_LEN,
+    );
+    let store = myshelltool_core::SecretStore::new(
+        &state.secret_store_dir,
+        Box::new(crate::dpapi_codec::DpapiCodec),
+    );
+    store.save(RECOVERY_PASSWORD_ID, &password)?;
+    Ok(password)
+}
+
+/// 读回已保存的自动生成恢复密码（供「换机恢复 → 查看恢复密码」）。
+/// 没有保存过（用户手输自己的密码）返回 None —— 不假装有。
+#[tauri::command]
+pub async fn sync_reveal_recovery_password(
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let store = myshelltool_core::SecretStore::new(
+        &state.secret_store_dir,
+        Box::new(crate::dpapi_codec::DpapiCodec),
+    );
+    store.read(RECOVERY_PASSWORD_ID)
+}
+
+/// 若本次使用的主密码与已保存的恢复密码不同，删掉后者。
+///
+/// 必要性：用户先用「生成强密码」建了备份，随后又改成自己的密码（或换机恢复时填了
+/// 原密码）—— 那份旧恢复密码**已经打不开当前备份**了。留着它会让「查看恢复密码」显示
+/// 一个错误的值，用户抄走后在换机时得到"密码错误"，且无从归因。宁可没有，不可给错。
+fn drop_stale_recovery_password(state: &AppState, used_password: &str) {
+    let store = myshelltool_core::SecretStore::new(
+        &state.secret_store_dir,
+        Box::new(crate::dpapi_codec::DpapiCodec),
+    );
+    match store.read(RECOVERY_PASSWORD_ID) {
+        Ok(Some(saved)) if saved != used_password => {
+            if let Err(e) = store.delete(RECOVERY_PASSWORD_ID) {
+                log::warn!("sync: 清理已失效的恢复密码失败（下次仍会显示旧值）: {e}");
+            } else {
+                log::info!("sync: 本次主密码与已保存的恢复密码不同，已清除后者（它会打开不当前备份）");
+            }
+        }
+        Ok(_) => {}
+        Err(e) => log::warn!("sync: 读取已保存的恢复密码失败，跳过一致性清理: {e}"),
+    }
+}
+
+/// 是否已保存自动生成的恢复密码（面板据此显示「查看恢复密码」入口）。
+fn recovery_password_saved(state: &AppState) -> bool {
+    let store = myshelltool_core::SecretStore::new(
+        &state.secret_store_dir,
+        Box::new(crate::dpapi_codec::DpapiCodec),
+    );
+    matches!(store.read(RECOVERY_PASSWORD_ID), Ok(Some(_)))
+}
+
 /// 派生会话密钥并 DPAPI 加密存盘（v1.6 启用自动同步）。
 ///
-/// 用主密码 + 随机 salt 派生 32 字节 AES key，连同 salt 一起序列化后交 SecretStore
-/// （DPAPI User scope 加密）。主密码派生后即丢弃，不落盘。
+/// 用主密码 + **新的随机 salt** 派生：适用于「本机已在用某份载荷，现在补一个免密密钥」
+/// （此后推送会按这把 key + salt 重写载荷，自洽）。换机恢复/首次初始化请改用
+/// `session_key_for_payload` + `store_session_key`，**按载荷的 salt** 重建，否则两条路径
+/// 会得到不同的 key。
 ///
 /// 返回 `()`：副作用（落盘）即本函数全部职责，派生出的内存 key 副本无需回传给调用方——
 /// 后续解密需要 key 时统一从 SecretStore 读（见 `read_session_key`）。
@@ -87,20 +158,55 @@ fn save_session_key(state: &AppState, master_password: &str) -> Result<(), Strin
     let mut salt = vec![0u8; crypto::SALT_LEN];
     rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut salt);
     let key = crypto::derive_session_key(master_password, &salt)?;
+    store_session_key(state, &key, &salt)
+}
 
-    // 存储格式：base64(key):base64(salt)。SecretStore 的 DPAPI codec 会整体加密。
-    let payload = format!("{}:{}", b64(&key), b64(&salt));
+/// 会话密钥落盘（`base64(key):base64(salt)`，整体交 SecretStore 的 DPAPI 加密）。
+///
+/// salt 必须一并存：写载荷时要用它（见 `pack_local_vault`），缺了就写不出可用主密码
+/// 恢复的备份 —— 因此空 salt 直接拒绝（fail-closed）。
+fn store_session_key(state: &AppState, key: &[u8; 32], salt: &[u8]) -> Result<(), String> {
+    if salt.is_empty() {
+        return Err("会话密钥缺少派生 salt：拒绝写出无法用主密码恢复的备份".to_string());
+    }
+    let payload = format!("{}:{}", b64(key), b64(salt));
     let store = myshelltool_core::SecretStore::new(
         &state.secret_store_dir,
         Box::new(crate::dpapi_codec::DpapiCodec),
     );
-    store.save(SESSION_KEY_ID, &payload)?;
-
-    Ok(())
+    store.save(SESSION_KEY_ID, &payload)
 }
 
-/// 从 SecretStore 读会话密钥（DPAPI 解密）。未配置返回 None（调用方回退手动模式）。
-fn read_session_key(state: &AppState) -> Result<Option<[u8; 32]>, String> {
+/// 开启/恢复同步时**顺手记住本机密钥**（DPAPI）：这是「登录 → 初始化一次 → 之后推拉与
+/// 自动同步全免密」的关键一步。
+///
+/// 按**载荷自己的 salt** 重建 key（`session_key_for_payload`），保证免密路径与主密码路径
+/// 解的是同一把 key。存盘失败**不阻断 setup**（免密只是便利，主密码路径照常可用），但
+/// 留 warn 且不置 `auto_sync_enabled` —— 前端会退回「输主密码」模式，用户可再点一次
+/// 「本机免密 & 自动同步」重试，不会被静默糊弄。
+fn remember_session_key(
+    state: &AppState,
+    master_password: &str,
+    payload: &SyncPayload,
+    sync_state: &mut SyncState,
+) {
+    match myshelltool_core::sync::session_key_for_payload(payload, master_password) {
+        Ok((key, salt)) => match store_session_key(state, &key, &salt) {
+            Ok(()) => {
+                sync_state.auto_sync_enabled = true;
+                log::info!("sync_setup: 已记住本机会话密钥（DPAPI）——后续推拉/自动同步免密");
+            }
+            Err(e) => log::warn!("sync_setup: 会话密钥存盘失败，免密未启用（可稍后手动启用）: {e}"),
+        },
+        Err(e) => log::warn!("sync_setup: 建立会话密钥失败，免密未启用: {e}"),
+    }
+}
+
+/// 从 SecretStore 读会话密钥 + 其派生 salt（DPAPI 解密）。未配置返回 None（调用方回退手动模式）。
+///
+/// **两者必须成对取用**：salt 要随每次加密的载荷写进 `blob.salt`，否则换机/重装后
+/// 主密码无法重建同一把 key（v2.7 修复的可恢复性缺陷，见 `crypto::encrypt_with_key`）。
+fn read_session_key_material(state: &AppState) -> Result<Option<([u8; 32], Vec<u8>)>, String> {
     let store = myshelltool_core::SecretStore::new(
         &state.secret_store_dir,
         Box::new(crate::dpapi_codec::DpapiCodec),
@@ -109,7 +215,7 @@ fn read_session_key(state: &AppState) -> Result<Option<[u8; 32]>, String> {
         Some(s) => s,
         None => return Ok(None), // 未启用自动同步
     };
-    let (key_b64, _salt_b64) = payload
+    let (key_b64, salt_b64) = payload
         .split_once(':')
         .ok_or_else(|| "会话密钥载荷格式损坏".to_string())?;
     let key_bytes = b64_decode(key_b64)?;
@@ -117,7 +223,20 @@ fn read_session_key(state: &AppState) -> Result<Option<[u8; 32]>, String> {
         .as_slice()
         .try_into()
         .map_err(|_| "会话密钥长度异常".to_string())?;
-    Ok(Some(key))
+    let salt = b64_decode(salt_b64)?;
+    // fail-closed：salt 缺失/为空时**拒绝**继续（否则会写出「只有本机能解」的载荷，
+    // 正是本次修复要根治的形态）。修法是关闭再重新启用自动同步以重新派生。
+    if salt.is_empty() {
+        return Err(
+            "本机会话密钥缺少派生 salt（无法写出可用主密码恢复的备份）：请关闭并重新启用自动同步".to_string(),
+        );
+    }
+    Ok(Some((key, salt)))
+}
+
+/// 只要会话密钥的便捷包装（解密/探测用，不需要 salt）。
+fn read_session_key(state: &AppState) -> Result<Option<[u8; 32]>, String> {
+    Ok(read_session_key_material(state)?.map(|(key, _salt)| key))
 }
 
 /// 删除会话密钥（关闭自动同步 / 重置密码 / 清空同步）。
@@ -343,6 +462,13 @@ pub struct SyncStatusResult {
     pub auto_sync_enabled: bool,
     /// 是否启用凭据与私钥同步。
     pub sync_credentials: bool,
+    /// 【v2.7】本机资产自上次同步后是否有改动（保守判定，见 has_local_changes_since_last_sync）。
+    ///
+    /// 面板据此把「推送到云端」提为主操作并显示「有改动待推送」——此前这个信号只服务于
+    /// pull 的冲突判定，前端拿不到，用户面对两个等重按钮不知道该按哪个。
+    pub local_has_changes: bool,
+    /// 【v2.7】本机是否保存了自动生成的恢复密码（供「查看恢复密码」入口显隐）。
+    pub recovery_password_saved: bool,
 }
 
 #[tauri::command]
@@ -366,11 +492,15 @@ pub async fn sync_status(state: State<'_, AppState>) -> Result<SyncStatusResult,
     });
     Ok(SyncStatusResult {
         configured: sync_state.gist_id.is_some(),
-        last_synced_at: sync_state.last_synced_at,
+        last_synced_at: sync_state.last_synced_at.clone(),
         gist_id_masked,
         pat_configured,
         auto_sync_enabled: sync_state.auto_sync_enabled,
         sync_credentials: sync_state.sync_credentials,
+        // 未配置同步时谈不上"待推送"（面板此时不显示动作区），给 false 更少歧义
+        local_has_changes: sync_state.gist_id.is_some()
+            && has_local_changes_since_last_sync(&state, &sync_state),
+        recovery_password_saved: recovery_password_saved(&state),
     })
 }
 
@@ -402,6 +532,9 @@ pub enum SyncSetupResult {
 ///
 /// - `gist_id` 为空：创建新 Gist，推送当前本地资产（加密）。
 /// - `gist_id` 非空：拉取已有 Gist，解密返回资产（换机器场景）。
+///
+/// **成功后顺手记住本机密钥**（DPAPI，`remember_session_key`）：主密码只在这一次（或换机时）
+/// 输入，此后 push/pull 与自动同步都免密 —— 「登录一次就能用」的关键。
 #[tauri::command]
 pub async fn sync_setup(
     state: State<'_, AppState>,
@@ -428,7 +561,9 @@ pub async fn sync_setup(
         let (content, _) = remote;
         let payload: SyncPayload = serde_json::from_str(&content)
             .map_err(|e| format!("Gist 内容非合法同步载荷: {e}"))?;
-        let vault = myshelltool_core::sync::unpack_vault(&payload, &master_password)?;
+        // 统一走 decrypt_vault（给了密码 → 密码路径）。只有「salt 随载荷」的新格式能解开，
+        // 旧格式由 core 明确拒绝并提示重建。
+        let vault = decrypt_vault(&state, &master_password, &payload)?;
         let assets_json = serde_json::to_string_pretty(&vault.assets_store)
             .map_err(|e| format!("序列化资产失败: {e}"))?;
 
@@ -469,7 +604,12 @@ pub async fn sync_setup(
         sync_state.gist_id = Some(existing_gist_id.clone());
         sync_state.local_rev = Some(payload.remote_rev);
         sync_state.last_synced_at = Some(chrono::Utc::now().to_rfc3339());
+        // 按**这份载荷的 salt** 记住本机密钥：以后推拉/自动同步免密
+        remember_session_key(&state, &master_password, &payload, &mut sync_state);
         save_sync_state(&state, &sync_state)?;
+        // 换机恢复用的是原机主密码：若本机还存着一份**不同**的自动生成密码，它已打不开
+        // 当前备份 —— 清掉，避免「查看恢复密码」给出错值
+        drop_stale_recovery_password(&state, &master_password);
 
         Ok(SyncSetupResult::PulledRemote { assets_json })
     } else {
@@ -482,7 +622,11 @@ pub async fn sync_setup(
         sync_state.local_rev = Some(1);
         // 与 push 同理：记本地完成时刻，与本地文件 mtime 保持同钟域
         sync_state.last_synced_at = Some(chrono::Utc::now().to_rfc3339());
+        // 按刚推上去的载荷的 salt 记住本机密钥（同一把 key 两条路都能解）
+        remember_session_key(&state, &master_password, &payload, &mut sync_state);
         save_sync_state(&state, &sync_state)?;
+        // 用户可能先点了「生成强密码」又改用自己的密码：清掉那份已失效的
+        drop_stale_recovery_password(&state, &master_password);
 
         Ok(SyncSetupResult::Created {
             gist_id_masked: mask_gist_id(&new_gist_id),
@@ -547,35 +691,40 @@ fn pack_local_vault(
     let vault = myshelltool_core::sync::SyncVaultData::new(store, credentials);
 
     if master_password.trim().is_empty() {
-        let key = read_session_key(state)?
+        // 免密路径（自动同步）：**连 salt 一起取**，写进载荷 —— 这样换机后主密码
+        // 仍能重建同一把 key 解开这份备份（v2.7 可恢复性修复）。
+        let (key, salt) = read_session_key_material(state)?
             .ok_or_else(|| "未启用自动同步，需提供主密码".to_string())?;
-        myshelltool_core::sync::pack_vault_with_key(&vault, &key, new_rev)
+        myshelltool_core::sync::pack_vault_with_key(&vault, &key, &salt, new_rev)
     } else {
         myshelltool_core::sync::pack_vault(&vault, master_password, new_rev)
     }
 }
 
-/// v1.6+ 统一解密 helper：优先会话密钥（master_password 为空时），回退主密码，解析为 SyncVaultData。
+/// 统一解密 helper：按调用方是否给了主密码选路径，解析为 SyncVaultData。
+///
+/// - 没给密码 → 免密路径（自动同步，必须本机有会话密钥）；
+/// - 给了密码 → 密码路径。会话密钥加密的载荷也随带派生 salt，因此主密码能重建同一把
+///   key —— 换机恢复即依赖此点；
+/// - 旧格式载荷（`blob.salt` 缺省）由 core 统一明确拒绝（v2.7：不做旧版适配），
+///   这里不再有任何回退分支。
 fn decrypt_vault(
     state: &AppState,
     master_password: &str,
     payload: &SyncPayload,
 ) -> Result<myshelltool_core::sync::SyncVaultData, String> {
-    if payload.blob.salt.is_empty() {
+    if master_password.trim().is_empty() {
         let key = read_session_key(state)?
-            .ok_or_else(|| "此 Gist 载荷由会话密钥加密，但本机未启用自动同步".to_string())?;
-        myshelltool_core::sync::unpack_vault_with_key(payload, &key)
-    } else if master_password.trim().is_empty() {
-        Err("此 Gist 载荷需主密码解密（旧版或他机加密），请输入主密码".to_string())
-    } else {
-        myshelltool_core::sync::unpack_vault(payload, master_password)
+            .ok_or_else(|| "未启用自动同步，需提供主密码".to_string())?;
+        return myshelltool_core::sync::unpack_vault_with_key(payload, &key);
     }
+    myshelltool_core::sync::unpack_vault(payload, master_password)
 }
 
 /// 推送本地资产及关联凭据到 Gist（端到端加密）。
 ///
-/// **v1.6 自动同步**：`master_password` 为空时尝试用会话密钥（key-based 路径）；
-/// 非空时走传统主密码路径（向后兼容）。
+/// `master_password` 为空 → 会话密钥路径（需已启用自动同步）；非空 → 主密码路径。
+/// 两条路径产出的都是同一种载荷格式（都带派生 salt），因此备份始终可用主密码恢复。
 #[tauri::command]
 pub async fn sync_push(
     state: State<'_, AppState>,
@@ -635,6 +784,11 @@ pub async fn sync_push(
     // push 后本地文件 mtime ≤ 此刻；last_synced_at 记本地完成时刻与 mtime 同钟域，
     // 才不会被 Gist 服务器钟与本机钟的偏差误报成「本地有变更」
     sync_state.last_synced_at = Some(chrono::Utc::now().to_rfc3339());
+    // 【v2.7】用主密码推成功、且本机还没有免密密钥时，顺手记住这把 key：
+    // 「输一次主密码」就足够把免密打开（已免密的老用户不受影响，不做 key churn）。
+    if !master_password.trim().is_empty() && !sync_state.auto_sync_enabled {
+        remember_session_key(&state, &master_password, &payload, &mut sync_state);
+    }
     save_sync_state(&state, &sync_state)?;
 
     Ok(SyncPushResult {
@@ -740,6 +894,11 @@ pub async fn sync_pull(
             // 记 Gist 的 updated_at（远端历史时刻）会导致此后每次
             // has_local_changes_since_last_sync 都误判「本地有变更」
             new_state.last_synced_at = Some(chrono::Utc::now().to_rfc3339());
+            // 【v2.7】用主密码拉成功、且本机还没有免密密钥时顺手记住（同 push）：
+            // 按**远端载荷的 salt** 重建，免密路径与主密码路径才是同一把 key。
+            if !master_password.trim().is_empty() && !new_state.auto_sync_enabled {
+                remember_session_key(&state, &master_password, &remote_payload, &mut new_state);
+            }
             save_sync_state(&state, &new_state)?;
 
             Ok(SyncPullResult::Pulled {
@@ -871,6 +1030,9 @@ pub async fn sync_reset_master_password(
     if new_password.trim().is_empty() {
         return Err("新主密码不能为空".to_string());
     }
+    if old_password.trim().is_empty() {
+        return Err("旧主密码不能为空".to_string());
+    }
     let sync_state = load_sync_state(&state)?;
     let gist_id = sync_state
         .gist_id
@@ -885,13 +1047,20 @@ pub async fn sync_reset_master_password(
     let (content, _) = remote_raw;
     let payload: SyncPayload = serde_json::from_str(&content)
         .map_err(|e| format!("Gist 内容非合法载荷: {e}"))?;
-    // 用旧密码解密——失败即旧密码错误
-    let assets_json = sync::unpack(&payload, &old_password)
-        .map_err(|_| "旧主密码错误".to_string())?;
+    // 验证旧密码 + 取出**完整保管库（含凭据）**。
+    //
+    // v2.7 修两处缺陷：
+    // ① 原实现用已删除的 `sync::unpack()` 取明文再 `sync::pack()` 回写 —— 那个接口在明文是
+    //    SyncVaultData 时**只返回 assets_store、丢弃 credentials**，于是「重置主密码」
+    //    会把 Gist 备份里的密码/私钥整段抹掉，且 UI 只提示「✓ 主密码已重置」（静默丢数据）。
+    //    现在走保管库级 `unpack_vault` / `pack_vault`，原样搬运凭据（旧接口已删，从类型上杜绝）。
+    // ② 旧格式载荷曾恒报「旧主密码错误」（正确密码也被判错）→ 现在 core 统一明确拒绝该格式，
+    //    文案直接说明「旧格式不再支持、请重推一次」，不再伪装成密码错误。
+    let vault = decrypt_vault(&state, &old_password, &payload)?;
 
-    // 用新密码重新加密推送
+    // 用新密码重新加密同一份保管库并推送
     let new_rev = sync_state.local_rev.unwrap_or(0) + 1;
-    let new_payload = sync::pack(&assets_json, &new_password, new_rev)?;
+    let new_payload = myshelltool_core::sync::pack_vault(&vault, &new_password, new_rev)?;
     let payload_json = serde_json::to_string(&new_payload).map_err(|e| e.to_string())?;
     gist_update(&pat, &gist_id, &payload_json).await?;
 
@@ -903,6 +1072,8 @@ pub async fn sync_reset_master_password(
     if new_state.auto_sync_enabled {
         save_session_key(&state, &new_password)?;
     }
+    // 换了主密码 → 旧主密码（含可能保存过的自动生成密码）已打不开备份，清掉免得给错值
+    drop_stale_recovery_password(&state, &new_password);
     save_sync_state(&state, &new_state)?;
     Ok(())
 }
@@ -956,16 +1127,16 @@ pub async fn sync_enable_auto_sync(
         .clone()
         .ok_or_else(|| "未配置同步（请先完成 sync_setup）".to_string())?;
 
-    // 验证主密码正确性：拉远端用主密码解密（兼容旧载荷），或本地无资产时跳过验证
+    // 验证主密码正确性：拉远端用主密码解密。
+    //
+    // v2.7：唯一载荷格式都带派生 salt，主密码**一律**能验（不再有「旧格式跳过验证」的分支）；
+    // 旧格式载荷由 core 明确拒绝，用户会看到「旧格式不再支持，请重推一次」而不是被静默放行。
     let pat = read_github_pat(&state)?;
     if let Some((content, _)) = gist_get(&pat, &gist_id).await? {
         let payload: SyncPayload = serde_json::from_str(&content)
             .map_err(|e| format!("Gist 内容非合法载荷: {e}"))?;
-        // 仅当载荷是主密码加密的（salt 非空）才验证；key-based 载荷跳过（无法用主密码验）
-        if !payload.blob.salt.is_empty() {
-            sync::unpack(&payload, &master_password)
-                .map_err(|_| "主密码错误".to_string())?;
-        }
+        myshelltool_core::sync::unpack_vault(&payload, &master_password)
+            .map_err(|e| format!("主密码验证失败：{e}"))?;
     }
 
     // 派生会话密钥 + DPAPI 加密存盘

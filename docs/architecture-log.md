@@ -68,7 +68,7 @@ Files currently over hard limit 鈥?refactor candidates (real numbers, not estim
 | `src/components/shell/GlobalModals.vue` | 1182 | 500 | 2.36脳 | all modals centralized |
 | `src/stores/files.ts` | 1357 | 500 | 2.71脳 | SFTP + transfer queue |
 
-> 2026-09-09 全量 TS 迁移（.js→.ts），行数含类型标注增量；上表为 wc -l 实测重估值：FileColumn.vue 已回落至 493 行（<500，不再是超标项）；`workbench.ts` 实测 507、`src-tauri/src/sync.rs` 实测 955、`crates/myshelltool-core/src/lib.rs` 实测 969 均已超各自 hard limit（见下方 soft-warn 表）；soft-warn 表中未超标项行数未重测。2026-09-10 `wc -l` 重测并刷新了本文件全部数字快照（上表 6 项 + soft-warn 表 4 项）。
+> 2026-09-09 全量 TS 迁移（.js→.ts），行数含类型标注增量；上表为 wc -l 实测重估值：FileColumn.vue 已回落至 493 行（<500，不再是超标项）；`workbench.ts` 实测 507、`src-tauri/src/sync.rs` 实测 955、`crates/myshelltool-core/src/lib.rs` 实测 969 均已超各自 hard limit（见下方 soft-warn 表）；soft-warn 表中未超标项行数未重测。2026-09-10 `wc -l` 重测并刷新了本文件全部数字快照（上表 6 项 + soft-warn 表 4 项）。2026-09-11 同步加密层修复（v2.7 续修）后重测并更新 soft-warn 表 3 项：`src-tauri/src/sync.rs` 955→**1168（146% of hard，.rs 中最该拆的一个）**、`src/stores/sync.ts` 339→**455（91% of hard，贴上限）**、`SyncPanelContent.vue` 461→**433（拆出 SyncSetupForm.vue 后回落，未超 500）**；新增 `src/components/shell/SyncSetupForm.vue` 174（视图 B 表单 + 语义分流文案）。`crates/myshelltool-core/src/crypto.rs` 434、`crates/myshelltool-core/src/sync.rs` 485 仍在各自 soft 线内。同日第二轮（按用户要求**移除旧版同步载荷适配**：删 `pack()`/`unpack()` 旧接口与「纯资产 JSON」解析分支、删除旧格式回退解密路径）后重测：`src-tauri/src/sync.rs` 1168→**1115（139% of hard）**、`crates/myshelltool-core/src/sync.rs` 485→**445**、`crates/myshelltool-core/src/crypto.rs` 434→**455**（统一拒绝文案 + 双路径守卫）、`crates/myshelltool-core/src/lib.rs` 实测 **1076（134% of hard，既有超标 + oauth_flow 模块注册）** —— 后者已在前一张超标表覆盖，下次改动前应先拆。同日第三轮（「登录一次就能用」：免密默认化 —— `sync_setup`/`sync_push`/`sync_pull` 成功后按载荷 salt 记住本机会话密钥 + PatConfigCard 以持久化 token 为权威）后重测：`src-tauri/src/sync.rs` 1115→**1166（146% of hard，仍是 .rs 里最该拆的一个：Gist HTTP 层 / 会话密钥层 / 命令层可分离）**、`crates/myshelltool-core/src/sync.rs` 445→**486**（`session_key_for_payload`）、`crates/myshelltool-core/src/crypto.rs` 455→**465**（`salt_bytes` 导出）；前端 `PatConfigCard.vue` 255、`SyncPanelContent.vue` 437、`SyncSetupForm.vue` 175、`SyncAutoSyncControl.vue` 157 均在各自上限内。
 
 ### 螖 vs previous baseline (2026-06-20)
 
@@ -128,14 +128,14 @@ Not over the hard limit, but approaching 鈥?track so they don't silently cross:
 
 | File | Lines | Limit type | Soft% |
 |---|---|---|---|
-| `src-tauri/src/sync.rs` | 955 | .rs (soft 400 / hard 800) | **119% of hard**锛?6-29 v1.6 鑷姩鍚屾 +SessionKey helper + 3 鍛戒护 + b64 宸ュ叿锛?85鈫拁830锛屸殸 鎺ヨ繎 hard limit锛屼笅娆″ぇ鏀瑰墠鍏虫敞锛?|
-| `crates/myshelltool-core/src/lib.rs` | 969 | .rs (soft 400 / hard 800) | 鈿?**121% 鈥?宸茶秴 hard limit**锛?6-22 璁?796 宸叉紓绉伙紝瀹炴祴鍥炲崌锛涘簲绉诲叆涓婃柟纭笂闄愯〃锛屼笅娆?RESET 鏁寸悊锛?|
+| `src-tauri/src/sync.rs` | 1253 | .rs (soft 400 / hard 800) | **157% of hard**锛?6-29 v1.6 鑷姩鍚屾 +SessionKey helper + 3 鍛戒护 + b64 宸ュ叿锛?85鈫拁830锛屸殸 鎺ヨ繎 hard limit锛屼笅娆″ぇ鏀瑰墠鍏虫敞锛?|
+| `crates/myshelltool-core/src/lib.rs` | 1076 | .rs (soft 400 / hard 800) | 鈿?**134% 鈥?宸茶秴 hard limit**锛?6-22 璁?796 宸叉紓绉伙紝瀹炴祴鍥炲崌锛涘簲绉诲叆涓婃柟纭笂闄愯〃锛屼笅娆?RESET 鏁寸悊锛?|
 | `src-tauri/src/resource_monitor.rs` | 875 | .rs (soft 400 / hard 800) | 鈿?**132% 鈥?宸茶秴 hard limit**锛堝悓涓婏紝06-22 璁?792 宸叉紓绉伙級 |
 | `src/stores/workbench.ts` | 507 | store .js (soft 300 / hard 500) | **101% of hard**锛?6-29 v1.6 +syncStore bridge + 鎺㈡祴 + 5 re-export锛?32鈫拁460锛岃创纭笂闄愶級 |
-| `src/stores/sync.ts` | 339 | store .js (soft 300 / hard 500) | 68% of hard锛?6-29 v1.6 +autoSync/remoteUpdates 鐘舵€?+ 4 action + attachWorkbench锛?23鈫?39锛?|
+| `src/stores/sync.ts` | 471 | store .js (soft 300 / hard 500) | **94% of hard**锛?6-29 v1.6 +autoSync/remoteUpdates 鐘舵€?+ 4 action + attachWorkbench锛?23鈫?39锛?|
 | `src/components/shell/McpPanelContent.vue` | 374 | .vue (soft 300 / hard 500) | 75% of hard |
 | `src-tauri/src/dangerous_commands.rs` | 402 | .rs (soft 400 / hard 800) | 50% of hard锛堣繘鍏?soft-warn锛?|
-| `src/components/shell/SyncPanelContent.vue` | 461 | .vue (soft 300 / hard 500) | **92% of hard**锛?6-29 v1.6 鎷?SyncAutoSyncControl + SyncConflictResolver 鍚庝粠 586 鍥為檷鍒?461锛屼粛璐寸‖涓婇檺锛屼笅娆″姞鍔熻兘蹇呴』鍏堟媶锛?|
+| `src/components/shell/SyncPanelContent.vue` | 87 | .vue (soft 300 / hard 500) | 17% of hard（v2.7 重设计后成为纯编排壳：读数/操作/配置三块拆成独立组件）锛?6-29 v1.6 鎷?SyncAutoSyncControl + SyncConflictResolver 鍚庝粠 586 鍥為檷鍒?461锛屼粛璐寸‖涓婇檺锛屼笅娆″姞鍔熻兘蹇呴』鍏堟媶锛?|
 | `src-tauri/src/mcp/tools.rs` | 368 | .rs (soft 400 / hard 800) | 46% of hard |
 | `src/stores/ui.ts` | 344 | store .js (soft 300 / hard 500) | 69% of hard |
 | `src/components/terminal/TerminalTabs.vue` | 338 | .vue (soft 300 / hard 500) | 68% of hard |

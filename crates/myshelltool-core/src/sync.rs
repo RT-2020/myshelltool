@@ -3,12 +3,16 @@
 //! 职责边界：本模块只做「数据封装 + 加解密 + 冲突判定」的纯逻辑，
 //! **不发 HTTP 请求**（reqwest 调用在 src-tauri 层，保持 core 可独立 cargo test）。
 //!
-//! 数据流：
-//!   connection-assets.json ──pack()──→ SyncPayload（含密文）──HTTP──→ Gist
-//!   Gist ──HTTP──→ SyncPayload ──unpack()──→ connection-assets.json
+//! 数据流（v2.7 起**只有一种载荷格式**，旧版格式一律拒绝、不做适配）：
+//!   SyncVaultData（资产 + 凭据）──pack_vault / pack_vault_with_key──→ SyncPayload ──HTTP──→ Gist
+//!   Gist ──HTTP──→ SyncPayload ──unpack_vault / unpack_vault_with_key──→ SyncVaultData
 //!
-//! 冲突检测基于 local_rev（上次同步时记录的远端 updated_at）：
-//!   - 拉取时比较「本地 local_rev」vs「远端 updated_at」判断远端是否变过
+//! 两条加密路径共用同一份密文语义：密码路径（`pack_vault`，随机 salt 随载荷）与
+//! 会话密钥路径（`pack_vault_with_key`，**key 的派生 salt 同样随载荷**）——因此
+//! 同一份载荷既可由会话密钥解，也可由主密码在任意机器上重建同一 key 解开。
+//!
+//! 冲突检测基于 local_rev（上次同步时记录的远端 rev）：
+//!   - 拉取时比较「本地 local_rev」vs「远端 remote_rev」判断远端是否变过
 //!   - 本地是否变过由调用方判断（比较本地资产 mtime 或内容 hash）
 
 use serde::{Deserialize, Serialize};
@@ -117,20 +121,10 @@ pub enum SyncDecision {
     Conflict,
 }
 
-/// 打包：纯资产 JSON → 加密 → SyncPayload。
-///
-/// `remote_rev` 由调用方传入（通常是当前远端的 rev，push 后递增）。
-pub fn pack(json: &str, master_password: &str, remote_rev: u64) -> Result<SyncPayload, String> {
-    let blob = crypto::encrypt(json.as_bytes(), master_password)?;
-    Ok(SyncPayload {
-        version: PAYLOAD_VERSION,
-        blob,
-        remote_rev,
-        updated_at: None, // 由 src-tauri 层 push 后填 GitHub 返回的 updated_at
-    })
-}
-
 /// 打包全量保管库（资产 + 凭据）：SyncVaultData → 加密 → SyncPayload。
+///
+/// 这是**唯一**的载荷打包入口（v2.7 删除了只打包资产的 `pack()`：它产出的载荷
+/// 没有凭据段，且是旧格式适配的来源）。`remote_rev` 由调用方传入（push 后递增）。
 pub fn pack_vault(
     vault: &SyncVaultData,
     master_password: &str,
@@ -147,13 +141,18 @@ pub fn pack_vault(
 }
 
 /// 使用会话密钥（AES Key）打包全量保管库（v1.6 自动同步路径）。
+///
+/// `salt` = 该会话密钥的 Argon2id 派生 salt，**必须随载荷存**（v2.7 修复，见
+/// `crypto::encrypt_with_key` 的注释）：这样同一份密文既能用本机会话密钥解，
+/// 也能在换机后用「主密码 + salt」重建同一把 key 解开 —— 备份可恢复。
 pub fn pack_vault_with_key(
     vault: &SyncVaultData,
     key: &[u8; 32],
+    salt: &[u8],
     remote_rev: u64,
 ) -> Result<SyncPayload, String> {
     let json = serde_json::to_string(vault).map_err(|e| format!("序列化同步保管库失败: {e}"))?;
-    let blob = crypto::encrypt_with_key(json.as_bytes(), key)?;
+    let blob = crypto::encrypt_with_key(json.as_bytes(), key, salt)?;
     Ok(SyncPayload {
         version: PAYLOAD_VERSION,
         blob,
@@ -189,48 +188,42 @@ pub fn unpack_vault_with_key(
     parse_vault_plaintext(&plaintext)
 }
 
-/// 解析解密后的明文为 SyncVaultData（自动向下兼容老版纯 ConnectionAssetStore 格式）。
+/// 解析解密后的明文为 SyncVaultData。
+///
+/// **只认最新格式**（v2.7 决定：项目仅一位用户，旧版「纯 assets JSON」载荷不做适配）。
+/// 旧载荷在此明确失败并提示重建，而不是被静默折叠成「有资产、无凭据」的半个保管库
+/// ——后者会让用户以为恢复成功，实际连接时全部认证失败。
 fn parse_vault_plaintext(plaintext: &[u8]) -> Result<SyncVaultData, String> {
     let json_str = String::from_utf8(plaintext.to_vec())
         .map_err(|e| format!("解密后非合法 UTF-8: {e}"))?;
 
-    // 1. 优先解析为新版 SyncVaultData
-    if let Ok(vault) = serde_json::from_str::<SyncVaultData>(&json_str) {
-        return Ok(vault);
-    }
-
-    // 2. 兼容解析为老版纯 ConnectionAssetStore
-    if let Ok(assets_store) = serde_json::from_str::<ConnectionAssetStore>(&json_str) {
-        return Ok(SyncVaultData {
-            version: 1,
-            assets_store,
-            credentials: vec![],
-        });
-    }
-
-    Err("解密数据无法解析为有效的资产或保管库格式".to_string())
+    serde_json::from_str::<SyncVaultData>(&json_str).map_err(|_| {
+        "解密数据不是合法的同步保管库（旧版纯资产载荷已不再支持）：请在本机执行一次「推送到云端」重建备份"
+            .to_string()
+    })
 }
 
-/// 解包：SyncPayload → 解密 → 资产 JSON 字符串（兼容旧调用方与测试）。
-pub fn unpack(payload: &SyncPayload, master_password: &str) -> Result<String, String> {
+/// 用主密码 + **载荷自带的 salt** 重建「加密这份载荷所用的会话密钥」及其 salt。
+///
+/// 为什么必须按载荷的 salt 重建：会话密钥 = `Argon2id(主密码, salt)`，salt 不同 → key 不同。
+/// 换机恢复时若随手用一个新随机 salt 存 key，本机免密（会话密钥）路径与主密码路径就会
+/// 得到**两把不同的 key**，之后免密拉取在载荷上莫名失败（报「会话密钥失效」，极难归因）。
+/// 用载荷的 salt 重建则两条路径天然一致：免密可用，主密码也能跨机恢复。
+///
+/// 返回 `(key, salt)`；载荷缺 salt（旧格式）直接拒绝。
+pub fn session_key_for_payload(
+    payload: &SyncPayload,
+    master_password: &str,
+) -> Result<([u8; 32], Vec<u8>), String> {
     if payload.version != PAYLOAD_VERSION {
         return Err(format!(
             "不支持的同步载荷版本 {}（当前支持 {}）",
             payload.version, PAYLOAD_VERSION
         ));
     }
-    let plaintext = crypto::decrypt(&payload.blob, master_password)?;
-    let json_str = String::from_utf8(plaintext)
-        .map_err(|e| format!("解密后非合法 UTF-8: {e}"))?;
-
-    // 如果解密出来的已经是新版 SyncVaultData，为了兼容只需要资产 JSON 的旧接口，提取 assets_store
-    if let Ok(vault) = serde_json::from_str::<SyncVaultData>(&json_str) {
-        return serde_json::to_string(&vault.assets_store)
-            .map_err(|e| format!("序列化资产失败: {e}"));
-    }
-
-    // 否则直接返回原始资产 JSON 字符串（完全保持原始格式一致性）
-    Ok(json_str)
+    let salt = crypto::salt_bytes(&payload.blob)?;
+    let key = crypto::derive_session_key(master_password, &salt)?;
+    Ok((key, salt))
 }
 
 /// 冲突检测：根据本地状态 + 远端载荷判定同步决策。
@@ -273,34 +266,31 @@ mod tests {
         r#"{"assets":[{"id":"a1","name":"prod-db","host":"10.0.0.1","port":22,"username":"root","auth_method":"password","group":"生产/数据库","tags":[],"status":"idle","last_connected":""}],"groups":["生产/数据库"]}"#
     }
 
-    #[test]
-    fn pack_unpack_roundtrip() {
-        let json = sample_assets_json();
-        let payload = pack(json, TEST_PW, 1).expect("pack");
-        let unpacked = unpack(&payload, TEST_PW).expect("unpack");
-        assert_eq!(unpacked, json);
+    /// 当前唯一载荷格式的样例保管库（v2.7 起不再有「纯资产」载荷）。
+    fn sample_vault() -> SyncVaultData {
+        let store: ConnectionAssetStore =
+            serde_json::from_str(sample_assets_json()).expect("sample store");
+        SyncVaultData::new(store, vec![])
     }
 
     #[test]
     fn unpack_wrong_password_fails() {
-        let payload = pack(sample_assets_json(), TEST_PW, 1).expect("pack");
-        let result = unpack(&payload, "wrong-password");
-        assert!(result.is_err());
+        let payload = pack_vault(&sample_vault(), TEST_PW, 1).expect("pack_vault");
+        assert!(unpack_vault(&payload, "wrong-password").is_err());
     }
 
     #[test]
     fn unpack_wrong_version_fails() {
-        let mut payload = pack(sample_assets_json(), TEST_PW, 1).expect("pack");
+        let mut payload = pack_vault(&sample_vault(), TEST_PW, 1).expect("pack_vault");
         payload.version = 999; // 篡改版本号
-        let result = unpack(&payload, TEST_PW);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("不支持"));
+        let err = unpack_vault(&payload, TEST_PW).expect_err("版本不符应失败");
+        assert!(err.contains("不支持"), "错误文案应说明版本不支持: {err}");
     }
 
     #[test]
     fn payload_serializes_to_json_for_gist() {
         // SyncPayload 要能序列化成 JSON 存进 Gist
-        let payload = pack(sample_assets_json(), TEST_PW, 42).expect("pack");
+        let payload = pack_vault(&sample_vault(), TEST_PW, 42).expect("pack_vault");
         let json = serde_json::to_string(&payload).expect("serialize");
         assert!(json.contains("\"version\":1"));
         assert!(json.contains("\"remote_rev\":42"));
@@ -332,7 +322,7 @@ mod tests {
             local_rev: Some(3),
             ..Default::default()
         };
-        let remote = pack(sample_assets_json(), TEST_PW, 5).expect("pack"); // rev=5 > 3
+        let remote = pack_vault(&sample_vault(), TEST_PW, 5).expect("pack_vault"); // rev=5 > 3
         let decision = decide(false, Some(&remote), &state);
         assert_eq!(decision, SyncDecision::PullRemote);
     }
@@ -344,7 +334,7 @@ mod tests {
             local_rev: Some(5),
             ..Default::default()
         };
-        let remote = pack(sample_assets_json(), TEST_PW, 5).expect("pack"); // rev=5 == 5
+        let remote = pack_vault(&sample_vault(), TEST_PW, 5).expect("pack_vault"); // rev=5 == 5
         let decision = decide(true, Some(&remote), &state);
         assert_eq!(decision, SyncDecision::PushLocal);
     }
@@ -356,7 +346,7 @@ mod tests {
             local_rev: Some(3),
             ..Default::default()
         };
-        let remote = pack(sample_assets_json(), TEST_PW, 5).expect("pack"); // rev=5 > 3
+        let remote = pack_vault(&sample_vault(), TEST_PW, 5).expect("pack_vault"); // rev=5 > 3
         let decision = decide(true, Some(&remote), &state);
         assert_eq!(decision, SyncDecision::Conflict);
     }
@@ -367,7 +357,7 @@ mod tests {
             local_rev: Some(5),
             ..Default::default()
         };
-        let remote = pack(sample_assets_json(), TEST_PW, 5).expect("pack");
+        let remote = pack_vault(&sample_vault(), TEST_PW, 5).expect("pack_vault");
         let decision = decide(false, Some(&remote), &state);
         assert_eq!(decision, SyncDecision::NoChange);
     }
@@ -376,7 +366,7 @@ mod tests {
     fn decide_pull_when_never_synced_but_remote_exists() {
         // 本地从没同步过（local_rev=None），远端有数据 → 拉取
         let state = SyncState::default();
-        let remote = pack(sample_assets_json(), TEST_PW, 1).expect("pack");
+        let remote = pack_vault(&sample_vault(), TEST_PW, 1).expect("pack_vault");
         let decision = decide(false, Some(&remote), &state);
         assert_eq!(decision, SyncDecision::PullRemote);
     }
@@ -416,18 +406,19 @@ mod tests {
     }
 
     #[test]
-    fn unpack_vault_backward_compatible_with_legacy_payload() {
-        // 模拟旧版本：payload 中直接是 sample_assets_json()
-        let payload = pack(sample_assets_json(), TEST_PW, 2).expect("pack legacy");
-        let unpacked_vault = unpack_vault(&payload, TEST_PW).expect("unpack legacy as vault");
-
-        assert_eq!(unpacked_vault.assets_store.assets.len(), 1);
-        assert_eq!(unpacked_vault.assets_store.assets[0].name, "prod-db");
-        assert!(unpacked_vault.credentials.is_empty());
-
-        // 使用原有 unpack 依然正常解析出资产 JSON
-        let unpacked_json = unpack(&payload, TEST_PW).expect("legacy unpack");
-        assert!(unpacked_json.contains("prod-db"));
+    fn unpack_vault_rejects_legacy_assets_only_payload() {
+        // v2.7：旧版「纯资产 JSON」载荷**不再适配**（项目仅一位用户，明确只支持最新格式）。
+        // 用当前 API 已造不出这种载荷，手工构造一个「加密后的纯资产 JSON」来验证被拒绝
+        // ——宁可直接报错，也不静默折叠成「有资产、无凭据」的半个保管库。
+        let blob = crypto::encrypt(sample_assets_json().as_bytes(), TEST_PW).expect("encrypt");
+        let payload = SyncPayload {
+            version: PAYLOAD_VERSION,
+            blob,
+            remote_rev: 2,
+            updated_at: None,
+        };
+        let err = unpack_vault(&payload, TEST_PW).expect_err("旧格式载荷应被拒绝");
+        assert!(err.contains("不再支持"), "错误文案要说明旧格式不再支持: {err}");
     }
 
     #[test]
@@ -439,11 +430,57 @@ mod tests {
         }];
         let vault = SyncVaultData::new(store, creds.clone());
 
-        let key = [42u8; 32];
-        let payload = pack_vault_with_key(&vault, &key, 5).expect("pack_vault_with_key");
+        // 会话密钥的真实来源：Argon2id(主密码, salt)（见 src-tauri/sync.rs 的 save_session_key）
+        let salt = [7u8; crypto::SALT_LEN];
+        let key = crypto::derive_session_key(TEST_PW, &salt).expect("derive_session_key");
+        let payload = pack_vault_with_key(&vault, &key, &salt, 5).expect("pack_vault_with_key");
         let unpacked = unpack_vault_with_key(&payload, &key).expect("unpack_vault_with_key");
-
         assert_eq!(unpacked.credentials, creds);
+
+        // 【v2.7 关键回归】同一载荷必须也能被「主密码」解开（换机恢复的前提）：
+        // salt 随载荷走 → 换一台机器用主密码 + 载荷里的 salt 重建的正是同一把 key。
+        let by_password = unpack_vault(&payload, TEST_PW).expect("主密码路径应能解开");
+        assert_eq!(by_password.credentials, creds);
+        assert_eq!(by_password.assets_store.assets.len(), 1);
+        // 认证加密不退化：错误主密码仍然解不开
+        assert!(unpack_vault(&payload, "wrong-pw").is_err(), "错误主密码不应解开");
+    }
+
+    #[test]
+    fn session_key_for_payload_rebuilds_the_encrypting_key() {
+        // 「登录后免密推拉」的基石：本机存的会话密钥必须**按载荷的 salt** 重建，
+        // 否则免密路径与主密码路径拿到两把 key，之后免密拉取会莫名失败。
+        let salt = [9u8; crypto::SALT_LEN];
+        let key = crypto::derive_session_key(TEST_PW, &salt).expect("derive");
+        let payload = pack_vault_with_key(&sample_vault(), &key, &salt, 7).expect("pack");
+
+        let (rebuilt, rebuilt_salt) = session_key_for_payload(&payload, TEST_PW).expect("rebuild");
+        assert_eq!(rebuilt, key, "必须重建出同一把 key");
+        assert_eq!(rebuilt_salt, salt, "salt 也要一并带出来（写载荷时要用）");
+        assert!(unpack_vault_with_key(&payload, &rebuilt).is_ok(), "重建的 key 应能解开载荷");
+        assert!(unpack_vault(&payload, TEST_PW).is_ok(), "主密码路径同样可用（跨机恢复）");
+        // 别的密码重建出的 key 必须解不开（不是 fail-open）
+        let (wrong, _) = session_key_for_payload(&payload, "wrong-pw").expect("rebuild wrong");
+        assert!(unpack_vault_with_key(&payload, &wrong).is_err(), "错误密码不得解开");
+    }
+
+    #[test]
+    fn vault_roundtrip_preserves_credentials() {
+        // 事故防线：曾有一个「只返回 assets_store」的 `unpack()` 便捷接口，被重置主密码
+        // 路径拿去重打包 → Gist 备份里的凭据整段被抹掉。v2.7 直接删掉该接口，
+        // 载荷的读写**只能**走保管库级 API，从类型上杜绝这类丢失。
+        let store: ConnectionAssetStore = serde_json::from_str(sample_assets_json()).unwrap();
+        let creds = vec![SyncCredentialItem {
+            id: "a1:password".to_string(),
+            secret: "pwd".to_string(),
+        }];
+        let vault = SyncVaultData::new(store, creds.clone());
+
+        // 换密码 = 用新密码重新打包同一份 vault
+        let payload = pack_vault(&vault, "new-pw", 3).expect("pack_vault");
+        let back = unpack_vault(&payload, "new-pw").expect("unpack_vault");
+        assert_eq!(back.credentials, creds, "重打包不得丢凭据");
+        assert_eq!(back.assets_store.assets.len(), vault.assets_store.assets.len());
     }
 }
 

@@ -71,6 +71,10 @@ pub async fn probe_endpoint(endpoint: &str) -> McpProbeResult {
 
         let client = reqwest::Client::builder()
             .timeout(HEALTH_CHECK_TIMEOUT)
+            // 【v2.7】本探测打的是自己的 127.0.0.1 endpoint，**必须绕过代理**：
+            // reqwest 启用 system-proxy 后会读 Windows 系统代理设置，若用户的代理软件
+            // 没把回环地址写进 ProxyOverride，健康检查会被送去代理 → 状态灯误报不可用。
+            .no_proxy()
             .build()
             .map_err(|e| ("http_error", format!("构建 HTTP client 失败: {e}")))?;
 
