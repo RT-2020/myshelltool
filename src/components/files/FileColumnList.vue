@@ -2,6 +2,7 @@
 import { computed } from 'vue';
 import { File as FileIcon, Folder, Link2, Loader2, AlertCircle, RefreshCw } from 'lucide-vue-next';
 import {
+  formatFileEntryOwner,
   formatFileEntryPermissions,
   formatFileEntrySize,
   formatFileEntryTime,
@@ -125,6 +126,10 @@ const emptyDesc = computed(() => {
           class="col-perm file-row-perm"
           :title="entry.permissions || ''"
         >{{ formatFileEntryPermissions(entry) }}</span>
+        <span
+          class="col-owner file-row-owner"
+          :title="formatFileEntryOwner(entry)"
+        >{{ formatFileEntryOwner(entry) }}</span>
         <span class="col-size file-row-size">{{ formatFileEntrySize(entry.size) }}</span>
         <span class="col-type file-row-type" :title="inferFileEntryType(entry)">
           {{ inferFileEntryType(entry) }}
@@ -253,10 +258,11 @@ const emptyDesc = computed(() => {
   grid-template-columns: v-bind(FILE_COLUMN_GRID_COMPACT);
 }
 
-// 窄栏回退：与 FileColumnColumns 的 @container 规则同阈值同步（去掉权限列 + 换模板）。
+// 窄栏回退：与 FileColumnColumns 的 @container 规则同阈值同步（去掉权限/属主组列 + 换模板）。
 // 选择器带 .file-row 前缀提高特异性，防跨组件打包顺序影响（同 .col-header .col-perm）。
-@container (max-width: 560px) {
-  .file-row .col-perm {
+@container (max-width: 660px) {
+  .file-row .col-perm,
+  .file-row .col-owner {
     display: none;
   }
 
@@ -310,6 +316,17 @@ const emptyDesc = computed(() => {
   font-family: var(--font-mono);
   text-align: center;
   white-space: nowrap;
+}
+
+// 属主/组：与权限列同款等宽字体；用户/组名可能很长，超宽省略号收尾（title 兜底全文）。
+.file-row-owner {
+  font-size: var(--text-xs);
+  color: var(--app-muted);
+  font-family: var(--font-mono);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .file-row-type {

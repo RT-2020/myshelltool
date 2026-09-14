@@ -3,11 +3,11 @@
 // 行首列 16px 是图标列；表头无图标列故不含 16px。
 // 元数据列必须定宽：行的滚动容器比表头窄一条滚动条（约 8px），定宽列两侧同宽才对得齐，
 // 差额只能由响应式的名称列（minmax(0, 1fr)）吸收。
-export const FILE_COLUMN_COLS = '76px 58px 46px 130px'; // permissions/size/type/mtime
+export const FILE_COLUMN_COLS = '76px 110px 58px 46px 130px'; // permissions/owner/size/type/mtime
 export const FILE_COLUMN_GRID_ROW = `16px minmax(0, 1fr) ${FILE_COLUMN_COLS}`;
 export const FILE_COLUMN_GRID_HEADER = `minmax(0, 1fr) ${FILE_COLUMN_COLS}`;
 // 窄栏回退模板（见 FileColumn.vue 的 container-type + 两处 @container 规则）：
-// 双栏模式每栏仅约 400px 时去掉权限列，否则名称列被元数据列挤到十几像素。
+// 双栏模式每栏仅约 400px 时去掉权限/属主组列，否则名称列被元数据列挤到十几像素。
 export const FILE_COLUMN_COLS_NARROW = '58px 46px 130px'; // size/type/mtime
 export const FILE_COLUMN_GRID_ROW_NARROW = `16px minmax(0, 1fr) ${FILE_COLUMN_COLS_NARROW}`;
 export const FILE_COLUMN_GRID_HEADER_NARROW = `minmax(0, 1fr) ${FILE_COLUMN_COLS_NARROW}`;
@@ -20,6 +20,9 @@ export interface FileColumnEntry {
   modified?: string | null;
   /** 权限八进制串（如 "0755"），后端未提供时为 undefined/null。 */
   permissions?: string | null;
+  /** 属主/属组名（SFTP 长名解析；部分 server 与本地文件不提供）。 */
+  user?: string | null;
+  group?: string | null;
 }
 
 /** 面包屑节点。 */
@@ -87,6 +90,19 @@ export function formatFileEntryPermissions(entry: FileColumnEntry): string {
     + triad((mode >> 6) & 7, mode & 0o4000 ? 's' : 0)
     + triad((mode >> 3) & 7, mode & 0o2000 ? 's' : 0)
     + triad(mode & 7, mode & 0o1000 ? 't' : 0);
+}
+
+/** 后端未提供属主/属组时的占位（本地文件、不回长名的 SFTP server）。 */
+export const OWNER_UNKNOWN = '—';
+
+/** 属主/属组 → `user:group` 组合串；只有一侧时只显示该侧，两侧都缺 → '—'（fail-closed，不猜）。 */
+export function formatFileEntryOwner(entry: FileColumnEntry): string {
+  const user = (entry.user ?? '').trim();
+  const group = (entry.group ?? '').trim();
+  if (!user && !group) return OWNER_UNKNOWN;
+  if (!user) return group;
+  if (!group) return user;
+  return `${user}:${group}`;
 }
 
 export function buildPathCrumbs(path: string | null | undefined): PathCrumb[] {
