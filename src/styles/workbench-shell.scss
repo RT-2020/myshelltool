@@ -65,9 +65,9 @@
   letter-spacing: -0.01em;
 }
 
-// 全局搜索框 —— 浏览器地址栏范式：填满标题栏中部（品牌 ↔ 窗口控件之间），
-// 焦点反馈只做「1px 描边变色 + 图标转主色」，不加 --focus-ring 光晕
-// （3px 光环在标题栏大宽度输入框上视觉突兀，用户实测反馈丑）。
+// 全局搜索框 —— 浏览器地址栏范式：填满标题栏中部（品牌 ↔ 窗口控件之间）。
+// 外层圆角描边常驻不变色（用户实测两轮反馈：聚焦变色描边/光环都丑）；
+// 状态反馈只靠背景提亮 + 图标转主色，焦点本身由光标指示（Windows 惯例）。
 .tb-search {
   position: relative;
   display: flex;
@@ -81,18 +81,14 @@
   border: 1px solid var(--app-border);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  transition:
-    border-color 0.15s var(--ease-standard),
-    background-color 0.15s var(--ease-standard);
+  transition: background-color 0.15s var(--ease-standard);
 }
 .tb-search:hover {
-  border-color: var(--accent-soft-strong);
   background: var(--app-panel);
 }
 .tb-search:focus-within {
   cursor: text;
   background: var(--app-panel);
-  border-color: var(--accent);
 }
 
 .tb-search .tb-search-icon { color: var(--app-muted); stroke-width: 1.7; flex-shrink: 0; }
