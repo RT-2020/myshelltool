@@ -71,3 +71,9 @@ sha2 = "0.10"
 # SecretCodec trait 在 core 层，DPAPI 实现在此（cfg(windows)）。
 [target.'cfg(windows)'.dependencies]
 windows-dpapi = "0.1"
+
+# 【v2.8 backlog #2 根治】vendored fork：非 UTF-8 文件名的可逆编解码
+# （U+E000+b ↔ 字节 b，见 third-party/russh-sftp/src/buf.rs 补丁注释）。
+# 升级 russh-sftp 版本时需重放该补丁（diff 仅 buf.rs/ser.rs 两处）。
+[patch.crates-io]
+russh-sftp = { path = "../third-party/russh-sftp" }
