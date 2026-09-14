@@ -225,6 +225,11 @@ async fn tool_sftp_read_file(
         .and_then(|v| v.as_str())
         .ok_or("缺少 path 参数")?;
 
+    // lossy 文件名守卫（v2.6 backlog #2）：失真名要么 No such file，要么命中
+    // 字面含 U+FFFD 的另一个真实文件——fail-closed，与 GUI 侧同一拒绝文案
+    if myshelltool_core::is_lossy_remote_path(path) {
+        return Err(myshelltool_core::lossy_remote_path_error(path));
+    }
     let session = HeadlessSftpSession::connect(ctx, asset_id).await?;
     // 单次读取上限 1MB (1,048,576 字节)
     let content = session.read_file_limited(path, 1024 * 1024).await?;
@@ -254,6 +259,12 @@ async fn tool_sftp_write_file(
         ));
     }
 
+    // lossy 守卫（多角色审查 Issue 3）：AI 宿主常把 sftp_list 的失真名（U+FFFD）
+    // 回灌成 write/upload 目标；临时文件 rename 的原子替换会静默覆盖字面含
+    // U+FFFD 的另一个真实文件。与 read/remove 同一 fail-closed 防线。
+    if myshelltool_core::is_lossy_remote_path(path) {
+        return Err(myshelltool_core::lossy_remote_path_error(path));
+    }
     let session = HeadlessSftpSession::connect(ctx, asset_id).await?;
     let bytes_written = session
         .write_file_atomic(path, content.as_bytes())
@@ -291,6 +302,11 @@ async fn tool_sftp_upload(
         )));
     }
 
+    // lossy 守卫（同 tool_sftp_write_file：上传是覆盖语义，失真名可能命中
+    // 字面含 U+FFFD 的既有真实文件）
+    if myshelltool_core::is_lossy_remote_path(remote_path) {
+        return Err(myshelltool_core::lossy_remote_path_error(remote_path));
+    }
     let session = HeadlessSftpSession::connect(ctx, asset_id).await?;
     let (bytes, sha256) = session.upload_stream(&local_path, remote_path).await?;
 
@@ -329,6 +345,10 @@ async fn tool_sftp_download(
         )));
     }
 
+    // lossy 文件名守卫：静默下到「字面含 U+FFFD 的另一个文件」的内容比报错危险
+    if myshelltool_core::is_lossy_remote_path(remote_path) {
+        return Err(myshelltool_core::lossy_remote_path_error(remote_path));
+    }
     let session = HeadlessSftpSession::connect(ctx, asset_id).await?;
     let (bytes, sha256) = session.download_stream(remote_path, &local_path).await?;
 
@@ -358,6 +378,11 @@ async fn tool_sftp_remove(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
+    // 删除（尤其 recursive）是最高危操作：失真名可能误删字面含 U+FFFD 的
+    // 另一个真实文件/目录树，fail-closed（v2.6 backlog #2）
+    if myshelltool_core::is_lossy_remote_path(path) {
+        return Err(myshelltool_core::lossy_remote_path_error(path));
+    }
     let session = HeadlessSftpSession::connect(ctx, asset_id).await?;
     session.remove_path(path, recursive).await?;
 

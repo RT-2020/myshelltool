@@ -6,6 +6,8 @@
 pub(crate) use myshelltool_core::dangerous_commands;
 
 mod dpapi_codec;
+/// 出站 HTTP 单例客户端（GitHub Gist / OAuth 共用）+ reqwest 错误链工具。
+mod http;
 pub(crate) mod fs_local; // format_modified 被 ssh.rs 复用（SFTP mtime → Unix 秒）
 mod mcp;
 mod resource_monitor;
@@ -22,6 +24,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
 use tokio::sync::Mutex as AsyncMutex;
 
+/// 应用级共享状态。
 pub struct AppState {
     pub asset_store_path: PathBuf,
     pub secret_store_dir: PathBuf,
@@ -637,7 +640,7 @@ pub fn run() {
             ssh::sftp_upload_start,
             ssh::sftp_upload_chunk,
             ssh::sftp_upload_finalize,
-            ssh::sftp_download_with_progress,
+            ssh::sftp_download_to_file,
             ssh::sftp_mkdir,
             ssh::sftp_rename,
             ssh::sftp_remove,
@@ -653,6 +656,7 @@ pub fn run() {
             fs_local::fs_local_delete,
             fs_local::fs_local_rename,
             fs_local::fs_local_read_chunk,
+            fs_local::fs_local_write_chunk,
             resource_monitor::resource_monitor_start,
             resource_monitor::resource_monitor_stop,
             resource_monitor::resource_monitor_snapshot,

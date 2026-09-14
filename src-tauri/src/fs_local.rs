@@ -17,7 +17,7 @@
 // - list_dir 用 resolved.join(name) 返回 logical path，不暴露 symlink 物理路径
 
 use serde::Serialize;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use tauri::command;
 
@@ -209,12 +209,17 @@ fn parent_string(path: &Path) -> String {
 // Unix 秒数字符串；前端 new Date(Number(s) * 1000) 本地化展示。
 // ssh.rs 的 sftp_list_dir / sftp_stat 复用（russh-sftp modified() 同为
 // io::Result<SystemTime>，None → Err(ErrorKind::InvalidData)）。
+//
+// 早于 1970 的时间（NTFS 支持 1601 起的任意时间戳，归档解包/安装器常写 1601）
+// 输出**负秒数**：前端 new Date(负数*1000) 正确本地化为真实历史日期。
+// 此前 duration_since 失败被折叠成空串，与「取 mtime 失败」不可区分
+// （v2.6 审计 backlog #4：显示层只能一律显示 "—"，用户无从分辨）。
 pub(crate) fn format_modified(modified: std::io::Result<std::time::SystemTime>) -> String {
     modified
-        .map(|t| {
-            t.duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs().to_string())
-                .unwrap_or_default()
+        .map(|t| match t.duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => d.as_secs().to_string(),
+            // SystemTimeError::duration() = 距 epoch 的负偏移量
+            Err(e) => format!("-{}", e.duration().as_secs()),
         })
         .unwrap_or_default()
 }
@@ -368,6 +373,48 @@ pub fn fs_local_read_chunk(path: String, offset: u64, length: u64) -> Result<Vec
     }
     buf.truncate(filled);
     Ok(buf)
+}
+
+/// 把一块字节写到本地文件：`offset == 0` 创建/截断，`offset > 0` 在既有内容上续写。
+///
+/// 为什么一个命令同时负责「建文件」和「续写」：下载侧不再把整份内容经 IPC 送回前端
+/// （1 GiB 文件经 JSON 数字数组序列化会膨胀成约 4 GiB 文本，前后端各驻留一份必然
+/// OOM），改为分块读远端、分块落盘。调用方只需「第一块 offset=0、其余块
+/// offset=已写字节数」这一条契约，不必先单独发一次 create（多一次 IPC 往返、
+/// 多一个「建了文件却没写内容」的中间态）。
+///
+/// 语义细节：
+/// - `offset == 0`：CREATE + TRUNCATE，覆盖同名旧文件（用户已在保存对话框确认过路径）。
+/// - `offset > 0`：不 CREATE，seek 到 offset 后写入。**文件不存在即报错**（不自动补建
+///   空文件）——否则「写第一块失败（例如本地磁盘满）+ 续写恰好成功」会产出一个头部
+///   空洞的坏文件，那种文件看起来完整、打开才发现损坏。
+/// - `offset` 超出当前长度：write 会先补零再写（与 POSIX/Windows 原生行为一致），
+///   显式接受这一行为而不是自作主张拒绝，因为补零区段是调用方算错 offset 的显式证据。
+///
+/// 失败一律返回可诊断错误串（含本地路径），不 panic：目录不存在、无权限、磁盘满、
+/// 目标被占用都会走到 `map_err` 上。此处不做系统目录白名单——沿用本文件 `fs_local_*`
+/// 的既有模型（黑名单由 resolve_input_path / is_sensitive_path 单点负责）。
+#[command]
+pub fn fs_local_write_chunk(path: String, offset: u64, bytes: Vec<u8>) -> Result<(), String> {
+    let target = resolve_input_path(&path)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true);
+    if offset == 0 {
+        // 首块负责建文件；后续块（offset > 0）刻意不带 create，语义由此与
+        // 「续写一个已存在的文件」绑定，文件被中途删掉时续写会显式失败而不是
+        // 悄悄建出一个只有尾部内容的短文件。
+        options.create(true).truncate(true);
+    }
+    let mut file = options
+        .open(&target)
+        .map_err(|e| format!("open failed for {}: {e}", target.display()))?;
+    if offset > 0 {
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|e| format!("seek failed for {}: {e}", target.display()))?;
+    }
+    file.write_all(&bytes)
+        .map_err(|e| format!("write failed for {}: {e}", target.display()))?;
+    Ok(())
 }
 
 #[cfg(test)]

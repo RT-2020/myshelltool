@@ -373,3 +373,78 @@ mod tests {
         assert_eq!(store.last_cleanup_ms, 10_000);
     }
 }
+
+// ─── v2.8 第五轮自 server.rs 迁入：执行日志组装三件（load_asset_meta/append/extract）───
+
+use super::tools::McpToolContext;
+/// 执行日志的记录范围：真实触发远程执行的工具调用所需的静态信息。
+///
+/// v2：所有真实触发远程执行的工具（ssh_exec / disk_usage / system_status /
+/// service_status / sftp_remove）记日志；list_assets / list_sessions / 桩工具 /
+/// 未知工具不记。command 填真实执行的命令文本（只读工具用 tools.rs 导出的
+/// 固定命令常量，sftp_remove 填目标路径）。
+pub(crate) struct LogScope {
+    pub(crate) tool: &'static str,
+    pub(crate) command: String,
+    pub(crate) asset_id: String,
+    pub(crate) intent: String,
+}
+
+use rmcp::model::CallToolResult;
+
+pub(crate) fn load_asset_meta(ctx: &McpToolContext, asset_id: &str) -> (String, String, u16, String) {
+    let empty = || (String::new(), String::new(), 0, String::new());
+    let Ok(store) = myshelltool_core::load_connection_asset_store(&ctx.asset_store_path) else {
+        return empty();
+    };
+    match store.assets.iter().find(|a| a.id == asset_id) {
+        Some(a) => (a.name.clone(), a.host.clone(), a.port, a.username.clone()),
+        None => empty(),
+    }
+}
+
+/// 落一条执行日志（append_entry 内部 best-effort，失败不阻断工具调用）。
+pub(crate) async fn append_execution_log(
+    ctx: &McpToolContext,
+    scope: &LogScope,
+    level_str: &str,
+    decision_str: &str,
+    outcome_str: &str,
+    output_text: &str,
+) {
+    let (asset_name, host, port, username) = load_asset_meta(ctx, &scope.asset_id);
+    let entry = ExecutionLogEntry {
+        id: uuid::Uuid::new_v4().to_string(),
+        timestamp_ms: now_ms(),
+        level: level_str.to_string(),
+        tool: scope.tool.to_string(),
+        asset_id: scope.asset_id.clone(),
+        asset_name,
+        host,
+        port,
+        username,
+        // 脱敏后落盘：命令原文可能含明文口令（`mysql -pP@ss`、`curl -u u:p`、
+        // `--password=x`），而执行日志是**长期保留**的审计文件（30 天 / 1000 条），
+        // 且会在 GUI 面板回显——违反 AGENTS.md §8「凭据不进日志」（形态 C 变体：
+        // 不是折叠错误，而是把敏感值当普通文本落盘）。
+        command: myshelltool_core::redact_command(&scope.command),
+        intent: scope.intent.clone(),
+        decision: decision_str.to_string(),
+        outcome: outcome_str.to_string(),
+        // 输出同样脱敏（v2.6 backlog #5）：远端 stdout 可能含口令——`env` 输出的
+        // `GITHUB_TOKEN=…`、`show create user` 的 `IDENTIFIED BY '<明文>'` 曾原样
+        // 进摘要。先脱敏再截断：先截断会把 KEY=value 形态切坏、遮不全。
+        output_summary: summarize_output(&myshelltool_core::redact_output(output_text)),
+    };
+    append_entry(&ctx.data_dir, entry).await;
+}
+
+/// 从 CallToolResult 提取全部 text content（拼成日志的 outputSummary 素材）。
+pub(crate) fn extract_result_text(result: &CallToolResult) -> String {
+    result
+        .content
+        .iter()
+        .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}

@@ -14,9 +14,14 @@
 //!
 //! ## 端口策略
 //!
-//! 优先绑 `127.0.0.1:41235`（与 vite dev 41234 区分）。被占用则 +1 重试，
-//! 最多重试 10 次。**只监听 localhost，绝不监听 0.0.0.0**（AGENTS.md §8 安全红线）。
-//! 实际监听地址写入 `<data_dir>/mcp-endpoint.json`，供前端展示 + 用户配置 host。
+//! 起始端口 = `MYSHELLTOOL_MCP_PORT` 环境变量（显式覆盖，三态解析见
+//! `myshelltool_core::port_env`）> 按构建形态取默认：release/正式版 41235，
+//! debug（`tauri:dev`）41500——开发实例与已安装正式版并行时错开起始端口，
+//! 防止先启动的开发实例抢走 41235（MCP host 配置的 URL 固定指向正式版端口，
+//! 被开发实例占了 host 就连错进程：审批弹窗弹在开发窗口、dev 重编译时连接反复断）。
+//! 被占用则 +1 重试，最多重试 10 次。**只监听 localhost，绝不监听 0.0.0.0**
+//! （AGENTS.md §8 安全红线）。实际监听地址写入 `<data_dir>/mcp-endpoint.json`，
+//! 供前端展示 + 用户配置 host。
 //!
 //! ## 生命周期
 //!
@@ -37,8 +42,14 @@ use super::tools::McpToolContext;
 
 /// MCP HTTP server 默认监听地址（127.0.0.1，仅本机）。
 pub const DEFAULT_BIND_HOST: &str = "127.0.0.1";
-/// MCP HTTP server 默认端口（与 vite dev server 41234 区分）。
+/// release/正式版默认端口（与 vite dev 41234 区分）。
+#[cfg(not(debug_assertions))]
 pub const DEFAULT_BIND_PORT: u16 = 41235;
+/// debug（`tauri:dev` / debug 构建）默认端口：错开正式版的 41235——开发实例
+/// 与已安装正式版并行时不再抢占 host 固定指向正式版的连接（见模块头「端口策略」）。
+/// 要在 debug 构建下复现正式端口行为，设 `MYSHELLTOOL_MCP_PORT=41235` 覆盖。
+#[cfg(debug_assertions)]
+pub const DEFAULT_BIND_PORT: u16 = 41500;
 /// 端口被占用时的最大重试次数。
 const MAX_PORT_RETRIES: u16 = 10;
 
@@ -50,13 +61,34 @@ pub struct McpEndpoint {
     pub port: u16,
 }
 
-/// 绑定 TCP 端口：从 DEFAULT_BIND_PORT 开始，被占用则 +1，最多重试 MAX_PORT_RETRIES 次。
+/// 解析起始监听端口：`MYSHELLTOOL_MCP_PORT` 优先，其次按构建形态取默认。
+/// 三态口径与 `MYSHELLTOOL_DATA_DIR`（lib.rs::mcp_data_dir）一致：未设置 = 默认；
+/// 设置了但不可用（空/非数字/0/超范围）= warn 让用户看见后回退默认，
+/// 不静默折叠成「未配置」——否则用户以为端口改了，实际还监听在老端口。
+fn resolve_base_port() -> u16 {
+    match myshelltool_core::parse_port(
+        std::env::var_os("MYSHELLTOOL_MCP_PORT").as_deref(),
+    ) {
+        myshelltool_core::PortOverride::Port(p) => p,
+        myshelltool_core::PortOverride::NotSet => DEFAULT_BIND_PORT,
+        myshelltool_core::PortOverride::Invalid(raw) => {
+            log::warn!(
+                "MYSHELLTOOL_MCP_PORT 存在但不是合法端口（{raw:?}），已忽略并回退默认端口 {DEFAULT_BIND_PORT}"
+            );
+            DEFAULT_BIND_PORT
+        }
+    }
+}
+
+/// 绑定 TCP 端口：从起始端口（`resolve_base_port`）开始，被占用则 +1，
+/// 最多重试 MAX_PORT_RETRIES 次。
 ///
 /// 返回 (listener, 实际绑定的 port)。失败返回最后一个错误。
 async fn bind_with_port_fallback() -> Result<(tokio::net::TcpListener, u16), std::io::Error> {
+    let base_port = resolve_base_port();
     let mut last_err = None;
     for offset in 0..=MAX_PORT_RETRIES {
-        let port = DEFAULT_BIND_PORT.saturating_add(offset);
+        let port = base_port.saturating_add(offset);
         let addr = format!("{DEFAULT_BIND_HOST}:{port}");
         match tokio::net::TcpListener::bind(&addr).await {
             Ok(listener) => {

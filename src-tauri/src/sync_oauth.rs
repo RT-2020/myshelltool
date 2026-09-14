@@ -29,11 +29,11 @@
 //! 最外层笼统描述，真正原因（连接超时/被拒/证书/读取中断）在 `source()` 链里。
 
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tauri::State;
 
 use crate::AppState;
+use crate::http::{error_chain, shared_client as http_client};
 use myshelltool_core::oauth_flow::{self, PollVerdict, TransportFault};
 
 /// 开发者注册 OAuth App 后，把 GitHub 显示的 Client ID 填在这里（形如 Ov23liAbCdEf12345678，
@@ -55,7 +55,6 @@ const DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 const ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 /// Device Flow 仅申请 gist 读写（与手动 PAT 的 scope 一致）。
 const OAUTH_SCOPE: &str = "gist";
-const USER_AGENT: &str = "myshelltool";
 /// 用户可见错误文案里 cause 链的字符上限（完整链只进应用日志）。
 const CHAIN_UI_MAX_CHARS: usize = 240;
 /// 非 2xx 正文摘录的字符上限（诊断用，先按秘密字面量脱敏再截断）。
@@ -151,47 +150,9 @@ fn clear_session(state: &AppState) {
     }
 }
 
-/// 单例 HTTP 客户端：**必须复用**（reqwest::Client 持有连接池）。
-fn http_client() -> Result<reqwest::Client, String> {
-    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
-    CLIENT.get_or_init(build_http_client).clone()
-}
-
-fn build_http_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .user_agent(USER_AGENT)
-        // connect 与整体分离限时：只设整体超时时，一次慢握手会把预算吃光，
-        // 表现为「偶发失败」而不是「慢」。
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(20))
-        .tcp_keepalive(Duration::from_secs(30))
-        .pool_idle_timeout(Duration::from_secs(90))
-        .build()
-        .map_err(|e| format!("构建 HTTP 客户端失败: {e}"))
-}
-
-/// reqwest 的 `Display` 只给最外层笼统描述，逐层取 `source()` 才是真原因。
-fn error_chain(err: &dyn std::error::Error) -> String {
-    /// cause 链深度上限（病态深链不刷屏；正常 reqwest 链 2-4 层）。
-    const MAX_LEVELS: usize = 6;
-    let mut parts: Vec<String> = Vec::new();
-    let mut cur = Some(err);
-    while let Some(e) = cur {
-        let text = e.to_string();
-        // 相邻重复层去重（reqwest 会在多层里重复同一句话）
-        if !text.is_empty() && parts.last().map(|p| p != &text).unwrap_or(true) {
-            parts.push(text);
-        }
-        if parts.len() >= MAX_LEVELS {
-            if e.source().is_some() {
-                parts.push("…".to_string());
-            }
-            break;
-        }
-        cur = e.source();
-    }
-    parts.join(" ← ")
-}
+// 单例 HTTP 客户端（http_client）与 error_chain 已抽到 `crate::http`
+//（v2.8：sync.rs 的 Gist 三处 Client::new() 收口时统一——两者都打 GitHub
+// API，共享连接池有真实复用收益；见该模块的超时画像注释）。
 
 /// 把 reqwest 错误的布尔特征映射成 core 的传输故障分类。
 /// 顺序有意：连接超时同时满足 timeout 与 connect，用户更需要知道「超时」。

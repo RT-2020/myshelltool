@@ -36,7 +36,7 @@ use tauri::Emitter;
 
 use super::approval::{self, ApprovalDecision, AutoApproveReason, ElicitationInfo, McpApprovalEvent};
 use super::config::McpInterceptLevel;
-use super::execution_log::{self, decision, outcome, ExecutionLogEntry};
+use super::execution_log::{self, decision, outcome, LogScope};
 use super::tools::{self, McpToolContext};
 
 // ── v1.1 审批辅助 ──
@@ -78,18 +78,6 @@ impl ApprovalVia {
     }
 }
 
-/// 执行日志的记录范围：真实触发远程执行的工具调用所需的静态信息。
-///
-/// v2：所有真实触发远程执行的工具（ssh_exec / disk_usage / system_status /
-/// service_status / sftp_remove）记日志；list_assets / list_sessions / 桩工具 /
-/// 未知工具不记。command 填真实执行的命令文本（只读工具用 tools.rs 导出的
-/// 固定命令常量，sftp_remove 填目标路径）。
-struct LogScope {
-    tool: &'static str,
-    command: String,
-    asset_id: String,
-    intent: String,
-}
 
 fn log_scope_for(
     tool_name: &str,
@@ -364,59 +352,6 @@ async fn check_approval_needed(
 
 /// 资产元数据兜底：读库失败或 assetId 不存在时其余字段空串（port=0），
 /// 不丢日志条目（assetId 保留原值）。
-fn load_asset_meta(ctx: &McpToolContext, asset_id: &str) -> (String, String, u16, String) {
-    let empty = || (String::new(), String::new(), 0, String::new());
-    let Ok(store) = myshelltool_core::load_connection_asset_store(&ctx.asset_store_path) else {
-        return empty();
-    };
-    match store.assets.iter().find(|a| a.id == asset_id) {
-        Some(a) => (a.name.clone(), a.host.clone(), a.port, a.username.clone()),
-        None => empty(),
-    }
-}
-
-/// 落一条执行日志（append_entry 内部 best-effort，失败不阻断工具调用）。
-async fn append_execution_log(
-    ctx: &McpToolContext,
-    scope: &LogScope,
-    level_str: &str,
-    decision_str: &str,
-    outcome_str: &str,
-    output_text: &str,
-) {
-    let (asset_name, host, port, username) = load_asset_meta(ctx, &scope.asset_id);
-    let entry = ExecutionLogEntry {
-        id: uuid::Uuid::new_v4().to_string(),
-        timestamp_ms: execution_log::now_ms(),
-        level: level_str.to_string(),
-        tool: scope.tool.to_string(),
-        asset_id: scope.asset_id.clone(),
-        asset_name,
-        host,
-        port,
-        username,
-        // 脱敏后落盘：命令原文可能含明文口令（`mysql -pP@ss`、`curl -u u:p`、
-        // `--password=x`），而执行日志是**长期保留**的审计文件（30 天 / 1000 条），
-        // 且会在 GUI 面板回显——违反 AGENTS.md §8「凭据不进日志」（形态 C 变体：
-        // 不是折叠错误，而是把敏感值当普通文本落盘）。
-        command: myshelltool_core::redact_command(&scope.command),
-        intent: scope.intent.clone(),
-        decision: decision_str.to_string(),
-        outcome: outcome_str.to_string(),
-        output_summary: execution_log::summarize_output(output_text),
-    };
-    execution_log::append_entry(&ctx.data_dir, entry).await;
-}
-
-/// 从 CallToolResult 提取全部 text content（拼成日志的 outputSummary 素材）。
-fn extract_result_text(result: &CallToolResult) -> String {
-    result
-        .content
-        .iter()
-        .filter_map(|c| c.as_text().map(|t| t.text.clone()))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
 
 /// 客户端不支持 elicitation（或 elicitation 失败/被自动拒绝）时的降级路径。
 ///
@@ -681,7 +616,7 @@ impl ServerHandler for MyshellToolMcpServer {
                             "approval: catastrophic command hard-blocked, refusing without approval chain"
                         );
                         if let Some(scope) = &log_scope {
-                            append_execution_log(
+                            execution_log::append_execution_log(
                                 &ctx,
                                 scope,
                                 level_str,
@@ -704,7 +639,7 @@ impl ServerHandler for MyshellToolMcpServer {
                             ElicitOutcome::Declined { via, reason } => {
                                 log::info!("elicitation: user declined");
                                 if let Some(scope) = &log_scope {
-                                    append_execution_log(
+                                    execution_log::append_execution_log(
                                         &ctx,
                                         scope,
                                         level_str,
@@ -718,7 +653,7 @@ impl ServerHandler for MyshellToolMcpServer {
                             }
                             ElicitOutcome::Timeout => {
                                 if let Some(scope) = &log_scope {
-                                    append_execution_log(
+                                    execution_log::append_execution_log(
                                         &ctx,
                                         scope,
                                         level_str,
@@ -734,7 +669,7 @@ impl ServerHandler for MyshellToolMcpServer {
                                 // GUI 审批通道不可用 → fail-secure 拒绝（两档等级行为一致）
                                 log::warn!("elicitation not supported, degrading to reject: {}", reason);
                                 if let Some(scope) = &log_scope {
-                                    append_execution_log(
+                                    execution_log::append_execution_log(
                                         &ctx,
                                         scope,
                                         level_str,
@@ -767,14 +702,14 @@ impl ServerHandler for MyshellToolMcpServer {
                 } else {
                     outcome::OK
                 };
-                let raw_output = extract_result_text(&result);
+                let raw_output = execution_log::extract_result_text(&result);
                 // D4 脱敏红线：针对 sftp_read_file 成功读取的输出，绝对不把文件本体写入审计日志，仅记元信息
                 let output_text = if scope.tool == "sftp_read_file" && result.is_error != Some(true) {
                     format!("[文件内容已脱敏：读取成功，共 {} 字符]", raw_output.len())
                 } else {
                     raw_output
                 };
-                append_execution_log(&ctx, scope, level_str, log_decision, outcome_str, &output_text)
+                execution_log::append_execution_log(&ctx, scope, level_str, log_decision, outcome_str, &output_text)
                     .await;
             }
 
