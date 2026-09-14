@@ -50,23 +50,67 @@ export function createNativePasteGuard({ getSessionId, requestDangerousPaste, an
   };
 }
 
-// createGlobalSearchHotkeyRelease — Ctrl+K 放行器工厂。
-// 焦点在终端时 xterm 会把 Ctrl+K 消费成 VT kill-line（\x0b 直接发给远端），
-// 事件不冒泡，App.vue 的 window keydown 监听收不到 → 全局搜索快捷键在终端
-// 焦点下失效。返回 false = xterm 对该键完全放行：keydown 不消费（事件冒泡到
-// window 由 handleGlobalKeydown preventDefault + 打开搜索），keyup 也不处理
-// （xterm 的 _keyUp 路径会 this.focus() 抢回焦点，故一并拦下）。
-// enabled=false（资产独立窗口不注册全局搜索）时全放行，保留终端 kill-line。
-export interface GlobalSearchHotkeyReleaseOptions {
+// ============================================================
+// 应用快捷键组合识别（单一信息源）
+// ============================================================
+// TerminalSurface.handleKeydown（动作分发）与 xterm 放行器（createAppShortcutRelease）
+// 共用本判定——两处各自维护一份组合表必然漂移（Ctrl+K 就是先例）。
+// 只收录带 Ctrl/Cmd 修饰键的组合；Escape 与可打印字符（如 ?）必须留给终端本体。
+// altKey 一律排除：欧洲键盘 AltGr+字符会带上 ctrlKey，不能当快捷键放行。
+
+export type AppShortcutAction =
+  | 'global-search'    // Ctrl+K（App.vue 全局层，不限 terminal tab）
+  | 'connect-selected' // Ctrl+Shift+T
+  | 'terminal-search'  // Ctrl+F
+  | 'command-palette'  // Ctrl+Shift+P
+  | 'terminal-copy'    // Ctrl+Shift+C
+  | 'terminal-paste'   // Ctrl+Shift+V
+  | 'terminal-clear'   // Ctrl+Shift+L
+  | 'font-inc'         // Ctrl+= / Ctrl++
+  | 'font-dec'         // Ctrl+-
+  | 'font-reset'       // Ctrl+0
+  | 'session-next'     // Ctrl+Tab
+  | 'session-prev'     // Ctrl+Shift+Tab
+  | 'session-close';   // Ctrl+W
+
+export function matchAppShortcut(event: KeyboardEvent): AppShortcutAction | null {
+  const mod = event.ctrlKey || event.metaKey;
+  if (!mod || event.altKey) return null;
+  if (event.key === 'Tab') return event.shiftKey ? 'session-prev' : 'session-next';
+  const key = typeof event.key === 'string' ? event.key.toLowerCase() : '';
+  if (event.shiftKey) {
+    if (key === 'p') return 'command-palette';
+    if (key === 'c') return 'terminal-copy';
+    if (key === 'v') return 'terminal-paste';
+    if (key === 'l') return 'terminal-clear';
+    if (key === 't') return 'connect-selected';
+    return null;
+  }
+  if (key === 'k') return 'global-search';
+  if (key === 'f') return 'terminal-search';
+  if (key === 'w') return 'session-close';
+  if (key === '=' || key === '+') return 'font-inc';
+  if (key === '-') return 'font-dec';
+  if (key === '0') return 'font-reset';
+  return null;
+}
+
+// createAppShortcutRelease — xterm 按键放行器工厂。
+// 焦点在终端时 xterm 会把 Ctrl 组合键消费成 VT 序列直接发给远端（Ctrl+K→\x0b、
+// Ctrl+F→\x06、Ctrl+W→\x17、Ctrl+Tab→\t）且拦截冒泡，window 上的应用监听收不到
+// → 终端快捷键在「终端焦点」这一主场景下整体失效（实测矩阵见 v2.8）。
+// 返回 false = xterm 对该键完全放行：keydown 不消费（事件冒泡到 window 分发），
+// keyup 也不处理（xterm 的 _keyUp 路径会 this.focus() 抢回焦点，故一并拦下）。
+// enabled=false（资产独立窗口，无全局搜索/命令面板）时全放行，保留终端原生行为。
+// 注意：Ctrl+V（无 shift）不在放行之列——那是 createNativePasteGuard 的领域。
+export interface AppShortcutReleaseOptions {
   enabled: boolean;
 }
 
-export function createGlobalSearchHotkeyRelease({ enabled }: GlobalSearchHotkeyReleaseOptions) {
+export function createAppShortcutRelease({ enabled }: AppShortcutReleaseOptions) {
   return (event: KeyboardEvent): boolean => {
     if (!enabled) return true;
-    const isCtrlK = (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey
-      && typeof event.key === 'string' && event.key.toLowerCase() === 'k';
-    return !isCtrlK;
+    return matchAppShortcut(event) === null;
   };
 }
 

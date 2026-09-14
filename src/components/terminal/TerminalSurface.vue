@@ -18,6 +18,7 @@ import { useAssetsStore } from '@/stores/assets';
 import { useClipboard } from '@/composables/useClipboard';
 import { isTauriRuntime } from '@/services/backend';
 import { tearOffSession } from '@/lib/sessionHandoff';
+import { matchAppShortcut } from '@/lib/terminalGuards';
 import TerminalTabs from './TerminalTabs.vue';
 import TerminalSearchBar from './TerminalSearchBar.vue';
 import TerminalPane from './TerminalPane.vue';
@@ -67,46 +68,49 @@ function handleKeydown(event: KeyboardEvent) {
     if (sessionsStore.dangerousPastePrompt.open) { sessionsStore.cancelDangerousPaste(); event.preventDefault(); return; }
   }
 
-  // Only intercept terminal shortcuts when terminal tab is active AND not typing
-  const isTextInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes((event.target as HTMLElement | null)?.tagName ?? '');
-  if (activeTab.value !== 'terminal' || isTextInput) return;
+  // Only intercept terminal shortcuts when terminal tab is active AND not typing.
+  // xterm 的 helper textarea 视为「在终端内」而非文本输入——终端焦点正是快捷键
+  // 的主场景，此前把它算进 isTextInput 导致全部终端快捷键在终端焦点下失效
+  // （Ctrl+Shift+T 报障的根因，实测矩阵见 v2.8）。
+  const targetEl = event.target as HTMLElement | null;
+  const inTerminal = targetEl?.classList.contains('xterm-helper-textarea') === true;
+  const isTextInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes(targetEl?.tagName ?? '');
+  if (activeTab.value !== 'terminal' || (isTextInput && !inTerminal)) return;
 
-  const mod = event.ctrlKey || event.metaKey;
-  const shift = event.shiftKey;
+  // `?` 速查表仅终端焦点之外：? 是 shell 正常输入字符，xterm 焦点时必须透传。
+  if (event.key === '?' && !event.ctrlKey && !event.metaKey && !event.altKey && !inTerminal) {
+    event.preventDefault(); shortcutCheatsheetOpen.value = true; return;
+  }
 
-  // Ctrl+F: terminal search / Ctrl+Shift+P: command palette
-  if (mod && !shift && (event.key === 'F' || event.key === 'f')) { event.preventDefault(); sessionsStore.openTerminalSearchInline(); return; }
-  if (mod && shift && (event.key === 'P' || event.key === 'p')) { event.preventDefault(); commandPaletteOpen.value = true; return; }
-  // Ctrl+Shift+C: copy
-  if (mod && shift && (event.key === 'C' || event.key === 'c')) { event.preventDefault(); sessionsStore.runTerminalAction('copy'); return; }
-  // Ctrl+Shift+V: paste（经 store 统一危险粘贴守卫）
-  if (mod && shift && (event.key === 'V' || event.key === 'v')) { event.preventDefault(); sessionsStore.runTerminalAction('paste'); return; }
-  // Ctrl+Shift+L: clear
-  if (mod && shift && (event.key === 'L' || event.key === 'l')) { event.preventDefault(); sessionsStore.runTerminalAction('clear'); return; }
-  // Ctrl+= / Ctrl++: font inc / Ctrl+-: font dec / Ctrl+0: font reset
-  if (mod && (event.key === '=' || event.key === '+')) { event.preventDefault(); sessionsStore.runTerminalAction('font-inc'); return; }
-  if (mod && event.key === '-') { event.preventDefault(); sessionsStore.runTerminalAction('font-dec'); return; }
-  if (mod && event.key === '0') { event.preventDefault(); sessionsStore.runTerminalAction('font-reset'); return; }
-  // Ctrl+Tab / Ctrl+Shift+Tab: session switch
-  if (mod && event.key === 'Tab') {
-    event.preventDefault();
-    const list = sessions.value;
-    if (!list.length) return;
-    const idx = list.findIndex(s => s.sessionId === activeSessionId.value);
-    const dir = shift ? -1 : 1;
-    const next = list[(idx + dir + list.length) % list.length];
-    sessionsStore.setActiveSession(next.sessionId);
-    return;
+  // 组合识别与 xterm 放行器共用 matchAppShortcut（单一信息源，防两处漂移）；
+  // Ctrl+K（global-search）归 App.vue 全局层处理，此处跳过。
+  const action = matchAppShortcut(event);
+  if (!action || action === 'global-search') return;
+  event.preventDefault();
+  switch (action) {
+    case 'terminal-search': sessionsStore.openTerminalSearchInline(); return;
+    case 'command-palette': commandPaletteOpen.value = true; return;
+    case 'terminal-copy': sessionsStore.runTerminalAction('copy'); return;
+    case 'terminal-paste': sessionsStore.runTerminalAction('paste'); return;
+    case 'terminal-clear': sessionsStore.runTerminalAction('clear'); return;
+    case 'font-inc': sessionsStore.runTerminalAction('font-inc'); return;
+    case 'font-dec': sessionsStore.runTerminalAction('font-dec'); return;
+    case 'font-reset': sessionsStore.runTerminalAction('font-reset'); return;
+    case 'connect-selected': sessionsStore.connectSelected(); return;
+    case 'session-close':
+      if (activeSession.value) sessionsStore.disconnectSession(activeSession.value.sessionId);
+      return;
+    case 'session-next':
+    case 'session-prev': {
+      const list = sessions.value;
+      if (!list.length) return;
+      const idx = list.findIndex(s => s.sessionId === activeSessionId.value);
+      const dir = action === 'session-prev' ? -1 : 1;
+      const next = list[(idx + dir + list.length) % list.length];
+      sessionsStore.setActiveSession(next.sessionId);
+      return;
+    }
   }
-  // Ctrl+W: close active session
-  if (mod && !shift && (event.key === 'w' || event.key === 'W')) {
-    if (activeSession.value) { event.preventDefault(); sessionsStore.disconnectSession(activeSession.value.sessionId); }
-    return;
-  }
-  // Ctrl+Shift+T: connect selected asset
-  if (mod && shift && (event.key === 'T' || event.key === 't')) { event.preventDefault(); sessionsStore.connectSelected(); return; }
-  // `?`: cheatsheet
-  if (event.key === '?' && !mod && !event.altKey) { event.preventDefault(); shortcutCheatsheetOpen.value = true; return; }
 }
 
 onMounted(() => window.addEventListener('keydown', handleKeydown));

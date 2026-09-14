@@ -6,6 +6,7 @@ import { usePanelResize } from './composables/usePanelResize';
 import { useAutoUpdate } from './composables/useAutoUpdate';
 import { bootAssetWindow } from './lib/assetWindowBoot';
 import { isAssetWindowMode } from './lib/assetWindows';
+import { matchAppShortcut } from './lib/terminalGuards';
 import { announceHandoffReady, setupHandoffListeners } from './lib/sessionHandoff';
 import { useSessionsStore } from './stores/sessions';
 import WorkbenchShell from './components/workbench/WorkbenchShell.vue';
@@ -63,7 +64,8 @@ onBeforeUnmount(() => {
 });
 
 function handleGlobalKeydown(event: KeyboardEvent) {
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k' && !event.shiftKey) {
+  // 组合识别与终端放行器/分发器共用 matchAppShortcut（单一信息源）
+  if (matchAppShortcut(event) === 'global-search') {
     event.preventDefault();
     store.openGlobalSearch();
   }
