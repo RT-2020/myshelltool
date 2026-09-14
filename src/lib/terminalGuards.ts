@@ -50,6 +50,35 @@ export function createNativePasteGuard({ getSessionId, requestDangerousPaste, an
   };
 }
 
+// createGlobalSearchHotkeyRelease — Ctrl+K 放行器工厂。
+// 焦点在终端时 xterm 会把 Ctrl+K 消费成 VT kill-line（\x0b 直接发给远端），
+// 事件不冒泡，App.vue 的 window keydown 监听收不到 → 全局搜索快捷键在终端
+// 焦点下失效。返回 false = xterm 对该键完全放行：keydown 不消费（事件冒泡到
+// window 由 handleGlobalKeydown preventDefault + 打开搜索），keyup 也不处理
+// （xterm 的 _keyUp 路径会 this.focus() 抢回焦点，故一并拦下）。
+// enabled=false（资产独立窗口不注册全局搜索）时全放行，保留终端 kill-line。
+export interface GlobalSearchHotkeyReleaseOptions {
+  enabled: boolean;
+}
+
+export function createGlobalSearchHotkeyRelease({ enabled }: GlobalSearchHotkeyReleaseOptions) {
+  return (event: KeyboardEvent): boolean => {
+    if (!enabled) return true;
+    const isCtrlK = (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey
+      && typeof event.key === 'string' && event.key.toLowerCase() === 'k';
+    return !isCtrlK;
+  };
+}
+
+// composeKeyHandlers — 组合多个 customKeyEventHandler。attachCustomKeyEventHandler
+// 只能挂一个（后挂覆盖前挂），多守卫必须经此组合；首个返回 false 即短路。
+export function composeKeyHandlers(...handlers: Array<(event: KeyboardEvent) => boolean>) {
+  return (event: KeyboardEvent): boolean => {
+    for (const handler of handlers) if (!handler(event)) return false;
+    return true;
+  };
+}
+
 // createDangerousPasteGuard — 危险粘贴守卫状态机（依赖注入，纯逻辑可单测）。
 // getSession(sessionId) 返回含 term 的 session（无则 null）；prompt 是 store 持有的
 // reactive 对象；detect 是 detectDangerousCommand。request 返回 true = 已拦截等确认。

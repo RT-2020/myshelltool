@@ -5,6 +5,7 @@ import { isTauriRuntime } from './services/backend';
 import { usePanelResize } from './composables/usePanelResize';
 import { useAutoUpdate } from './composables/useAutoUpdate';
 import { bootAssetWindow } from './lib/assetWindowBoot';
+import { isAssetWindowMode } from './lib/assetWindows';
 import { announceHandoffReady, setupHandoffListeners } from './lib/sessionHandoff';
 import { useSessionsStore } from './stores/sessions';
 import WorkbenchShell from './components/workbench/WorkbenchShell.vue';
@@ -16,7 +17,7 @@ import type { ModalState } from './types/domain';
 
 // 独立资产窗口（WebviewWindow url 带 ?win=asset&assetId=...）：模块加载即定
 const params = new URLSearchParams(window.location.search);
-const isAssetWindow = params.get('win') === 'asset' && Boolean(params.get('assetId'));
+const isAssetWindow = isAssetWindowMode();
 
 const store = useWorkbenchStore();
 // 单实例（关键）：panelResize 必须全局唯一——两实例会互相覆盖 documentElement

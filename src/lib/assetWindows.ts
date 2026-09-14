@@ -28,6 +28,13 @@ export interface AssetLike {
   name: string;
 }
 
+/** 是否运行在资产独立窗口（?win=asset&assetId=…）。App.vue 的渲染分支与
+ *  「是否注册全局搜索 / 终端是否放行 Ctrl+K」等都以本判定为单一信息源。 */
+export function isAssetWindowMode(): boolean {
+  const params = new URLSearchParams(window.location.search);
+  return params.get('win') === 'asset' && Boolean(params.get('assetId'));
+}
+
 // djb2 8 位十六进制短哈希（确定性、无依赖）：id 含 Tauri label 白名单外字符
 // 时追加，保证 sanitize 后不同 id 不碰撞（见 sanitizeWindowLabel 注释）。
 function idHash8(id: string): string {
