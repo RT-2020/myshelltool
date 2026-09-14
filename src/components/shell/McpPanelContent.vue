@@ -247,7 +247,8 @@ onMounted(() => {
   border: 1px solid var(--app-border);
   border-radius: var(--radius-md);
   background: var(--app-panel);
-  overflow: hidden;
+  // 不能设 overflow: hidden——拦截行的 AppSelect 下拉菜单绝对定位在面板内，
+  // 会被这里裁掉（下拉被截断的事故来源）；内部行没有满宽背景，无需圆角裁切
 }
 .mcp-surface > * + * {
   border-top: 1px solid var(--app-border-soft);
