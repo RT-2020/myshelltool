@@ -13,7 +13,7 @@
 import { computed, unref } from 'vue';
 import { Download, ExternalLink, RefreshCw } from 'lucide-vue-next';
 import type { useAutoUpdate } from '@/composables/useAutoUpdate';
-import { isTauriRuntime } from '@/services/backend';
+import { openExternal } from '@/lib/openExternal';
 import AppButton from '@/components/ui/AppButton.vue';
 import AppProgress from '@/components/ui/AppProgress.vue';
 import ReleaseNotesBlock from '@/components/shell/ReleaseNotesBlock.vue';
@@ -25,20 +25,6 @@ const props = defineProps<{
   // 当前应用版本号（「已是最新版本」文案用；父组件异步获取后传入，初始为 —）
   appVersion: string;
 }>();
-
-async function openExternal(url: string) {
-  if (!isTauriRuntime()) {
-    window.open(url, '_blank', 'noopener');
-    return;
-  }
-  try {
-    const { openUrl } = await import('@tauri-apps/plugin-opener');
-    await openUrl(url);
-  } catch (e) {
-    console.warn('[settings] opener failed, fallback to window.open:', e);
-    window.open(url, '_blank', 'noopener');
-  }
-}
 
 // —— 更新按钮状态机 ——
 // 复用注入的 autoUpdate（来自 App.vue，与状态栏点击同一实例）。
