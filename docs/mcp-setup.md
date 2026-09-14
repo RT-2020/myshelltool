@@ -2,11 +2,11 @@
 
 myshelltool 内嵌 MCP（Model Context Protocol）server，可被 Claude Code、Cursor、Cline 等支持 MCP 的工具调用，让 AI 执行 SSH 运维操作。
 
-> 版本：v0.4.0（MCP 内嵌 GUI + Streamable HTTP transport）。**MCP server 随 GUI 进程启停**——不再有独立 exe，不再需要单独构建/打包。高危命令（rm -rf 等）经 elicitation 在客户端界面内弹确认（三段式），不支持 elicitation 的客户端 fail-secure 拒绝。
+> **MCP server 随 GUI 进程启停**——内嵌 GUI + Streamable HTTP transport，无独立 exe、无需单独构建。高危命令按**拦截等级**（Minimal/Strict，GUI 面板可切换）审批：确认框优先经 elicitation 在客户端界面内弹出（三段式），客户端不支持时降级为 myshelltool GUI 弹窗，均不可用才 fail-secure 拒绝。
 
 ---
 
-## 一、架构（v0.4.0 内嵌 HTTP）
+## 一、架构（内嵌 HTTP）
 
 ```
 ┌─────────────────┐   Streamable HTTP      ┌──────────────────────────┐
@@ -123,7 +123,7 @@ Claude 会调用 `list_assets` 返回你配置的服务器列表。
 }
 ```
 
-> ⚠️ **Cline 安全注意**：Cline 有「auto-approve use MCP servers」开关。开启后执行 MCP 工具不再逐次询问。但 **myshelltool 自带 elicitation 审批门仍生效**——高危命令（rm -rf / mkfs / dd 等）会触发客户端内确认框，不会因 Cline 的 auto-approve 而绕过。
+> ⚠️ **Cline 安全注意**：Cline 有「auto-approve use MCP servers」开关。开启后执行 MCP 工具不再逐次询问。但 **myshelltool 自带审批门仍生效**（elicitation / GUI 弹窗降级 + 拦截等级）——毁灭性命令两档恒拒，Strict 档高危命令不会因 Cline 的 auto-approve 绕过。
 
 ---
 
@@ -137,21 +137,25 @@ Claude 会调用 `list_assets` 返回你配置的服务器列表。
 
 ---
 
-## 七、可用能力一览（v0.4.0）
+## 七、可用能力一览
 
-### Tools（9 个）
+### Tools（13 个 = 7 系统类 + 6 文件类）
 
 | 工具 | 说明 | 审批 |
 |------|------|------|
 | `list_assets` | 列出连接资产（脱敏） | 自动 |
-| `list_sessions` | 活跃会话列表（当前返回说明，会话复用为 follow-up） | 自动 |
-| `disk_usage` | 磁盘使用（df -h） | 自动 |
-| `system_status` | uptime/内存/负载/top | 自动 |
-| `service_status` | systemctl status | 自动 |
-| `sftp_list` | SFTP 目录列表 | 自动 |
-| `resource_monitor_snapshot` | 资源监控快照 | 自动 |
-| `ssh_exec` | **任意命令** | 白名单自动 / 其余 elicitation 确认 |
-| `sftp_remove` | **删除文件** | 始终 elicitation 确认 |
+| `list_sessions` | 活跃 SSH 会话清单（含 GUI 已建立的会话） | 自动 |
+| `disk_usage` | 磁盘使用（df -h），含逐段退出码回声 | 自动 |
+| `system_status` | uptime/内存/负载/top，仅 Linux 远端 | 自动 |
+| `service_status` | systemctl status，仅 systemd 远端 | 自动 |
+| `resource_monitor_snapshot` | CPU/内存/磁盘资源快照 | 自动 |
+| `ssh_exec` | **任意 Shell 命令** | 按拦截等级；毁灭性命令两档恒拒 |
+| `sftp_list` | 远程目录列表 | 按拦截等级 |
+| `sftp_read_file` | 读远程文本文件（二进制/非 UTF-8 明确拒绝，不猜编码） | 按拦截等级；**敏感凭据文件（如私钥）恒需审批** |
+| `sftp_write_file` | 写远程文本文件（原子写，失败保留原文件） | 按拦截等级；核心系统目录写恒拒 |
+| `sftp_upload` | 上传本地文件到远程（流式 + SHA256 校验） | 按拦截等级；核心系统目录写恒拒 |
+| `sftp_download` | 下载远程文件到本机（流式 + SHA256 校验） | 按拦截等级 |
+| `sftp_remove` | 删除远程文件/目录 | 按拦截等级；**根级/核心目录删除两档恒拒** |
 
 ### Resources（3 + 1）
 
@@ -172,14 +176,24 @@ Claude 会调用 `list_assets` 返回你配置的服务器列表。
 
 ---
 
-## 八、安全机制（v0.4.0）
+## 八、安全机制
 
-### 审批分层（fail-secure 默认拒）
+### 拦截等级（GUI MCP 面板可切换，改档对已连接 AI 会话下次调用即生效）
 
-- **白名单**（df/uptime/systemctl status 等 20 条只读前缀）→ 自动执行
-- **高危命令**（`ssh_exec` 的非白名单 + `sftp_remove`）→ 经 **MCP elicitation** 在客户端界面内弹确认框，用户 accept 才执行
-- **黑名单**（dangerous_commands 的 16 条正则：rm -rf/mkfs/dd/fork bomb/shutdown 等）→ 拒绝
-- **不支持 elicitation 的客户端** → fail-secure 拒绝（宁可误拦不可漏放）
+| 等级 | 行为 |
+|------|------|
+| **Minimal**（默认） | 仅硬拦毁灭性命令，其余直接执行（记执行日志 `minimal_allowed` 供审计） |
+| **Strict** | 非白名单一律人工确认；毁灭性命令同样恒拒 |
+
+### 审批判定
+
+- **白名单逐段判定**：只读命令（df/uptime/systemctl status 等）按 shell 词法分段后**逐段**过白名单，全部命中才自动放行——`df -h; cat /etc/shadow` 这类拼接/管道夹带不会因前缀相似漏过；含重定向/命令替换一律不进白名单
+- **毁灭性命令**（`rm -rf /`、mkfs、dd 写块设备、fork 炸弹、chmod -R 系统目录等）：两档恒拒，不弹审批直接拒绝，决策记 `hard_blocked`，命令不执行
+- **审批三级降级**：elicitation（客户端界面内确认框）→ myshelltool GUI 弹窗（60s 超时）→ fail-secure 拒绝（宁可误拦不可漏放）
+
+### 执行审计日志
+
+真实触发远程执行的工具调用记一条日志（时间/资产/命令[口令已脱敏]/决策/输出摘要），GUI 的 MCP 面板可查看/搜索/清空。
 
 ### 三段式确认信息
 
@@ -203,10 +217,9 @@ MCP 仅服务**已在 GUI 信任过**的资产。首次连接/未知 host key �
 
 ---
 
-## 九、已知限制与 Follow-ups（v0.4.0）
+## 九、已知限制与 Follow-ups
 
-- **会话不复用**：`ssh_exec`/`sftp_*` 工具当前直走 headless 独立建连（v0.4.0 删了 v1.1 的 named pipe 复用桥）。Follow-up：注入 GUI 的 `SshSessionManager` 到 MCP context，命中已建立会话时直接复用（同进程内存访问，比 pipe 更简单）。
-- **不支持 elicitation 的客户端**：当前直接 fail-secure 拒绝高危命令（v0.4.0 删了 v1.1 的 pipe GUI 弹窗降级）。Follow-up：注入 AppHandle，实现同进程 GUI 弹窗审批（像 ssh.rs host-key 验证那样 emit 前端）。
+- **会话不复用**：`ssh_exec`/`sftp_*` 工具当前直走 headless 独立建连。Follow-up：注入 GUI 的 `SshSessionManager` 到 MCP context，命中已建立会话时直接复用（同进程内存访问）。
 - **Claude Desktop 不直连**：见上方第六节，需 mcp-remote 桥接。
 - **MFA 不支持**：headless 模式无法弹窗收集 MFA，仅支持密码/私钥/keyboard-interactive 密码类 prompt。
 - **提示词注入风险**：AI 可能被远程内容诱导执行恶意命令——靠三段式人工识破（行业级未解难题）。
@@ -232,4 +245,4 @@ MCP 仅服务**已在 GUI 信任过**的资产。首次连接/未知 host key �
 
 ### elicitation 确认框不出现
 
-客户端可能不支持 elicitation（如旧版 Claude Desktop）。v0.4.0 对此类客户端直接拒绝高危命令（fail-secure）。换用 Claude Code 或 Cursor（支持 elicitation）。
+客户端可能不支持 elicitation（如旧版 Claude Desktop）。此时自动降级为 **myshelltool GUI 弹窗审批**（60s 超时）；GUI 不在或超时才 fail-secure 拒绝。想获得客户端界面内的确认体验，换用支持 elicitation 的客户端（Claude Code / Cursor / Cline）。
