@@ -9,6 +9,7 @@ import type {
   SyncStatusResult
 } from '@/types/domain';
 import { invokeBackend, isTauriRuntime } from '../services/backend';
+import { errorMessage } from '../lib/errorMessage';
 
 /** sync store 实际消费的 workbench bridge 最小结构。
  *  assetsStore：拉取/冲突解决后必须重载前端资产内存态（见 reloadAssetsFromBackend）。 */
@@ -95,7 +96,7 @@ export const useSyncStore = defineStore('sync', () => {
     try {
       await assetsStore.reloadAssets();
     } catch (error) {
-      flashMessage(`✗ 已拉取远端数据，但本地资产列表重载失败：${(error as Error | undefined)?.message || error}`, true);
+      flashMessage(`✗ 已拉取远端数据，但本地资产列表重载失败：${errorMessage(error)}`, true);
     }
   }
 
@@ -106,7 +107,7 @@ export const useSyncStore = defineStore('sync', () => {
       status.value = await invokeBackend<SyncStatusResult>('sync_status');
     } catch (error) {
       // eslint-disable-next-line no-console
-      console.warn('[sync] refreshStatus failed:', (error as Error | undefined)?.message || error);
+      console.warn('[sync] refreshStatus failed:', errorMessage(error));
     }
   }
 
@@ -133,7 +134,7 @@ export const useSyncStore = defineStore('sync', () => {
         : '同步已配置，无需重复设置');
       return result;
     } catch (error) {
-      flashMessage(`✗ ${(error as Error | undefined)?.message || error}`, true);
+      flashMessage(`✗ ${errorMessage(error)}`, true);
       return null;
     } finally {
       loading.value = false;
@@ -157,7 +158,7 @@ export const useSyncStore = defineStore('sync', () => {
       remoteHasUpdates.value = false;
       return result;
     } catch (error) {
-      flashMessage(`✗ 推送失败：${(error as Error | undefined)?.message || error}`, true);
+      flashMessage(`✗ 推送失败：${errorMessage(error)}`, true);
       return null;
     } finally {
       loading.value = false;
@@ -214,7 +215,7 @@ export const useSyncStore = defineStore('sync', () => {
       }
       return result;
     } catch (error) {
-      flashMessage(`✗ 拉取失败：${(error as Error | undefined)?.message || error}`, true);
+      flashMessage(`✗ 拉取失败：${errorMessage(error)}`, true);
       return null;
     } finally {
       loading.value = false;
@@ -245,7 +246,7 @@ export const useSyncStore = defineStore('sync', () => {
       await reloadAssetsFromBackend();
       flashMessage(choice === 'local' ? '✓ 已用本地覆盖远端' : '✓ 已用远端覆盖本地');
     } catch (error) {
-      flashMessage(`✗ 冲突解决失败：${(error as Error | undefined)?.message || error}`, true);
+      flashMessage(`✗ 冲突解决失败：${errorMessage(error)}`, true);
       return;
     } finally {
       loading.value = false;
@@ -263,7 +264,7 @@ export const useSyncStore = defineStore('sync', () => {
       });
       flashMessage('✓ 主密码已重置');
     } catch (error) {
-      flashMessage(`✗ ${(error as Error | undefined)?.message || error}`, true);
+      flashMessage(`✗ ${errorMessage(error)}`, true);
       return null;
     } finally {
       loading.value = false;
@@ -280,7 +281,7 @@ export const useSyncStore = defineStore('sync', () => {
       await refreshStatus();
       flashMessage('已清空同步配置');
     } catch (error) {
-      flashMessage(`✗ ${(error as Error | undefined)?.message || error}`, true);
+      flashMessage(`✗ ${errorMessage(error)}`, true);
       return null;
     } finally {
       loading.value = false;
@@ -324,13 +325,13 @@ export const useSyncStore = defineStore('sync', () => {
           remoteHasUpdates.value = false;
           note = '，并已把云端备份升级为主密码可恢复的格式';
         } catch (error) {
-          note = `；但升级云端备份失败（${(error as Error | undefined)?.message || error}），请稍后在「立即同步」里手动推送一次`;
+          note = `；但升级云端备份失败（${errorMessage(error)}），请稍后在「立即同步」里手动推送一次`;
         }
       }
       flashMessage('✓ 自动同步已启用' + note);
       return true;
     } catch (error) {
-      flashMessage(`✗ ${(error as Error | undefined)?.message || error}`, true);
+      flashMessage(`✗ ${errorMessage(error)}`, true);
       return false;
     } finally {
       loading.value = false;
@@ -348,7 +349,7 @@ export const useSyncStore = defineStore('sync', () => {
       flashMessage('已关闭自动同步');
       return true;
     } catch (error) {
-      flashMessage(`✗ ${(error as Error | undefined)?.message || error}`, true);
+      flashMessage(`✗ ${errorMessage(error)}`, true);
       return false;
     } finally {
       loading.value = false;
@@ -371,7 +372,7 @@ export const useSyncStore = defineStore('sync', () => {
     } catch (error) {
       // 探测失败不阻塞启动，静默
       // eslint-disable-next-line no-console
-      console.warn('[sync] checkRemoteUpdates failed:', (error as Error | undefined)?.message || error);
+      console.warn('[sync] checkRemoteUpdates failed:', errorMessage(error));
     }
   }
 
@@ -415,7 +416,7 @@ export const useSyncStore = defineStore('sync', () => {
             remoteHasUpdates.value = false;
           } catch (error) {
             // 自动同步失败 announce，不打断用户（典型：冲突，让用户手动处理）
-            workbenchBridge?.announce?.('自动同步失败：' + ((error as Error | undefined)?.message || error) + '（请到同步面板处理）');
+            workbenchBridge?.announce?.('自动同步失败：' + errorMessage(error) + '（请到同步面板处理）');
           }
           if (autoPushPending) { autoPushPending = false; rerun = true; }
         }
@@ -449,7 +450,7 @@ export const useSyncStore = defineStore('sync', () => {
       await refreshStatus();
       flashMessage(enabled ? '✓ 已开启凭据与私钥同步' : '已关闭凭据与私钥同步（仅同步资产元数据）');
     } catch (error) {
-      flashMessage(`✗ 操作失败：${(error as Error | undefined)?.message || error}`, true);
+      flashMessage(`✗ 操作失败：${errorMessage(error)}`, true);
     }
   }
 

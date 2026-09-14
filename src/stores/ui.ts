@@ -23,6 +23,7 @@ import {
   THEME_ORDER
 } from '../composables/useTheme';
 import type { ThemeMode } from '../composables/useTheme';
+import { errorMessage } from '../lib/errorMessage';
 import { parseSshTarget } from '../lib/parseSshTarget';
 
 // localStorage key（CRITICAL: do NOT rename — Critic 改进 3）
@@ -304,7 +305,14 @@ export const useUiStore = defineStore('ui', () => {
       if (tab === 'files' && typeof workbenchBridge.filesStore === 'function') {
         const filesStore = workbenchBridge.filesStore();
         if (filesStore && typeof filesStore.refreshRemoteFiles === 'function') {
-          filesStore.refreshRemoteFiles().catch((error: Error) => announce('远程文件刷新失败：' + error.message));
+          // 后端 `#[tauri::command]` 返回 Err(String) 时前端 invoke 以**字符串**（不是
+          // Error 实例）reject，标成 Error 再取 .message 只会拿到 undefined，用户看到的是
+          // 「远程文件刷新失败：undefined」，真实故障原因被吞掉——取值统一走 errorMessage，
+          // 参数标注放宽为 unknown（.catch 回调默认是 any，标 unknown 才受类型保护）。
+          // 未接管的 rejected Promise：announce 同步返回 number|null（notify 的返回类型，
+          // 非 thenable），回调体无 await、不返回 Promise，故这条 .catch() 的派生 Promise
+          // 不会因回调返回值而 rejected；本语句的返回值无人接管这一事实不再构成风险。
+          filesStore.refreshRemoteFiles().catch((error: unknown) => announce('远程文件刷新失败：' + errorMessage(error)));
           filesStore.manualRemotePathInput = filesStore.remotePath;
           filesStore.manualLocalPathInput = filesStore.localPath;
           if (!filesStore.localPath) filesStore.refreshLocalFiles().catch(() => null);

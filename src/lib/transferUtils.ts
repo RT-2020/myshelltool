@@ -9,13 +9,29 @@
 export type TransferOp =
   | { kind: 'file'; file: File; remoteTarget: string }             // 上传（浏览器 File）
   | { kind: 'localEntry'; entry: unknown; remoteTarget: string }   // 上传（本地条目，形状由 files store 决定）
-  | { kind: 'download'; entry: unknown };                          // 下载
+  // 下载：下载已改为「后端流式写入本地文件」，因此需要记住用户选定的落盘路径。
+  // localPath 为 null 表示「尚未选定」——首次执行时弹系统目录选择框，
+  // 重试时复用已解析路径（避免重试让用户重选一次）。
+  // destDir：本次选定的保存目录。批量下载时由第一个文件选定、同批其余文件复用，
+  // 因此整批只弹一次目录框（不是每个文件一次）。
+  | { kind: 'download'; entry: unknown; localPath: string | null; destDir?: string | null };
 
 /** 传输队列项（files store 的 transferQueue 元素形状）。 */
 export interface TransferQueueItem {
   id: string;
   direction: string; // 'upload' | 'download'
   name: string;
+  /**
+   * 发起本次传输时所属资产的 id（Wave: 跨资产归属修复）。
+   *
+   * 为什么必须有它：重试（retryTransfer）原先用「当前活跃会话」解析目标，
+   * 用户在 A 上失败了传输、切到 B 再点重试，重试会**在 B 上按 A 的路径继续**——
+   * 路径与文件名都来自原传输项，落到另一台服务器上（可能静默成功）。
+   * 记下发起时的资产 id，重试时按它解析会话，解析不到就明确拒绝而不是换机器。
+   *
+   * 可选：历史队列项（该字段引入前构造的）没有此值，调用方需容忍 undefined。
+   */
+  assetId?: string | null;
   remotePath: string;
   op: TransferOp | null;
   transferred: number;
@@ -37,6 +53,8 @@ export interface BuildTransferItemArgs {
   remotePath: string;
   total?: number | null;
   op?: TransferOp | null;
+  /** 发起时的资产 id（见 TransferQueueItem.assetId）。 */
+  assetId?: string | null;
 }
 
 /**
@@ -74,11 +92,12 @@ export function formatEta(seconds: number | null | undefined): string {
  *   - 上传（本地条目）     : { kind: 'localEntry', entry, remoteTarget }
  *   - 下载                : { kind: 'download', entry }
  */
-export function buildTransferItem({ id, direction, name, remotePath, total, op }: BuildTransferItemArgs): TransferQueueItem {
+export function buildTransferItem({ id, direction, name, remotePath, total, op, assetId }: BuildTransferItemArgs): TransferQueueItem {
   return {
     id,
     direction,
     name,
+    assetId: assetId ?? null,
     remotePath,
     op: op || null,
     transferred: 0,

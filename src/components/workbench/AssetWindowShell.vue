@@ -12,8 +12,9 @@
  * 样式复用全局 workbench-shell.scss 的 .titlebar / .window-btn / .main /
  * .resize / .statusbar / .sb-* 系列（本组件 scoped 仅写差异），避免双份实现漂移。
  *
- * 关窗流程：onCloseRequested 拦截系统关闭 → 无活跃会话直接 destroy；
- * 有则弹 confirmCloseAssetWindow 确认（body 在 ConfirmCloseAssetWindowContent），
+ * 关窗流程：onCloseRequested 拦截系统关闭 → 有在途传输则提示并中止（防远端
+ * 半截文件 + 泄漏写入句柄，见 requestCloseAssetWindow 注释）→ 无活跃会话直接
+ * destroy；有则弹 confirmCloseAssetWindow 确认（body 在 ConfirmCloseAssetWindowContent），
  * 确认后先等 connecting 会话 settle 再断开全部，最后 destroy（绕过
  * close-requested 防递归确认）。
  *
@@ -164,6 +165,20 @@ function requestClose() {
 // 关窗流程（核心）：无活跃会话直接销毁；有则确认后 断开全部 → 销毁
 // ============================================================
 async function requestCloseAssetWindow() {
+  // 传输中守卫（置于最前，早于会话统计与确认弹窗）：销毁窗口会连 JS 上下文
+  // 一起销毁，但 Rust 侧 SshSessionManager 里 sftp_upload_start 建立的写入句柄
+  // 无人清理——远端留下的是「半截文件」（不是没传、也不是传完，而是损坏的不
+  // 完整文件），且每个泄漏句柄持续占用远端 OpenSSH 的 MaxSessions 配额（默认
+  // 10），耗尽后该服务器上所有 SFTP/监控通道都报 Channel open failed。
+  // 因此有在途/排队传输时直接阻断关窗，不进入会话确认流程、不销毁窗口。
+  // （不做主动取消/断开：编排不在关窗流程范围内，交由用户在传输列表处理。）
+  if (activeTransferCount.value > 0) {
+    props.store.announce?.(
+      `有 ${activeTransferCount.value} 个传输任务正在进行，请等待完成或先在传输列表取消后再关闭窗口`,
+      { level: 'warn' }
+    );
+    return;
+  }
   const active = (props.store.sessions || []).filter(
     s => s.status === 'connected' || s.status === 'connecting'
   );
@@ -190,7 +205,7 @@ async function closeAfterConfirm() {
     (props.store.sessions || []).some(s => s.status === 'connecting')
     && Date.now() < deadline
   ) {
-    await new Promise(resolve => setTimeout(resolve, 250));
+    await new Promise(resolve => setTimeout(resolve, 250)); // fact-guard:allow no-fixed-wait-frontend settle 轮询间隔：while 头每轮实测 sessions 状态，65s deadline 封顶，非就绪信号
   }
   if ((props.store.sessions || []).some(s => s.status === 'connecting')) {
     props.store.announce?.('连接仍在进行中，请稍候重试，或先在终端取消连接', { level: 'warn' });
@@ -245,7 +260,7 @@ onBeforeUnmount(() => {
       @dblclick="handleTitlebarDoubleClick"
     >
       <div class="tb-left" data-tauri-drag-region>
-        <AppBrandLogo :size="20" />
+        <AppBrandLogo :size="26" />
         <div class="tb-asset">
           <span class="tb-name">{{ asset?.name || '未知资产' }}</span>
           <span v-if="asset" class="tb-subtitle">{{ asset.username }}@{{ asset.host }}:{{ asset.port }}</span>

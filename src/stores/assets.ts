@@ -1,3 +1,4 @@
+import { buildGroupTree } from '@/lib/assetGroupTree';
 import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 import type {
@@ -14,6 +15,7 @@ import {
   normalizeAsset,
   slugify
 } from '../services/backend';
+import { errorMessage } from '../lib/errorMessage';
 
 /** assets store 实际消费的 workbench bridge 最小结构。 */
 interface AssetsWorkbenchBridge {
@@ -21,6 +23,11 @@ interface AssetsWorkbenchBridge {
   modal: ModalState;
   clearFileSelection(): void;
   autoPushIfEnabled(): void | Promise<void>;
+  /**
+   * selectedAsset 切换通知（files store 消费：重置远程面板残留 + 有会话时自动
+   * 加载）。可选：注入方缺该方法时降级为不通知（旧行为）。
+   */
+  handleAssetSelected?(assetId: string): void;
 }
 /**
  * useAssetsStore — Wave 2 Step 2.2
@@ -97,59 +104,6 @@ export const useAssetsStore = defineStore('assets', () => {
   //   3. 每个 asset 推入 nodeMap.get(asset.group).items；group==='未分组' 推入未分组节点。
   //   4. 节点顺序：路径按首次出现顺序（声明优先，asset.group 补充）。
   // ------------------------------------------------------------
-  function buildGroupTree(assetList: NormalizedConnectionAsset[], groupList?: string[] | null): GroupTreeNode {
-    const root: GroupTreeNode = { name: '', path: '', parent: '', children: [], items: [] };
-    const ungrouped: GroupTreeNode = { name: '未分组', path: '未分组', parent: '', children: [], items: [] };
-    const nodeMap = new Map<string, GroupTreeNode>(); // path -> node（不含未分组，未分组单独管理）
-    const insertionOrder: string[] = []; // 记录 path 首次出现顺序（含中间隐式节点）
-
-    // 收集所有路径，按首次出现顺序保留
-    const seenPaths = new Set<string>();
-    const orderedPaths: string[] = [];
-    for (const p of groupList || []) {
-      if (p && p !== '未分组' && !seenPaths.has(p)) { seenPaths.add(p); orderedPaths.push(p); }
-    }
-    for (const asset of assetList) {
-      const p = asset.group && asset.group !== '未分组' ? asset.group : '';
-      if (p && !seenPaths.has(p)) { seenPaths.add(p); orderedPaths.push(p); }
-    }
-
-    function ensureNode(path: string): GroupTreeNode {
-      if (path === '未分组') return ungrouped;
-      const existing = nodeMap.get(path);
-      if (existing) return existing;
-      const slashIdx = path.lastIndexOf('/');
-      const parentPath = slashIdx === -1 ? '' : path.slice(0, slashIdx);
-      const name = slashIdx === -1 ? path : path.slice(slashIdx + 1);
-      const parent = parentPath ? ensureNode(parentPath) : root;
-      const node: GroupTreeNode = { name, path, parent: parentPath, children: [], items: [] };
-      parent.children.push(node);
-      nodeMap.set(path, node);
-      insertionOrder.push(path);
-      return node;
-    }
-
-    // 先建所有声明路径的节点骨架（保证空分组可见、层级顺序稳定）
-    for (const p of orderedPaths) ensureNode(p);
-
-    // 把 asset 挂到对应节点
-    for (const asset of assetList) {
-      const g = asset.group || '未分组';
-      if (g === '未分组') {
-        ungrouped.items.push(asset);
-      } else {
-        // 若 asset.group 是声明路径中未出现过的（理论不会，上面已收集），兜底建节点
-        const node = ensureNode(g);
-        node.items.push(asset);
-      }
-    }
-
-    // 未分组置于根 children 末尾（且仅在有内容时保留）
-    if (ungrouped.items.length || ungrouped.children.length) {
-      root.children.push(ungrouped);
-    }
-    return root;
-  }
 
   const groupedAssets = computed(() => buildGroupTree(assets.value, declaredGroups.value));
 
@@ -166,6 +120,11 @@ export const useAssetsStore = defineStore('assets', () => {
     if (workbenchBridge && typeof workbenchBridge.clearFileSelection === 'function') {
       workbenchBridge.clearFileSelection();
     }
+    // 文件面板归属联动：重置上一资产的远程目录残留，新资产有会话时自动加载。
+    // 漏通知的表现：连接第二个资产后面板仍显示第一个资产的目录。
+    try {
+      workbenchBridge?.handleAssetSelected?.(id);
+    } catch { /* files 侧刷新失败不影响选中 */ }
     if (announceSelection && selectedAsset.value) announce('已选择连接：' + selectedAsset.value.name);
   }
 
@@ -173,20 +132,59 @@ export const useAssetsStore = defineStore('assets', () => {
     return `${assetId}:${kind}`;
   }
 
-  function uniqueAssetId(name?: string, host?: string) {
-    const base = slugify(name || host || 'asset');
+  /** id 消歧后缀：base 空着就原样用，否则 base-2、base-3…（本 store 既有命名风格）。 */
+  function dedupeId(base: string, used: Set<string>) {
     let candidate = base;
     let index = 2;
-    while (assets.value.some(item => item.id === candidate)) {
+    while (used.has(candidate)) {
       candidate = base + '-' + index;
       index += 1;
     }
+    used.add(candidate);
     return candidate;
+  }
+
+  // 载入列表归一化：normalizeAsset 对无 id 资产以 name / host 的 slug 兜底，两条 slug
+  // 相同的资产（重名主机；「生产 Web」与「生产-Web」）于是拿到同一个 id。id 既是
+  // save_connection_asset 的 upsert 键，又是凭据键名前缀（credentialIdFor）——碰撞的
+  // 真实损失：后保存的资产静默覆盖先有那份、两个资产共用一份凭据（A 的密码被 B 的
+  // 保存覆盖，表现是「连接成功但用的是另一台的密码」）。故载入即消歧：首个出现的 id
+  // 保持不变，后续碰撞项追加 -2 / -3；只改 id，不动其它字段，不丢数据。
+  function normalizeAssetList(rawList?: AssetListResult['assets']): NormalizedConnectionAsset[] {
+    const list = (rawList || []).map(normalizeAsset);
+    const seen = new Set<string>();
+    let dupes = 0;
+    for (const asset of list) {
+      const id = dedupeId(asset.id, seen); // 已占用则追加 -2 / -3
+      if (id !== asset.id) { asset.id = id; dupes += 1; }
+    }
+    if (dupes) console.warn(`[assets] 检测到 ${dupes} 个重复资产 id，已自动消歧`);
+    return list;
+  }
+
+  // 生成新资产 id；查重依据默认取内存列表，新建路径传磁盘 ∪ 内存（见 saveAsset）。
+  function uniqueAssetId(name?: string, host?: string, takenIds?: ReadonlySet<string>) {
+    return dedupeId(slugify(name || host || 'asset'), new Set(takenIds ?? assets.value.map(item => item.id)));
   }
 
   async function saveAsset(input: ConnectionAssetInput, credentials: AssetSaveCredentials = {}) {
     const previous = assets.value.find(asset => asset.id === input.id);
-    const id = input.id || uniqueAssetId(input.name, input.host);
+    // 新建路径（input.id 为空）：生成 id 前先与磁盘真实列表对账——只信 assets.value 会在
+    // 列表过期时（外部改写了 connection-assets.json）造出磁盘上已存在的 id，随即被
+    // save_connection_asset 以 upsert 静默覆盖。不用 reloadAssets()：它会连带改写
+    // selectedAssetId / declaredGroups / assetSource。拉取失败降级为内存查重并记 warn。
+    let id = input.id;
+    if (!id) {
+      let diskIds: Set<string> | undefined;
+      try {
+        const disk = await invokeBackend<AssetListResult>('list_connection_assets');
+        // 查重依据 = 磁盘 ∪ 内存：磁盘可能被外部改写，内存可能含尚未落盘的项
+        diskIds = new Set([...normalizeAssetList(disk.assets), ...assets.value].map(asset => asset.id));
+      } catch (error) {
+        console.warn('[assets] 新建资产前拉取磁盘资产列表失败，降级为按内存列表查重：', error);
+      }
+      id = uniqueAssetId(input.name, input.host, diskIds);
+    }
     const item = normalizeAsset({
       ...input,
       id,
@@ -236,7 +234,7 @@ export const useAssetsStore = defineStore('assets', () => {
     }
 
     const result = await invokeBackend<AssetListResult>('save_connection_asset', { asset: item });
-    assets.value = (result.assets || []).map(normalizeAsset);
+    assets.value = normalizeAssetList(result.assets);
     declaredGroups.value = result.groups || [];
     assetSource.value = { ...result, count: result.count ?? result.assets?.length ?? assets.value.length };
     selectAsset(item.id, false);
@@ -260,7 +258,7 @@ export const useAssetsStore = defineStore('assets', () => {
       }
     }
     const result = await invokeBackend<AssetListResult>('delete_connection_asset', { id });
-    assets.value = (result.assets || []).map(normalizeAsset);
+    assets.value = normalizeAssetList(result.assets);
     declaredGroups.value = result.groups || [];
     assetSource.value = { ...result, count: result.count ?? result.assets?.length ?? assets.value.length };
     // 删除当前选中项后，回退到首项（或空）
@@ -285,7 +283,7 @@ export const useAssetsStore = defineStore('assets', () => {
   // ------------------------------------------------------------
   async function reloadAssets() {
     const result = await invokeBackend<AssetListResult>('list_connection_assets');
-    assets.value = (result.assets || []).map(normalizeAsset);
+    assets.value = normalizeAssetList(result.assets);
     declaredGroups.value = result.groups || [];
     assetSource.value = { ...result, count: result.count ?? result.assets?.length ?? assets.value.length };
     // 选中项若在拉取后的列表里已不存在，回落到首项（与 deleteAsset 的回退口径一致）；
@@ -332,7 +330,7 @@ export const useAssetsStore = defineStore('assets', () => {
   // ------------------------------------------------------------
   async function renameGroup(oldPath: string, newPath: string) {
     const result = await invokeBackend<AssetListResult>('rename_asset_group', { oldPath, newPath });
-    assets.value = (result.assets || []).map(normalizeAsset);
+    assets.value = normalizeAssetList(result.assets);
     declaredGroups.value = result.groups || [];
     assetSource.value = { ...result, count: result.count ?? result.assets?.length ?? assets.value.length };
     wb().modal = { type: null };
@@ -342,7 +340,7 @@ export const useAssetsStore = defineStore('assets', () => {
 
   async function dissolveGroup(path: string) {
     const result = await invokeBackend<AssetListResult>('dissolve_asset_group', { path });
-    assets.value = (result.assets || []).map(normalizeAsset);
+    assets.value = normalizeAssetList(result.assets);
     declaredGroups.value = result.groups || [];
     assetSource.value = { ...result, count: result.count ?? result.assets?.length ?? assets.value.length };
     announce('分组已解散：' + path);
@@ -351,7 +349,7 @@ export const useAssetsStore = defineStore('assets', () => {
 
   async function createGroup(path: string) {
     const result = await invokeBackend<AssetListResult>('create_asset_group', { path });
-    assets.value = (result.assets || []).map(normalizeAsset);
+    assets.value = normalizeAssetList(result.assets);
     declaredGroups.value = result.groups || [];
     assetSource.value = { ...result, count: result.count ?? result.assets?.length ?? assets.value.length };
     wb().modal = { type: null };
@@ -379,7 +377,7 @@ export const useAssetsStore = defineStore('assets', () => {
       declaredGroups.value = result.groups || [];
       maybeAutoPush();
     } catch (error) {
-      announce('分组排序失败：' + ((error as Error | undefined)?.message || error));
+      announce('分组排序失败：' + errorMessage(error));
     }
   }
 
@@ -428,6 +426,14 @@ export const useAssetsStore = defineStore('assets', () => {
     selectAsset,
     credentialIdFor,
     uniqueAssetId,
+    /**
+     * 列表级归一化（含重复 id 消歧）。对外导出是因为**启动载入**发生在
+     * workbench 的初始化里（`workbench.ts` 的 `Promise.all` 之后直接赋值
+     * assetsStore.assets），不属于本 store 的任何 action——若那条路径漏掉消歧，
+     * 磁盘上两个同 slug 的无 id 资产在启动后就会同 id，编辑其一会 upsert 覆盖
+     * 另一个并共用 `credentialIdFor(id, ...)` 的凭据键。
+     */
+    normalizeAssetList,
     saveAsset,
     deleteAsset,
     reloadAssets,

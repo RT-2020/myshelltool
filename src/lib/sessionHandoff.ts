@@ -102,6 +102,11 @@ export interface HandoffSessionsStore {
 export interface HandoffWorkbenchStore {
   announce?(message: string, options?: { level?: string }): unknown;
   onSessionClosed?(assetId?: string | null): unknown;
+  // 本窗口的在途/排队传输（workbench.activeTransfers）。移交守据（见
+  // pushSessionToMainWindow）：会话移走后本窗口即销毁，在途传输依赖的写入句柄
+  // 还没跑完清理代码就连同 JS 上下文一起消失，句柄变成无人认领的孤儿。
+  // 可选成员：asset 窗口外的调用方（如主窗口 tearoff 路径）传的 store 无需提供。
+  activeTransfers?: unknown[];
 }
 
 // 遍历 normal buffer 导出纯文本（serialize addon 不可用时的回退）。已知限制：
@@ -462,6 +467,21 @@ function waitMergeAckWithGrace(sessionId: string, primary: Promise<MergeAckResul
 export async function pushSessionToMainWindow({ sessionsStore, workbenchStore, sessionId }: MigrateSessionOutArgs): Promise<boolean> {
   const session = sessionsStore.sessions.find(item => item.sessionId === sessionId);
   if (!session) return false;
+  // 在途传输守卫（必须早于 detachSessionLocal，也早于任何中转写入）：移交成功后
+  // 本窗口会随空窗自动销毁，而在途上传/下载的写入句柄由本窗口 JS 侧的传输代码
+  // 收尾——上下文一消失就再没人清理，句柄成为孤儿（远端留半截文件，且每个泄漏
+  // 句柄持续占用 OpenSSH MaxSessions 配额）。关窗按钮已有同义守卫（见
+  // AssetWindowShell.requestCloseAssetWindow），但这里直接 destroy() 绕过
+  // close-requested，故守卫需在协议层再拦一道。
+  // 先拒后动：不写中转、不移交、不销毁、不触发 MERGE_PUSH，本窗口状态完整保留。
+  const activeTransfers = workbenchStore?.activeTransfers?.length || 0;
+  if (activeTransfers > 0) {
+    workbenchStore?.announce?.(
+      `本窗口仍有 ${activeTransfers} 个传输任务，无法移回主窗口；请等待完成后再移回`,
+      { level: 'warn' }
+    );
+    return false;
+  }
   // getByLabel 是 async，须 await：主窗口已关闭时 MERGE_PUSH 无人应答
   const mainWindow = await getExistingTauriWebviewWindow('main');
   if (!mainWindow) {

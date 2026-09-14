@@ -39,7 +39,7 @@ const isSearch = computed(() => props.type === 'search');
 const isPassword = computed(() => props.type === 'password');
 const hasValue = computed(() => props.modelValue !== '' && props.modelValue !== null && props.modelValue !== undefined);
 const showPassword = ref(false);
-const fieldType = computed(() => (isPassword.value && !showPassword.value ? 'password' : props.type));
+const fieldType = computed(() => (isPassword.value ? (showPassword.value ? 'text' : 'password') : props.type));
 const errorId = computed(() => (props.id ? `${props.id}-error` : `app-input-error-${instanceSeq}`));
 
 function onInput(e: Event) {

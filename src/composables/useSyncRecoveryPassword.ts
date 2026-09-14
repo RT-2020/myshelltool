@@ -1,4 +1,5 @@
 import { invokeBackend } from '@/services/backend';
+import { errorMessage } from '@/lib/errorMessage';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useSyncStore } from '@/stores/sync';
 
@@ -27,7 +28,7 @@ export function useSyncRecoveryPassword() {
       await syncStore.refreshStatus(); // 让「查看恢复密码」入口立刻出现
       return password;
     } catch (error) {
-      store.announce(`生成恢复密码失败：${(error as Error | undefined)?.message || error}`, { level: 'error' });
+      store.announce(`生成恢复密码失败：${errorMessage(error)}`, { level: 'error' });
       return null;
     }
   }
@@ -40,7 +41,7 @@ export function useSyncRecoveryPassword() {
     try {
       return await invokeBackend<string | null>('sync_reveal_recovery_password');
     } catch (error) {
-      store.announce(`读取恢复密码失败：${(error as Error | undefined)?.message || error}`, { level: 'error' });
+      store.announce(`读取恢复密码失败：${errorMessage(error)}`, { level: 'error' });
       return null;
     }
   }
