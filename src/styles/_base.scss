@@ -78,6 +78,16 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   box-shadow: var(--focus-ring);
 }
 
+// 可编辑元素例外：原生 input/textarea/select 聚焦时不吃全局光环——
+// 光环画在容器内的 input 上会形成「框中框」（tb-search / sb-quick / 文件面板
+// 路径编辑态都踩过）。想要光环的组件（AppInput/AppSelect/TerminalSearchBar/
+// 过滤浮窗）在自己的类选择器 :focus 里声明，优先级高于本条。
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  box-shadow: none;
+}
+
 // Reduced motion（a11y）：尊重系统「减弱动态效果」偏好
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

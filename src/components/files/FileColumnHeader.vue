@@ -367,14 +367,13 @@ onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
   font-size: var(--text-xs);
   font-family: var(--font-mono);
   outline: none;
-  transition:
-    border-color var(--motion-fast) var(--ease-standard),
-    box-shadow var(--motion-fast) var(--ease-standard);
+  transition: border-color var(--motion-fast) var(--ease-standard);
 }
 
+// 焦点反馈只做 1px 描边变色；22px 小输入框上叠 3px 光环（--focus-ring）
+// 会形成刺眼的「框中框」，与标题栏搜索框同口径。
 .file-column-manual-path:focus {
   border-color: var(--accent);
-  box-shadow: var(--focus-ring);
 }
 
 .filter-host {
