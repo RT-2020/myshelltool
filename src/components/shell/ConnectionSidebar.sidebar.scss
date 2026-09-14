@@ -203,7 +203,9 @@
 }
 .sb-quick:focus-within {
   background: var(--app-control);
-  border-color: var(--accent);
+}
+.sb-quick:focus-within svg {
+  color: var(--accent);
 }
 .sb-quick svg {
   width: 13px;
