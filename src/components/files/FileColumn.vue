@@ -425,6 +425,7 @@ function crumbClick(seg: { path: string }) {
       @enter-path-editing="enterPathEditing"
       @manual-path-input="onManualPathInput"
       @path-input-keydown="onPathInputKeydown"
+      @blur-path-input="exitPathEditing"
       @crumb-click="crumbClick"
       @toggle-filter-input="onFilterInput"
       @clear-filter="clearFilter"

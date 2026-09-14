@@ -99,6 +99,11 @@ function updateSearchQuery(event: Event) {
   props.store.setGlobalSearchQuery((event.target as HTMLInputElement).value);
 }
 
+function clearSearch() {
+  props.store.setGlobalSearchQuery('');
+  searchInputRef.value?.focus();
+}
+
 function activateSearchSuggestion(item: SearchSuggestion) {
   props.store.activateSuggestion(item);
 }
@@ -240,13 +245,14 @@ onMounted(() => {
       <div class="tb-center" data-tauri-drag-region>
         <div
           class="tb-search"
+          :class="{ 'has-value': Boolean(searchState.query) }"
           data-no-drag="true"
           role="combobox"
           :aria-expanded="searchOpen ? 'true' : 'false'"
           aria-label="全局搜索"
           @click="openSearch"
         >
-          <Search :size="14" />
+          <Search :size="14" class="tb-search-icon" />
           <input
             ref="searchInputRef"
             class="tb-search-input tb-search-text"
@@ -254,9 +260,21 @@ onMounted(() => {
             :value="searchState.query"
             placeholder="搜索连接 / 命令 / 文件"
             spellcheck="false"
+            autocomplete="off"
             @input="updateSearchQuery"
             @keydown="onSearchKeydown"
           />
+          <!-- antd allowClear 语义：有值才出现；点击清空并保持聚焦（不吞焦点） -->
+          <button
+            v-if="searchState.query"
+            class="tb-search-clear"
+            type="button"
+            aria-label="清空搜索"
+            title="清空"
+            @click.stop="clearSearch"
+          >
+            <X :size="12" />
+          </button>
           <kbd>Ctrl K</kbd>
           <ul v-if="searchOpen" class="tb-suggestions" role="listbox">
             <li

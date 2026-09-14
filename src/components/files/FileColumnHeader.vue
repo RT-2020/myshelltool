@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import {
   ArrowUp,
   ChevronRight,
@@ -41,12 +41,26 @@ const emit = defineEmits<{
   'enter-path-editing': [];
   'manual-path-input': [event: Event];
   'path-input-keydown': [event: KeyboardEvent];
+  'blur-path-input': [];
   'crumb-click': [seg: PathCrumb];
   'toggle-filter-input': [event: Event];
   'clear-filter': [];
   'go-up': [];
   'refresh': [];
 }>();
+
+const pathInputRef = ref<HTMLInputElement | null>(null);
+
+// 编辑态挂载即聚焦并全选：HTML 的 autofocus 属性对动态插入的元素不生效
+// （只认文档初次加载），且全选让「整路径覆盖输入」一键可达（antd Editable
+// 常规形态）。
+watch(() => props.pathEditing, editing => {
+  if (!editing) return;
+  nextTick(() => {
+    pathInputRef.value?.focus();
+    pathInputRef.value?.select();
+  });
+});
 
 const filterOpen = ref(false);
 const filterPopoverRef = ref<HTMLElement | null>(null);
@@ -117,13 +131,14 @@ onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
 
       <input
         v-else
+        ref="pathInputRef"
         class="file-column-manual-path"
         :value="manualPathInput"
         placeholder="路径（回车跳转，Esc 取消）"
         spellcheck="false"
-        autofocus
         @input="emit('manual-path-input', $event)"
         @keydown="emit('path-input-keydown', $event)"
+        @blur="emit('blur-path-input')"
       />
     </div>
 

@@ -65,21 +65,41 @@
   letter-spacing: -0.01em;
 }
 
+// 全局搜索框 —— antd Input 状态语义（default/hover/focus + allowClear），
+// 外加标题栏场景的「宽度呼吸」：默认收窄 320，聚焦展开 480，
+// 「现在可以输入」这一状态一眼可辨（VSCode/GitHub 同款惯例）。
 .tb-search {
   position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 480px;
-  height: 32px;
-  padding: 0 12px;
-  background: var(--app-panel);
+  width: 320px;
+  height: 30px;
+  padding: 0 10px;
+  background: var(--app-panel-2);
   border: 1px solid var(--app-border);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
+  transition:
+    width 0.2s var(--ease-standard),
+    border-color 0.15s var(--ease-standard),
+    box-shadow 0.15s var(--ease-standard),
+    background-color 0.15s var(--ease-standard);
+}
+.tb-search:hover {
+  border-color: var(--accent-soft-strong);
+  background: var(--app-panel);
+}
+.tb-search:focus-within {
+  width: 480px;
+  cursor: text;
+  background: var(--app-panel);
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
 }
 
-.tb-search svg { color: var(--app-muted); stroke-width: 1.7; }
+.tb-search .tb-search-icon { color: var(--app-muted); stroke-width: 1.7; flex-shrink: 0; }
+.tb-search:focus-within .tb-search-icon { color: var(--accent); }
 .tb-search-input {
   flex: 1;
   min-width: 0;
@@ -97,6 +117,32 @@
 .tb-search-input::placeholder {
   color: var(--app-muted);
 }
+// type="search" 在 Chromium 会画原生 × 取消按钮，与自定义清除按钮重复
+.tb-search-input::-webkit-search-cancel-button {
+  display: none;
+  appearance: none;
+}
+
+.tb-search-clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--app-muted);
+  cursor: pointer;
+}
+.tb-search-clear:hover {
+  background: var(--app-border);
+  color: var(--app-text);
+}
+.tb-search-clear svg { stroke-width: 2.2; }
+
 .tb-search kbd {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -105,6 +151,13 @@
   border-radius: 5px;
   background: var(--app-panel-2);
   color: var(--app-muted);
+  transition: opacity 0.15s var(--ease-standard);
+}
+// 聚焦或有值时让出空间（信息此时已无意义）：antd 同款弱化策略
+.tb-search:focus-within kbd,
+.tb-search.has-value kbd {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .tb-suggestions {
