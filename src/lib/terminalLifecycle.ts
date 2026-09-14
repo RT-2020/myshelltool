@@ -14,7 +14,7 @@ import { markRaw, reactive, type Ref } from 'vue';
 import type { NotifyOptions, NormalizedConnectionAsset } from '@/types/domain';
 import { buildTerminalOptions } from '@/composables/useTerminalConfig';
 import { useAutoReconnect } from '@/composables/useAutoReconnect';
-import { composeKeyHandlers, createGlobalSearchHotkeyRelease, createNativePasteGuard } from '@/lib/terminalGuards';
+import { composeKeyHandlers, createAppShortcutRelease, createNativePasteGuard } from '@/lib/terminalGuards';
 import { isAssetWindowMode } from '@/lib/assetWindows';
 import { invokeBackend } from '@/services/backend';
 import { errorMessage } from '@/lib/errorMessage';
@@ -235,13 +235,14 @@ export async function createTerminalForAsset(asset: NormalizedConnectionAsset, o
   });
   // 终端按键守卫链（attachCustomKeyEventHandler 只能挂一个，经 composeKeyHandlers
   // 组合；connectSelected / adopt 两条创建路径都走本函数，天然全覆盖）：
-  // ① Ctrl+K 放行——焦点在终端时 xterm 会把它消费成 VT kill-line（\x0b）且事件
-  //    不冒泡，App.vue 的全局搜索快捷键因此失效（实测复现）；主窗口放行给全局
-  //    监听，资产独立窗口不注册全局搜索、保留终端 kill-line 原生行为。
+  // ① 应用快捷键放行——焦点在终端时 xterm 会把 Ctrl 组合键消费成 VT 序列
+  //    （Ctrl+K→\x0b、Ctrl+F→\x06、Ctrl+W→\x17、Ctrl+Tab→\t）且拦截冒泡，window
+  //    上的应用监听收不到 → 终端快捷键在终端焦点下整体失效；主窗口放行给全局
+  //    监听，资产独立窗口不注册这些动作、保留终端原生行为。
   // ② 原生 Ctrl+V 粘贴守卫（安全红线）。闭包经 getSessionId 取 session 当前
   //    sessionId（重连期间 sessionId 会切换，不能写死初始值）。
   term.attachCustomKeyEventHandler(composeKeyHandlers(
-    createGlobalSearchHotkeyRelease({ enabled: !isAssetWindowMode() }),
+    createAppShortcutRelease({ enabled: !isAssetWindowMode() }),
     createNativePasteGuard({
       getSessionId: () => session.sessionId,
       requestDangerousPaste: ctx.requestDangerousPaste,
