@@ -14,7 +14,8 @@ import { markRaw, reactive, type Ref } from 'vue';
 import type { NotifyOptions, NormalizedConnectionAsset } from '@/types/domain';
 import { buildTerminalOptions } from '@/composables/useTerminalConfig';
 import { useAutoReconnect } from '@/composables/useAutoReconnect';
-import { createNativePasteGuard } from '@/lib/terminalGuards';
+import { composeKeyHandlers, createGlobalSearchHotkeyRelease, createNativePasteGuard } from '@/lib/terminalGuards';
+import { isAssetWindowMode } from '@/lib/assetWindows';
 import { invokeBackend } from '@/services/backend';
 import { errorMessage } from '@/lib/errorMessage';
 import type { AdoptSessionPayload, SessionEntry, SessionOverrides, TerminalModules } from '@/lib/terminalTypes';
@@ -232,14 +233,21 @@ export async function createTerminalForAsset(asset: NormalizedConnectionAsset, o
       ctx.announce('自动重连失败：' + session.asset.name + '，请手动重连', { level: 'error' });
     }
   });
-  // 原生 Ctrl+V 粘贴守卫（安全红线，两条创建路径都必须有）：markRaw(term) 之后挂
-  // handler；闭包经 getSessionId 取 session 当前 sessionId（重连期间 sessionId
-  // 会切换，不能写死初始值）。
-  term.attachCustomKeyEventHandler(createNativePasteGuard({
-    getSessionId: () => session.sessionId,
-    requestDangerousPaste: ctx.requestDangerousPaste,
-    announce: ctx.announce
-  }));
+  // 终端按键守卫链（attachCustomKeyEventHandler 只能挂一个，经 composeKeyHandlers
+  // 组合；connectSelected / adopt 两条创建路径都走本函数，天然全覆盖）：
+  // ① Ctrl+K 放行——焦点在终端时 xterm 会把它消费成 VT kill-line（\x0b）且事件
+  //    不冒泡，App.vue 的全局搜索快捷键因此失效（实测复现）；主窗口放行给全局
+  //    监听，资产独立窗口不注册全局搜索、保留终端 kill-line 原生行为。
+  // ② 原生 Ctrl+V 粘贴守卫（安全红线）。闭包经 getSessionId 取 session 当前
+  //    sessionId（重连期间 sessionId 会切换，不能写死初始值）。
+  term.attachCustomKeyEventHandler(composeKeyHandlers(
+    createGlobalSearchHotkeyRelease({ enabled: !isAssetWindowMode() }),
+    createNativePasteGuard({
+      getSessionId: () => session.sessionId,
+      requestDangerousPaste: ctx.requestDangerousPaste,
+      announce: ctx.announce
+    })
+  ));
   // 搜索计数订阅：findNext/findPrevious 结果变化时更新 session.searchMatch
   session.searchResultsDisposable = search.onDidChangeResults(({ resultIndex, resultCount }) => {
     session.searchMatch = { index: resultIndex, total: resultCount };
