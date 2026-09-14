@@ -20,9 +20,9 @@ description: 发布 myshelltool（Tauri 2 桌面 SSH 客户端）的新版本。
 
 ---
 
-## 发版主流程（6 步）
+## 发版主流程（7 步）
 
-发版就是改版本号 → 生成发布说明 → 提交 → 打 tag → 推送 → 等产物。每一步都要做对。
+发版就是改版本号 → 同步 README → 提交 → 打 tag → 推送 → 等产物。每一步都要做对。
 
 ### 步骤 1：bump 版本号（用脚本，一次改 7 个版本源）
 
@@ -43,7 +43,16 @@ grep '^version' src-tauri/Cargo.toml crates/myshelltool-core/Cargo.toml
 ```
 应用自身版本值必须完全相同。脚本原理与失败处理见文末「附录：脚本说明」。
 
-### 步骤 2：（可选）预览发布说明
+### 步骤 2：同步 README（版本演进表 + 显著变化核对）
+
+README 的「版本演进」表随发版维护。历史上漏过（v0.14.0/v0.15.0 都没进表，2026-09 才补齐）——本步骤就是防这个：
+
+1. 在 README「版本演进」表末追加本版本行，格式与既有行一致（`| vX.Y.Z | 一句话重点 |`）。重点从 `git log <上个tag>..HEAD --oneline` 提炼：feat 优先，refactor/fix 择要归并成一句
+2. 核对表尾版本号 == 本次发版版本号，且无缺行（中间隔了未记录的版本就一并补齐）
+3. 本版有用户可见变化时，同步检查 README 的「功能特性」「已知限制」是否需要增删一句；MCP 工具集有变化时同步 `docs/mcp-setup.md` 的「可用能力一览」
+4. 提交：`git add README.md docs/mcp-setup.md && git commit -m "docs(readme): 版本演进同步 vX.Y.Z"`
+
+### 步骤 3：（可选）预览发布说明
 
 `release.yml` 会**自动**生成结构化发布说明：workflow 内跑 `scripts/gen-changelog.mjs`（`--from <上个tag> --to <本tag>`）产出 `release-notes.md`，注入 `latest.json` 的 `notes` 字段（应用内更新弹窗展示的更新日志就是它），并作为 GitHub Release body（`body_path`）。想在打 tag 前预览同一份内容：
 
@@ -66,7 +75,7 @@ node scripts/gen-changelog.mjs --from v0.5.0 --to v0.6.0
 
 可追加到 `CHANGELOG.md` 或本地留存。**此步纯预览**——发布说明由 workflow 自动生成注入，跳过不影响发版。
 
-### 步骤 3：本地验证 config schema（必做，防坑）
+### 步骤 4：本地验证 config schema（必做，防坑）
 
 ```bash
 cd src-tauri && cargo check
@@ -74,7 +83,7 @@ cd src-tauri && cargo check
 
 这步在 build.rs 阶段校验 `tauri.conf.json` 的 schema，能在本地 1-2 分钟内暴露配置错误（如字段名拼错），比等 CI 跑 8 分钟才发现快得多。**发版前必做。**
 
-### 步骤 4：打 tag 并推送
+### 步骤 5：打 tag 并推送
 
 tag 必须指向刚提交的 commit，所以先 push master 再 push tag（或一起）：
 ```bash
@@ -86,7 +95,7 @@ git push origin master --tags
 - `release.yml`（完整构建发版，约 8-12 分钟）← 这个是发版主体
 - `ci.yml`（master commit 触发的构建守护）← 顺带跑，必然绿
 
-### 步骤 5：监控 release.yml
+### 步骤 6：监控 release.yml
 
 用 GitHub REST API 查进度（**不需要认证**就能查公开仓库的 run 状态，比浏览器抓 DOM 稳定得多）：
 
@@ -102,7 +111,7 @@ curl -s "https://api.github.com/repos/RT-2020/myshelltool/actions/runs/RUN_ID/jo
 
 Build 步骤是关键且最耗时（8-12 分钟，完整 release 编译 + NSIS 打包 + 签名）。轮询间隔用 `sleep 180` 或 `sleep 240`，不要频繁查。
 
-### 步骤 6：验证产物
+### 步骤 7：验证产物
 
 Release 成功后，查 release 的附件（4 个文件必须都在）：
 ```bash
@@ -202,15 +211,16 @@ echo "6. Tauri build hook 使用 npm:"; grep -c '"beforeBuildCommand": "npm run 
 ```bash
 # 1. bump 版本号 + 自动提交（脚本改 7 个版本源 + Lore commit）
 node scripts/bump-version.mjs 0.6.0 --commit
-# 2. （可选）预览发布说明（CI 会自动生成注入，body 与 latest.json notes 同源）
+# 2. 同步 README 版本演进表并提交（见步骤 2）
+# 3. （可选）预览发布说明（CI 会自动生成注入，body 与 latest.json notes 同源）
 node scripts/gen-changelog.mjs --from v0.5.0 --to v0.6.0
-# 3. 本地验证 config schema（必做，防坑 2）
+# 4. 本地验证 config schema（必做，防坑 2）
 cd src-tauri && cargo check && cd ..
-# 4. 打 tag 推送（触发 release.yml + ci.yml）
+# 5. 打 tag 推送（触发 release.yml + ci.yml）
 git tag v0.6.0
 git push origin master --tags
-# 5. 轮询 release.yml 直到 conclusion: success（约 8-12 分钟）
-# 6. 验证 4 个产物文件齐全 + Release body 与 latest.json notes 均非空且一致
+# 6. 轮询 release.yml 直到 conclusion: success（约 8-12 分钟）
+# 7. 验证 4 个产物文件齐全 + Release body 与 latest.json notes 均非空且一致
 ```
 
 ---
