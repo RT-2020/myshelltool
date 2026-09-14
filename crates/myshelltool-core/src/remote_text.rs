@@ -10,6 +10,14 @@
 //! - **二进制**：前若干字节命中 NUL 或常见二进制魔数 → 拒绝（引导改用下载工具）；
 //! - **非 UTF-8 文本**：非法字节序列 → 拒绝并报出首个非法位置，不替换成 U+FFFD；
 //! - **UTF-8 文本**：原样返回，并标注是否带 BOM（BOM 会污染下游解析，调用方需知情）。
+//!
+//! 同主题的**文件名**侧事实见 [`is_lossy_remote_path`]：russh-sftp 原版对非 UTF-8
+//! 文件名做 lossy 解码（U+FFFD，不可逆）——按它反查服务器必然失配，且可能命中
+//! **名字字面含 U+FFFD 的另一个真实文件**（跨文件误删风险）。
+//! **v2.8 已根治**：本仓库 vendored fork（third-party/russh-sftp，[patch.crates-io]）
+//! 把非法字节可逆编码为 U+E000+b（PUA-A），回发时还原原始字节——文件名字节
+//! 全链路无损往返，普通操作不再产生 U+FFFD 名。本守卫保留为纵深防御
+//!（防 fork 失效/其它来源的失真名进入危险操作）。
 
 /// 探测二进制用的前缀长度（与常见实现一致的 512 字节启发式）。
 const SNIFF_LEN: usize = 512;
@@ -71,9 +79,51 @@ pub fn decode_remote_text(bytes: &[u8]) -> RemoteTextOutcome {
     }
 }
 
+/// 远端路径是否含 U+FFFD 替换符——russh-sftp 对非 UTF-8 文件名 lossy 解码的产物
+///（上游 `buf.rs`，暂无 raw bytes 接口，v2.6 审计 backlog #2）。
+///
+/// 这样的名字**无法忠实寻址**：拿它发 remove/rename/read/download，服务器按
+/// 字节比对，真实文件名（GBK 等）对不上 → "No such file"；更危险的是，若服务器
+/// 上**恰好存在**一个名字字面含 U+FFFD 的真实文件，操作会命中它——跨文件误删/
+/// 误覆盖（write/upload 的 create 是 O_CREAT|O_TRUNC 覆盖语义，分不清新建与
+/// 覆盖；MCP 场景 AI 宿主会把 sftp_list 的失真名回灌成目标路径）。因此所有
+/// 「按名寻址远端文件」的操作入口（GUI 的 read/write/upload/download/rename/
+/// remove 与 MCP 的 read/write/upload/download/remove）都必须先过本守卫，命中
+/// 即拒绝（fail-closed），文案引导用户在终端按真实文件名处理。
+///
+/// 唯一不拦的是「创建全新路径且名字由用户显式输入」的 mkdir（目录新建无覆盖
+/// 语义，名字失真立即自见）。
+pub fn is_lossy_remote_path(path: &str) -> bool {
+    path.contains('\u{FFFD}')
+}
+
+/// [`is_lossy_remote_path`] 命中时的统一拒绝文案（GUI 命令与 MCP 工具共用，
+/// 保证两边给用户的解释一致）。
+pub fn lossy_remote_path_error(path: &str) -> String {
+    format!(
+        "路径「{path}」含无法识别的字符（U+FFFD：远端文件名不是 UTF-8，客户端拿到的名字已失真）。\
+         按这个名字操作可能找不到真实文件、甚至误伤同名文件；请在终端里用真实文件名处理，\
+         或先把文件改成 UTF-8 文件名"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lossy_remote_path_detection() {
+        // russh-sftp lossy 解码产物（GBK 名字常见）、以及字面含 U+FFFD 的名字
+        assert!(is_lossy_remote_path("/tmp/\u{FFFD}\u{FFFD}.conf"));
+        assert!(is_lossy_remote_path("./\u{FFFD}"));
+        // 正常路径（含中文 UTF-8 文件名）不受影响
+        assert!(!is_lossy_remote_path("/etc/nginx/nginx.conf"));
+        assert!(!is_lossy_remote_path("/home/user/日志.log"));
+        // 拒绝文案点名路径并给出可操作指引
+        let msg = lossy_remote_path_error("/tmp/\u{FFFD}.sh");
+        assert!(msg.contains("/tmp/\u{FFFD}.sh"));
+        assert!(msg.contains("终端"));
+    }
 
     #[test]
     fn ascii_and_chinese_utf8_are_text() {
