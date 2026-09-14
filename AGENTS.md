@@ -219,7 +219,10 @@ npm run dev          # Vite 浏览器预览（127.0.0.1:41234）。无 SSH/文�
 npm run tauri:dev    # Tauri 桌面开发模式（完整功能）。SSH 类功能只能在此验证
 
 # —— 构建 ——
-npm run build        # 前端构建 = 事实门禁（lint:facts）→ vue-tsc 类型检查 → Vite 构建
+npm run build        # 前端构建 = 更新日志生成（gen-changelog-history.mjs 遍历 v* tag →
+                     #   src/generated/changelog.json，产物提交进 git，设置面板「更新日志」
+                     #   区块离线渲染；发版 CI 在 tag checkout 上重新生成最新全历史打进安装包）
+                     #   → 事实门禁（lint:facts）→ vue-tsc 类型检查 → Vite 构建
 npm run tauri:build  # 完整桌面安装包（Windows NSIS），beforeBuildCommand 走 npm run build 自动含门禁
 
 # —— 测试 ——

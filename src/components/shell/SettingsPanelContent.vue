@@ -35,6 +35,8 @@ import AppBrandLogo from '@/components/ui/AppBrandLogo.vue';
 import McpPanelContent from '@/components/shell/McpPanelContent.vue';
 import SyncPanelContent from '@/components/shell/SyncPanelContent.vue';
 import UpdateSection from '@/components/shell/UpdateSection.vue';
+import ChangelogSection from '@/components/shell/ChangelogSection.vue';
+import { openExternal } from '@/lib/openExternal';
 import { isTauriRuntime } from '@/services/backend';
 
 /**
@@ -101,20 +103,6 @@ watch(activeTab, id => {
   panelRef.value?.closest('.app-modal-body')?.scrollTo({ top: 0 });
 });
 
-async function openExternal(url: string) {
-  if (!isTauriRuntime()) {
-    window.open(url, '_blank', 'noopener');
-    return;
-  }
-  try {
-    const { openUrl } = await import('@tauri-apps/plugin-opener');
-    await openUrl(url);
-  } catch (e) {
-    console.warn('[settings] opener failed, fallback to window.open:', e);
-    window.open(url, '_blank', 'noopener');
-  }
-}
-
 // —— 版本号（关于与更新 tab）——
 // 接 @tauri-apps/api/app 的 getVersion（运行时真实值）；浏览器预览无 Tauri runtime 时 fallback。
 const appVersion = ref('—');
@@ -162,6 +150,10 @@ function selectTheme(value: string) {
         <!-- 更新区：单一主操作（检查更新），未注入 autoUpdate 时整体隐藏（浏览器预览）。
              状态机文案/进度条/更新日志已拆至 UpdateSection.vue（500 行 SFC 硬上限约束）。 -->
         <UpdateSection v-if="autoUpdate" :auto-update="autoUpdate" :app-version="appVersion" />
+
+        <!-- 更新日志（常驻）：任意状态下可回看当前/历史版本的更新内容，
+             数据为构建时打包的全历史 changelog.json（组件内自取，仅依赖 appVersion）。 -->
+        <ChangelogSection :app-version="appVersion" />
 
         <section class="block">
           <header class="block-head"><Info :size="12" />关于</header>
