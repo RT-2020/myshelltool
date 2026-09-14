@@ -367,14 +367,9 @@ onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
   font-size: var(--text-xs);
   font-family: var(--font-mono);
   outline: none;
-  transition: border-color var(--motion-fast) var(--ease-standard);
 }
-
-// 焦点反馈只做 1px 描边变色；22px 小输入框上叠 3px 光环（--focus-ring）
-// 会形成刺眼的「框中框」，与标题栏搜索框同口径。
-.file-column-manual-path:focus {
-  border-color: var(--accent);
-}
+// 描边恒定不变色（同标题栏搜索框口径）：编辑态本身就是模式切换的可见反馈，
+// 焦点由光标 + 全选高亮指示。
 
 .filter-host {
   position: relative;
