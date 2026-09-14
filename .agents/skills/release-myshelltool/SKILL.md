@@ -43,14 +43,16 @@ grep '^version' src-tauri/Cargo.toml crates/myshelltool-core/Cargo.toml
 ```
 应用自身版本值必须完全相同。脚本原理与失败处理见文末「附录：脚本说明」。
 
-### 步骤 2：（可选）生成发布说明
+### 步骤 2：（可选）预览发布说明
 
-`release.yml` 已开 `generate_release_notes: true`，GitHub 会自动生成基础发布说明。若想要**按 feat/fix 分组的中文结构化说明**，用 `scripts/gen-changelog.mjs` 生成后手动粘贴到 Release：
+`release.yml` 会**自动**生成结构化发布说明：workflow 内跑 `scripts/gen-changelog.mjs`（`--from <上个tag> --to <本tag>`）产出 `release-notes.md`，注入 `latest.json` 的 `notes` 字段（应用内更新弹窗展示的更新日志就是它），并作为 GitHub Release body（`body_path`）。想在打 tag 前预览同一份内容：
 
 ```bash
-node scripts/gen-changelog.mjs --for vX.Y.Z
-# 生成 vX.Y.Z 相对上个 tag 的结构化 changelog，输出到 stdout
+node scripts/gen-changelog.mjs --from v0.5.0 --to v0.6.0
+# 生成 v0.6.0 相对上个 tag 的结构化 changelog，输出到 stdout
 # 加 -o notes.md 可写入文件
+# 注意：--for 曾在 Windows 有坑（execSync 经 cmd.exe 吃 ^ 转义符，fromTag 算成自身），
+# 已修复（改用 ~1）；--from/--to 显式传参区间更透明，workflow 与本地预览均沿用。
 ```
 
 输出形如：
@@ -62,7 +64,7 @@ node scripts/gen-changelog.mjs --for vX.Y.Z
 - **terminal**: 重连后光标位置错乱
 ```
 
-可粘贴到发布后的 GitHub Release body，或追加到 `CHANGELOG.md`。**此步可选**——跳过也能正常发版，GitHub 默认说明够用。
+可追加到 `CHANGELOG.md` 或本地留存。**此步纯预览**——发布说明由 workflow 自动生成注入，跳过不影响发版。
 
 ### 步骤 3：本地验证 config schema（必做，防坑）
 
@@ -113,6 +115,15 @@ curl -s "https://api.github.com/repos/RT-2020/myshelltool/releases/tags/vX.Y.Z" 
 - `myshelltool_X.Y.Z_x64-setup.exe.sig` — **签名文件（自动更新校验用）**
 - `myshelltool-X.Y.Z-portable.zip` — 便携版
 - `latest.json` — 应用内自更新清单
+
+**发布说明双路检查**（latest.json notes 现由 workflow 内 `gen-changelog.mjs` 生成注入，Release body 同源 `body_path`）：
+1. Release 页面 body 非空（应为中文分组格式，不是 GitHub 默认英文 PR 平铺）；
+2. latest.json 的 `notes` 字段与 body 内容一致且非空：
+```bash
+curl -s "https://github.com/RT-2020/myshelltool/releases/latest/download/latest.json" \
+  | node -e "const j=JSON.parse(require('fs').readFileSync(0,'utf8'));console.log('version:',j.version,'notes 长度:',(j.notes||'').length);console.log((j.notes||'').split('\n').slice(0,3).join('\n'))"
+```
+任一为空/是 `myshelltool X.Y.Z` 占位串，回 run 日志查 `Generate release notes` / `Inject notes into latest.json` 两步。
 
 ---
 
@@ -191,16 +202,15 @@ echo "6. Tauri build hook 使用 npm:"; grep -c '"beforeBuildCommand": "npm run 
 ```bash
 # 1. bump 版本号 + 自动提交（脚本改 7 个版本源 + Lore commit）
 node scripts/bump-version.mjs 0.6.0 --commit
-# 2. （可选）生成结构化发布说明，待会儿粘贴到 Release
-node scripts/gen-changelog.mjs --for v0.6.0 -o notes-v0.6.0.md
+# 2. （可选）预览发布说明（CI 会自动生成注入，body 与 latest.json notes 同源）
+node scripts/gen-changelog.mjs --from v0.5.0 --to v0.6.0
 # 3. 本地验证 config schema（必做，防坑 2）
 cd src-tauri && cargo check && cd ..
 # 4. 打 tag 推送（触发 release.yml + ci.yml）
 git tag v0.6.0
 git push origin master --tags
 # 5. 轮询 release.yml 直到 conclusion: success（约 8-12 分钟）
-# 6. 验证 4 个产物文件齐全
-# 7. （可选）把 notes-v0.6.0.md 内容粘贴到 GitHub Release 的 body
+# 6. 验证 4 个产物文件齐全 + Release body 与 latest.json notes 均非空且一致
 ```
 
 ---
@@ -233,4 +243,4 @@ node scripts/gen-changelog.mjs [--from <tag>] [--to <ref>] [--for <版本>] [-o 
 - **`--from A --to B`**：自定义区间（`B` 默认 HEAD）。
 - **解析规则**：识别 `type(scope)?: description` 格式。本项目历史 commit 是这个风格（`feat(sync):`、`fix(release):` 等）。兼容非标准写法（如 `feat(sync) PR-4:` 没冒号也认）。
 - **输出**：默认 stdout；`-o file.md` 写文件。markdown 格式，带 emoji 分组标题（✨ 新功能 / 🐛 修复 / 🔧 杂项 ...）。
-- **与 release.yml 的关系**：release.yml 已开 `generate_release_notes: true`（GitHub 自动生成）。本脚本是**增强版**——对中文 conventional commit 分组更清晰，可手动粘贴到 Release body 替换默认说明，或追加到 CHANGELOG.md。**两套机制并存，本脚本可选。**
+- **与 release.yml 的关系**：workflow 内**自动调用**（`Generate release notes` 步骤，checkout 已配 `fetch-depth: 0` 取全量 tag 历史）。产物 `release-notes.md` 双路消费：注入 `latest.json` 的 `notes` 字段 + 作为 Release body（`body_path`）。workflow 用 `--from/--to` 显式传参而非 `--for`：bash 里先 `git describe` 解析上个 tag 并 echo 出「notes range: A -> B」，区间透明便于排查（`--for` 的 Windows `^` 转义坑已修复，两种写法均可用）。发版后应检查 Release body 与 latest.json notes 都非空且内容一致。

@@ -66,10 +66,10 @@ const activeSearchIndex = ref(0);
 const activeTransferCount = computed(() => props.store.activeTransfers?.length || 0);
 const syncText = computed(() => props.store.syncText || '未配置同步');
 const mcpText = computed(() => props.store.mcpClientConnected ? 'MCP 可用' : 'MCP 不可用');
-// 应用内更新状态：available → 状态栏消息可点击下载安装 + 设置图标红点；
-// error → 状态栏消息可点击重试；其余状态保持纯文本（aria-live）。
+// 应用内更新状态：available → 状态栏 pill 与设置图标红点（点击 pill 打开设置面板
+// 「关于与更新」查看更新内容并安装）；error → 无 pill，重试路径经设置面板更新按钮；
+// 其余状态保持纯文本（aria-live）。
 const updateState = computed(() => unref(props.autoUpdate?.state) || 'idle');
-const updateClickable = computed(() => updateState.value === 'available' || updateState.value === 'error');
 const appClasses = computed(() => ({
   'sidebar-collapsed': props.store.assetsCollapsed,
   'right-collapsed': props.store.rightCollapsed
@@ -430,8 +430,8 @@ onMounted(() => {
           v-if="updateState === 'available'"
           class="sb-item sb-update-pill is-available"
           type="button"
-          title="点击下载并安装新版本"
-          @click="props.autoUpdate?.onClick()"
+          title="查看新版本更新内容并安装"
+          @click="emit('open-settings')"
         >
           <Sparkles :size="12" aria-hidden="true" />
           <span>新版本就绪</span>

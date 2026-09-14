@@ -4,7 +4,8 @@
 // 同时复用状态栏 statusMessage（已渲染为可点击按钮）承载更新提示，
 // 不引入新弹窗/toast 组件，符合 AGENTS.md「禁止造轮子」红线。
 //
-// 状态机：idle →（init/check 检查）→ checking → available（状态栏「发现新版本 vX，点击更新」）
+// 状态机：idle →（init/check 检查）→ checking → available（状态栏「发现新版本 vX，点击更新」；
+//   available 态携带 releaseNotes——来自 latest.json 的 notes 字段，设置面板渲染为更新日志）
 //   → 用户点击 → downloading（显示「更新下载中…」）→ installed（自动重启）
 //   → 任一步失败 → error（显示原因，可再点重试）。
 //
@@ -35,6 +36,9 @@ export function useAutoUpdate({ announce }: { announce: AnnounceFn }) {
   const newVersion = ref('');
   const errorMessage = ref('');
   const downloadProgress = ref(0);
+  // available 态的更新日志（latest.json notes 字段；旧发布链路写入的
+  // 「myshelltool <v>」无意义兜底串会被下方判空逻辑折叠成空串）。
+  const releaseNotes = ref('');
   const lastCheckedAt = ref<Date | null>(null);
   let pendingUpdate: PendingUpdate | null = null; // 抓到的 Update 对象，点击时复用（非响应式，仅内部用）
 
@@ -50,6 +54,7 @@ export function useAutoUpdate({ announce }: { announce: AnnounceFn }) {
     state.value = 'checking';
     errorMessage.value = '';
     downloadProgress.value = 0;
+    releaseNotes.value = '';
     try {
       const check = await loadUpdater();
       const update = await check();
@@ -57,12 +62,17 @@ export function useAutoUpdate({ announce }: { announce: AnnounceFn }) {
       if (!update) {
         // 已是最新。silent 模式不提示（避免启动刷屏），主动检查时给明确 toast 反馈。
         state.value = 'up_to_date';
+        releaseNotes.value = '';
         if (!silent) announce('当前已是最新版本', { level: 'info' });
         return;
       }
       pendingUpdate = update;
       newVersion.value = update.version;
-      setState('available', `发现新版本 v${newVersion.value}，可点击设置或状态栏进行更新`, { level: 'success' });
+      // 旧发布链路的 notes 是「myshelltool <version>」占位串（无实际内容），
+      // trim 后既无换行又匹配该模式即视为空，UI 走「未附详细说明」兜底。
+      const body = (update.body ?? '').trim();
+      releaseNotes.value = /^myshelltool\s+\S+$/.test(body) ? '' : body;
+      setState('available', `发现新版本 v${newVersion.value}，点击状态栏提示可查看更新内容并升级`, { level: 'success' });
     } catch (err) {
       state.value = 'error';
       errorMessage.value = err instanceof Error ? err.message : String(err);
@@ -147,6 +157,7 @@ export function useAutoUpdate({ announce }: { announce: AnnounceFn }) {
     newVersion,
     errorMessage,
     downloadProgress,
+    releaseNotes,
     lastCheckedAt,
     init,
     check,

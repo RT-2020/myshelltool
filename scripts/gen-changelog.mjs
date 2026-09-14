@@ -39,13 +39,15 @@ let fromTag = explicitFrom;
 let toRef = explicitTo;
 
 if (!fromTag) {
-  // --for v0.6.0 或默认：找相对于目标的上一个 tag。
-  // 用 git describe 拿「离目标最近的 tag」，跳过目标本身。
-  try {
-    fromTag = execSync(`git describe --tags --abbrev=0 ${forVersion ? forVersion + '^' : 'HEAD^'}`, {
-      cwd: root, encoding: 'utf8'
-    }).trim();
-  } catch (e) {
+    // --for v0.6.0 或默认：找相对于目标的上一个 tag。
+    // 用 git describe 拿「离目标最近的 tag」，跳过目标本身。
+    // 用 ~1（父提交）而非 ^：execSync 在 Windows 经 cmd.exe 执行会吃掉 ^ 转义符，
+    // `<tag>^` 变成 `<tag>` → fromTag 算成 tag 自身 → 空区间说明。
+    try {
+      fromTag = execSync(`git describe --tags --abbrev=0 ${forVersion ? forVersion + '~1' : 'HEAD~1'}`, {
+        cwd: root, encoding: 'utf8'
+      }).trim();
+    } catch (e) {
     if (forVersion) {
       // 显式指定的 --for tag 必须真实存在且有自己的上一个 tag——否则把「全历史」
       // 当成发布说明输出还 exit 0，等于静默给错误内容盖章。

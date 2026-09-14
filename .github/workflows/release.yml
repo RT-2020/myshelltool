@@ -29,6 +29,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # gen-changelog 需要 git log 全历史 + 全部 tags（git describe --tags 依赖），
+          # 默认 fetch-depth 1 拿不到上个 tag，发布说明会生成失败。
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -105,9 +109,12 @@ jobs:
             $v = "${{ steps.ver.outputs.version }}"
             $sigContent = (Get-Content $sig.FullName -Raw).Trim()
             $url = "https://github.com/RT-2020/myshelltool/releases/latest/download/$($setup.Name)"
+            # 若 release-notes.md 已生成（步骤顺序调整时兜底），优先注入真实说明。
+            $notes = "myshelltool $v"
+            if (Test-Path "release-notes.md") { $notes = (Get-Content "release-notes.md" -Raw).Trim() }
             $manifest = @{
               version = $v
-              notes = "myshelltool $v"
+              notes = $notes
               pub_date = (Get-Date).ToUniversalTime().ToString("o")
               platforms = @{
                 "windows-x86_64" = @{
@@ -122,11 +129,46 @@ jobs:
           echo "sig=$($sig.FullName)" >> $env:GITHUB_OUTPUT
           echo "latest=$latest" >> $env:GITHUB_OUTPUT
 
+      # 生成结构化中文发布说明（feat/fix 分组）。失败即中止 workflow——
+      # 静默发一个无说明的版本正是本链路要修的 bug，不加 || true 兜底。
+      # 注：gen-changelog.mjs 的 --for 曾因 `git describe <tag>^` 在 Windows 经
+      # cmd.exe 执行丢 ^ 转义符而算错区间，已修复（改用 `~1` 父提交语法）。
+      # 此处仍保留 bash 显式解析上个 tag + --from/--to 传参的写法：echo 出
+      # 「notes range: A -> B」便于排查区间错误（日志透明），改回 --for 也可以。
+      - name: Generate release notes
+        shell: bash
+        run: |
+          prev_tag=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^")
+          echo "notes range: ${prev_tag} -> ${GITHUB_REF_NAME}"
+          node scripts/gen-changelog.mjs --from "$prev_tag" --to "$GITHUB_REF_NAME" -o release-notes.md
+
+      # 把 release-notes.md 注入 latest.json 的 notes 字段（Tauri updater 前端
+      # update.body 读的就是它）。node 读写在 Windows 上保证 UTF-8 无 BOM、
+      # JSON 仍可解析；strip BOM 是防上面 pwsh 兜底路径（UTF8 带 BOM）。
+      - name: Inject notes into latest.json
+        shell: bash
+        env:
+          LATEST_JSON: ${{ steps.artifacts.outputs.latest }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const notes = fs.readFileSync("release-notes.md", "utf8").trim();
+            if (!notes) { console.error("release-notes.md 为空，拒绝注入空说明"); process.exit(1); }
+            const path = process.env.LATEST_JSON;
+            const raw = fs.readFileSync(path, "utf8").replace(/^\uFEFF/, "");
+            const manifest = JSON.parse(raw);
+            manifest.notes = notes;
+            fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+            console.log("notes 已注入", path, "（长度", notes.length, "）");
+          '
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }}
-          generate_release_notes: true
+          # Release body 与 latest.json notes 同源（gen-changelog 产物）——
+          # 不用 GitHub 默认 generate_release_notes（英文 PR 平铺，与中文分组说明重复且可读性差）。
+          body_path: release-notes.md
           files: |
             ${{ steps.artifacts.outputs.setup }}
             ${{ steps.artifacts.outputs.sig }}
