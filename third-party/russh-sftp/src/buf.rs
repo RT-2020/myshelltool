@@ -49,7 +49,7 @@ pub(crate) fn decode_lossy_reversible(bytes: &[u8]) -> String {
 }
 
 /// serialize_str 的反向解码：U+E000+b → 字节 b；其余字符按 UTF-8 原样。
-pub(crate) fn encode_back_to_wire(s: &str) -> std::borrow::Cow<[u8]> {
+pub(crate) fn encode_back_to_wire(s: &str) -> std::borrow::Cow<'_, [u8]> {
     if !s.chars().any(|c| ('\u{E000}'..='\u{E0FF}').contains(&c)) {
         return std::borrow::Cow::Borrowed(s.as_bytes());
     }
