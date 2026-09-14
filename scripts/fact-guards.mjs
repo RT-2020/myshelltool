@@ -168,6 +168,20 @@ const RULES = [
     }
   },
   {
+    id: 'no-fixed-wait-frontend',
+    title: '前端禁止裸固定延迟充当就绪信号（时序猜测，快机器白等、慢机器不够）',
+    fix: '优先等可观测信号（事件监听 / store 状态轮询带 deadline / rAF）；确属「探测-等待-再探测」节流（每次等待前后都校验真实状态）的存量写法，行尾加 `fact-guard:allow no-fixed-wait-frontend 理由` 显式辩护。与 no-blocking-sleep（Rust）/ no-fixed-wait-in-tests（测试）补齐三端覆盖。',
+    targets: ['app'],
+    pattern: /await\s+new\s+Promise\(\s*\w+\s*=>\s*setTimeout\s*\(/,
+    samples: {
+      bad: ['await new Promise(r => setTimeout(r, 500)); // 赌 500ms 后弹窗已挂载'],
+      good: [
+        "await listenBackendEvent('ssh-session-status', handler); // 等事件信号",
+        'await new Promise(resolve => { emitter.once("ready", resolve); });'
+      ]
+    }
+  },
+  {
     id: 'no-csh-hostile-env-prefix',
     title: '命令串禁止 `VAR=值 命令` / `export VAR=值` 形态（csh/tcsh/fish 下不是赋值，整条命令失败）',
     fix: '改用 `env LC_ALL=C <命令>`（POSIX，BusyBox/BSD 自带，两种 shell 语义一致）。事故：FreeBSD（root 默认 /bin/csh）上 `LC_ALL=C df -h` 报 "LC_ALL=C: Command not found."，df 根本没运行、工具完全取不到数据。',
