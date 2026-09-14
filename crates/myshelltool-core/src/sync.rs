@@ -18,7 +18,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::crypto::{self, EncryptedBlob};
-use crate::ConnectionAssetStore;
+use crate::asset_store::ConnectionAssetStore;
 
 /// 同步载荷格式版本（未来加密算法/结构变更时升版，便于向后兼容）。
 /// pub：src-tauri/sync.rs 在打包载荷时复用此常量，跨 crate 引用必须公开。

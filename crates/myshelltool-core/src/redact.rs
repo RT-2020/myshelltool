@@ -201,6 +201,112 @@ pub fn redact_excerpt(text: &str, secrets: &[&str], max_chars: usize) -> String 
     masked.chars().take(max_chars).collect()
 }
 
+/// 对远端命令**输出**文本做凭据脱敏（落审计日志 / 组装回显摘要前）。
+///
+/// 与 [`redact_command`]（命令形态：`-p` / `--password` / `-u`）互补，这里处理
+/// 输出形态（v2.6 审计 backlog：`env` 输出的 `GITHUB_TOKEN=...`、
+/// `show create user` 的 `IDENTIFIED BY '<明文>'` 曾原样进 output_summary）：
+/// - `SENSITIVE_KEY=value`：键命中 [`is_sensitive_env_name`]（全大写
+///   [A-Z0-9_]+ 且含 TOKEN/PASSWORD/SECRET/… 片段）即遮值；逐 token 扫，
+///   同一行多个赋值都处理，空白原样保留；
+/// - mysql `IDENTIFIED … BY '<…>'` / `IDENTIFIED … AS '<哈希>'`：只认
+///   IDENTIFIED 之后 80 字节内的 BY/AS 子句，普通 `ORDER BY 'x'` 不误伤。
+///
+/// 取向是**宁过度勿遗漏**：审计日志少看一列值无害，多看一个口令就是
+/// §8 凭据红线事故。已知局限：SQL 字符串里的转义引号（`\'`）按首个闭引号
+/// 截断，极罕见形态可能遮蔽不全——遮蔽目标始终覆盖到值的首段。
+pub fn redact_output(text: &str) -> String {
+    text.lines()
+        .map(redact_output_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 单行输出脱敏：先处理 mysql IDENTIFIED 子句（字符串级），再做 token 级
+/// `KEY=value` 扫描（保持原空白，不折叠多空格）。
+fn redact_output_line(line: &str) -> String {
+    let subject = redact_mysql_identified(line);
+    let chars: Vec<char> = subject.chars().collect();
+    let mut out = String::with_capacity(subject.len());
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        if c.is_whitespace() {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && !chars[i].is_whitespace() {
+            i += 1;
+        }
+        let token: String = chars[start..i].iter().collect();
+        if let Some(eq) = token.find('=') {
+            let name = &token[..eq];
+            // 只遮非空值：`KEY=` 后面本就什么都没有，遮了反而制造「这里曾有值」的暗示
+            if !name.is_empty() && is_sensitive_env_name(name) && token.len() > eq + 1 {
+                out.push_str(name);
+                out.push('=');
+                out.push_str(MASK);
+                continue;
+            }
+        }
+        out.push_str(&token);
+    }
+    out
+}
+
+/// 遮蔽 mysql `IDENTIFIED [WITH …] BY '<明文>'` / `IDENTIFIED [WITH …] AS '<哈希>'`
+/// 引号内的内容。键词大小写不敏感（show create user 输出恒大写，手写 SQL 常小写）。
+fn redact_mysql_identified(line: &str) -> String {
+    // to_ascii_lowercase 逐字节映射，字节长度与原文一致，下标可互通
+    let lower = line.to_ascii_lowercase();
+    let Some(id_end) = lower.find("identified").map(|p| p + "identified".len()) else {
+        return line.to_string();
+    };
+    // 只在 IDENTIFIED 之后 80 字节内找 BY/AS：隔太远的多半不是同一条子句。
+    // 窗口右界必须回退到字符边界——id_end+80 是任意字节偏移，落在 UTF-8
+    // 多字节序列中间时切片直接 panic（多角色审查第 1 轮 Issue 1：MySQL 8
+    // `IDENTIFIED BY '…' COMMENT '<中文>'` 的合法输出即可触发，远端输出
+    // 打崩 MCP 请求任务 = 拒绝服务面）。
+    let mut window_end = (id_end + 80).min(lower.len());
+    while window_end < lower.len() && !lower.is_char_boundary(window_end) {
+        window_end += 1;
+    }
+    let window = &lower[id_end..window_end];
+    let Some(rel) = window.find(" by ").or_else(|| window.find(" as ")) else {
+        return line.to_string();
+    };
+    let bytes = line.as_bytes();
+    // 跳过 BY/AS 关键字（含两侧空格之一）与其后的空白
+    let mut pos = id_end + rel + 3;
+    while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+        pos += 1;
+    }
+    // 可选 PASSWORD 关键字（5.7 的 IDENTIFIED BY PASSWORD '*hash…'）
+    if lower[pos..].starts_with("password") {
+        pos += "password".len();
+        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+    }
+    if pos >= bytes.len() {
+        return line.to_string();
+    }
+    let quote = bytes[pos];
+    if quote != b'\'' && quote != b'"' {
+        return line.to_string();
+    }
+    let Some(close) = lower[pos + 1..].find(quote as char).map(|r| pos + 1 + r) else {
+        return line.to_string();
+    };
+    let mut out = String::with_capacity(line.len());
+    out.push_str(&line[..pos + 1]);
+    out.push_str(MASK);
+    out.push_str(&line[close..]);
+    out
+}
+
 /// 长选项名（去掉 `--` 后的部分）是否属于敏感参数。
 fn is_sensitive_long_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
@@ -337,4 +443,88 @@ mod tests {
         let out = redact_excerpt("abc", &[""], 10);
         assert_eq!(out, "abc");
     }
+
+    #[test]
+    fn output_env_assignment_is_masked() {
+        let out = redact_output("GITHUB_TOKEN=ghp_abc123secret PATH=/usr/bin");
+        assert!(!out.contains("ghp_abc123secret"), "token 泄露: {out}");
+        assert!(out.contains("GITHUB_TOKEN=<redacted>"));
+        // 非敏感键不受影响
+        assert!(out.contains("PATH=/usr/bin"));
+    }
+
+    #[test]
+    fn output_multiple_sensitive_assignments_same_line() {
+        let out = redact_output("DB_PASSWORD=hunter2   MY_API_KEY=sk-123 host=db1");
+        assert!(!out.contains("hunter2") && !out.contains("sk-123"), "泄露: {out}");
+        assert!(out.contains("DB_PASSWORD=<redacted>"));
+        assert!(out.contains("MY_API_KEY=<redacted>"));
+        // 多空格原样保留
+        assert!(out.contains("<redacted>   MY_API_KEY"));
+        assert!(out.contains("host=db1"));
+    }
+
+    #[test]
+    fn output_lowercase_and_empty_assignments_untouched() {
+        // 小写参数赋值（`host=db`）不参与判定；`KEY=` 空值不遮（无值可泄）
+        let out = redact_output("host=db TOKEN= password=");
+        assert_eq!(out, "host=db TOKEN= password=");
+    }
+
+    #[test]
+    fn output_mysql_identified_by_plain_is_masked() {
+        let line = "CREATE USER 'app'@'%' IDENTIFIED BY 'P@ssw0rd!';";
+        let out = redact_output(line);
+        assert!(!out.contains("P@ssw0rd!"), "明文口令泄露: {out}");
+        assert!(out.contains("IDENTIFIED BY '<redacted>'"), "应保留子句结构: {out}");
+    }
+
+    #[test]
+    fn output_mysql_identified_variants_are_masked() {
+        // BY PASSWORD（5.7 哈希）/ WITH plugin BY / WITH plugin AS（8.0 哈希）/ 小写
+        for line in [
+            "IDENTIFIED BY PASSWORD '*C5B1B1A1E1E1E1E1E1E1E1E1E1E1E1'",
+            "IDENTIFIED WITH mysql_native_password BY 'plainsecret'",
+            "IDENTIFIED WITH caching_sha2_password AS '$A$005$HASHVALUE'",
+            "identified by 'low'",
+        ] {
+            let out = redact_output(line);
+            assert!(!out.contains("plainsecret"));
+            assert!(!out.contains("HASHVALUE"));
+            assert!(!out.contains("C5B1B1"));
+            assert!(!out.contains("low'"), "行 {line} 未脱敏: {out}");
+        }
+    }
+
+    #[test]
+    fn output_order_by_not_affected() {
+        // 普通 ORDER BY 'x' 无 IDENTIFIED 前缀，不误伤
+        let out = redact_output("SELECT * FROM t ORDER BY 'name' LIMIT 1");
+        assert_eq!(out, "SELECT * FROM t ORDER BY 'name' LIMIT 1");
+    }
+
+    #[test]
+    fn output_multiline_each_line_handled() {
+        let text = "HOME=/root\nGITHUB_TOKEN=ghp_leak\nmysql: IDENTIFIED BY 'leak'";
+        let out = redact_output(text);
+        assert!(out.contains("HOME=/root"));
+        assert!(!out.contains("ghp_leak") && !out.contains("'leak'"));
+        assert_eq!(out.matches("<redacted>").count(), 2);
+    }
+
+    #[test]
+    fn output_multibyte_window_boundary_does_not_panic() {
+        // 多角色审查第 1 轮 Issue 1 的回归用例：窗口右界 id_end+80 落在中文
+        // COMMENT 的 UTF-8 序列中间时，旧实现按任意字节偏移切片直接 panic
+        //（MySQL 8 show create user 对带中文备注用户的真实输出形态）。
+        let filler = "字".repeat(60);
+        let line = format!("CREATE USER 'u'@'%' IDENTIFIED BY 'abcdef' COMMENT '{filler}'");
+        let out = redact_output(&line);
+        assert!(!out.contains("abcdef"), "口令未脱敏: {out}");
+        assert!(out.contains("IDENTIFIED BY '<redacted>'"));
+        // WITH 子句里只有多字节串、无引号值 → 不误遮，也不 panic
+        let safe = redact_output(&format!("IDENTIFIED WITH plugin {filler}"));
+        assert!(!safe.contains(MASK), "无引号值不应误遮: {safe}");
+    }
+
 }
