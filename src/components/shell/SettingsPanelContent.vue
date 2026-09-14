@@ -13,28 +13,28 @@
  * 复用策略（vibe-guard reuse check 通过）：
  *   - McpPanelContent / SyncPanelContent 是零 props/emit 自包含子组件，原样嵌入 tab，不复制不重写
  *   - 主题数据走 uiStore（theme/setTheme）+ useTheme 常量（THEME_ORDER/THEME_LABELS），不重复定义
- *   - 更新链路复用 useAutoUpdate（已在 App.vue 实例化），这里直接注入
+ *   - 更新链路复用 useAutoUpdate（已在 App.vue 实例化），这里直接注入后透传给
+ *     UpdateSection.vue（应用更新区块）→ ReleaseNotesBlock.vue（更新日志行级渲染），
+ *     两级子组件为守 500 行 SFC 硬上限自本文件拆出
  *
  * 由 GlobalModals.vue 的 modal.type === 'settings' 分支渲染。抽成独立组件是为
  * 避免 GlobalModals.vue 超 500 行 SFC 硬上限（AGENTS.md 质量红线）。
  */
-import { ref, computed, onMounted, unref, watch } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import type { Component } from 'vue';
 import { storeToRefs } from 'pinia';
-import { Info, LayoutGrid, Palette, RefreshCw, Plug, Sun, Moon, Monitor, Download, ExternalLink, TerminalSquare } from 'lucide-vue-next';
+import { Info, LayoutGrid, Palette, RefreshCw, Plug, Sun, Moon, Monitor, ExternalLink, TerminalSquare } from 'lucide-vue-next';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { THEME_ORDER, THEME_LABELS } from '@/composables/useTheme';
 import type { useAutoUpdate } from '@/composables/useAutoUpdate';
-// 别名导入：本文件下方已有 errorMessage computed（镜像 useAutoUpdate 的错误文案字段），
-// 直接具名导入会与之冲突
-import { errorMessage as toErrorMessage } from '@/lib/errorMessage';
+import { errorMessage } from '@/lib/errorMessage';
 import AppTabGroup from '@/components/ui/AppTabGroup.vue';
 import AppButton from '@/components/ui/AppButton.vue';
-import AppProgress from '@/components/ui/AppProgress.vue';
 import AppSelect from '@/components/ui/AppSelect.vue';
 import AppBrandLogo from '@/components/ui/AppBrandLogo.vue';
 import McpPanelContent from '@/components/shell/McpPanelContent.vue';
 import SyncPanelContent from '@/components/shell/SyncPanelContent.vue';
+import UpdateSection from '@/components/shell/UpdateSection.vue';
 import { isTauriRuntime } from '@/services/backend';
 
 /**
@@ -53,7 +53,7 @@ const { theme, modal } = storeToRefs(store);
 const modalExtras = computed<SettingsModalExtras>(() => (modal.value ?? {}) as unknown as SettingsModalExtras);
 
 // autoUpdate 实例由 App.vue 通过 modal payload 注入（store.modal = { type:'settings', autoUpdate, tab }）。
-// 同一实例，与状态栏点击共享状态。未注入时（浏览器预览）更新区降级隐藏。
+// 同一实例，与状态栏点击共享状态；透传给 UpdateSection。未注入时（浏览器预览）更新区整体不渲染。
 const autoUpdate = computed(() => modalExtras.value.autoUpdate || null);
 
 // resetLayout 回调由 App.vue 通过 modal payload 注入（原顶栏布局菜单删除后的
@@ -124,40 +124,9 @@ onMounted(async () => {
     const { getVersion } = await import('@tauri-apps/api/app'); // 动态加载：浏览器预览缺 Tauri 模块
     appVersion.value = await getVersion();
   } catch (err) {
-    console.warn('[settings] 获取版本号失败：', toErrorMessage(err));
+    console.warn('[settings] 获取版本号失败：', errorMessage(err));
   }
 });
-
-// —— 更新按钮状态机（关于与更新 tab）——
-// 复用注入的 autoUpdate（来自 App.vue，与状态栏点击同一实例）。未注入时隐藏整个更新区。
-const hasUpdater = computed(() => !!autoUpdate.value);
-const updateState = computed(() => unref(autoUpdate.value?.state) || 'idle');
-const newVersion = computed(() => unref(autoUpdate.value?.newVersion) || '');
-const errorMessage = computed(() => unref(autoUpdate.value?.errorMessage) || '');
-const downloadProgress = computed(() => unref(autoUpdate.value?.downloadProgress) ?? 0);
-// 下载进度：useAutoUpdate 把进度写进 statusMessage（文字流），这里展示进度条。
-const isBusy = computed(() => updateState.value === 'checking' || updateState.value === 'downloading');
-
-// 主按钮文案随状态机变化（单一主操作，ui-ux-pro-max §4）。
-const updateBtnLabel = computed(() => {
-  switch (updateState.value) {
-    case 'checking': return '检查中…';
-    case 'downloading': return downloadProgress.value > 0 ? `下载中 ${downloadProgress.value}%` : '下载中…';
-    case 'available': return `下载并安装 v${newVersion.value}`;
-    case 'error': return '重试';
-    case 'up_to_date': return '重新检查';
-    default: return '检查更新';
-  }
-});
-
-function onUpdateClick() {
-  if (!autoUpdate.value) return;
-  if (updateState.value === 'available') {
-    autoUpdate.value.onClick(); // 已发现新版 → 下载安装
-  } else {
-    autoUpdate.value.check(); // idle / error / checking → (重新)检查
-  }
-}
 
 // —— 主题选择（外观 tab）——
 // 读 uiStore.theme（原始三态 system/light/dark）+ 调 setTheme（点哪个选哪个）。
@@ -190,35 +159,9 @@ function selectTheme(value: string) {
         </div>
         <p class="muted">Windows 桌面 SSH 运维客户端。多主机连接、终端、文件、隧道、资源监控。</p>
 
-        <!-- 更新区：单一主操作（检查更新），未注入 autoUpdate 时整体隐藏（浏览器预览） -->
-        <section v-if="hasUpdater" class="block">
-          <header class="block-head"><Download :size="12" />应用更新</header>
-          <div class="update-row">
-            <AppButton
-              variant="primary"
-              size="sm"
-              :disabled="isBusy"
-              @click="onUpdateClick"
-            >
-              <RefreshCw v-if="isBusy" :size="12" class="spin" />
-              {{ updateBtnLabel }}
-            </AppButton>
-            <span
-              class="muted update-hint"
-              :class="{
-                'is-error': updateState === 'error',
-                'is-success': updateState === 'available' || updateState === 'up_to_date'
-              }"
-            >
-              <template v-if="updateState === 'available'">发现新版本 v{{ newVersion }}，点击下载并安装，完成后自动重启</template>
-              <template v-else-if="updateState === 'downloading'">正在下载更新安装包（{{ downloadProgress }}%），请稍候…</template>
-              <template v-else-if="updateState === 'error'">检查或更新失败：{{ errorMessage || '网络连接失败或超时' }}</template>
-              <template v-else-if="updateState === 'up_to_date'">当前已是最新版本 (v{{ appVersion }})</template>
-              <template v-else>检查 GitHub releases 是否有新版本</template>
-            </span>
-          </div>
-          <AppProgress v-if="updateState === 'downloading'" :value="downloadProgress > 0 ? downloadProgress : null" />
-        </section>
+        <!-- 更新区：单一主操作（检查更新），未注入 autoUpdate 时整体隐藏（浏览器预览）。
+             状态机文案/进度条/更新日志已拆至 UpdateSection.vue（500 行 SFC 硬上限约束）。 -->
+        <UpdateSection v-if="autoUpdate" :auto-update="autoUpdate" :app-version="appVersion" />
 
         <section class="block">
           <header class="block-head"><Info :size="12" />关于</header>
@@ -400,7 +343,7 @@ function selectTheme(value: string) {
   color: var(--app-muted);
 }
 
-// —— 更新区 ——
+// —— 更新/布局共用的操作行（更新区本体已拆至 UpdateSection.vue）——
 .update-row {
   display: flex;
   align-items: center;
@@ -410,14 +353,6 @@ function selectTheme(value: string) {
 .update-hint {
   font-size: 12px;
   line-height: 1.5;
-
-  &.is-error {
-    color: var(--danger);
-  }
-
-  &.is-success {
-    color: var(--success);
-  }
 }
 
 // —— 主题选择卡片 ——
@@ -474,13 +409,7 @@ function selectTheme(value: string) {
   }
 }
 
-// —— 工具类 ——
-.spin {
-  animation: spin 1s linear infinite;
-}
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
+// .spin 已随更新按钮迁至 UpdateSection.vue。
 
 // .stack / .muted / .num / .mono-path 由全局 _utilities / _base 提供，此处不重复定义。
 
