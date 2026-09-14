@@ -197,16 +197,14 @@
   height: 30px;
   padding: 0 10px;
   background: var(--app-panel-2);
-  // 外层圆角描边常驻（与标题栏搜索框同口径），聚焦不变色
-  border: 1px solid var(--app-border);
+  border: 1px solid transparent;
   border-radius: 7px;
-  transition: background var(--motion-fast);
+  transition: border-color var(--motion-fast), background var(--motion-fast);
 }
+// 内层裸 input 的直角 :focus-visible 光环已由 _base.scss 根治，此处交互保持原样
 .sb-quick:focus-within {
   background: var(--app-control);
-}
-.sb-quick:focus-within svg {
-  color: var(--accent);
+  border-color: var(--accent);
 }
 .sb-quick svg {
   width: 13px;
