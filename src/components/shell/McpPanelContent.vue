@@ -1,31 +1,37 @@
 <script setup lang="ts">
 /**
- * McpPanelContent — v1.2 MCP 服务可观测与配置引导面板内容。
+ * McpPanelContent — MCP 服务面板（设置 → MCP tab / mcpPanel 弹窗共用）。
  *
- * 视觉语言对齐 OpsSummaryPanel（运维仪表盘范式）：
- *   - chrome section header（大写标题 + letter-spacing）
- *   - dl/dt/dd 网格（auto 1fr，dt 大写，dd 右对齐）
- *   - tone 语义色（success/warn/muted）
- *   - tag 小徽章（--app-subtle 背景）
+ * 信息架构（v2.9 重设计，对齐「设置 → 同步」页的范式：状态优先、动作其次、参考折叠）：
+ *   ① 控制面 = 一块面板（.mcp-surface），hairline 分隔三行：
+ *      状态行（圆点 + 状态词 + 版本 + 刷新）/ 接入行（endpoint + 复制配置，
+ *      JSON 与数据目录折叠进行内详情）/ 拦截行（等级 select + 一行动态说明）
+ *   ② 执行日志（McpExecutionLogList）：审计区，列表限高内部滚动
+ *   ③ 暴露能力（McpCapabilityList）：参考区，默认折叠
  *
- * 信息架构分三层（修复原版"四个等权 section 堆叠"的混乱）：
- *   1. Hero 状态条 —— 连接状态全宽横幅，第一眼即知「连没连」+ 关键指标
- *   2. 配置引导 —— 三家共用 JSON，输入框 + 复制，warning 单行
- *   3. 能力清单 —— 工具按只读/高危分组，resources/prompts 双栏
+ * 上一版的问题：七个等权区块竖直堆叠（Hero 横幅/连接详情/配置引导/拦截/日志/
+ * 能力清单），两个长列表无高度上限全部内联，弹窗被拉到几千像素；「探测 Endpoint」
+ * 与「MCP Endpoint」是同一值的冗余两行。这一版合并冗余、长列表各自限高滚动。
  *
- * 由 GlobalModals.vue 的 modal.type === 'mcpPanel' 分支渲染。抽成独立组件
- * 是为避免 GlobalModals.vue 超 500 行 SFC 硬上限（AGENTS.md 质量红线）。
+ * 设计约束（同同步页）：只用既有 token；状态色只由圆点承担（surface 外框保持
+ * 中性，不再整框上色）；复制反馈走 store.announce（toast），不在行内塞 flash 文案。
+ *
+ * 拦截设置（原 McpInterceptionSettings.vue）已收编进本组件的 surface 第三行——
+ * 它是这个内嵌服务的控制面之一，与状态/接入同属一块面板；独立组件已无复用方。
  */
 import { computed, ref, onMounted } from 'vue';
 import { storeToRefs } from 'pinia';
-import { Plug, Copy, RefreshCw, FileCode2, Database } from 'lucide-vue-next';
+import {
+  Copy, RefreshCw, FileJson2, FolderOpen,
+  ChevronDown, ChevronRight, ShieldAlert
+} from 'lucide-vue-next';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useMcpStore } from '@/stores/mcp';
 import { useClipboard } from '@/composables/useClipboard';
 import type { McpStatusResult } from '@/types/domain';
 import AppButton from '@/components/ui/AppButton.vue';
+import AppSelect from '@/components/ui/AppSelect.vue';
 import McpCapabilityList from '@/components/shell/McpCapabilityList.vue';
-import McpInterceptionSettings from '@/components/shell/McpInterceptionSettings.vue';
 import McpExecutionLogList from '@/components/shell/McpExecutionLogList.vue';
 
 const store = useWorkbenchStore();
@@ -34,51 +40,80 @@ const {
   mcpTools, mcpResources, mcpPrompts
 } = storeToRefs(store);
 
-// v2：拦截设置/执行日志子组件直接用 mcp store（不经 workbench re-export）。
-// McpPanelContent 的 onMounted 顺带拉取初始数据。
+// v2：拦截等级/执行日志直接用 mcp store（不经 workbench re-export，
+// 照 ResourceMonitorPanel 直接 use 的先例）。
 const mcpStore = useMcpStore();
 
 const { copy } = useClipboard();
 
-const copiedHint = ref('');
-
 const status = computed<Partial<McpStatusResult>>(() => mcpStatus.value || {});
 const hasStatus = computed(() => Boolean(mcpStatus.value));
 
-function fmtTime(iso?: string | null) {
-  if (!iso) return '—';
+// 状态行副标题的探测时间：当天只显示时分秒，跨天补月-日（完整时间在 title）
+function fmtProbeTime(iso?: string | null) {
+  if (!iso) return '';
   try {
     const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return iso;
+    if (Number.isNaN(d.getTime())) return '';
     const pad = (n: number) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    const now = new Date();
+    const sameDay = d.getFullYear() === now.getFullYear()
+      && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+    const hms = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    return sameDay ? hms : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hms}`;
   } catch {
-    return iso;
+    return '';
   }
 }
 
+const statusSub = computed(() => {
+  if (!mcpClientConnected.value) {
+    return mcpProbe.value?.detail || '健康检查未通过';
+  }
+  const t = fmtProbeTime(mcpProbe.value?.probedAt);
+  return t ? `HTTP 健康检查通过 · 探测于 ${t}` : 'HTTP 健康检查通过';
+});
+
+// —— 接入配置（JSON 详情默认收起，复制按钮不需要先看 JSON）——
+const configOpen = ref(false);
 const configJson = computed(() => store.buildMcpConfig());
 
 async function onCopyConfig() {
   const ok = await copy(configJson.value);
-  flashHint(ok ? '✓ 已复制' : '复制失败');
+  store.announce(ok ? '接入配置 JSON 已复制' : '复制失败');
+}
+async function onCopyEndpoint() {
+  const url = status.value.endpoint;
+  if (!url) return;
+  const ok = await copy(url);
+  store.announce(ok ? 'Endpoint 已复制' : '复制失败');
 }
 async function onCopyDataDir() {
   if (!mcpDataDir.value) return;
   const ok = await copy(mcpDataDir.value);
-  flashHint(ok ? '✓ 路径已复制' : '复制失败');
-}
-function flashHint(msg: string) {
-  copiedHint.value = msg;
-  setTimeout(() => { copiedHint.value = ''; }, 2000);
+  store.announce(ok ? '数据目录路径已复制' : '复制失败');
 }
 function onRefresh() { store.refreshMcpStatus(); }
+
+// —— 危险命令拦截（收编自 McpInterceptionSettings）——
+const LEVEL_OPTIONS = [
+  { label: '仅拦截毁灭性命令（默认）', value: 'minimal' },
+  { label: '全部需确认', value: 'strict' }
+];
+const level = computed(() => mcpStore.interceptLevel);
+const isMinimal = computed(() => level.value !== 'strict');
+
+function onLevelChange(value: string | number) {
+  // LEVEL_OPTIONS 的 value 恒为 string，String() 仅类型收敛、不改值
+  if (value === mcpStore.interceptLevel) return;
+  mcpStore.setMcpInterceptLevel(String(value));
+}
 
 onMounted(() => {
   if (!hasStatus.value) {
     store.refreshMcpStatus();
   }
-  // v2：拦截等级 + 执行日志（面板打开时拉初始值）；
+  // 拦截等级 + 执行日志（面板打开时拉初始值）；
   // 日志上限 1000 条，这里拉 500 条做展示窗口，列表侧有分页渲染兜底
   mcpStore.loadMcpConfig();
   mcpStore.loadExecLogs(500);
@@ -87,79 +122,102 @@ onMounted(() => {
 
 <template>
   <div class="mcp-panel">
-    <!-- ① Hero 状态条：全宽，探测结果决定整体色调，第一眼即知「MCP 能否工作」 -->
-    <div class="hero" :class="mcpClientConnected ? 'is-connected' : 'is-offline'">
-      <div class="hero-header-row">
-        <div class="hero-main">
-          <Plug :size="18" class="hero-icon" />
-          <div class="hero-text">
-            <span class="hero-status">{{ mcpClientConnected ? 'MCP 服务可用' : 'MCP 服务不可用' }}</span>
-            <span class="hero-sub">
-              {{ mcpClientConnected
-                ? 'HTTP 健康检查通过，MCP server 正常响应协议'
-                : (mcpProbe?.detail || '探测失败，MCP 无法正常工作') }}
-            </span>
-          </div>
-        </div>
-        <AppButton variant="subtle" size="sm" :loading="mcpLoading" class="hero-refresh-btn" @click="onRefresh">
-          <RefreshCw v-if="!mcpLoading" :size="12" />刷新
-        </AppButton>
-      </div>
-      <div class="hero-meta-row">
-        <div class="meta-item"><span class="meta-label">版本</span><span class="meta-val num">myshelltool {{ mcpServerVersion }}</span></div>
-        <div v-if="mcpProbe?.probedAt" class="meta-item"><span class="meta-label">探测时间</span><span class="meta-val num">{{ fmtTime(mcpProbe.probedAt) }}</span></div>
-      </div>
-    </div>
-
-    <!-- 不可用时的引导文案（可用时隐藏，减少噪音） -->
-    <p v-if="!mcpClientConnected" class="hero-hint muted">
-      已对 MCP HTTP endpoint 做健康检查（initialize 握手）但未通过。常见原因：HTTP server 尚未启动、端口被占用、协议异常。MCP server 随 GUI 启停，请确认 GUI 正在运行后点刷新。
-    </p>
-
     <div v-if="!hasStatus" class="loading muted">正在探测 MCP…</div>
 
     <template v-else>
-      <!-- ② 连接详情：紧凑 dl，照 OpsSummaryPanel 范式 -->
-      <section class="block">
-        <header class="block-head"><Database :size="12" />连接详情</header>
-        <dl class="detail-grid">
-          <dt>探测 Endpoint</dt>
-          <dd><code class="mono-path">{{ mcpProbe?.exePath || '—' }}</code></dd>
-          <dt>数据目录</dt>
-          <dd>
-            <code class="mono-path">{{ mcpDataDir || '—' }}</code>
-            <button v-if="mcpDataDir" class="link-btn" @click="onCopyDataDir"><Copy :size="11" /></button>
-          </dd>
-          <dt>MCP Endpoint</dt>
-          <dd><code class="mono-path">{{ status.endpoint || '—' }}</code></dd>
-        </dl>
-      </section>
-
-      <!-- ③ 配置引导：三家共用一份 JSON -->
-      <section class="block">
-        <header class="block-head">
-          <FileCode2 :size="12" />接入配置
-          <span v-if="copiedHint" class="copy-hint">{{ copiedHint }}</span>
-        </header>
-        <p class="block-note muted">
-          v1.4：MCP 内嵌 GUI 进程，Streamable HTTP transport。三家宿主共用
-          <code>mcpServers.myshelltool</code>，仅贴入文件不同：
-          <strong>Claude Code</strong> → 配置文件 ·
-          <strong>Cursor</strong> → <code>.cursor/mcp.json</code> ·
-          其他合规 MCP host 同理
+      <!-- ① 控制面：状态 / 接入 / 拦截，一块面板 hairline 分隔 -->
+      <section class="mcp-surface">
+        <!-- 状态行：圆点承担状态色，右侧版本 + 刷新 -->
+        <div class="s-row s-status">
+          <span class="status-dot" :class="mcpClientConnected ? 'is-up' : 'is-down'" />
+          <div class="s-main">
+            <span class="s-title">{{ mcpClientConnected ? 'MCP 服务正常' : 'MCP 服务不可用' }}</span>
+            <span class="s-sub muted">{{ statusSub }}</span>
+          </div>
+          <span v-if="mcpServerVersion" class="s-ver num muted">v{{ mcpServerVersion }}</span>
+          <AppButton variant="ghost" size="sm" :loading="mcpLoading" @click="onRefresh">
+            <RefreshCw v-if="!mcpLoading" :size="12" />刷新
+          </AppButton>
+        </div>
+        <!-- 不可用时的排查提示：收在状态行同一格内，不再独占一个段落 -->
+        <p v-if="!mcpClientConnected" class="down-hint">
+          MCP server 内嵌于本应用并随其启停，只监听本机回环。若刚启动请稍后点「刷新」；
+          持续不可用多为端口被占用或协议异常。
         </p>
-        <pre class="code-block"><code>{{ configJson }}</code></pre>
-        <div class="config-foot">
-          <AppButton variant="primary" size="sm" @click="onCopyConfig"><Copy :size="12" />复制配置 JSON</AppButton>
-          <span class="warn-inline">⚠ 确保 GUI 在运行（MCP server 随 GUI 启停）</span>
+
+        <!-- 接入行：endpoint + 复制配置；JSON / 数据目录折叠进行内详情 -->
+        <div class="s-cell">
+          <div class="s-row s-config">
+            <button
+              type="button"
+              class="config-toggle"
+              :aria-expanded="configOpen"
+              title="查看配置 JSON 与数据目录"
+              @click="configOpen = !configOpen"
+            >
+              <component :is="configOpen ? ChevronDown : ChevronRight" :size="13" class="chev" />
+              <FileJson2 :size="13" class="chev" />
+              <span class="s-label">接入配置</span>
+              <code class="endpoint">{{ status.endpoint || '—' }}</code>
+            </button>
+            <button
+              v-if="status.endpoint"
+              type="button"
+              class="icon-act"
+              title="复制 Endpoint"
+              @click="onCopyEndpoint"
+            ><Copy :size="12" /></button>
+            <AppButton variant="primary" size="sm" @click="onCopyConfig">
+              <Copy :size="12" />复制配置
+            </AppButton>
+          </div>
+          <div v-if="configOpen" class="config-detail">
+            <pre class="code-block"><code>{{ configJson }}</code></pre>
+            <p class="muted detail-note">
+              贴入 MCP host 配置文件：<strong>Claude Code</strong> 配置文件 ·
+              <strong>Cursor</strong> <code>.cursor/mcp.json</code> · 其他合规 host 同理。
+              MCP server 随本应用启停。
+            </p>
+            <div class="datadir-row">
+              <FolderOpen :size="12" class="chev" />
+              <span class="s-label">数据目录</span>
+              <code class="endpoint">{{ mcpDataDir || '—' }}</code>
+              <button
+                v-if="mcpDataDir"
+                type="button"
+                class="icon-act"
+                title="复制数据目录路径"
+                @click="onCopyDataDir"
+              ><Copy :size="12" /></button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 拦截行：等级 select + 一行动态说明（原 warn 色块压缩为一行文字） -->
+        <div class="s-cell">
+          <div class="s-row">
+            <ShieldAlert :size="13" class="chev" />
+            <span class="s-label">危险命令拦截</span>
+            <span class="s-spacer" />
+            <AppSelect
+              class="level-select"
+              :model-value="level"
+              :options="LEVEL_OPTIONS"
+              @update:model-value="onLevelChange"
+            />
+          </div>
+          <p class="level-note" :class="isMinimal ? 'is-warn' : 'muted'">
+            {{ isMinimal
+              ? '其余命令与文件操作（含 reboot、rm -rf 目录、curl|bash）直接执行并记入日志；敏感凭据读取仍需确认。'
+              : '非白名单的命令与文件操作（上传/写入/下载/删除）一律弹窗确认；毁灭性命令两档恒拦。' }}
+          </p>
         </div>
       </section>
 
-      <!-- ④ v2 拦截设置 + 执行日志（逻辑全在子组件，本 SFC 保持 <500 行） -->
-      <McpInterceptionSettings />
+      <!-- ② 执行日志：审计区（列表限高滚动在子组件内） -->
       <McpExecutionLogList />
 
-      <!-- ⑤ 能力清单：抽到 McpCapabilityList 子组件（避免本 SFC 超 500 行） -->
+      <!-- ③ 暴露能力：参考区，默认折叠 -->
       <McpCapabilityList :tools="mcpTools" :resources="mcpResources" :prompts="mcpPrompts" />
     </template>
   </div>
@@ -173,98 +231,7 @@ onMounted(() => {
   flex-direction: column;
   gap: var(--space-3);
   font-size: var(--text-sm);
-  // 不自带滚动：渲染在 AppModal body（唯一滚动容器）内，避免滚动条嵌套
-}
-
-// ─── ① Hero 状态条 ───
-// 全宽横幅，连接态用 success 边框/底色，断开用 muted。第一眼信息优先级最高。
-.hero {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--app-border);
-  background: var(--app-panel-2);
-  transition: border-color var(--motion-base) var(--ease-standard),
-    background var(--motion-base) var(--ease-standard);
-}
-.hero.is-connected {
-  border-color: color-mix(in oklab, var(--success), transparent 55%);
-  background: color-mix(in oklab, var(--success), transparent 90%);
-}
-.hero.is-offline {
-  border-style: dashed;
-}
-.hero-header-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-3);
-  width: 100%;
-}
-.hero-main {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-  flex: 1 1 0;
-  min-width: 0;
-}
-.hero-icon {
-  flex-shrink: 0;
-  margin-top: 2px;
-  color: var(--app-muted);
-}
-.hero.is-connected .hero-icon { color: var(--success); }
-.hero-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  flex: 1 1 auto;
-}
-.hero-status {
-  font-size: var(--text-sm);
-  font-weight: 600;
-  color: var(--app-strong);
-}
-.hero.is-connected .hero-status { color: var(--success); }
-.hero-sub {
-  font-size: var(--text-xs);
-  color: var(--app-muted);
-  line-height: 1.4;
-  word-break: break-word;
-}
-.hero-refresh-btn {
-  flex-shrink: 0;
-}
-.hero-meta-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  padding-top: var(--space-2);
-  border-top: 1px solid color-mix(in oklab, var(--app-border), transparent 40%);
-}
-.meta-item {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-.meta-label {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--app-subtle);
-}
-.meta-val {
-  font-size: var(--text-xs);
-  color: var(--app-strong);
-}
-.hero-hint {
-  margin: 0;
-  font-size: var(--text-xs);
-  line-height: 1.5;
-  padding: 0 var(--space-1);
+  // 不自带滚动：AppModal body 是唯一滚动容器，避免滚动条嵌套
 }
 
 .loading {
@@ -273,113 +240,143 @@ onMounted(() => {
   font-size: var(--text-xs);
 }
 
-// ─── block 通用（照 OpsSummaryPanel 的 chrome header 范式）───
-.block {
+// ─── ① 控制面 surface：一个外框，内部 hairline 分隔（照 .sync-surface 手法）───
+.mcp-surface {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-md);
+  background: var(--app-panel);
+  overflow: hidden;
 }
-.block-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--text-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--app-muted);
-  padding-bottom: 4px;
-  border-bottom: 1px solid var(--app-border);
-}
-.block-head :deep(svg) { flex-shrink: 0; }
-.block-note {
-  margin: 0;
-  font-size: var(--text-xs);
-  line-height: 1.6;
-}
-.block-note code,
-.req {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  background: var(--app-hover);
-  padding: 0 4px;
-  border-radius: 4px;
+.mcp-surface > * + * {
+  border-top: 1px solid var(--app-border-soft);
 }
 
-// ─── ② 连接详情 dl（auto 1fr 网格，dt 大写，dd 右对齐）───
-.detail-grid {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 6px var(--space-3);
-  margin: 0;
-}
-.detail-grid dt {
-  font-size: var(--text-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--app-muted);
-  align-self: center;
-}
-.detail-grid dd {
-  margin: 0;
-  display: inline-flex;
+.s-row {
+  display: flex;
   align-items: center;
-  gap: 6px;
-  justify-content: flex-end;
-  font-size: var(--text-xs);
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+}
+.s-status {
+  padding: var(--space-3);
+}
+.s-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.s-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
   color: var(--app-strong);
 }
-.mono-path {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  background: var(--app-hover);
-  padding: 1px 6px;
-  border-radius: var(--radius-sm);
-  word-break: break-all;
-  max-width: 100%;
+.s-sub {
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  word-break: break-word;
 }
-.link-btn {
-  background: transparent;
-  border: none;
-  padding: 2px;
+.s-ver {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+}
+.s-label {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--app-strong);
+}
+.s-spacer { flex: 1 1 0; }
+.chev {
+  flex-shrink: 0;
   color: var(--app-muted);
-  cursor: pointer;
-  border-radius: 4px;
-  display: inline-flex;
 }
-.link-btn:hover { color: var(--app-strong); background: var(--app-hover); }
 
-// ─── ③ 配置引导 ───
-.field {
+// 状态圆点：状态色唯一承担者（surface 外框保持中性）
+.status-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+}
+.status-dot.is-up { background: var(--success); }
+.status-dot.is-down { background: var(--danger); }
+
+.down-hint {
+  margin: 0;
+  padding: 0 var(--space-3) var(--space-3);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--app-muted);
+}
+
+// 接入行：整行左区是展开热区（chevron + label + endpoint）
+.s-cell {
   display: flex;
   flex-direction: column;
-  gap: 4px;
 }
-.field-label {
-  font-size: var(--text-xs);
-  color: var(--app-muted);
-}
-.check-row {
+.config-toggle {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  font-size: var(--text-xs);
-  color: var(--app-text);
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
   cursor: pointer;
-  margin: 2px 0;
 }
-.check-row code {
+.config-toggle:hover { background: var(--app-hover); }
+.config-toggle:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.endpoint {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: var(--font-mono);
   font-size: 11px;
-  background: var(--app-hover);
-  padding: 0 4px;
-  border-radius: 4px;
+  color: var(--app-muted);
+}
+.icon-act {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--app-muted);
+  cursor: pointer;
+}
+.icon-act:hover { color: var(--app-strong); background: var(--app-hover); }
+
+// 行内详情：灰底 inset，与外框 hairline 区分层级
+.config-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0 var(--space-3) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--app-panel-2);
 }
 .code-block {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
   background: var(--terminal-bg);
   border: 1px solid var(--app-border);
   border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-3);
-  margin: 0;
+  // 默认配置 JSON 恰为 7 行：高度放到能完整显示，更长内容再内部滚动
   max-height: 180px;
   overflow: auto;
 }
@@ -390,28 +387,35 @@ onMounted(() => {
   white-space: pre;
   line-height: 1.5;
 }
-.config-foot {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-}
-.copy-hint {
-  margin-left: auto;
-  color: var(--success);
+.detail-note {
+  margin: 0;
   font-size: var(--text-xs);
-  text-transform: none;
-  letter-spacing: 0;
+  line-height: 1.6;
 }
-.warn-inline {
-  font-size: var(--text-xs);
-  color: var(--app-muted);
-  line-height: 1.4;
-}
-.warn-inline code {
+.detail-note code {
   font-family: var(--font-mono);
   font-size: 11px;
+  background: var(--app-hover);
+  padding: 0 4px;
+  border-radius: 4px;
 }
+.datadir-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.level-select {
+  min-width: 200px;
+  flex-shrink: 0;
+}
+.level-note {
+  margin: 0;
+  padding: 0 var(--space-3) var(--space-3);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+.level-note.is-warn { color: var(--warn); }
+.muted { color: var(--app-muted); }
 </style>
-
-
