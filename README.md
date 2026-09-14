@@ -525,7 +525,8 @@ cd src-tauri && cargo check   # Rust 类型检查（Windows 上 build 偶受 bui
 
 ### GUI
 
-- `sftp_download_with_progress` 仍返回整块 `Vec<u8>`（分块上传已实现，下载侧待改造）
+- 下载已流式化（`sftp_download_to_file` 后端分块读、`tokio::fs` 直接写本地文件），但**仍不可取消**（单次 invoke、后端无中断通道）
+- 上传仍走前端 8 MiB 分块经 IPC（JSON 数组序列化有约 4 倍膨胀）；改为服务端按路径流式上传是后续优化
 - `start_remote_forward` 是返回 Err 的桩（local/dynamic SOCKS5 已实现）
 - ProxyJump/跳板链未实现
 - 多窗口已知限制：窗口不持久化恢复、资产删除不跨窗口同步、主题跨窗口不实时同步、Esc 取消的窗外拖拽可能误开窗

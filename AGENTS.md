@@ -42,7 +42,7 @@
 - ❌ 硬编码颜色/z-index/间距：用 `var(--token)`（见 `src/styles/_tokens.scss`）。
 - ❌ 同一概念多份实现：连接状态等用权威定义点（见指南 §5）。
 - ❌ 死代码：未被 import 的模块确认后删除。
-- ❌ 靠猜测代替事实：对外部环境（家目录/工具链/locale/时钟域/就绪信号/身份键）不做臆断——协议求证（SFTP canonicalize/stat、pty 终端模式）、解析命令输出加 `LC_ALL=C` + POSIX 选项（写法必须 `env LC_ALL=C <cmd>`，`VAR=值 cmd` 在 csh/tcsh 下整条命令失败）、比较同钟域、身份用完整键、探测三态（真/假/未知按保守处理）。详见指南 §7；**机械门禁**：`npm run lint:facts`（`scripts/fact-guards.mjs`，14 条规则，随 build/CI/发版强制执行）。新增远程能力**默认走 SFTP/协议**，确需 exec 解析输出时注释平台假设与降级策略。
+- ❌ 靠猜测代替事实：对外部环境（家目录/工具链/locale/时钟域/就绪信号/身份键）不做臆断——协议求证（SFTP canonicalize/stat、pty 终端模式）、解析命令输出加 `LC_ALL=C` + POSIX 选项（写法必须 `env LC_ALL=C <cmd>`，`VAR=值 cmd` 在 csh/tcsh 下整条命令失败）、比较同钟域、身份用完整键、探测三态（真/假/未知按保守处理）。详见指南 §7；**机械门禁**：`npm run lint:facts`（`scripts/fact-guards.mjs`，15 条规则，随 build/CI/发版强制执行）。新增远程能力**默认走 SFTP/协议**，确需 exec 解析输出时注释平台假设与降级策略。
 - ❌ 靠形状猜测（形态 E）：用正则/前缀/子串去认结构化对象（命令串/路径/设备树/身份）必被等价写法绕过——命令按 shell 词法分段后**逐段**判定（`df -h; cat /etc/shadow` 不得因前缀 `df` 免审批）、路径先归一再按**组件**判定（`./.ssh/id_rsa`、`\\?\UNC\...`、`/home/x/.ssh/id_rsa` 同罪）、设备按**拓扑**判重（LVM/RAID 的 `dm-*`/`md*` 与物理盘记同一份 IO）。
 - ❌ 失败朝宽松方向折叠：涉及审批/凭据/拦截等级/数据覆盖的读盘或解析失败，**只允许回落到更严的一档**（fail-closed）+ 日志 + 损坏文件隔离改名；只有「文件不存在 = 用户无偏好」才可用产品默认档。「读不出来」永远不等于「空数据/不存在」——已两次导致静默丢数据（拦截等级降级为零审批放行、整份审计日志被 1 条覆盖）。
 
@@ -88,7 +88,8 @@ myshelltool/
 │   ├── App.vue                 # 根组件：按 query 分支（?win=asset&assetId= → AssetWindowShell，否则 WorkbenchShell）+ initialize 启动加载
 │   ├── components/
 │   │   ├── shell/              # 外壳：ConnectionSidebar / AssetGroupNode(递归) /
-│   │   │                       #        GlobalModals(弹窗中枢) / OpsSummaryPanel / RightSidebar
+│   │   │                       #        GlobalModals(弹窗中枢，表单体已拆 Content 子组件 +
+│   │   │                       #        GlobalModals.modal.css) / OpsSummaryPanel / RightSidebar
 │   │   ├── workbench/          # 实际运行的外壳：WorkbenchShell（标题栏/状态栏/拖拽条）/
 │   │   │                       # AssetWindowShell（资产独立窗口壳，复用 Terminal/File/RightSidebar）
 │   │   ├── terminal/           # 终端：TerminalSurface / TerminalTabs / TerminalToolbar
@@ -99,7 +100,8 @@ myshelltool/
 │   │                           #   index.ts barrel 导出全部
 │   ├── stores/                 # Pinia stores（8 个：7 领域 + 1 编排壳）
 │   │   ├── workbench.ts        # 编排壳：实例化 7 个子 store（不含 resourceMonitor），initialize() 启动加载
-│   │   ├── sessions.ts         # 活跃 SSH 会话 + 终端生命周期
+│   │   ├── sessions.ts         # 活跃 SSH 会话 + 连接管理壳（终端生命周期/流接线/事件/
+│   │   │                       #   外观/操作已拆 lib/terminal*+sessionEvents，绑定式 ctx）
 │   │   ├── assets.ts           # 连接资产 CRUD + 分组树
 │   │   ├── files.ts            # SFTP 文件 + 传输队列
 │   │   ├── tunnels.ts          # SSH 隧道/端口转发
@@ -109,9 +111,13 @@ myshelltool/
 │   │   └── sync.ts             # 【v1.3】Gist 资产同步（push/pull/冲突解决/状态展示）
 │   ├── composables/            # useTheme / useClipboard / useTerminalConfig /
 │   │                           # useAutoReconnect / usePanelResize / useAutoUpdate /
-│   │                           # useGithubDeviceLogin（Device Flow 状态机 + 传输故障退避重试）
+│   │                           # useGithubDeviceLogin（Device Flow 状态机 + 传输故障退避重试）/
+│   │                           # useModalDismiss（弹窗 Esc/遮罩 fail-secure 语义）/
+│   │                           # useAssetDnd（侧栏拖拽状态机，v2.8 自 ConnectionSidebar 抽出）
 │   ├── lib/                    # terminalThemes / dangerousCommands / terminalGuards /
-│   │                           # transferUtils / assetWindows+assetWindowBoot（资产独立窗口纯函数模块）
+│   │                           # transferUtils / assetWindows+assetWindowBoot（资产独立窗口纯函数模块）/
+│   │                           # terminalTypes+oscParser+terminalLifecycle+terminalStream
+│   │                           #（v2.8 自 sessions store 拆出的终端生命周期与流接线，绑定式 ctx）
 │   ├── services/
 │   │   └── backend.ts          # Tauri IPC 桥：invokeBackend / listenBackendEvent /
 │   │                           #                 normalizeAsset / slugify
@@ -122,10 +128,15 @@ myshelltool/
 │   ├── src/
 │   │   ├── main.rs             # 二进制入口（tauri::run 壳）
 │   │   ├── lib.rs              # AppState + 资产/凭据命令 + generate_handler 注册 + mcp_status
-│   │   ├── ssh.rs              # SSH/SFTP/隧道核心（SshSessionManager + russh Handler）
-│   │   ├── resource_monitor.rs # 远程 CPU/mem/net/disk 轮询（SshCommand::MonitorExec）
+│   │   ├── ssh.rs              # SSH 会话核心壳：SshSessionManager/共享类型/清理三件套 + 子模块
+│   │   │                       # glob 再导出（v2.8 从 2733 行按域拆出 ssh/ 六模块，命令名不变）
+│   │   ├── ssh/                # 【v2.8 拆分】session（连接/认证/PTY 命令）/ sftp（文件操作 +
+│   │   │                       # 分块上传/流式下载）/ tunnel（转发 + SOCKS5）/ headless（MCP 一次性
+│   │   │                       # 连接）/ monitor（exec 采样桥）/ known_hosts（信任记录）
+│   │   ├── http.rs             # 【v2.8】出站 HTTP 单例（Gist/OAuth 共用，connect/整体超时）+ reqwest 错误链
+│   │   ├── resource_monitor.rs # 远程 CPU/mem/net/disk 轮询的 Tauri 命令层（解析层在 core::proc_parse，经 re-export 供 ssh.rs 调用）
 │   │   ├── fs_local.rs         # 本地文件系统命令
-│   │   ├── sync.rs             # 【v1.3】Gist 同步命令层（push/pull/conflict，粘合 core sync + reqwest）
+│   │   ├── sync.rs             # 【v1.3】Gist 同步命令层壳（v2.8 拆出 sync/{gist,ops,secrets} 三域）
 │   │   ├── sync_oauth.rs       # 【v1.3】GitHub OAuth Device Flow 登录（v2.7 抗抖动：单例客户端 + 结构化可重试判定）
 │   │   ├── dpapi_codec.rs      # 【v1.3】DPAPI 凭据编解码（Windows CryptProtectData，cfg(windows)）
 │   │   ├── bin/mcp.rs          # 【v1.4 已删】原 myshelltool-mcp 独立 console bin，内嵌后取消双二进制
@@ -145,11 +156,15 @@ myshelltool/
 ├── crates/
 │   └── myshelltool-core/       # 共享核心库（无 Tauri 依赖，可独立 cargo test）
 │       └── src/
-│           ├── lib.rs          # ConnectionAsset / SecretStore / 资产持久化 / 资产校验
+│           ├── lib.rs          # 模块编排与再导出壳（v2.8 拆出 asset_store/secret_store/lib_tests）
+│           ├── asset_store.rs  # ConnectionAsset / 资产持久化 / 校验 / 分组操作 / write_atomic
+│           ├── secret_store.rs # SecretStore / 编解码器 / 凭据状态与引用
 │           ├── dangerous_commands.rs # 【v2.6 迁入】白/黄/黑/Unknown 四层命令分类 + 毁灭层（GUI 与 MCP 共享单点真相，fail-secure 默认拒）
-│           ├── redact.rs       # 【v2.6】命令文本脱敏（`mysql -pP@ss` 等落日志前的凭据红线，`redact_command`/`redact_excerpt` 从 crate 根再导出）
+│           ├── redact.rs       # 【v2.6】命令文本脱敏（`mysql -pP@ss` 等落日志前的凭据红线）；【v2.8】redact_output 输出脱敏（env 赋值 + mysql IDENTIFIED BY，审计日志 outputSummary 用）
 │           ├── oauth_flow.rs   # 【v2.7】GitHub Device Flow 轮询判定（传输故障/429/5xx/非 JSON = 可重试，协议拒绝 = 终止；纯函数可单测）
-│           ├── remote_text.rs  # 【v2.6】远端文件内容编码判定（二进制/非 UTF-8/UTF-8 三态，拒绝对内容做 lossy「解码」）
+│           ├── remote_text.rs  # 【v2.6】远端文件内容编码判定（二进制/非 UTF-8/UTF-8 三态，拒绝对内容做 lossy「解码」）；【v2.8】lossy 文件名守卫 is_lossy_remote_path
+│           ├── proc_parse/     # 【v2.8 迁入】/proc/* 采样解析层（mod.rs 代码 + tests.rs）：网络默认路由口径、
+│           │                   #   DISKSTATS_MARKER 显式分段、degraded 分层失败语义、MONITOR_SAMPLE_COMMAND
 │           └── shell.rs        # 【v2.6 迁入】shell 命令分段器（引号感知；命令层安检的结构判据，替代整串前缀匹配）
 ├── tests/
 │   ├── ui-smoke.mjs            # UI 冒烟：5 区域 + 资源监控占位（Playwright）
@@ -209,7 +224,9 @@ npm run tauri:build  # 完整桌面安装包（Windows NSIS），beforeBuildComm
 
 # —— 测试 ——
 npm run test:core    # Rust core 单元测试：cargo test --manifest-path crates/myshelltool-core/Cargo.toml
-npm run test:ui      # UI 冒烟：node tests/ui-smoke.mjs && node tests/ui-host-key.mjs && node tests/ui-file-loading.mjs（需先 npm run dev 起服务）
+npm run test:ui      # UI 四套：ui-smoke / ui-host-key / ui-file-loading / **ui-ipc-flows**
+                     #（后者 mock window.__TAURI__ IPC 驱动真实 store 流：连接+输出流+自动重连/
+                     #   分块上传边界/覆盖确认链/hostkey 认领与 resolve；需先 npm run dev 起服务）
 
 # —— 静态检查（各自单跑）——
 npm run lint:facts   # 「靠猜测代替事实」门禁：scripts/fact-guards.mjs（指南 §7）；build 首步即跑，CI/发版同步生效
@@ -270,7 +287,8 @@ npm run type-check   # vue-tsc --build，strict 全量；build 亦含此步
 - `sftp_list_dir` / `sftp_read_file` / `sftp_write_file`
 - `sftp_list_dir` 的 **path 为空串 = 服务器默认目录**：后端 `canonicalize(".")` 解析登录用户真实家目录（root → /root）并在返回的 `path` 字段回传绝对路径；前端不再猜测 home（旧版 `/home/<username>` 对 root 必错、tag 硬编码目录不存在即 No such file，已废弃）
 - 分块上传：`sftp_upload_start` / `sftp_upload_chunk` / `sftp_upload_finalize`（防 IPC OOM）
-- `sftp_download_with_progress` / `sftp_mkdir` / `sftp_rename` / `sftp_remove` / `sftp_stat`
+- `sftp_download_to_file` / `sftp_mkdir` / `sftp_rename` / `sftp_remove` / `sftp_stat`
+  - 下载已改为**流式落盘**（后端分块读 → `tokio::fs` 直接写本地文件，进度事件节流 1 MiB / 200ms）；字节不再经过 IPC，也不返回 `Vec<u8>`。前端用 `plugin:dialog|open`（`directory: true`）让用户选**保存目录**、文件名沿用远端名，再调用它；批量下载整批只弹一次目录框（不是每文件一次）。
 
 **隧道**（`ssh.rs`，仅内存）
 - `tunnel_create` / `tunnel_start` / `tunnel_stop` / `tunnel_list` / `tunnel_delete`
@@ -279,7 +297,9 @@ npm run type-check   # vue-tsc --build，strict 全量；build 亦含此步
 - `resource_monitor_start` / `_stop` / `_snapshot` / `_list_active`
 
 **本地文件**（`fs_local.rs`）
-- `fs_local_home_dir` / `fs_local_list_dir` / `fs_local_mkdir` / `fs_local_delete` / `fs_local_rename`
+- `fs_local_home_dir` / `fs_local_list_dir` / `fs_local_mkdir` / `fs_local_delete` / `fs_local_rename` / `fs_local_read_chunk` / `fs_local_write_chunk`
+  - `fs_local_write_chunk(path, offset, bytes)`：`offset == 0` 时创建/截断，`offset > 0` 时以读写方式打开并 seek 续写（文件不存在返回 Err，不隐式创建）。与 `fs_local_read_chunk` 配对，供分块读写本地文件。
+  - 说明：流式下载（`sftp_download_to_file`）后端用**单个写句柄**全程追加，不逐块走本命令——本命令是给前端分块写本地文件用的通用能力，当前暂无调用方。
 
 **MCP 服务**（`lib.rs` 调 `mcp/http_server.rs` + `mcp/probe.rs`）
 - `mcp_status` → 【v1.4】HTTP 健康检查 + 聚合能力清单。返回 `McpStatus { serverName, serverVersion, endpoint, dataDir, probe: McpProbeResult, tools[], resources[], prompts[] }`。`probe.ok` 是状态灯唯一信号源（向自己的 HTTP endpoint 发 initialize 握手，不再 spawn 子进程）。`endpoint` 是 MCP HTTP URL（如 `http://127.0.0.1:41235/mcp`），供用户配置 MCP host。
@@ -346,13 +366,15 @@ credential_id(Option), passphrase_credential_id(Option)
 
 ## 9. 已知边界 / Follow-ups（改这些时要留意）
 
-- `sftp_download_with_progress` 仍返回整块 `Vec<u8>`（upload 已分块，download 待改造）。
+- 下载已流式化（`sftp_download_to_file` 直接写本地文件），但**仍不可取消**：单次 invoke、后端无中断通道，前端只能等它跑完；`TransferDrawer` 因此对下载行不渲染取消按钮（勿造假按钮）。
+- 上传仍是前端分块经 IPC（8 MiB/chunk，JSON 数组序列化有约 4 倍膨胀）；改为「按本地路径在服务端流式上传」是后续优化。
+- 资产 id 消歧（`assets.ts` 的 `normalizeAssetList`，启动载入与各载入路径都走它）**只改 `id`**，不动 `credential_id` 等引用：若磁盘数据里存在多个指向同一凭据键的资产，重命名后那些引用仍指向旧键，凭据共用面未完全消除。要彻底解决需要连带迁移凭据引用（暂不做）。
 - `start_remote_forward` 是返回 Err 的桩（local/dynamic SOCKS5 已实现）。
 - `sanitize_credential_id` 是**删除式清洗**：仅保留字母数字与 `-`/`_`，其余字符直接删除（`192.168.2.2:password` → `19216822password`）。已知限制：清洗不可逆、不同 id 可能碰撞（`a:b` 与 `ab` 写同一个 `<id>.cred` 文件）；若改映射规则需迁移既有凭据文件（暂不改）。
 - Windows 上 `cargo build` 偶因 build script（windres）阻断，用 `cargo check` 兜底；`cargo test` 的 src-tauri 测试二进制会因 Tauri runtime DLL 缺失报 `STATUS_ENTRYPOINT_NOT_FOUND`，用 `cargo check --tests` 验证测试可编译。
 - `workbench.ts`（实测 507 行）是编排壳而非纯 re-export 壳：实例化 7 个子 store + `initialize()` 启动编排，另含 5 个真实路径 helper（`remotePathForAsset`/`parentPath`/`joinPath`/`joinLocalPath`/`parentLocalPath`），return 块 re-export 子 store 的 state/actions。
 - **【v1.4】MCP 内嵌 GUI（Streamable HTTP）**：MCP server 跑在 GUI 进程内，绑定 `127.0.0.1:41235/mcp`（占用则 +1，写 `<data_dir>/mcp-endpoint.json`）。取消双二进制（删 `bin/mcp.rs` + `pipe.rs`），根治 v1.2 的僵尸进程 + os error 32 + NSIS 打包缺口。MCP server 随 GUI 启停（`CancellationToken` 控制 graceful shutdown）。
-- **【v1.4】MCP 端口策略**：默认 41235，被占用则 +1 重试最多 10 次，**只监听 localhost**（§8 安全红线）。实际端口写 mcp-endpoint.json，前端 `mcp_status.endpoint` 返回。
+- **【v1.4】MCP 端口策略**：默认 41235（v2.8 起 release 构建恒 41235、debug 构建默认 41500，见下条），被占用则 +1 重试最多 10 次，**只监听 localhost**（§8 安全红线）。实际端口写 mcp-endpoint.json，前端 `mcp_status.endpoint` 返回。
 - **【v1.4 follow-up】会话复用**：`tools.rs::exec_on_asset` 当前直走 headless 建连（删了 v1.1 pipe 复用分支）。后续可注入 GUI 的 `Arc<AsyncMutex<SshSessionManager>>` 到 McpToolContext，命中已建立会话时直接复用（同进程访问，比 pipe 更简单）。
 - **【v2】MCP 审批三级降级 + 拦截等级可配置**：v1.5 已实现三级降级（elicitation → AppHandle emit `mcp-tool-approval` GUI 弹窗 + 60s oneshot 超时 → headless/emit 失败才 fail-secure 拒），不再是「不支持 elicitation 直接拒」。v2 起拦截等级用户可配置（`mcp-config.json`，GUI 经 `mcp_get_config`/`mcp_set_config` 读写）：默认 **Minimal** 仅硬拦毁灭性命令（机器报废级：rm 根级删除如 `rm -rf /`、mkfs、dd 写块设备、fork 炸弹、chmod -R 系统目录），其余命令（含 reboot、`rm -rf 目录`、`curl|bash` 等黑名单级）不经确认直接执行（用户明确选择的低摩擦默认，放行记执行日志 `minimal_allowed` 供审计）；**Strict** 非白名单一律人工确认（保留原 fail-secure 语义）。毁灭性命令两档下均直接拒绝、不弹审批（decision 记 `hard_blocked`，命令未执行）；`find` 含 `-delete`/`-exec` 不再白名单放行（落黄层：Minimal 自动放行记日志 / Strict 人工确认）；sftp_remove 已于 v2.3 纳入等级体系，仅根级/核心目录删除恒拦。等级存共享 `Arc<RwLock<McpConfig>>`，改档后已建 MCP 会话下次调用即生效。`ssh_exec` 等工具返回结构化文本（exit_code + stdout + stderr；超 16000 字符自动截断保留头/尾各 8000，提示用 grep/tail 收窄）。
 - **【v2】MCP 执行日志**：`server.rs::call_tool` 为真实触发远程执行的工具（ssh_exec/disk_usage/system_status/service_status/sftp_remove）记一条 `mcp-execution-log.json`（哪台服务器/什么命令/什么决策/什么结果），前端 MCP 面板经 `mcp_list_execution_logs`/`mcp_clear_execution_logs` 查看/清空。30 天惰性清理 + 上限 1000 条（append 时触发，无常驻定时任务）；tokio Mutex 串行化 append/clear，`.tmp`+rename 原子写，落盘失败 best-effort 不阻断工具调用。Entry 不含任何凭据字段（§8 红线）。
@@ -366,7 +388,7 @@ credential_id(Option), passphrase_credential_id(Option)
 - **【v2.5】同步安全加固**：本地资产 JSON 可读但损坏 → 中止同步并报错（不再静默折叠成空 vault 推 Gist 覆盖远端备份）；资产文件写回失败 → 报错且不推进 `last_synced_at`（防后续 pull 以「安全拉取」误判覆盖）；MCP 执行日志文件损坏 → 改名 `mcp-execution-log.corrupt-<unix秒>.json` 隔离保留证据后从空日志继续。
 - **【v2.5】MCP SFTP 原子写兜底**：临时文件 rename 覆盖失败时**保留**临时文件（路径写入错误信息），供人工恢复，不静默丢数据。
 - **【v2.5】本地系统目录黑名单加固（fs_local.rs）**：支持 UNC（`\\server\share`）与 `\\?\` verbatim 前缀；路径存在时先 canonicalize 归一再判（封 NTFS 8.3 短名如 `C:\PROGRA~1` 绕过）；家目录不可得时显式报错，不再回退 `.`（工作目录冒充家目录）。
-- **【v2.6】事实门禁扩充到 14 条 + 安全判据可测化**：`scripts/fact-guards.mjs` 在 v2.5 的 7 条之上新增 6 条——`no-csh-hostile-env-prefix`（`VAR=值 命令`/`export VAR=值` 在 csh/tcsh 下不是赋值，整条命令失败；统一写 `env LC_ALL=C <cmd>`）、`no-pipeline-rc-echo`（管道后的 `echo rc_*=$?` 是管道末端的码，恒 0，会把「命令不存在」伪装成成功）、`no-fake-type-cast-call`（`(x as unknown as { m() }).m()` 断言后调用不存在的方法，TS 迁移后的新形态）、`no-empty-catch-block`（空 `catch {}` 必须带理由注释）、`no-drive-root-fallback`（字面盘符根当回退/临时目录）、`no-env-path-without-absolute-check`（环境变量当路径根须过 `var_os` + 非空 + 绝对三关）；第二轮又加 `no-unredacted-command-in-log`（命令文本落日志必须过 `redact_command`，见下）。同时把 `dangerous_commands.rs`、`shell.rs`（命令分段器）与 `redact.rs`（命令脱敏）放进 `crates/myshelltool-core`（`src-tauri` 侧 re-export 保持调用点不变）——src-tauri 的测试二进制受 Tauri runtime DLL 限制跑不起来，**安全判据必须在 `npm run test:core` 里真跑**（现 138 项，含白名单绕过/重定向/命令替换/verbatim UNC/私钥相对路径/脱敏正反例/原子写失败保留原文件/远端内容编码三态的回归用例）。
+- **【v2.6】事实门禁扩充到 14 条 + 安全判据可测化**：`scripts/fact-guards.mjs` 在 v2.5 的 7 条之上新增 6 条——`no-csh-hostile-env-prefix`（`VAR=值 命令`/`export VAR=值` 在 csh/tcsh 下不是赋值，整条命令失败；统一写 `env LC_ALL=C <cmd>`）、`no-pipeline-rc-echo`（管道后的 `echo rc_*=$?` 是管道末端的码，恒 0，会把「命令不存在」伪装成成功）、`no-fake-type-cast-call`（`(x as unknown as { m() }).m()` 断言后调用不存在的方法，TS 迁移后的新形态）、`no-empty-catch-block`（空 `catch {}` 必须带理由注释）、`no-drive-root-fallback`（字面盘符根当回退/临时目录）、`no-env-path-without-absolute-check`（环境变量当路径根须过 `var_os` + 非空 + 绝对三关）；第二轮又加 `no-unredacted-command-in-log`（命令文本落日志必须过 `redact_command`，见下）。同时把 `dangerous_commands.rs`、`shell.rs`（命令分段器）与 `redact.rs`（命令脱敏）放进 `crates/myshelltool-core`（`src-tauri` 侧 re-export 保持调用点不变）——src-tauri 的测试二进制受 Tauri runtime DLL 限制跑不起来，**安全判据必须在 `npm run test:core` 里真跑**（v2.8 连同迁入的 proc_parse 解析层共 191 项，含白名单绕过/重定向/命令替换/verbatim UNC/私钥相对路径/脱敏正反例/原子写失败保留原文件/远端内容编码三态的回归用例）。
 - **【v2.6】审批白名单不再「整串前缀匹配」（形态 E 事故）**：`classify_command` 曾对整串做前缀匹配，`df -h; cat /etc/shadow` 以 `df` 开头即判 `Safe` → Minimal 零审批执行、**Strict 档也免人工确认**。现按 `shell::split_shell_segments` 的词法分段（引号感知、转义分隔符不切段）**逐段**判定：每段都要命中白名单，且出现重定向（`>`/`<`）或命令替换（`$`/反引号）一律不进白名单（落黄层/Unknown → Minimal 记日志 / Strict 人工确认，不误升级为 HardBlock）。只读管道组合（`df -h | head -3`）在各段都在白名单内时仍放行。
 - **【v2.6】敏感远端路径的相对形态漏判**：`file_policy::is_sensitive_remote_path` 按 `/.ssh/` 等**段**匹配，而 `sftp_list(path=".")` 返回的条目形如 `./.ssh/id_rsa`，归一后是 `.ssh/id_rsa`（无前导斜杠）→ 整类相对路径漏判、私钥可免审批读取（违反 §8 凭据红线）。现统一补前导 `/` 作为段边界哨兵（绝对路径幂等），并有相对/绝对两套回归用例。
 - **【v2.6】MCP 拦截等级与执行日志的 fail-closed 化**：`load_mcp_config` 原先对「读失败/空文件/JSON 非法/未知 level」一律 `unwrap_or_default()` → **Minimal（零审批档）**，用户显式设的 Strict 会因一次断电或手改而静默降级。现三态分明：文件不存在 = 产品默认 Minimal（用户无偏好）；**存在但不可信 = `McpConfig::strict()` + log::error + 改名隔离 `mcp-config.corrupt-<秒>.json`**；写入改 `.tmp`+rename 原子替换（写侧不再自造损坏）。执行日志同理由「读失败当空日志」改为三态（NotFound/Loaded/Unreadable）：**读取失败时 append 拒绝落盘**并把原文件隔离，`clear_entries` 直接返回 Err——避免「读不出来 → 下一次 append 把整份审计历史覆盖成 1 条」。
@@ -382,14 +404,14 @@ credential_id(Option), passphrase_credential_id(Option)
   - **自动重连计数改按「会话稳定」归零**：`useAutoReconnect` 新增 `markConnected()`——连接/重连成功后启动**稳定窗口**（默认 20s），窗口内不再断开才把计数清零；窗口内又断则计数保留、退避继续往后走。此前 `ssh_connect` 一返回 ok 就 `reset()`，认证通过但随即被关的服务器（nologin / shell 立即退出 / 建连后 1-3s 断）会「成功→清零→又断」无限循环，4 次上限形同虚设并对端形成 1s 一次登录风暴。稳定窗口结束后若仍 connected 会再提示一次「连接已稳定」。
   - **跨窗口接管回执不再「6 秒即失败」**：MERGE_ACK 等待从 6s 改为 **20s + 10s 宽限轮询**（`waitMergeAckWithGrace`），超时文案由「移回失败」改为「**尚未确认**（主窗口可能仍在接管），会话暂时保留在本窗口」。此前主窗口最小化时 `adoptSession` 的 rAF 被节流必然超时 → 弹「失败」但主窗口稍后仍接管成功 → 两窗口共持同一会话（之后关 asset 窗口会把主窗口在用的连接断掉）。
   - **拖出前就绪门（D-6）**：新增 `handoff-ready` 事件 + `announceHandoffReady()`（App.vue 两分支在监听注册后各上报一次，setupHandoffListeners 全窗口登记）。`tearOffSession` 在目标窗口**已存在**时先等它上报就绪（≤3s），等不到就放弃本次拖出并提示「稍后重试」，不再迁移。此前 `getByLabel` 查得到窗口 ≠ webview 已注册监听（页面加载+boot 有数百 ms~数秒空窗），此刻拖出会让会话从 UI 消失、后端留孤儿连接且无任何提示。
-- **【v2.6 未修 backlog】第二轮「靠猜测/硬编码」审计的余项**（均已实证；前三轮共修掉前四条 + 编码假设/重连计数/ACK 超时/拆出就绪门，见上）：
-  1. **[监控口径 · 中] 网络统计的重复计数**：`resource_monitor.rs` 的 `/proc/net/dev` 只排除 `lo` —— 隧道接口（`tun*`/`wg*`）与物理网卡、容器 `veth*`/`docker0`/`br-*` 与宿主网卡字节重叠，网速虚高约 2 倍。修法：以 `/proc/net/route` 的默认路由接口（`00000000` 目标行的 ifname）为准，其余接口仅作明细。
-  2. **[上游依赖 · 中] 远端**文件名**的非 UTF-8 无法无损回传**：russh-sftp 用 `from_utf8_lossy` 解码目录条目名（源码 `buf.rs`），客户端拿到的是 U+FFFD 版本，据此 rename/remove/download 会 `No such file`。内容侧已修（`remote_text` 三态判定），文件名侧需上游暴露 raw bytes 才能根治；当前缓解：列出的名字本身就是替换符，用户可辨识。
-  3. **[门禁覆盖 · 低] 前端固定延迟等待**：`src/` 的 `await new Promise(r => setTimeout(r, N))` 不在现有门禁内（`no-blocking-sleep` 只覆盖 Rust、`no-fixed-wait-in-tests` 只覆盖 `tests/`）。存量 2 处（`files.ts` 退避间隔、`AssetWindowShell.vue` settle 轮询）都属「探测-等待-再探测」的合法节流，可加规则 + 两处显式豁免，把「等待必须有可观测信号」变成需辩护的例外。
-  4. **[展示 · 低] `format_modified` 把「早于 UNIX_EPOCH」与「取 mtime 失败」都折叠成空串**：NTFS 支持 1601 起的任意时间戳（归档解包/安装器会写 1601），显示层与「无 mtime」不可区分（前端已把空串显示为 `—`，故仅显示层问题）。
-  5. **[一致性 · 低] `MCP call_tool` 的 `output_summary` 未脱敏**：命令文本已脱敏（见上），但远端 stdout 里若含口令（如 `mysql -e "show create user"` 的明文、`env` 输出）仍会进审计日志。修法：对摘要复用 `redact` 的赋值/`-p` 规则或按行过滤敏感键。
-  6. **[边界 · 低] MERGE_ACK 在宽限期之后才到达**：本窗口不自动移交（超时文案已改为「尚未确认」并说明可从主窗口继续使用，不再谎报失败）；彻底解决需把「路径 A 未确认即视为失败」改成可续期的等待，或让主窗口在 adopt 前先回一个 `accepted` 两段式回执。
-- **【v2.7】GitHub 登录链路抗抖动（系统代理特性 + 判定分层 + 前端退避重试）**：用户报「偶尔登录失败：轮询 GitHub 授权状态失败: error sending request for url (…/login/oauth/access_token)」。三条并存的根因（都要修，缺一条仍会偶发）：① **`src-tauri/Cargo.toml` 的 `reqwest` 是 `default-features = false`，顺带把默认特性里的 `system-proxy` 关掉了**——`Proxy::system()` 于是只读 `HTTP(S)_PROXY` 环境变量、**完全不读 Windows 系统代理**（`HKCU\...\Internet Settings` 的 `ProxyEnable`/`ProxyServer`/`ProxyOverride`，Clash/v2rayN/SSRUNCore 的「系统代理」模式写的就是这里），而 GUI 从资源管理器启动时没有 `*_PROXY` 环境变量 → 所有 GitHub 请求直连（已用 `cargo tree -f "{p} {f}"` 证实特性集为 `__tls,default-tls,json,native-tls`，`hyper-util/client-proxy-system` 未启用）；② `sync_oauth_poll` **每次轮询新建 `reqwest::Client`**，连接池随之丢弃 → 900s 内最多 ~180 次轮询 = 180 次全新 DNS+TCP+TLS 握手（每次都是独立的失败机会），且只有单个 10s 整体超时（无 connect 超时），跨网络/经代理时一次握手就能吃光预算；③ 传输故障与「授权被拒」都折成 `Err`，前端 `catch` 里直接 `stopTimers(); phase='error'` → **一次瞬时抖动作废整个登录**（设备码在 GitHub 端仍有效 900s，用户却要重新走浏览器授权）。修法：Cargo 显式加 `system-proxy`（随之 `mcp/probe.rs` 的 127.0.0.1 健康检查补 `.no_proxy()`，防 MCP 状态灯被送去代理）；`sync_oauth.rs` 改单例客户端（keep-alive + connect 10s / 整体 20s + tcp_keepalive 30s，`OnceLock<Result<Client,String>>` 缓存），`Err` 只留给内部错误（锁中毒），业务结论走 tag enum：`unstable{user_code, reason}`（传输故障/429/5xx/非 JSON 响应）、`superseded`（session 已被覆盖/取消）、`failed{reason}`（GitHub 明确报错 / token 落库失败）；判定逻辑抽到 `crates/myshelltool-core/src/oauth_flow.rs`（纯函数，`npm run test:core` 真跑——铁律：**传输故障一律可重试、协议拒绝一律终止**，未知 error 码是终止不是重试）；前端 `unstable`/IPC 失败 → 5/10/20/30s 退避重发轮询并显示降级提示，**不设重试次数上限**（权威边界是设备码有效期/倒计时，重试不会重复消费设备码），另修两处竞态：poll 响应加 epoch 快照（旧流程的响应不再改新流程状态、不再排野 timer）+ 响应处理前校验 `phase==='pending'`（倒计时归零后到达的响应当前会把它打回 pending 并继续轮询）。错误文案改带 reqwest 的 `source()` 链（`error sending request for url (...)` 只是最外层笼统描述，真原因——超时/连接被拒/读取中断——在链里）；**2xx 正文绝不回显**（可能含 access_token），非 2xx 正文经 `myshelltool_core::redact_excerpt(text, &[device_code], 200)` 先遮设备码再按字符截断。已知边界：`sync_oauth_start` 与 `sync.rs` 的三处 `reqwest::Client::new()`（**无任何超时**）仍是单次尝试，属同源问题，待单独处理。
+- **【v2.6 未修 backlog】第二轮「靠猜测/硬编码」审计的余项**（均已实证；前三轮共修掉前四条 + 编码假设/重连计数/ACK 超时/拆出就绪门，见上；**v2.8 清偿 #1/#3/#4/#5，缓解 #2，#6 维持文档化边界**，见下方 v2.8 节）：
+  1. ~~**[监控口径 · 中] 网络统计的重复计数**~~ **已修（v2.8）**：默认路由口径，见 v2.8 节。
+  2. ~~**[上游依赖 · 中] 远端文件名的非 UTF-8 无法无损回传**~~ **已根治（v2.8 第六轮）**：vendored fork `third-party/russh-sftp`（`[patch.crates-io]`）把非法字节**可逆编码**为 U+E000+b（PUA-A），`serialize_str` 回发时还原原始字节——文件名字节在「列出→显示→回发」全链路无损往返（GBK 服务器上的 mojibake 名可直接 rename/remove/download）。fork 补丁仅 buf.rs/ser.rs 两处 + buf.rs 内 3 个往返单测；升级 russh-sftp 需重放补丁。已知取舍：真实文件名字面含 PUA-A 字符会被误解码（概率远小于 GBK 服务器场景）；`is_lossy_remote_path` 守卫保留为纵深防御。
+  3. ~~**[门禁覆盖 · 低] 前端固定延迟等待**~~ **已修（v2.8）**：门禁第 15 条 `no-fixed-wait-frontend`，见 v2.8 节。
+  4. ~~**[展示 · 低] `format_modified` 时间戳折叠**~~ **已修（v2.8）**：负秒数 + 前端正则收负号，见 v2.8 节。
+  5. ~~**[一致性 · 低] `MCP call_tool` 的 `output_summary` 未脱敏**~~ **已修（v2.8）**：`redact_output`，见 v2.8 节。
+  6. **[边界 · 低] MERGE_ACK 在宽限期之后才到达**：本窗口不自动移交（超时文案已改为「尚未确认」并说明可从主窗口继续使用，不再谎报失败）；彻底解决需把「路径 A 未确认即视为失败」改成可续期的等待，或让主窗口在 adopt 前先回一个 `accepted` 两段式回执。**维持现状**（发生概率低 + 现文案已诚实，协议重构的复杂度不成比例）。
+- **【v2.7】GitHub 登录链路抗抖动（系统代理特性 + 判定分层 + 前端退避重试）**：用户报「偶尔登录失败：轮询 GitHub 授权状态失败: error sending request for url (…/login/oauth/access_token)」。三条并存的根因（都要修，缺一条仍会偶发）：① **`src-tauri/Cargo.toml` 的 `reqwest` 是 `default-features = false`，顺带把默认特性里的 `system-proxy` 关掉了**——`Proxy::system()` 于是只读 `HTTP(S)_PROXY` 环境变量、**完全不读 Windows 系统代理**（`HKCU\...\Internet Settings` 的 `ProxyEnable`/`ProxyServer`/`ProxyOverride`，Clash/v2rayN/SSRUNCore 的「系统代理」模式写的就是这里），而 GUI 从资源管理器启动时没有 `*_PROXY` 环境变量 → 所有 GitHub 请求直连（已用 `cargo tree -f "{p} {f}"` 证实特性集为 `__tls,default-tls,json,native-tls`，`hyper-util/client-proxy-system` 未启用）；② `sync_oauth_poll` **每次轮询新建 `reqwest::Client`**，连接池随之丢弃 → 900s 内最多 ~180 次轮询 = 180 次全新 DNS+TCP+TLS 握手（每次都是独立的失败机会），且只有单个 10s 整体超时（无 connect 超时），跨网络/经代理时一次握手就能吃光预算；③ 传输故障与「授权被拒」都折成 `Err`，前端 `catch` 里直接 `stopTimers(); phase='error'` → **一次瞬时抖动作废整个登录**（设备码在 GitHub 端仍有效 900s，用户却要重新走浏览器授权）。修法：Cargo 显式加 `system-proxy`（随之 `mcp/probe.rs` 的 127.0.0.1 健康检查补 `.no_proxy()`，防 MCP 状态灯被送去代理）；`sync_oauth.rs` 改单例客户端（keep-alive + connect 10s / 整体 20s + tcp_keepalive 30s，`OnceLock<Result<Client,String>>` 缓存），`Err` 只留给内部错误（锁中毒），业务结论走 tag enum：`unstable{user_code, reason}`（传输故障/429/5xx/非 JSON 响应）、`superseded`（session 已被覆盖/取消）、`failed{reason}`（GitHub 明确报错 / token 落库失败）；判定逻辑抽到 `crates/myshelltool-core/src/oauth_flow.rs`（纯函数，`npm run test:core` 真跑——铁律：**传输故障一律可重试、协议拒绝一律终止**，未知 error 码是终止不是重试）；前端 `unstable`/IPC 失败 → 5/10/20/30s 退避重发轮询并显示降级提示，**不设重试次数上限**（权威边界是设备码有效期/倒计时，重试不会重复消费设备码），另修两处竞态：poll 响应加 epoch 快照（旧流程的响应不再改新流程状态、不再排野 timer）+ 响应处理前校验 `phase==='pending'`（倒计时归零后到达的响应当前会把它打回 pending 并继续轮询）。错误文案改带 reqwest 的 `source()` 链（`error sending request for url (...)` 只是最外层笼统描述，真原因——超时/连接被拒/读取中断——在链里）；**2xx 正文绝不回显**（可能含 access_token），非 2xx 正文经 `myshelltool_core::redact_excerpt(text, &[device_code], 200)` 先遮设备码再按字符截断。~~已知边界：`sync_oauth_start` 与 `sync.rs` 的三处 `reqwest::Client::new()`（无任何超时）待单独处理~~ **已收口（v2.8 第二轮）**：单例客户端与 `error_chain` 抽到 `src-tauri/src/http.rs`（`shared_client()`：UA + connect 10s / 整体 20s + keepalive 30s + pool idle 90s，`OnceLock<Result<Client,String>>`），`sync_oauth.rs` 与 `sync.rs` 的 gist_create/get/update 三处共用（两者都打 GitHub API，连接池真实复用）；gist 三处错误文案同步带上 `source()` 链。`mcp/probe.rs` 有意保留自建客户端（localhost 健康检查必须 `.no_proxy()` 且带独立超时，不共享代理画像）。
 - **【v2.7 续修】同步加密层四个真问题（主密码可恢复性 + 重置密码丢凭据）**：用户问「登录成功了同步还要再输之前的密码吗」——**要**（账号层 token 与加密层主密码互不替代，这是端到端加密的前提），但顺着这条链查出四处缺陷，均已修：
   - **① 备份不可恢复（高）**：`encrypt_with_key` 把 `blob.salt` 留空，而会话密钥 = `Argon2id(主密码, salt)`、`salt` 只存本机 SecretStore —— 开过「自动同步」的备份换机/重装/换 Windows 用户后**连主密码都解不开**（任何密码都派生不出那把 key），而 UI 明写「主密码解密即可恢复全部资产」。修法：会话密钥的 salt 随载荷写进 `blob.salt`（salt 本就不敏感，password 路径一向公开随密文存），于是**同一份密文既可由本机会话密钥解、也可由主密码在任意机器重建同一 key 解开**；`encrypt_with_key` 对空 salt 直接 Err（fail-closed，杜绝再产出「只有本机能解」的载荷）。**旧格式已整体移除（用户决定：项目仅一位用户，不做适配）**：`decrypt_vault` 不再有 salt 缺省的回退分支、`LEGACY_PAYLOAD_HINT` 与 `decrypt_vault_verified` 已删除（新格式下「解密成功」本身就证明了旧密码正确），core 的 `crypto::decrypt` / `decrypt_with_key` 与 `parse_vault_plaintext` 统一明确拒绝旧载荷（文案指路「在本机点一次『推送到云端』用本地资产重建备份」——push 不做解密，所以这条出路总是可行）。回归防线：`crypto.rs` 的 `key_based_blob_carries_salt_and_master_password_can_decrypt_it`、`legacy_payload_without_salt_is_rejected_on_both_paths`、`key_based_encryption_rejects_empty_salt` + `sync.rs` 的 `key_based_pack_unpack_vault_roundtrip`（含「错误主密码仍解不开」的认证性断言）、`unpack_vault_rejects_legacy_assets_only_payload`。
   - **② 重置主密码丢凭据（高）**：`sync_reset_master_password` 用 `sync::unpack()` 取明文再 `sync::pack()` 回写，而 `unpack()` 在明文是 `SyncVaultData` 时**只返回 `assets_store`、丢弃 `credentials`** → 重打包覆盖 Gist 后备份里的密码/私钥整段永久消失，UI 还只提示「✓ 主密码已重置」。修法：改走保管库级 `unpack_vault` / `pack_vault`（原样搬运凭据），新增核心回归用例 `vault_roundtrip_preserves_credentials`（含「资产-only 路径必然丢凭据」的反面断言）。
@@ -409,6 +431,21 @@ credential_id(Option), passphrase_credential_id(Option)
   - **复核方式**：临时 Playwright harness（mock `window.__TAURI__`）渲染 5 种状态截图逐一批判后迭代（含一个真 bug：rail 在 surface 内外各渲染一次）；用完即删，不留仓库。已知瑕疵：2× 截图里中文段落首字看似被切，DOM 实测内缩正常（13px = padding+border），属渲染瑕疵。
   - **架构备注**：`SyncStatusRail` / `SyncActionBar` 直接 `useSyncStore()`（先例：resourceMonitor panel、useGithubDeviceLogin），避免继续往已超硬上限（517 行）的 workbench 编排壳里加 re-export。新增组件 `SyncStatusRail.vue` / `SyncActionBar.vue` / `SyncAdvancedSettings.vue`。
 - **【v2.7 续修·五】零输入建备份：应用生成恢复密码（用户问"新用户能不能只登录一下"）**：用户提出目标「方便用户使用的同时还安全」，并质疑上一轮的"提示存进密码管理器"——**那等于把能否恢复押在用户装没装某个外部软件上**。改法：`core::recovery_code::generate_recovery_password`（24 位、去 `0/O/1/l/I` 歧义字符，供人眼抄写）+ 两个命令 `sync_generate_recovery_password`（生成→DPAPI 存盘→返回明文填入表单并明示一次）/`sync_reveal_recovery_password`（「换机恢复」里查看/复制）；`sync_status.recovery_password_saved` 决定入口显隐。新用户路径因此是：**登录 → （可选）点一下生成强密码 → 创建备份 → 之后全自动免密**。三条工程纪律：① 只保存应用生成的密码，用户手输的不保存（§8 边界）；② `sync_setup`/`sync_reset_master_password` 后发现保存值与本次主密码不同即**删除**（防"查看"给出打不开备份的错值）；③ 明文只回本机 webview、不进 store/localStorage/日志（前端 `reveal` 也是点一次读一次）。**同时按用户要求删掉界面上"旧版备份不再支持"的迁移提示**（唯一用户，全力维护新版；后端那条明确拒绝仍保留 —— 那是 fail-closed 报错不是迁移文案）。设计复核仍走截图：新增的生成结果块与恢复密码明文块各截一张，修掉"按钮被 stretch 居中""密码块缺一句它是什么"。
+- **【v2.8】MCP 端口 dev 隔离（环境变量 + debug 构建默认错开）**：本地 `tauri:dev` 会与已安装正式版**并行抢占 41235**（先启动者得手），而 MCP host 配置的 URL 固定指向正式版端口 → host 连到开发实例：审批弹窗弹在开发窗口、dev 重编译时连接反复断、断点挂起时 60s fail-secure。修法两层：① `MYSHELLTOOL_MCP_PORT` 环境变量显式指定起始端口（三态解析 `core::port_env::parse_port`：未设置=默认 / 空·纯空白·非数字·`0`·超 u16=Invalid→warn 后回退默认 / 1-65535=生效——口径与 `MYSHELLTOOL_DATA_DIR` 一致，「配置了但不可用」不得静默折叠成「未配置」）；② `http_server.rs::DEFAULT_BIND_PORT` 按 `#[cfg(debug_assertions)]` 分裂：release 恒 41235，debug（`tauri:dev`/debug 构建）默认 **41500**——开发实例零配置即与正式版错开，要在 debug 下复现正式端口设 `MYSHELLTOOL_MCP_PORT=41235`。dev 实例要在 host 里连时用面板显示的 41500 端口另配一条。**边界提醒**：这只隔离端口；dev 与正式版仍共享 `app_data_dir`（资产/凭据/known_hosts/sync-state，且 `McpToolContext` 的资产/凭据路径走 app_data_dir 而非 mcp_data_dir）。MCP 三件套（endpoint/config/执行日志）可用既有 `MYSHELLTOOL_DATA_DIR` 隔离，资产/凭据要彻底分家需换 identifier（dev 配置覆盖，未实施）。
+- **【v2.8】资源监控解析层迁 core + 清偿 v2.6 backlog 五项**：`/proc/*` 采样解析层（`parse_proc_stat/meminfo/net_dev/route/diskstats/df`、`build_snapshot`、`MONITOR_SAMPLE_COMMAND`、`ResourceSnapshot/DiskMountInfo` 类型与全部测试）从 `src-tauri/src/resource_monitor.rs` 迁入 `crates/myshelltool-core/src/proc_parse/`（`mod.rs` 代码 + `tests.rs` 测试），src-tauri 侧 re-export 保持 ssh.rs / lib.rs 调用点不变、resource_monitor.rs 瘦身为纯 Tauri 命令层（1433→~230 行）。**迁移动机是被证实的假覆盖**：src-tauri 测试二进制 `STATUS_ENTRYPOINT_NOT_FOUND` 起不来，resource_monitor.rs 里的 20+ 个测试**从未真正运行过**——迁入 core 后第一次真跑就揭穿 4 个失败，其中两个是真 bug：
+  - **磁盘 IO 读写字节自引入 df 段起恒为 0（真 bug）**：`split_proc_output` 用「net 段结束 = 下一个锚点」推 disk 段起点，而 diskstats 是六段里唯一没有自然文本锚点的段 → disk 段 = `[df锚点, df锚点)` 恒为空串。修法：**协议注入边界**——采样命令在 `cat /proc/diskstats` 前 `echo ===PROC_DISKSTATS===`（`DISKSTATS_MARKER`，长度 20 > IFNAMSIZ 不可能与接口名混淆；POSIX sh/BusyBox/csh 的 echo 都原样输出），切分器按标记定界；`test_monitor_sample_command_carries_diskstats_marker` 把命令串与切分器锁在一起防漂移。标记缺失 → disk 段空 → degraded（不猜边界）。
+  - **degraded「net」/「diskstats」分支是死代码**：`parse_proc_net_dev`/`parse_proc_diskstats` 签名是 `Result` 却**从不返回 Err** → 段缺失时静默给 (0,0)，前端看到「正常的 0 KB/s / 0 字节」。现空段（输出里没有该段）→ Err → degraded 标注；「有表头但无数据行」仍 Ok((0,0))（合法零值）。
+  - **一个从未运行的坏测试**：`test_compute_cpu_usage_delta` 的「All busy → 100%」用例 prev=(0,100)→(0,100) 总量增量为 0、函数按约定返回 0%，断言却期望 100%——修正为真实增量用例并补「总量零增量不除零」断言。
+  - **网络双计（backlog #1）**：采样命令追加 `cat /proc/net/route`（放最后，route 段 = `Iface\tDestination` 表头锚点到 EOF），`parse_proc_net_route` 取持默认路由（Destination=="00000000"，严格 8 位 hex 形态校验挡住泄入的无关行）的接口名去重列表，`sum_net_dev_by_primary` 只对它们求和——隧道（tun*/wg*）与容器桥（docker0/veth*/br-*）和物理网卡记同一份字节流，全量累加虚高约 2 倍。**不靠接口名前缀猜角色**（接口可随意改名）：无默认路由（IPv6-only/静态路由/受限 procfs）或 route 与 net/dev 失配（两次 cat 间接口改名）→ 回退全量口径。多默认路由（ECMP/双上联）全部保留（同一字节只经一条，求和不重复）。
+  - **`format_modified` 时间戳折叠（backlog #4）**：早于 1970（NTFS 归档解包常写 1601）由折叠成空串改为输出**负秒数**，前端 `fileColumnUtils.ts` 正则 `/^\d+$/`→`/^-?\d+$/`，`new Date(负数*1000)` 正确本地化为真实历史日期，与「无 mtime」（仍空串→`—`）可区分。
+  - **MCP `output_summary` 脱敏（backlog #5）**：`core::redact::redact_output`——逐行 token 级 `SENSITIVE_KEY=value` 遮值（键复用 `is_sensitive_env_name`：全大写 [A-Z0-9_]+ 且含 TOKEN/PASSWORD/SECRET/… 片段）+ mysql `IDENTIFIED … BY/AS '<…>'` 引号内容遮蔽（只认 IDENTIFIED 后 80 字节内的 BY/AS，`ORDER BY 'x'` 不误伤）。接进 `server.rs::append_execution_log`（**先脱敏再截断**——先截断会把 KEY=value 切坏遮不全）。取向宁过度勿遗漏：审计日志少看一列值无害，多看一个口令就是 §8 红线事故。
+  - **lossy 远端文件名守卫（backlog #2 缓解）**：`core::remote_text::is_lossy_remote_path`（含 U+FFFD 即真）+ 统一拒绝文案 `lossy_remote_path_error`。接进 GUI `sftp_read_file/sftp_rename(old_path)/sftp_remove/sftp_download_to_file` 与 MCP `sftp_read_file/sftp_download/sftp_remove` 共 7 个「按名寻址既有文件」的入口——失真名要么 No such file，**要么命中字面含 U+FFFD 的另一个真实文件（跨文件误删）**，一律 fail-closed。新建目录/上传目标名是用户显式输入的新名字，不拦。根治仍需 russh-sftp 上游暴露 raw bytes。
+  - **门禁第 15 条 `no-fixed-wait-frontend`（backlog #3）**：`src/` 的 `await new Promise(r => setTimeout(r, N))` 裸等待需 `fact-guard:allow` 显式辩护；存量 2 处（files.ts 退避间隔、AssetWindowShell.vue settle 轮询）均为「探测-等待-再探测」合法节流，已加豁免注释（豁免统计在门禁输出可见）。至此 Rust（no-blocking-sleep）/ 测试（no-fixed-wait-in-tests）/ 前端三端固定等待全覆盖。
+  - **【多角色审查第 1 轮修复】**（迁移代码经 5 角色独立审查，3 个 ≥80 置信度问题全数修复）：① **`redact_mysql_identified` 字节切片 panic（Critical，95）**——窗口右界 `id_end+80` 是任意字节偏移，落在 UTF-8 多字节序列中间即 panic，MySQL 8 `IDENTIFIED BY '…' COMMENT '<中文>'` 的**合法输出**即可触发（审查方已用 rustc 复现实证）；远端输出打崩 MCP 请求任务（无 catch_unwind）= 拒绝服务面。修法：`window_end` 回退到字符边界 + `output_multibyte_window_boundary_does_not_panic` 回归用例。② **echo 标记未加引号（87）**——zsh 的 EQUALS 选项默认开启，未引用的 `=word` 按命令名 `=` 展开报 not found → zsh 登录 shell 的远端 marker 恒缺失、磁盘 IO 恒降级（本项目远端确实存在 zsh，见 v2.3）；修法：`echo '===PROC_DISKSTATS==='`（引号对所有 shell 无副作用），一致性测试追加锁定带引号形态。③ **write/upload 漏 lossy 守卫（84）**——SFTP create 是 O_CREAT|O_TRUNC 覆盖语义，分不清新建与覆盖；MCP 场景 AI 宿主会把 `sftp_list` 的失真名（U+FFFD）回灌成 write/upload 目标，可能静默覆盖「字面含 U+FFFD 的另一个真实文件」。补齐 GUI `sftp_write_file`/`sftp_upload_start` 与 MCP `tool_sftp_write_file`/`tool_sftp_upload` 四处守卫（防线从 7 个入口扩到 11 个）。
+- **【v2.8 第二轮】出站 HTTP 收口 + ssh.rs 按域拆分（architecture-log Target 1 落地）**：
+  - **HTTP 单例收口（v2.7 同源遗留清偿）**：新增 `src-tauri/src/http.rs`——`shared_client()`（UA + connect 10s / 整体 20s + tcp keepalive 30s + pool idle 90s，`OnceLock<Result<Client,String>>`）与 `error_chain()`（reqwest source 链展开）。`sync.rs` 的 gist_create/get/update 三处**无任何超时**的 `Client::new()` 全部接入（此前网络抖动/代理异常会让同步 IPC 无限期挂住），错误文案同步带 cause 链；`sync_oauth.rs` 删本地实现改复用。`mcp/probe.rs` 有意保留自建客户端（localhost 健康检查必须 `.no_proxy()`，不共享代理画像）。
+  - **ssh.rs 拆分（2733→390 + ssh/ 六模块，cycle-tier 清账）**：按 architecture-log 2026-06-23 既有预案（session/sftp/tunnel/headless/known_hosts 五切 + monitor 从 session 再分），零逻辑变更的行级迁移；最终 session 762 / sftp 719 / tunnel 434 / headless 257 / monitor 174 / known_hosts 35，全部低于 800 硬上限。关键手法：① 根模块 `pub use 子模块::*` **glob** 再导出——tauri `generate_handler` 要按 `ssh::命令名` 解析隐藏宏 `__cmd__X`，逐项列表带不动宏；② 子模块统一 `use super::*`（Rust 后代可见性：子模块能经根 glob 拿到根的私有项与 use 别名）；③ 跨分支共享符号（`SshClient`/`build_client_config`/`wrap_key_with_preferred_hash`/`expand_home_path`/known_hosts 三件/`handle_monitor_exec`+Guard/`dir_entry_to_remote_file_entry`/`UploadEntry`）升 pub。验证：符号级审计（23 个 `#[tauri::command]` 持平、fn/struct/enum/impl 名单逐一比对仅见可见性升级与既定改名）、`cargo check`/`--tests` 零警告、`test:core` 191/191、`npm run build` exit 0；命令名全部不变，前端/lib.rs/mcp 调用点零改动。
+
 - **【v2.5】前端事实驱动改造**：连接后文件面板自动加载改 1s/2s/5s 退避重试（重试前校验该资产仍有活跃会话，会话断开可取消退避链，失败静默展示空态+重试）；File 直传以短块（< CHUNK_SIZE / 0 字节）为真 EOF + 上传后字节对账（仅 warn 差异），不信任列表时刻的 file.size；`remotePath` 未加载（空串）时禁止上传/建目录等远程写操作（防折叠到根路径）；AssetWindowShell 删主窗存活探测的 3 次重试门（改挂载 + 焦点/可见事件各探测一次，成败以点击时刻真实探测为准）、关窗等 connecting 会话 settle 上限 65s（后端 60s 超时 + 5s 缓冲）且超时**不销毁窗口**（防 destroy 把孤儿 SSH 会话留在后端）；`assetWindows` label sanitize 发生字符替换时追加 id 的 djb2 短哈希后缀防不同 id 碰撞；终端字号/行高读取路径 clamp（字号 9-28、行高 1-2，手改 localStorage 坏值不再越界渲染）。
 
 ---
