@@ -367,9 +367,16 @@ onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
   font-size: var(--text-xs);
   font-family: var(--font-mono);
   outline: none;
+  transition:
+    border-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard);
 }
-// 描边恒定不变色（同标题栏搜索框口径）：编辑态本身就是模式切换的可见反馈，
-// 焦点由光标 + 全选高亮指示。
+
+// 光环跟随本输入框自身的圆角（区别于 _base.scss 根治的裸 input 直角光环）
+.file-column-manual-path:focus {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
 
 .filter-host {
   position: relative;
