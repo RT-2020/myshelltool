@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import type { ResourceSnapshot } from '@/types/domain';
 import { invokeBackend, isTauriRuntime, listenBackendEvent } from '../services/backend';
+import { errorMessage } from '../lib/errorMessage';
 
 const MAX_HISTORY = 60;
 const INTERVAL_MS = 2000;
@@ -145,7 +146,9 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
     try {
       await invokeBackend('resource_monitor_start', { sessionId, intervalMs });
     } catch (e) {
-      const msg = (e as Error | undefined)?.message || String(e);
+      // 取值统一走 errorMessage（后端 Err(String) 以字符串 reject 的原因见该文件注释）；
+      // msg 同时用于下面的 'already monitored' 判定（后端串原样返回，判定不受影响）
+      const msg = errorMessage(e);
       if (msg.includes('already monitored')) {
         // 跨窗口迁移竞态：Rust 侧仍有旧窗口（asset 独立窗口）的监控任务，
         // 先 stop 再重试（静默）。asset 窗口 onBeforeUnmount 的 stop 可能晚于主窗口 adopt。
@@ -153,7 +156,7 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
           await invokeBackend('resource_monitor_stop', { sessionId });
           await invokeBackend('resource_monitor_start', { sessionId, intervalMs });
         } catch (e2) {
-          error.value = (e2 as Error | undefined)?.message || String(e2);
+          error.value = errorMessage(e2);
           enabled.value = false;
         }
         return;
@@ -170,7 +173,7 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
           applySnapshot(next);
         });
       } catch (e) {
-        error.value = (e as Error | undefined)?.message || String(e);
+        error.value = errorMessage(e);
       }
     }
     if (!errorUnlisten) {
@@ -188,7 +191,7 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
           enabled.value = false;
         });
       } catch (e) {
-        error.value = (e as Error | undefined)?.message || String(e);
+        error.value = errorMessage(e);
       }
     }
   }

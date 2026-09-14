@@ -25,6 +25,9 @@ import { Info, LayoutGrid, Palette, RefreshCw, Plug, Sun, Moon, Monitor, Downloa
 import { useWorkbenchStore } from '@/stores/workbench';
 import { THEME_ORDER, THEME_LABELS } from '@/composables/useTheme';
 import type { useAutoUpdate } from '@/composables/useAutoUpdate';
+// 别名导入：本文件下方已有 errorMessage computed（镜像 useAutoUpdate 的错误文案字段），
+// 直接具名导入会与之冲突
+import { errorMessage as toErrorMessage } from '@/lib/errorMessage';
 import AppTabGroup from '@/components/ui/AppTabGroup.vue';
 import AppButton from '@/components/ui/AppButton.vue';
 import AppProgress from '@/components/ui/AppProgress.vue';
@@ -81,10 +84,21 @@ const validTabs = TABS.map(t => t.id);
 const initialTab = modalExtras.value.tab ?? '';
 const activeTab = ref(validTabs.includes(initialTab) ? initialTab : 'about');
 
+// pane 常驻：首次访问才挂载（v-if），之后仅切换显示（v-show）——
+// 避免 Sync/Mcp 面板每次切 tab 重挂载重拉数据导致闪烁，并保留滚动/折叠等局部状态。
+const visitedTabs = ref<string[]>([activeTab.value]);
+const panelRef = ref<HTMLElement | null>(null);
+
 watch(() => modalExtras.value.tab, next => {
   if (next && validTabs.includes(next)) {
     activeTab.value = next;
   }
+});
+
+watch(activeTab, id => {
+  if (!visitedTabs.value.includes(id)) visitedTabs.value.push(id);
+  // 长 pane（如同步）滚到底部后切到短 pane，浏览器钳位后视口位置不可预期，统一回顶
+  panelRef.value?.closest('.app-modal-body')?.scrollTo({ top: 0 });
 });
 
 async function openExternal(url: string) {
@@ -110,7 +124,7 @@ onMounted(async () => {
     const { getVersion } = await import('@tauri-apps/api/app'); // 动态加载：浏览器预览缺 Tauri 模块
     appVersion.value = await getVersion();
   } catch (err) {
-    console.warn('[settings] 获取版本号失败：', (err as Error | undefined)?.message || err);
+    console.warn('[settings] 获取版本号失败：', toErrorMessage(err));
   }
 });
 
@@ -160,13 +174,13 @@ function selectTheme(value: string) {
 </script>
 
 <template>
-  <div class="settings-panel">
+  <div ref="panelRef" class="settings-panel">
     <!-- Tab 导航 -->
     <AppTabGroup :tabs="TABS" v-model:active="activeTab" />
 
     <div class="tab-body">
       <!-- ① 关于与更新（默认 tab，用户最常找的更新入口） -->
-      <section v-if="activeTab === 'about'" class="stack">
+      <section v-if="visitedTabs.includes('about')" v-show="activeTab === 'about'" class="stack tab-pane">
         <div class="about-hero">
           <AppBrandLogo :size="48" class="about-logo" />
           <div class="about-text">
@@ -228,7 +242,7 @@ function selectTheme(value: string) {
       </section>
 
       <!-- ② 外观（主题三选） -->
-      <section v-else-if="activeTab === 'appearance'" class="stack">
+      <section v-if="visitedTabs.includes('appearance')" v-show="activeTab === 'appearance'" class="stack tab-pane">
         <header class="block-head"><Palette :size="12" />主题</header>
         <div class="theme-grid">
           <button
@@ -280,10 +294,10 @@ function selectTheme(value: string) {
       </section>
 
       <!-- ③ 同步（复用 SyncPanelContent + PatConfigCard，零 props 自包含） -->
-      <SyncPanelContent v-else-if="activeTab === 'sync'" />
+      <SyncPanelContent v-if="visitedTabs.includes('sync')" v-show="activeTab === 'sync'" class="tab-pane" />
 
       <!-- ④ MCP（复用 McpPanelContent，零 props 自包含） -->
-      <McpPanelContent v-else-if="activeTab === 'mcp'" />
+      <McpPanelContent v-if="visitedTabs.includes('mcp')" v-show="activeTab === 'mcp'" class="tab-pane" />
     </div>
   </div>
 </template>
@@ -469,5 +483,14 @@ function selectTheme(value: string) {
 }
 
 // .stack / .muted / .num / .mono-path 由全局 _utilities / _base 提供，此处不重复定义。
+
+// pane 进入动画：v-show 从 display:none 翻回可见时 animation 自动重播，无需 Vue Transition
+.tab-pane {
+  animation: settings-pane-in var(--motion-base) var(--ease-standard);
+}
+@keyframes settings-pane-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 </style>
 

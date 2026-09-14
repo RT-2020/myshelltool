@@ -9,3 +9,17 @@ import './styles/main.scss';
 import '@xterm/xterm/css/xterm.css';
 
 createApp(App).use(createPinia()).mount('#app');
+
+// 【v2.8】DEV-only 测试钩子：tests/ui-ipc-flows.mjs 经 window.__myshelltool 驱动真实
+// store 流（连接/上传/重连），配合脚本化的 window.__TAURI__ mock 后端——覆盖浏览器
+// 预览模式测不到的 Tauri IPC 路径。生产构建（import.meta.env.DEV=false）整段剔除。
+if (import.meta.env.DEV) {
+  const { useWorkbenchStore } = await import('./stores/workbench');
+  const { useSessionsStore } = await import('./stores/sessions');
+  const { useFilesStore } = await import('./stores/files');
+  (window as unknown as Record<string, unknown>).__myshelltool = {
+    workbench: useWorkbenchStore(),
+    sessions: useSessionsStore(),
+    files: useFilesStore()
+  };
+}

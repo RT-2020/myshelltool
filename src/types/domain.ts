@@ -376,3 +376,44 @@ export interface TerminalSearchState {
   direction: string;
   result: string | null;
 }
+
+// ─── 弹窗表单态（GlobalModals 与其 Content 子组件共享；编辑态字段的宽松类型
+// 由输入控件回传 string 所致，提交时按 saveAsset 入参契约收窄）───
+
+/** 资产编辑表单（tags 编辑态为逗号串，port/auth_method 收 AppInput/AppSelect 的 string 回传）。 */
+export interface AssetEditorForm {
+  id: string;
+  name: string;
+  host: string;
+  port: number | string;
+  username: string;
+  auth_method: string | number;
+  private_key_path: string;
+  group: string;
+  tags: string;
+  status: string;
+  credential_id: string | null;
+  passphrase_credential_id: string | null;
+  private_key_credential_id: string | null;
+}
+
+/** 资产编辑器的凭据表单（clear* 为「清除已存凭据」标记，与重新输入互斥）。 */
+export interface CredentialEditorForm {
+  password: string;
+  passphrase: string;
+  privateKey: string;
+  clearPassword: boolean;
+  clearPassphrase: boolean;
+  clearPrivateKey: boolean;
+}
+
+/** 隧道新建表单（端口为 string，提交时 Number() 转换）。 */
+export interface TunnelEditorForm {
+  name: string;
+  kind: string | number;
+  local_addr: string;
+  local_port: string;
+  remote_addr: string;
+  remote_port: string;
+  auto_start: boolean;
+}

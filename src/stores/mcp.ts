@@ -9,6 +9,7 @@ import type {
   NotifyOptions
 } from '@/types/domain';
 import { invokeBackend, isTauriRuntime, listenBackendEvent } from '../services/backend';
+import { errorMessage } from '../lib/errorMessage';
 
 // ─── 配置引导：给外部 LLM 宿主的注册 JSON 模板 ───
 //
@@ -125,7 +126,7 @@ export const useMcpStore = defineStore('mcp', () => {
       // 真 runtime 下的失败才记日志——探测本身的失败已内化成 probe.ok=false，
       // 这里 catch 的只有 IPC 层异常（命令未注册等），值得 warn。
       // eslint-disable-next-line no-console
-      console.warn('[mcp] refresh failed:', (error as Error | undefined)?.message || error);
+      console.warn('[mcp] refresh failed:', errorMessage(error));
     } finally {
       loading.value = false;
     }
@@ -163,7 +164,7 @@ export const useMcpStore = defineStore('mcp', () => {
       });
     } catch (error) {
       // eslint-disable-next-line no-console
-      console.warn('[mcp] approval listener registration deferred:', (error as Error | undefined)?.message);
+      console.warn('[mcp] approval listener registration deferred:', errorMessage(error));
     }
   }
 
@@ -177,7 +178,7 @@ export const useMcpStore = defineStore('mcp', () => {
     try {
       await invokeBackend('mcp_confirm_tool', { requestId, accepted });
     } catch (error) {
-      wb().announce?.('MCP 审批响应失败：' + ((error as Error | undefined)?.message || error));
+      wb().announce?.('MCP 审批响应失败：' + errorMessage(error));
     }
     approvalPrompt.value = null;
     if (!accepted) wb().modal = { type: null };
@@ -218,7 +219,7 @@ export const useMcpStore = defineStore('mcp', () => {
       interceptLevel.value = config?.level ?? 'minimal';
     } catch (error) {
       // eslint-disable-next-line no-console
-      console.warn('[mcp] loadMcpConfig failed:', (error as Error | undefined)?.message || error);
+      console.warn('[mcp] loadMcpConfig failed:', errorMessage(error));
     }
   }
 
@@ -234,7 +235,7 @@ export const useMcpStore = defineStore('mcp', () => {
       interceptLevel.value = config?.level ?? level;
       wb().announce?.(`MCP 拦截等级已切换为「${label}」`);
     } catch (error) {
-      wb().announce?.('切换 MCP 拦截等级失败：' + ((error as Error | undefined)?.message || error));
+      wb().announce?.('切换 MCP 拦截等级失败：' + errorMessage(error));
     }
   }
 
@@ -249,7 +250,7 @@ export const useMcpStore = defineStore('mcp', () => {
       execLogs.value = await invokeBackend<McpExecutionLogEntry[]>('mcp_list_execution_logs', { limit });
     } catch (error) {
       // eslint-disable-next-line no-console
-      console.warn('[mcp] loadExecLogs failed:', (error as Error | undefined)?.message || error);
+      console.warn('[mcp] loadExecLogs failed:', errorMessage(error));
     } finally {
       execLogsLoading.value = false;
     }
@@ -262,7 +263,7 @@ export const useMcpStore = defineStore('mcp', () => {
       execLogs.value = [];
       wb().announce?.('MCP 执行日志已清空');
     } catch (error) {
-      wb().announce?.('清空 MCP 执行日志失败：' + ((error as Error | undefined)?.message || error));
+      wb().announce?.('清空 MCP 执行日志失败：' + errorMessage(error));
     }
   }
 

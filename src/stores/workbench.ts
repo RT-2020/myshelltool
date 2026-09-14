@@ -10,10 +10,10 @@ import type {
 import {
   invokeBackend,
   isTauriRuntime,
-  normalizeAsset,
   normalizeTunnelStatus
 } from '../services/backend';
 import { applyTheme } from '../composables/useTheme';
+import { errorMessage } from '../lib/errorMessage';
 import { useSessionsStore } from './sessions';
 import { useFilesStore } from './files';
 import { useTunnelsStore } from './tunnels';
@@ -99,7 +99,10 @@ export const useWorkbenchStore = defineStore('workbench', () => {
       ]);
       uiStore.backendStatus = status;
       assetsStore.assetSource = { ...assetResult, count: assetResult.count ?? assetResult.assets?.length ?? 0 };
-      assetsStore.assets = (assetResult.assets || []).map(normalizeAsset);
+      // 必须走 assetsStore.normalizeAssetList（而不是就地 map(normalizeAsset)）：
+      // 启动载入同样需要重复 id 消歧，否则磁盘上两个同 slug 的无 id 资产启动后
+      // 会同 id，编辑其一会 upsert 覆盖另一个并共用凭据键。
+      assetsStore.assets = assetsStore.normalizeAssetList(assetResult.assets);
       assetsStore.declaredGroups = assetResult.groups || [];
       assetsStore.githubPatConfigured = Boolean(credential.exists);
       tunnelsStore.tunnels = (tunnelResult || []).map(normalizeTunnelStatus);
@@ -107,7 +110,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
       uiStore.backendStatus = { ready: false, mode: 'fallback' };
       assetsStore.assetSource = { source: 'unavailable', count: 0 };
       assetsStore.assets = [];
-      announce('后端桥接初始化失败：' + (error as Error).message);
+      announce('后端桥接初始化失败：' + errorMessage(error));
     }
     if (!assetsStore.selectedAssetId && assetsStore.assets.length) {
       assetsStore.selectedAssetId = assetsStore.assets[0].id;
@@ -115,7 +118,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
 
     // 4. 事件监听编排 — sessions + files 各管各的；ui 在 initializeTheme 内已注册 systemThemeListener
     setupEventListeners(options.mode === 'asset').catch(error => {
-      announce('后端事件监听初始化失败：' + (error as Error).message);
+      announce('后端事件监听初始化失败：' + errorMessage(error));
     });
 
     // 5. 连接成功 → 后台预刷新远程 + 本地文件。不切 tab（保留「连接后看终端」的常规体验），
@@ -167,7 +170,9 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   // sessions store 需要 selectedAsset / effectiveTheme / modal / selectedAssetId /
   // selectAsset（切标签联动资产树选中）/ onSessionClosed + onSessionConnected +
   // syncTerminalCwd（终端生命周期联动文件面板：断开清空/连接自动加载/cd 跟随）/
-  // announce / setTab / updateTransferProgress（转发到 files）。
+  // announce / setTab。
+  // 传输进度不经此桥接：sftp-transfer-progress 是全局广播，files store 已自监听自处理
+  // （其 transferQueue 归自己所有），再从这里转发只会让同一条事件被处理两次。
   // files store 需要 announce / selectedAsset / setTab / modal + sessionsStore 引用。
   // tunnels store 需要 announce / modal + sessionsStore 引用。
   // assets store 需要 announce / modal + clearFileSelection（转发到 files）。
@@ -189,8 +194,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     onSessionConnected: filesStore.handleSessionConnected,
     syncTerminalCwd: filesStore.syncTerminalCwd,
     announce,
-    setTab: uiStore.setTab,
-    updateTransferProgress: filesStore.updateTransferProgress
+    setTab: uiStore.setTab
   });
 
   filesStore.attachWorkbench({
@@ -199,7 +203,9 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     setTab: uiStore.setTab,
     get modal() { return uiStore.modal; },
     set modal(v) { uiStore.modal = v; },
-    sessionsStore: () => sessionsStore
+    sessionsStore: () => sessionsStore,
+    // 传输重试按 assetId 找回原资产（用户可能已切走，selectedAsset 不够用）
+    assets: () => assetsStore.assets
   });
 
   tunnelsStore.attachWorkbench({
@@ -214,7 +220,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     get modal() { return uiStore.modal; },
     set modal(v) { uiStore.modal = v; },
     clearFileSelection: filesStore.clearSelection,
-    autoPushIfEnabled: syncStore.autoPushIfEnabled
+    autoPushIfEnabled: syncStore.autoPushIfEnabled,
+    handleAssetSelected: id => { filesStore.handleAssetSelected(id); }
   });
 
   // v1.5：mcp store 需 modal setter（弹/关审批窗）+ announce（超时提示）。
@@ -475,43 +482,7 @@ export function normalizeStatus(status: string | null | undefined): { label: str
   return { label: 'idle', dotClass: '' };
 }
 
-export function remotePathForAsset(_asset?: NormalizedConnectionAsset | null) {
-  // 空串 = 服务器默认：后端 sftp_list_dir 对空 path 做 canonicalize(".") 解析
-  // 登录用户真实家目录。旧版猜 /home/<username>（root 家在 /root 必错）与按 tag
-  // 硬编码（/backup、/var/lib/redis、/srv/app/releases——不存在即 No such file）已废弃。
-  return '';
-}
 
-export function parentPath(path: string) {
-  if (!path || path === '/' || path === '') return '/';
-  const trimmed = path.replace(/\/+$/, '');
-  const idx = trimmed.lastIndexOf('/');
-  if (idx <= 0) return '/';
-  return trimmed.slice(0, idx);
-}
-
-export function joinPath(base: string, name: string) {
-  if (!base || base === '/') return '/' + name;
-  return base.replace(/\/+$/, '') + '/' + name;
-}
-
-// 本地路径 helper：处理 Windows 反斜杠和 Unix 正斜杠。
-// 前端只做拼接/解析，所有真实 IO 走 Rust fs_local_* 命令。
-export function joinLocalPath(base: string, name: string) {
-  if (!base) return name;
-  const sep = base.includes('\\') && !base.includes('/') ? '\\' : '/';
-  const trimmed = base.replace(/[\\/]+$/, '');
-  return trimmed + sep + name;
-}
-
-export function parentLocalPath(path: string) {
-  if (!path) return '';
-  // 同时支持 Windows 和 Unix 风格
-  const match = path.match(/^(.*?)[\\/]+[^\\/]+[\\/]*$/);
-  if (!match) return path;
-  const parent = match[1];
-  if (!parent) return path; // 根目录
-  // Windows 盘符根：D: -> D:\
-  if (/^[a-zA-Z]:$/.test(parent)) return parent + '\\';
-  return parent || path;
-}
+// 路径五助手已抽到 lib/pathUtils（v2.8 第五轮）；re-export 保持
+// '@/stores/workbench' 与 '@/lib/pathUtils' 两条 import 路径都可用。
+export { remotePathForAsset, parentPath, joinPath, joinLocalPath, parentLocalPath } from '@/lib/pathUtils';

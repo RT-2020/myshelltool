@@ -1,0 +1,249 @@
+/* Minimal legacy styles — visual chrome lives in main.scss. These mirror
+   the .modal-layer / .modal / .modal-head / .modal-actions selectors
+   the original App.vue shipped, so the legacy CSS rules in main.scss
+   still target them by class. */
+.modal-layer {
+  position: fixed;
+  inset: 0;
+  background: var(--app-scrim);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: var(--z-modal);
+}
+.modal-layer.open {
+  display: flex;
+  /* 开合动效：display 切换时触发（勿改 v-if 结构，保持 legacy 选择器） */
+  animation: modal-layer-fade var(--motion-fast) var(--ease-standard);
+}
+@keyframes modal-layer-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.modal {
+  background: var(--app-panel);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-pop);
+  width: 100%;
+  max-width: 580px;
+  max-height: calc(100vh - 80px);
+  display: flex;
+  flex-direction: column;
+  animation: modal-pop var(--motion-base) var(--ease-emphasized);
+}
+@keyframes modal-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--app-border);
+}
+.modal-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--app-text);
+}
+.modal-body {
+  padding: 16px;
+  overflow-y: auto;
+  flex: 1;
+}
+.modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--app-border);
+}
+/* 弹窗关闭按钮是文本「×」形态（18px 字形），与全局 28px svg 图标按钮规格不同，
+   故保留局部 .icon-btn 定义；hover 用 token 化背景（原 rgba(255,255,255,.06) 硬编码） */
+.icon-btn {
+  background: transparent;
+  border: none;
+  color: var(--app-muted);
+  cursor: pointer;
+  font-size: 18px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.icon-btn:hover { background: var(--app-hover); color: var(--app-strong); }
+
+/* Legacy .btn classes — kept so the host-key test's
+   ".modal-actions .btn.danger" selector still resolves. main.scss
+   defines the global .btn / .btn.primary / .btn.danger rules; these
+   scoped rules exist only as a fallback if global CSS is overridden. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 16px;
+  background: var(--app-control);
+  color: var(--app-text);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast), box-shadow var(--motion-fast);
+}
+.btn:hover { background: var(--app-hover); }
+.btn.primary {
+  background: var(--accent);
+  color: var(--accent-on);
+  border-color: var(--accent);
+}
+.btn.primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+.btn.danger {
+  background: var(--danger);
+  color: var(--accent-on);
+  border-color: var(--danger);
+}
+.btn.danger:hover {
+  background: color-mix(in oklab, var(--danger), black 10%);
+  border-color: color-mix(in oklab, var(--danger), black 10%);
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.muted { color: var(--app-muted); font-size: 12px; }
+.context-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  margin: 8px 0;
+}
+.context-grid dt { color: var(--app-muted); font-size: 12px; }
+.callout {
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.callout strong { display: block; margin-bottom: 4px; }
+
+/* 表单内联组：输入框 + 附加按钮（私钥路径浏览 / 凭据清除） */
+.inline-field-row {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+
+.inline-field-row > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.num { font-family: ui-monospace, monospace; }
+
+/* 分组移动用的原生 input（AppInput 不透传 list 属性，故裸 input 对齐 AppInput 视觉）。 */
+.native-input {
+  width: 100%;
+  padding: 6px 10px;
+  background: var(--app-control);
+  color: var(--app-text);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-family: var(--font-body);
+  outline: none;
+  transition: border-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard);
+}
+.native-input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+/* assetEditor 内联校验错误（替代 window.alert）。 */
+.form-error {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in oklab, var(--danger), transparent 50%);
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklab, var(--danger), transparent 88%);
+  color: var(--danger);
+  font-size: var(--text-xs);
+}
+
+/* 文件删除确认：名称清单 + 不可撤销警示（S2） */
+.delete-file-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 140px;
+  overflow: auto;
+}
+.delete-file-list li {
+  padding: 4px 8px;
+  background: var(--app-panel-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  color: var(--app-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.danger-note {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in oklab, var(--danger), transparent 50%);
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklab, var(--danger), transparent 88%);
+  color: var(--danger);
+  font-size: var(--text-xs);
+  font-weight: 500;
+}
+.overwrite-path {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--app-panel-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  word-break: break-all;
+  color: var(--app-text);
+}
+
+/* 主/副按钮异步提交 spinner（S2：复用 .app-btn-spinner 思路，token 驱动） */
+.btn-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: modal-btn-spin 0.7s linear infinite;
+  opacity: 0.85;
+  flex: 0 0 auto;
+}
+@keyframes modal-btn-spin {
+  to { transform: rotate(360deg); }
+}

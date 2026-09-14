@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, ref, unref, watch } from 'vue';
 import {
   ArrowUpDown,
   Minus,
+  Monitor,
   Moon,
   PanelRight,
   Search,
@@ -231,7 +232,7 @@ onMounted(() => {
     >
       <div class="tb-left" data-tauri-drag-region>
         <div class="tb-brand">
-          <AppBrandLogo :size="22" />
+          <AppBrandLogo :size="26" />
           <span class="tb-name">myshelltool</span>
         </div>
       </div>
@@ -277,8 +278,16 @@ onMounted(() => {
       </div>
 
       <div class="tb-right">
-        <button class="icon-btn" type="button" aria-label="切换主题" title="切换主题" @click="emit('toggle-theme')">
-          <Sun v-if="store.effectiveTheme === 'light'" />
+        <button
+          class="icon-btn"
+          type="button"
+          :aria-label="`切换主题（当前：${store.themeLabel}）`"
+          :title="`切换主题（当前：${store.themeLabel}）`"
+          @click="emit('toggle-theme')"
+        >
+          <!-- 与设置面板「外观」tab 同一套三态图标：system→Monitor / light→Sun / dark→Moon -->
+          <Monitor v-if="store.theme === 'system'" />
+          <Sun v-else-if="store.theme === 'light'" />
           <Moon v-else />
         </button>
         <button

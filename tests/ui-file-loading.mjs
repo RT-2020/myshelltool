@@ -79,10 +79,18 @@ try {
               });
             });
           }
-          if (cmd === 'sftp_download_with_progress') {
+          // 目录选择对话框：下载已改为「先选保存目录，再由后端流式写入该目录下的
+          // 同名文件」，因此必须先应答 dialog|open(directory)，runDownload 才会发出
+          // 下载命令。
+          if (cmd === 'plugin:dialog|open') {
+            return Promise.resolve('C:\\Users\\tester');
+          }
+          // 下载命令不再返回文件字节（后端直接写本地文件），只需挂起以观察
+          // 「传输进行中不阻塞文件列表浏览」这一 S2 行为。
+          if (cmd === 'sftp_download_to_file') {
             window.__MST_FILE_LOADING_MOCK.downloadStarted += 1;
             return new Promise(resolve => {
-              window.__MST_FILE_LOADING_MOCK.releaseDownload = () => resolve([65, 66, 67]);
+              window.__MST_FILE_LOADING_MOCK.releaseDownload = () => resolve(null);
             });
           }
           if (cmd === 'fs_local_home_dir') return Promise.resolve('C:\\Users\\tester');

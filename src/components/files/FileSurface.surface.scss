@@ -1,0 +1,164 @@
+@use '@/styles/_tokens' as *;
+
+// ============================================================
+// region-files：grid 32px 1fr（与三列头部高度统一）
+// ============================================================
+.region-files {
+  position: relative;
+  display: grid;
+  grid-template-rows: 32px 1fr;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: var(--app-window);
+  color: var(--app-text);
+  font-family: var(--font-body);
+  overflow: hidden;
+}
+
+// ============================================================
+// file-header（app.css L694-701：view-pills + file-actions）
+// ============================================================
+.file-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  background: var(--app-chrome);
+  border-bottom: 1px solid var(--app-border);
+}
+.file-actions {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+
+// 通用 icon-btn 已收敛为全局类（_utilities.scss 单一权威实现），模板直接使用
+
+// ============================================================
+// view-pills（app.css L703-727：视图胶囊 双栏/仅远程）
+// ============================================================
+.view-pills,
+.view-switch {
+  display: inline-flex;
+  align-items: center;
+  background: var(--app-panel-2);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+  gap: 2px;
+}
+.view-pill {
+  padding: 3px 12px;
+  font-size: var(--text-xs);
+  color: var(--app-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: var(--font-body);
+  transition: background var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard);
+}
+.view-pill:hover {
+  color: var(--app-text);
+}
+.view-pill.active {
+  background: var(--app-panel);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: var(--shadow-xs);
+}
+
+// ============================================================
+// file-dual（app.css L729-734：grid 1fr 1px 1fr）
+// 仅远程模式时隐藏 local 列与 divider，grid 自动塌缩为 1fr
+// ============================================================
+.file-dual {
+  display: grid;
+  grid-template-columns: 1fr;
+  min-height: 0;
+  overflow: hidden;
+}
+.region-files.local-open .file-dual {
+  grid-template-columns: 1fr 1px 1fr;
+}
+.file-pane {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.file-divider {
+  background: var(--app-border);
+}
+
+// S2：远程列表头弱提示（右键查看更多操作）
+.file-column-hint {
+  font-size: var(--text-xs);
+  color: var(--app-subtle);
+  white-space: nowrap;
+  padding-inline: 4px;
+  user-select: none;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+// ============================================================
+// drag-overlay（拖拽时整面 accent 虚线 + 居中浮层）
+// ============================================================
+.drag-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-drawer);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-soft);
+  border: 2px dashed var(--accent);
+  pointer-events: none;
+}
+.drag-overlay-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: var(--space-4) var(--space-6);
+  color: var(--accent);
+  background: var(--app-panel);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-pop);
+}
+.drag-overlay-inner strong {
+  font-size: var(--text-sm);
+}
+.drag-overlay-sub {
+  font-size: var(--text-xs);
+  color: var(--app-muted);
+  font-family: var(--font-mono);
+}
+
+// ============================================================
+// 栏间拖拽（本地 → 远程）：远程栏 wrapper + 栏级 overlay
+// ============================================================
+.file-pane-remote-wrap {
+  position: relative;
+}
+.column-drag-overlay {
+  position: absolute;
+  inset: 8px;
+  z-index: var(--z-dropdown);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-soft);
+  border: 1.5px dashed var(--accent);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  pointer-events: none;
+}

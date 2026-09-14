@@ -29,9 +29,10 @@ import AssetGroupNode from './AssetGroupNode.vue';
 import { useSessionsStore } from '@/stores/sessions';
 import { useWorkbenchStore, normalizeStatus } from '@/stores/workbench';
 import { openAssetWindow } from '@/lib/assetWindows';
-import { useDragOutsideViewport } from '@/composables/useDragOutsideViewport';
-import { isTauriRuntime } from '@/services/backend';
+import { useAssetDnd } from '@/composables/useAssetDnd';
+import { useSidebarContextMenu } from '@/composables/useSidebarContextMenu';
 import { parseSshTarget } from '@/lib/parseSshTarget';
+import { errorMessage } from '@/lib/errorMessage';
 import type { GroupTreeNode, NormalizedConnectionAsset } from '@/types/domain';
 
 const props = withDefaults(
@@ -198,180 +199,26 @@ function isActiveAsset(asset: NormalizedConnectionAsset) {
 // dataTransfer 用自定义 MIME 携带 { kind, id|path, parent }，区分两类拖拽。
 // 「未分组」不可拖动排序，但可作为资产拖入目标。
 // ============================================================
-const DRAG_MIME = 'application/x-myshelltool-drag';
-
-/** dataTransfer 自定义 MIME 的载荷（readDragData/writeDragData 的契约）。 */
-type DragPayload =
-  | { kind: 'asset'; id: string }
-  | { kind: 'group'; path: string; parent: string };
-
-// 拖拽态：当前被拖对象 / 当前悬停目标分组 / 上半还是下半区
-const dragSource = ref<DragPayload | null>(null);
-const dropTarget = ref<{ path: string; position: 'in' | 'before' | 'after' } | null>(null);
-// 内部 drop 消费标记：分组移动 / 分组排序 drop 命中（onGroupDrop 的 emit 处）置 true，
-// dragend 据此跳过「拖出主窗口开独立窗口」判定；每次 dragend 结束时复位，不残留
-let internalDropHandled = false;
-// 拖拽期间指针是否离开过 webview 视口（窗外释放判定，见 composable 头注释）
-const dragOutside = useDragOutsideViewport();
+// —— 拖拽状态机（useAssetDnd，store-agnostic 经回调接线）——
+// 「未分组」不可拖动排序，但可作为资产拖入目标；行为契约见 composable 头注释。
+const {
+  onAssetDragStart, onAssetDragEnd, isDraggingAsset,
+  onGroupDragStart, onGroupDragEnd, onGroupDragOver, onGroupDragEnter,
+  onGroupDragLeave, onGroupDrop, groupHeaderClass
+} = useAssetDnd({
+  getAssets: () => props.assets,
+  getGroupedAssets: () => props.groupedAssets,
+  onMoveAssetDirect: payload => emit('move-asset-direct', payload),
+  onReorderGroups: paths => emit('reorder-groups', paths),
+  openDetached: openAssetDetached
+});
 
 // 开独立资产窗口（拖出判定 / 右键菜单共用入口）：失败 console.error + toast 提示，不阻断
 function openAssetDetached(asset: NormalizedConnectionAsset) {
   openAssetWindow(asset).catch(error => {
     console.error('[ConnectionSidebar] open asset window failed:', error);
-    workbench.announce('打开独立窗口失败：' + ((error as Error | undefined)?.message || error), { level: 'error' });
+    workbench.announce('打开独立窗口失败：' + errorMessage(error), { level: 'error' });
   });
-}
-
-function readDragData(event: DragEvent): DragPayload | null {
-  const raw = event.dataTransfer?.getData(DRAG_MIME);
-  if (!raw) return null;
-  try { return JSON.parse(raw) as DragPayload; } catch { return null; }
-}
-function writeDragData(event: DragEvent, payload: DragPayload) {
-  // 兜底 text/plain：某些环境（部分 webview）对自定义 MIME 支持不稳
-  event.dataTransfer?.setData(DRAG_MIME, JSON.stringify(payload));
-  event.dataTransfer?.setData('text/plain', payload.kind === 'asset' ? payload.id : payload.path);
-  // dragstart/dragover 事件的 dataTransfer 恒非空（DOM 契约），非空断言仅类型层收窄
-  event.dataTransfer!.effectAllowed = 'move';
-}
-
-// —— 资产拖拽 source ——
-function onAssetDragStart(event: DragEvent, asset: NormalizedConnectionAsset) {
-  dragSource.value = { kind: 'asset', id: asset.id };
-  writeDragData(event, { kind: 'asset', id: asset.id });
-  // 挂 document 级视口跟踪（仅资产拖拽需要，分组拖拽不开独立窗口）
-  dragOutside.attach();
-}
-function onAssetDragEnd(event: DragEvent) {
-  // 拖出主窗口边界释放 → 开独立资产窗口（Phase 2）。
-  // 判定 = 坐标在视口外 ∥ 拖拽期间离开过视口（dragend 坐标在窗外释放时不可靠，
-  // dragleave 标记是可靠信号，两者取或，详见 useDragOutsideViewport）。
-  // 已知边界：Esc 取消的「窗外拖拽」也会置标记、可能误开窗（v1 接受，待实测）；
-  // 拖到主窗口内其他无效区域释放时坐标在视口内且未离开过视口，不会触发。
-  const src = dragSource.value; // 内部 drop 路径（onGroupDrop）会先清 dragSource，故判定前快照语义等价
-  const openDetached =
-    !internalDropHandled &&
-    src?.kind === 'asset' &&
-    isTauriRuntime() &&
-    dragOutside.isOutside(event);
-  dragSource.value = null;
-  dropTarget.value = null;
-  internalDropHandled = false;
-  dragOutside.detach();
-  if (!openDetached) return;
-  // 类型断言：openDetached 为 true 蕴含 src 非 null 且 kind === 'asset'（上方判定式）
-  const asset = props.assets.find(a => a.id === (src as { id: string }).id);
-  if (asset) openAssetDetached(asset);
-}
-function isDraggingAsset(id: string) {
-  return dragSource.value?.kind === 'asset' && dragSource.value.id === id;
-}
-
-// —— 分组拖拽 source（排序）——
-function onGroupDragStart(event: DragEvent, path: string, parent: string) {
-  if (path === '未分组') { event.preventDefault(); return; } // 保留节点不可拖
-  dragSource.value = { kind: 'group', path, parent };
-  writeDragData(event, { kind: 'group', path, parent });
-}
-function onGroupDragEnd(event: DragEvent) {
-  dragSource.value = null;
-  dropTarget.value = null;
-  internalDropHandled = false; // 分组拖拽同样复位，避免残留毒化下一次资产拖出判定
-}
-
-// —— 分组头作为 drop target（同时收资产拖入与分组排序）——
-function onGroupDragOver(event: DragEvent, path: string, parent: string) {
-  const src = readDragData(event) || dragSource.value;
-  if (!src) return;
-  // 资产拖入：任意分组都可接收（含「未分组」），effectAllowed=move 需配 dropEffect
-  if (src.kind === 'asset') {
-    event.dataTransfer!.dropEffect = 'move';
-    event.preventDefault();
-    return;
-  }
-  // 分组排序：仅同级可排（同 parent），且不能排到自己上、不能排到「未分组」
-  if (src.kind === 'group') {
-    if (path === '未分组' || src.path === path || src.parent !== parent) return;
-    event.dataTransfer!.dropEffect = 'move';
-    event.preventDefault();
-  }
-}
-function onGroupDragEnter(event: DragEvent, path: string) {
-  const src = readDragData(event) || dragSource.value;
-  if (!src) return;
-  if (src.kind === 'asset') {
-    dropTarget.value = { path, position: 'in' };
-  } else if (src.kind === 'group' && path !== '未分组' && src.path !== path) {
-    // 上半/下半区决定 before/after
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    const position = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
-    dropTarget.value = { path, position };
-  }
-}
-function onGroupDragLeave(event: DragEvent, path: string) {
-  // dragleave 会因子元素冒泡频繁触发；仅在真正离开该分组头时清目标
-  if (dropTarget.value?.path === path) {
-    const related = event.relatedTarget;
-    if (!(event.currentTarget as HTMLElement).contains(related as Node | null)) {
-      dropTarget.value = null;
-    }
-  }
-}
-function onGroupDrop(event: DragEvent, targetPath: string, targetParent: string) {
-  const src = readDragData(event) || dragSource.value;
-  dropTarget.value = null;
-  dragSource.value = null;
-  if (!src) return;
-  if (src.kind === 'asset') {
-    // 资产拖入分组 → 直接移动（内部消费：dragend 不再判「拖出开窗」）
-    internalDropHandled = true;
-    emit('move-asset-direct', { id: src.id, group: targetPath });
-    return;
-  }
-  if (src.kind === 'group') {
-    // 同级排序：把 src.path 插到 targetPath 的 before/after
-    if (targetPath === '未分组' || src.path === targetPath || src.parent !== targetParent) return;
-    internalDropHandled = true;
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    const placeAfter = event.clientY >= rect.top + rect.height / 2;
-    emit('reorder-groups', buildReorderedPaths(src.path, targetPath, placeAfter));
-  }
-}
-
-// 把分组拖拽结果转成全量新顺序（扁平路径，父在子前 DFS 先序）。
-// 思路：从当前分组树按 DFS 先序收集所有非「未分组」路径，移除 src，
-// 插到 target 的 before/after 位置。
-function buildReorderedPaths(srcPath: string, targetPath: string, placeAfter: boolean): string[] {
-  const ordered = collectGroupPathsDfs(props.groupedAssets);
-  const filtered = ordered.filter(p => p !== srcPath);
-  const idx = filtered.indexOf(targetPath);
-  if (idx === -1) return ordered; // 兜底：target 不在列表，原样返回
-  filtered.splice(placeAfter ? idx + 1 : idx, 0, srcPath);
-  return filtered;
-}
-// DFS 先序收集分组路径（root.children 起步），跳过「未分组」。
-function collectGroupPathsDfs(root: GroupTreeNode): string[] {
-  const out: string[] = [];
-  const walk = (node: GroupTreeNode) => {
-    for (const child of (node.children || [])) {
-      if (child.path !== '未分组') out.push(child.path);
-      walk(child);
-    }
-  };
-  walk(root);
-  return out;
-}
-
-// 分组头拖放态 class（AssetGroupNode 调用）
-function groupHeaderClass(path: string) {
-  if (!dropTarget.value || dropTarget.value.path !== path) {
-    return dragSource.value?.kind === 'group' && dragSource.value.path === path ? 'is-dragging' : '';
-  }
-  const pos = dropTarget.value.position;
-  if (pos === 'in') return 'is-drop-in';
-  if (pos === 'before') return 'is-drop-before';
-  if (pos === 'after') return 'is-drop-after';
-  return '';
 }
 
 // ============================================================
@@ -436,73 +283,18 @@ function registerAssetEl(id: string, el: unknown) {
   else assetElMap.value.delete(id);
 }
 
-// ============================================================
-// 右键菜单：资产 / 分组两套，共用一个 contextMenu ref（带 kind 区分）
-// ============================================================
-interface SidebarMenuState {
-  visible: boolean;
-  kind: '' | 'asset' | 'group';
-  x: number;
-  y: number;
-  asset: NormalizedConnectionAsset | null;
-  path: string;
-}
-const contextMenu = ref<SidebarMenuState>({ visible: false, kind: '', x: 0, y: 0, asset: null, path: '' });
-
-function openContextMenu(event: MouseEvent, kind: 'asset' | 'group', payload: { asset?: NormalizedConnectionAsset; path?: string }) {
-  contextMenu.value = {
-    visible: true,
-    kind,
-    x: event.clientX,
-    y: event.clientY,
-    asset: payload.asset || null,
-    path: payload.path || ''
-  };
-}
-
-function onAssetContextMenu(event: MouseEvent, asset: NormalizedConnectionAsset) {
-  openContextMenu(event, 'asset', { asset });
-}
-
-function onGroupContextMenu(event: MouseEvent, path: string) {
-  // 「未分组」是保留节点，不提供分组管理菜单
-  if (path === '未分组') return;
-  openContextMenu(event, 'group', { path });
-}
-
-function closeContextMenu() {
-  contextMenu.value = { ...contextMenu.value, visible: false };
-}
-
-const assetMenuItems = computed(() => {
-  if (!contextMenu.value.visible || contextMenu.value.kind !== 'asset') return [];
-  const a = contextMenu.value.asset;
-  if (!a) return [];
-  const make = (label: string, fn: () => void, opts: { danger?: boolean } = {}) => ({ label, action: fn, ...opts });
-  return [
-    make('编辑', () => emit('edit-asset', a)),
-    make('复制', () => emit('duplicate-asset', a)),
-    { separator: true },
-    make('移动到分组…', () => emit('move-asset', a)),
-    // 独立窗口入口：仅 Tauri runtime 显示（浏览器预览无多窗口能力）
-    ...(isTauriRuntime()
-      ? [{ separator: true }, make('在独立窗口打开', () => openAssetDetached(a))]
-      : []),
-    { separator: true },
-    make('删除', () => emit('delete-asset', a), { danger: true })
-  ];
-});
-
-const groupMenuItems = computed(() => {
-  if (!contextMenu.value.visible || contextMenu.value.kind !== 'group') return [];
-  const path = contextMenu.value.path;
-  if (!path) return [];
-  const make = (label: string, fn: () => void, opts: { danger?: boolean } = {}) => ({ label, action: fn, ...opts });
-  return [
-    make('重命名…', () => emit('rename-group', path)),
-    { separator: true },
-    make('解散分组', () => emit('dissolve-group', path), { danger: true })
-  ];
+// —— 右键菜单（useSidebarContextMenu，动作经回调接线 emit / openAssetWindow）——
+const {
+  contextMenu, closeContextMenu, assetMenuItems, groupMenuItems,
+  onAssetContextMenu, onGroupContextMenu
+} = useSidebarContextMenu({
+  onEditAsset: a => emit('edit-asset', a),
+  onDuplicateAsset: a => emit('duplicate-asset', a),
+  onMoveAsset: a => emit('move-asset', a),
+  onDeleteAsset: a => emit('delete-asset', a),
+  onRenameGroup: path => emit('rename-group', path),
+  onDissolveGroup: path => emit('dissolve-group', path),
+  openDetached: openAssetDetached
 });
 
 // ============================================================
@@ -700,276 +492,4 @@ provide('connectionSidebar', {
   </div>
 </template>
 
-<style scoped lang="scss">
-@use '@/styles/_tokens' as *;
-
-// ============================================================
-// Sidebar 容器（app.css L397-404 严格同步）
-// ============================================================
-.sidebar {
-  display: grid;
-  grid-template-rows: auto auto 1fr auto;
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  background: var(--app-window);
-  color: var(--app-text);
-  font-family: var(--font-body);
-  overflow: hidden;
-}
-
-// ============================================================
-// Header（app.css L405-418 sb-header + chrome-label + sb-count）
-// ============================================================
-.sb-header {
-  // 高度与终端标签条（.region-terminal 32px）、右栏 rs-header 对齐，三列头部横线共线
-  height: 32px;
-  padding: 0 12px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  border-bottom: 1px solid var(--app-border-soft);
-  flex: 0 0 auto;
-}
-.sb-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-// chrome-label（app.css L182-188：mono 小写大字距，但中文友好调整）
-.chrome-label {
-  font-family: var(--font-display);
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  color: var(--app-muted);
-}
-.sb-count {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--app-muted);
-  background: var(--app-panel-2);
-  border-radius: 4px;
-  padding: 1px 6px;
-}
-.sb-actions {
-  display: flex;
-  gap: 2px;
-}
-
-.sb-rail {
-  display: none;
-}
-
-// 通用 icon-btn 已收敛为全局类（_utilities.scss 单一权威实现），
-// 仅保留折叠 rail 的局部 .primary 变体（常显 accent-soft 底，见文件尾）
-
-// ============================================================
-// Search（app.css L420-446 sb-search-wrap + sb-search-input）
-// ============================================================
-.sb-search-wrap {
-  position: relative;
-  padding: 8px 12px;
-  flex: 0 0 auto;
-}
-.sb-search-icon {
-  position: absolute;
-  left: 22px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 13px;
-  height: 13px;
-  color: var(--app-muted);
-  stroke-width: 1.7;
-  pointer-events: none;
-}
-.sb-search-input {
-  width: 100%;
-  height: 30px;
-  padding: 0 12px 0 32px;
-  background: var(--app-panel-2);
-  border: 1px solid transparent;
-  border-radius: 7px;
-  font-size: 12.5px;
-  font-family: var(--font-body);
-  color: var(--app-text);
-  outline: none;
-  transition: border-color var(--motion-fast), background var(--motion-fast);
-}
-.sb-search-input::placeholder { color: var(--app-subtle); }
-.sb-search-input:focus {
-  background: var(--app-control);
-  border-color: var(--accent);
-}
-
-// ============================================================
-// Tree（app.css L448-451 sb-tree）
-// ============================================================
-.sb-tree {
-  overflow-y: auto;
-  padding: 4px 8px 12px;
-  min-height: 0;
-}
-// 滚动条（app.css L958-962）
-.sb-tree::-webkit-scrollbar { width: 8px; }
-.sb-tree::-webkit-scrollbar-thumb {
-  background: var(--app-border);
-  border-radius: 4px;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-.sb-tree::-webkit-scrollbar-thumb:hover { background: var(--app-border-strong); }
-
-// ============================================================
-// Empty state（app.css L453-475 sb-empty 虚线边框容器）
-// ============================================================
-.sb-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 32px 16px;
-  margin: 8px 4px;
-  text-align: center;
-  border: 1px dashed var(--app-border-strong);
-  border-radius: 8px;
-}
-.sb-empty-icon {
-  width: 40px;
-  height: 40px;
-  display: grid;
-  place-items: center;
-  border-radius: 10px;
-  background: var(--app-panel-2);
-  border: 1px solid var(--app-border);
-  color: var(--app-subtle);
-}
-.sb-empty-title {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--app-text);
-}
-.sb-empty-desc {
-  font-size: 11.5px;
-  color: var(--app-muted);
-  line-height: 1.5;
-}
-.sb-empty-desc kbd {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  padding: 1px 5px;
-  border: 1px solid var(--app-border);
-  border-radius: 4px;
-  background: var(--app-panel-2);
-  color: var(--app-muted);
-}
-// 主按钮（app.css L319-332 btn-primary）
-.btn-primary {
-  height: 30px;
-  padding: 0 14px;
-  background: var(--accent);
-  color: var(--accent-on);
-  border: 0;
-  border-radius: 7px;
-  font-size: 12.5px;
-  font-weight: 500;
-  cursor: pointer;
-  margin-top: 4px;
-  transition: background var(--motion-fast);
-}
-.btn-primary:hover { background: var(--accent-hover); }
-.btn-primary:active { background: var(--accent-active); }
-
-// ============================================================
-// Footer（app.css L416-418 + L419-433 sb-footer + sb-quick）
-// ============================================================
-.sb-footer {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px 12px;
-  border-top: 1px solid var(--app-border-soft);
-  background: var(--app-window);
-}
-.sb-quick {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 30px;
-  padding: 0 10px;
-  background: var(--app-panel-2);
-  border: 1px solid transparent;
-  border-radius: 7px;
-  transition: border-color var(--motion-fast), background var(--motion-fast);
-}
-.sb-quick:focus-within {
-  background: var(--app-control);
-  border-color: var(--accent);
-}
-.sb-quick svg {
-  width: 13px;
-  height: 13px;
-  color: var(--app-muted);
-  stroke-width: 1.7;
-  flex-shrink: 0;
-}
-.sb-quick-input {
-  flex: 1;
-  min-width: 0;
-  border: 0;
-  background: transparent;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--app-text);
-  outline: none;
-}
-.sb-quick-input::placeholder { color: var(--app-subtle); }
-.sb-quick-error {
-  margin: 0;
-  padding-left: 2px;
-  font-size: 11px;
-  color: var(--danger);
-}
-
-// ============================================================
-// Collapsed rail（实用优先偏离点：保留竖排图标列）
-// app.html 设计稿折叠态几乎空白，但保留竖排图标列保证折叠后仍可操作（展开/新建分组/新增）
-// ============================================================
-.sidebar.is-collapsed {
-  grid-template-rows: 1fr;
-  padding: 8px 0;
-  place-items: start center;
-}
-.sidebar.is-collapsed .sb-header,
-.sidebar.is-collapsed .sb-search-wrap,
-.sidebar.is-collapsed .sb-tree,
-.sidebar.is-collapsed .sb-footer {
-  display: none;
-}
-.sidebar.is-collapsed .sb-rail {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding-top: 4px;
-}
-.sb-rail-divider {
-  width: 18px;
-  height: 1px;
-  background: var(--app-border);
-  margin: 2px 0;
-}
-// 折叠 rail：primary 按钮常显 accent-soft 底（全局 .icon-btn.primary 仅在 hover 时上色）
-.sb-rail .icon-btn.primary {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-.sb-rail .icon-btn.primary:hover {
-  background: var(--accent-soft-strong);
-  color: var(--accent-hover);
-}
-</style>
-
+<style scoped lang="scss" src="./ConnectionSidebar.sidebar.scss"></style>
