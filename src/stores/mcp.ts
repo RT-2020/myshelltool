@@ -53,7 +53,8 @@ interface McpWorkbenchBridge {
  *
  * v2：拦截等级（interceptLevel，mcp_get_config/mcp_set_config）+ 执行日志
  * （execLogs，mcp_list_execution_logs/mcp_clear_execution_logs）。由
- * McpInterceptionSettings / McpExecutionLogList 组件直接 use 本 store，
+ * McpPanelContent（拦截等级，v2.9 收编原 McpInterceptionSettings）/
+ * McpExecutionLogList 组件直接 use 本 store，
  * 不经 workbench re-export（workbench.js 已贴近 500 行硬上限）。
  */
 export const useMcpStore = defineStore('mcp', () => {

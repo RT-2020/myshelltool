@@ -128,7 +128,7 @@ function hostTitle(row: McpExecutionLogEntry) {
   <section class="block">
     <header class="block-head">
       <ScrollText :size="12" />执行日志
-      <span class="head-note muted">记录每次真实触发远程执行的 MCP 工具调用（保留 30 天）</span>
+      <span class="head-note muted">真实远程执行留痕 · 保留 30 天</span>
       <span class="head-actions">
         <AppButton variant="ghost" size="sm" :loading="execLogsLoading" @click="mcpStore.loadExecLogs()">
           <RefreshCw v-if="!execLogsLoading" :size="12" />刷新
@@ -155,54 +155,58 @@ function hostTitle(row: McpExecutionLogEntry) {
         :logs="rows"
       />
 
-      <ul v-if="filteredCount" class="log-list">
-        <li
-          v-for="row in pagedRows"
-          :key="row.id"
-          :class="['log-item', { open: expandedId === row.id }]"
-        >
-          <button
-            type="button"
-            class="log-row"
-            :title="row.command ? `查看输出：${row.command}` : '查看输出'"
-            @click="onRowClick(row)"
+      <!-- 列表限高内部滚动：设置弹窗窄列里 50 条全内联会把整页拉到几千像素；
+           过滤条固定在滚动容器外，滚动时不丢过滤上下文 -->
+      <div v-if="filteredCount" class="log-scroll">
+        <ul class="log-list">
+          <li
+            v-for="row in pagedRows"
+            :key="row.id"
+            :class="['log-item', { open: expandedId === row.id }]"
           >
-            <span class="line1">
-              <span :class="['outcome', outcomeClass(row.outcome)]" :title="outcomeLabel(row.outcome)">
-                <span class="outcome-dot" />{{ outcomeLabel(row.outcome) }}
+            <button
+              type="button"
+              class="log-row"
+              :title="row.command ? `查看输出：${row.command}` : '查看输出'"
+              @click="onRowClick(row)"
+            >
+              <span class="line1">
+                <span :class="['outcome', outcomeClass(row.outcome)]" :title="outcomeLabel(row.outcome)">
+                  <span class="outcome-dot" />{{ outcomeLabel(row.outcome) }}
+                </span>
+                <span class="tool-tag" :title="row.tool">{{ TOOL_LABELS[row.tool] || row.tool }}</span>
+                <span class="host" :title="hostTitle(row)">{{ row.host || row.assetName || row.assetId || '—' }}</span>
+                <span class="spacer" />
+                <span :class="['decision', `decision-${row.decision}`]" :title="decisionLabel(row.decision)">
+                  {{ decisionShort(row.decision) }}
+                </span>
+                <span class="time mono" :title="fmtTime(row.timestampMs)">{{ fmtShortTime(row.timestampMs) }}</span>
               </span>
-              <span class="tool-tag" :title="row.tool">{{ TOOL_LABELS[row.tool] || row.tool }}</span>
-              <span class="host" :title="hostTitle(row)">{{ row.host || row.assetName || row.assetId || '—' }}</span>
-              <span class="spacer" />
-              <span :class="['decision', `decision-${row.decision}`]" :title="decisionLabel(row.decision)">
-                {{ decisionShort(row.decision) }}
-              </span>
-              <span class="time mono" :title="fmtTime(row.timestampMs)">{{ fmtShortTime(row.timestampMs) }}</span>
-            </span>
-            <code class="cmd">{{ row.command || '（无命令）' }}</code>
-          </button>
+              <code class="cmd">{{ row.command || '（无命令）' }}</code>
+            </button>
 
-          <!-- 条目内原位展开：完整时间 / 意图 / 资产 / 输出摘要 -->
-          <div v-if="expandedId === row.id" class="detail">
-            <div class="detail-meta muted">
-              <span class="mono">{{ fmtTime(row.timestampMs) }}</span>
-              · 意图：{{ row.intent || '（未声明）' }}
-              <template v-if="row.assetName || row.assetId">
-                · {{ row.username || '—' }}@{{ row.host || '—' }}:{{ row.port || '—' }}
-              </template>
+            <!-- 条目内原位展开：完整时间 / 意图 / 资产 / 输出摘要 -->
+            <div v-if="expandedId === row.id" class="detail">
+              <div class="detail-meta muted">
+                <span class="mono">{{ fmtTime(row.timestampMs) }}</span>
+                · 意图：{{ row.intent || '（未声明）' }}
+                <template v-if="row.assetName || row.assetId">
+                  · {{ row.username || '—' }}@{{ row.host || '—' }}:{{ row.port || '—' }}
+                </template>
+              </div>
+              <pre class="detail-output"><code>{{ row.outputSummary || '（无输出）' }}</code></pre>
             </div>
-            <pre class="detail-output"><code>{{ row.outputSummary || '（无输出）' }}</code></pre>
-          </div>
-        </li>
-      </ul>
+          </li>
+        </ul>
 
-      <!-- 分页脚注：有剩余 → 加载更多；加载完 → 条数收尾 -->
-      <div v-if="hasMore" class="load-more-row">
-        <button type="button" class="load-more" @click="visibleCount += PAGE_SIZE">
-          加载更多（已显示 {{ pagedRows.length }} / {{ filteredCount }} 条）
-        </button>
+        <!-- 分页脚注：有剩余 → 加载更多；加载完 → 条数收尾（滚动容器内底部） -->
+        <div v-if="hasMore" class="load-more-row">
+          <button type="button" class="load-more" @click="visibleCount += PAGE_SIZE">
+            加载更多（已显示 {{ pagedRows.length }} / {{ filteredCount }} 条）
+          </button>
+        </div>
+        <p v-else class="muted list-end">共 {{ filteredCount }} 条记录</p>
       </div>
-      <p v-else class="muted list-end">共 {{ filteredCount }} 条记录</p>
 
       <p v-if="!filteredCount" class="muted empty">没有匹配的记录，试试调整搜索或筛选条件</p>
     </template>
@@ -254,6 +258,14 @@ function hostTitle(row: McpExecutionLogEntry) {
   margin: 0;
   padding: var(--space-2);
   font-size: var(--text-xs);
+}
+
+// —— 列表限高滚动：父级固定最大高度，内部滚动（全局细滚动条样式已由 _base.scss 提供）——
+.log-scroll {
+  max-height: 320px;
+  overflow-y: auto;
+  // 上下留出条目 hover 背景的呼吸位，避免贴边
+  padding: 2px 0;
 }
 
 // —— 紧凑列表：双行条目（第一行元信息，第二行命令）——
