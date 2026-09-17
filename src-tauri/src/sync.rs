@@ -84,6 +84,8 @@ pub struct SyncStatusResult {
     pub last_synced_at: Option<String>,
     /// Gist ID（脱敏，只显示后 6 位 + ...）。
     pub gist_id_masked: Option<String>,
+    /// 完整 Gist ID（数据定位符，非密钥）：供「换机恢复」复制，新电脑填它找回同一份备份。
+    pub gist_id: Option<String>,
     /// 是否配置了 GitHub PAT。
     pub pat_configured: bool,
     /// v1.6：是否启用自动同步（会话密钥已派生）。
@@ -122,6 +124,7 @@ pub async fn sync_status(state: State<'_, AppState>) -> Result<SyncStatusResult,
         configured: sync_state.gist_id.is_some(),
         last_synced_at: sync_state.last_synced_at.clone(),
         gist_id_masked,
+        gist_id: sync_state.gist_id.clone(),
         pat_configured,
         auto_sync_enabled: sync_state.auto_sync_enabled,
         sync_credentials: sync_state.sync_credentials,

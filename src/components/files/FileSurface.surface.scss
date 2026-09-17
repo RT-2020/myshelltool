@@ -98,7 +98,8 @@
 // S2：远程列表头弱提示（右键查看更多操作）
 .file-column-hint {
   font-size: var(--text-xs);
-  color: var(--app-subtle);
+  // 常驻说明文字（非占位符）用 muted 保证可读；subtle 在白底仅约 2.9:1 不达 AA
+  color: var(--app-muted);
   white-space: nowrap;
   padding-inline: 4px;
   user-select: none;

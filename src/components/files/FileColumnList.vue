@@ -86,6 +86,10 @@ const emptyDesc = computed(() => {
     return props.disabledHint || (props.currentPath ? '该目录为空' : '点击刷新加载本地目录');
   }
   if (props.remoteError) return props.remoteError;
+  // 从未加载：空态不能是死胡同——说明「接下来会发生什么 / 该点哪里」
+  if (!props.remoteEntriesLength && !props.remoteLoaded) {
+    return props.currentPath ? '点击右上角刷新加载' : '连接会话后自动加载远程目录';
+  }
   if (props.remoteFilter) return '无匹配「' + props.remoteFilter + '」的条目';
   return '';
 });

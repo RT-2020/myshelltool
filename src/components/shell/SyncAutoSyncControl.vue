@@ -42,10 +42,10 @@ async function onEnable() {
       </span>
       <p class="note">
         <template v-if="syncAutoSyncEnabled">
-          推拉免密 + 改动自动推送。密钥由 Windows DPAPI 保护、仅本机可用；换机或重装后用主密码重新开启。
+          这台电脑不用再输密码，改动会自动备份。
         </template>
         <template v-else>
-          推拉免密 + 改动自动备份。只需输<strong>一次</strong>主密码，本机用它派生并保存密钥（主密码本身不落盘）。
+          输<strong>一次</strong>主密码，之后这台电脑不用再输，改动会自动备份。
         </template>
       </p>
     </div>
@@ -77,7 +77,7 @@ async function onEnable() {
       :disabled="syncLoading"
       @click="store.syncDisableAutoSync()"
     >
-      取消免密（恢复每次输主密码）
+      取消免密
     </button>
   </section>
 </template>

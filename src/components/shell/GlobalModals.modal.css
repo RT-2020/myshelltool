@@ -68,15 +68,44 @@
   padding: 12px 16px;
   border-top: 1px solid var(--app-border);
 }
+
+/* —— settings 弹窗专属（左竖导航 + 右内容布局） ——
+   加宽到 760px 容纳 172px 导航列；标题「设置」降级为窗框小标签（真正的顶级分类
+   是左侧竖导航，标题不再与之争层级）；body 去 padding，由 SettingsPanelContent 撑满。 */
+.modal--settings {
+  max-width: 760px;
+  height: min(560px, calc(100vh - 80px));
+}
+.modal--settings .modal-head h2 {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--app-subtle);
+}
+.modal--settings .modal-body {
+  padding: 0;
+  overflow: hidden; /* 滚动交给 SettingsPanelContent 的右侧内容区，避免双层滚动条 */
+  display: flex;
+  flex-direction: column;
+}
 /* 弹窗关闭按钮是文本「×」形态（18px 字形），与全局 28px svg 图标按钮规格不同，
-   故保留局部 .icon-btn 定义；hover 用 token 化背景（原 rgba(255,255,255,.06) 硬编码） */
+   故保留局部 .icon-btn 定义；hover 用 token 化背景（原 rgba(255,255,255,.06) 硬编码）。
+   固定 28×28 + flex 居中：「×」是文本字形、自带基线偏移，靠 padding 撑出的框会让
+   字形在 hover 背景里偏上，改为网格居中后字形落在圆框正中。 */
 .icon-btn {
   background: transparent;
   border: none;
   color: var(--app-muted);
   cursor: pointer;
   font-size: 18px;
-  padding: 4px 8px;
+  line-height: 1;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border-radius: var(--radius-sm);
   transition: background var(--motion-fast), color var(--motion-fast);
 }

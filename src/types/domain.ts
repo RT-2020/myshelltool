@@ -265,6 +265,8 @@ export interface SyncStatusResult {
   configured: boolean;
   last_synced_at?: string | null;
   gist_id_masked?: string | null;
+  /** 完整 Gist ID（数据定位符，非密钥）：供「换机恢复」复制，新电脑填它找回同一份备份。 */
+  gist_id?: string | null;
   pat_configured?: boolean;
   auto_sync_enabled?: boolean;
   sync_credentials?: boolean;

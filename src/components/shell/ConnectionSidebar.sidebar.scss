@@ -269,3 +269,12 @@
   background: var(--accent-soft-strong);
   color: var(--accent-hover);
 }
+// 头部同理：「新增连接」是面板主行动，常显底色与「新建分组/收起」两个次级图标拉开层级
+.sb-header .icon-btn.primary {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.sb-header .icon-btn.primary:hover {
+  background: var(--accent-soft-strong);
+  color: var(--accent-hover);
+}

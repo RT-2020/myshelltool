@@ -28,8 +28,10 @@ const { githubPatConfigured } = storeToRefs(store);
 /**
  * `flat`：嵌在已有容器里（如「设置与高级」折叠区）时去掉自带卡片边框/背景，
  * 避免"卡片套卡片"；默认形态（独立展示）保持原样。
+ * `hideHeader`：折叠区内由外层分组标题承担「这是什么」时，隐藏自带的「GitHub 账号登录」
+ * 标题，避免两个大写标题叠在一起；未配置时的独立登录卡保持显示。
  */
-withDefaults(defineProps<{ flat?: boolean }>(), { flat: false });
+withDefaults(defineProps<{ flat?: boolean; hideHeader?: boolean }>(), { flat: false, hideHeader: false });
 
 const tokenInput = ref('');
 
@@ -84,7 +86,7 @@ async function copyUserCode() {
   <div class="pat-card stack" :class="{ 'is-flat': flat }">
     <!-- GitHub Device Flow 登录 -->
     <section class="oauth-block stack">
-      <header class="oauth-head"><Github :size="12" />GitHub 账号登录</header>
+      <header v-if="!hideHeader" class="oauth-head"><Github :size="12" />GitHub 账号登录</header>
 
       <!-- idle / success：单按钮入口（已登录时以「本地安全存储」为权威，不再催登录） -->
       <div v-if="phase === 'idle' || phase === 'success'" class="oauth-entry">

@@ -1,20 +1,24 @@
 <script setup lang="ts">
 /**
- * SyncAdvancedSettings — 「设置与高级」折叠区：把低频配置收进一个入口。
+ * SyncAdvancedSettings — 「设置与高级」折叠区：一张按风险分层的「配置清单」。
  *
- * 为什么合并（信息架构改动）：此前免密、凭据同步、账号、重置主密码、换机说明、清空
- * 是 5-6 个并列卡片，把"该按哪个按钮"的主任务淹在配置里。日常只需要状态 + 两个按钮，
- * 配置是一次性的 —— 折叠后默认视图只剩状态、动作、这一个入口。
+ * 信息架构（v2.8 重设计）：不再是 5-6 个无差别的并列区块，而是**三组分层**，
+ * 每组的视觉权重对应其风险等级：
+ *   ① 常规        —— 低风险开关（免密 / 密码与密钥），白卡；
+ *   ② 账号与备份  —— 核心配置。GitHub 账号是一行状态（PatConfigCard 去自带标题）；
+ *                    「更改主密码」「换机恢复」是两个**统一模式的可展开行**（图标+名称+chevron），
+ *                    主密码从「GitHub 账号」里拆出来，和换机恢复同组（换机要填的正是它俩）；
+ *   ③ 危险操作    —— 清空同步配置，红边红底下沉，二次确认。
  *
- * 内容顺序按"改动风险"排：无害开关在上（免密 / 密码与密钥），账号与恢复居中，
- * 清空（逃生口）永远最后且要二次确认。
+ * 统一展开模式：此前「手动PAT / 重置主密码 / 清空」是三个长得一样但内容迥异的 link，
+ * 用户点之前无法预期展开什么；现统一为「可展开行」，危险操作用颜色进一步区分。
  *
- * 子组件复用：SyncAutoSyncControl（免密开关）、SyncSecurityOptionsCard（凭据开关）、
- * PatConfigCard（账号）原样嵌入，不复制逻辑；两者已改为"设置行"样式以适配折叠区。
+ * 子组件复用：SyncAutoSyncControl / SyncSecurityOptionsCard（设置行）、
+ * PatConfigCard（账号，flat + hide-header）原样嵌入组卡片，不复制逻辑。
  */
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { storeToRefs } from 'pinia';
-import { ChevronDown, ChevronRight, ArrowLeftRight, KeyRound, Settings2 } from 'lucide-vue-next';
+import { ChevronDown, ChevronRight, Settings2, Copy, Check, KeyRound, MonitorSmartphone, Trash2 } from 'lucide-vue-next';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useSyncStore } from '@/stores/sync';
 import { useSyncRecoveryPassword } from '@/composables/useSyncRecoveryPassword';
@@ -28,12 +32,16 @@ import PatConfigCard from '@/components/shell/PatConfigCard.vue';
 const store = useWorkbenchStore();
 const { syncLoading } = storeToRefs(store);
 const syncStore = useSyncStore();
-const { recoveryPasswordSaved } = storeToRefs(syncStore);
+const { recoveryPasswordSaved, status } = storeToRefs(syncStore);
 const { reveal } = useSyncRecoveryPassword();
 const { copy } = useClipboard();
 
+/** 完整 Gist ID（换机恢复要填的那个）；未配置时为空。 */
+const gistId = computed(() => status.value?.gist_id ?? '');
+
 const open = ref(false);
 const showReset = ref(false);
+const showRestore = ref(false);
 const resetOldPassword = ref('');
 const resetNewPassword = ref('');
 const confirmingClear = ref(false);
@@ -49,8 +57,17 @@ async function onReveal() {
 async function copyRevealed() {
   if (revealed.value) {
     await copy(revealed.value);
-    store.announce('恢复密码已复制到剪贴板');
+    store.announce('主密码已复制到剪贴板');
   }
+}
+
+/** 复制 Gist ID 后的短暂「已复制」反馈（2s 后还原）。 */
+const gistCopied = ref(false);
+async function copyGistId() {
+  if (!gistId.value) return;
+  await copy(gistId.value);
+  gistCopied.value = true;
+  setTimeout(() => { gistCopied.value = false; }, 2000);
 }
 
 async function onResetPassword() {
@@ -84,80 +101,117 @@ async function onClearSync() {
     </button>
 
     <div v-if="open" class="adv-body">
-      <!-- ① 免密（改风险最低的开关放最前） -->
-      <SyncAutoSyncControl />
-
-      <!-- ② 密码与密钥一并备份 -->
-      <SyncSecurityOptionsCard />
-
-      <!-- ③ 账号与主密码 -->
-      <section class="row-block">
-        <header class="row-head"><KeyRound :size="12" />GitHub 账号与主密码</header>
-        <PatConfigCard flat />
-        <button class="link-btn" type="button" @click="showReset = !showReset">
-          {{ showReset ? '收起重置主密码' : '重置主密码' }}
-        </button>
-        <div v-if="showReset" class="reset-form">
-          <label class="field">
-            <span class="field-label">当前主密码</span>
-            <AppInput v-model="resetOldPassword" type="password" />
-          </label>
-          <label class="field">
-            <span class="field-label">新主密码 <em class="req">至少 6 位</em></span>
-            <AppInput v-model="resetNewPassword" type="password" />
-          </label>
-          <AppButton
-            variant="ghost"
-            size="sm"
-            :disabled="!resetOldPassword || resetNewPassword.length < 6 || syncLoading"
-            @click="onResetPassword"
-          >重置并用新密码重新推送</AppButton>
+      <!-- ══ 组① 常规：低风险开关 ══ -->
+      <div class="group">
+        <div class="group-title">常规</div>
+        <div class="group-card">
+          <SyncAutoSyncControl />
+          <SyncSecurityOptionsCard />
         </div>
-      </section>
+      </div>
 
-      <!-- ④ 换机恢复：自成一小节（它讲的是另一台机器上的操作，不该和账号设置粘在一起） -->
-      <section class="row-block">
-        <header class="row-head"><ArrowLeftRight :size="12" />换机恢复</header>
-        <p class="note">
-          新电脑上：安装 myshelltool → 登录同一 GitHub 账号 → 在同步页点「从已有备份恢复」，
-          填 Gist ID 与<strong>这份备份的主密码</strong>即可取回全部资产。
-        </p>
+      <!-- ══ 组② 账号与备份 ══ -->
+      <div class="group">
+        <div class="group-title">账号与备份</div>
+        <div class="group-card">
+          <!-- GitHub 账号：状态行（PatConfigCard 去自带标题，只留登录状态与操作主体） -->
+          <PatConfigCard flat hide-header />
 
-        <!-- 应用生成的恢复密码存在本机，可随时查看/复制带走；用户自设的密码不在应用手里 -->
-        <template v-if="recoveryPasswordSaved">
-          <button v-if="!revealed" type="button" class="link-btn" @click="onReveal">
-            查看这台电脑的恢复密码
+          <!-- 更改主密码：可展开行（统一模式） -->
+          <button
+            type="button"
+            class="expand-row"
+            :aria-expanded="showReset"
+            @click="showReset = !showReset"
+          >
+            <KeyRound :size="13" class="expand-icon" />
+            <span class="expand-name">更改主密码</span>
+            <ChevronRight :size="13" class="chev" />
           </button>
-          <div v-else class="reveal">
-            <span class="reveal-label">这份备份的主密码（应用生成，保存在这台电脑）</span>
-            <code class="reveal-code">{{ revealed }}</code>
-            <div class="confirm-row">
-              <AppButton variant="subtle" size="sm" @click="copyRevealed">复制</AppButton>
-              <AppButton variant="ghost" size="sm" @click="revealed = ''">隐藏</AppButton>
+          <div v-if="showReset" class="expand-body">
+            <label class="field">
+              <span class="field-label">当前主密码</span>
+              <AppInput v-model="resetOldPassword" type="password" />
+            </label>
+            <label class="field">
+              <span class="field-label">新主密码 <em class="req">至少 6 位</em></span>
+              <AppInput v-model="resetNewPassword" type="password" />
+            </label>
+            <div class="btn-row">
+              <AppButton
+                variant="primary"
+                size="sm"
+                :disabled="!resetOldPassword || resetNewPassword.length < 6 || syncLoading"
+                @click="onResetPassword"
+              >更改并重新加密备份</AppButton>
+            </div>
+            <p class="note">用新主密码重新加密同一份备份，凭据不丢失。旧主密码随即失效。</p>
+          </div>
+
+          <!-- 换机恢复：可展开行（统一模式） -->
+          <button
+            type="button"
+            class="expand-row"
+            :aria-expanded="showRestore"
+            @click="showRestore = !showRestore"
+          >
+            <MonitorSmartphone :size="13" class="expand-icon" />
+            <span class="expand-name">换一台电脑怎么恢复</span>
+            <ChevronRight :size="13" class="chev" />
+          </button>
+          <div v-if="showRestore" class="expand-body">
+            <p class="note">在新电脑上：登录同一个 GitHub，点「从已有备份恢复」，填下面这两样即可取回全部资产。</p>
+            <div class="restore-item">
+              <span class="restore-label">Gist ID</span>
+              <code class="restore-code">{{ gistId || '（未配置）' }}</code>
+              <button v-if="gistId" type="button" class="link-btn" @click="copyGistId">
+                <component :is="gistCopied ? Check : Copy" :size="11" />{{ gistCopied ? '已复制' : '复制' }}
+              </button>
+            </div>
+            <div class="restore-item">
+              <span class="restore-label">主密码</span>
+              <template v-if="recoveryPasswordSaved">
+                <template v-if="!revealed">
+                  <span class="restore-value muted">应用生成的那份，已保存在这台电脑</span>
+                  <button type="button" class="link-btn" @click="onReveal">查看</button>
+                </template>
+                <template v-else>
+                  <code class="restore-code">{{ revealed }}</code>
+                  <span class="confirm-row">
+                    <button type="button" class="link-btn" @click="copyRevealed"><Copy :size="11" />复制</button>
+                    <button type="button" class="link-btn" @click="revealed = ''">隐藏</button>
+                  </span>
+                </template>
+              </template>
+              <span v-else class="restore-value muted">你自己设的，应用没有保存——换机前请确认还记得。</span>
             </div>
           </div>
-        </template>
-        <p v-else class="note is-quiet">
-          你使用的是自己设置的主密码：应用没有保存它（只保存了本机免密用的派生密钥），
-          请自行记牢 —— 它是换机恢复的唯一凭据。
-        </p>
-      </section>
+        </div>
+      </div>
 
-      <!-- ④ 清空（逃生口，永远最后） -->
-      <section class="row-block danger-zone">
-        <button v-if="!confirmingClear" class="link-btn danger-link" type="button" @click="confirmingClear = true">
-          清空同步配置（忘了主密码时用）
-        </button>
-        <template v-else>
-          <p class="note is-danger">
-            确定清空？本地资产不受影响，但 GitHub 上的 Gist 需你手动删除。
-          </p>
-          <div class="confirm-row">
-            <AppButton variant="danger" size="sm" :disabled="syncLoading" @click="onClearSync">确认清空</AppButton>
-            <AppButton variant="ghost" size="sm" @click="confirmingClear = false">取消</AppButton>
+      <!-- ══ 组③ 危险操作（视觉下沉） ══ -->
+      <div class="group danger">
+        <div class="group-title">危险操作</div>
+        <div class="group-card">
+          <button
+            type="button"
+            class="expand-row danger-row"
+            :aria-expanded="confirmingClear"
+            @click="confirmingClear = !confirmingClear"
+          >
+            <Trash2 :size="13" class="expand-icon" />
+            <span class="expand-name">清空同步配置</span>
+            <ChevronRight :size="13" class="chev" />
+          </button>
+          <div v-if="confirmingClear" class="expand-body">
+            <p class="note is-danger">确定清空？忘了主密码时用。本地资产不受影响，但 GitHub 上的 Gist 需你手动删除。</p>
+            <div class="btn-row">
+              <AppButton variant="danger" size="sm" :disabled="syncLoading" @click="onClearSync">确认清空</AppButton>
+              <AppButton variant="ghost" size="sm" @click="confirmingClear = false">取消</AppButton>
+            </div>
           </div>
-        </template>
-      </section>
+        </div>
+      </div>
     </div>
   </section>
 </template>
@@ -207,32 +261,80 @@ async function onClearSync() {
 .adv-body {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
   padding: 0 var(--space-3) var(--space-3);
 }
 
-// 折叠区里的分节：不用卡片（避免卡片套卡片），只用一条 hairline 分隔。
-// 统一由 `> * + *` 提供分隔线，子组件（免密行/凭据行）无需各自带边框。
-.adv-body > * + * {
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--app-border-soft);
-}
-.row-block {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-.row-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+// ══ 分组：组标题 + 组卡片 ══
+.group-title {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--app-muted);
+  margin: 0 0 var(--space-2) 2px;
 }
-.row-head :deep(svg) { flex-shrink: 0; }
+.group.danger .group-title { color: var(--danger); }
+
+.group-card {
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-md);
+  background: var(--app-panel);
+  overflow: hidden;
+  // 组内各行之间用 hairline 分隔
+  > * + * { border-top: 1px solid var(--app-border-soft); }
+}
+.group.danger .group-card {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+// 子组件（免密行/凭据行/账号卡）自带 padding，放进组卡片后统一行的内边距，
+// 并去掉它们自己可能的额外间距（它们是 flex column 的 setting-row/pat-card）。
+.group-card > :deep(.setting-row),
+.group-card > :deep(.pat-card) {
+  padding: var(--space-3) var(--space-4);
+}
+
+// ══ 可展开行（次级表单的统一模式：图标 + 名称 + chevron） ══
+.expand-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  background: none;
+  border: none;
+  font: inherit;
+  text-align: left;
+  color: var(--app-text);
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease-standard);
+}
+.expand-row:hover { background: var(--app-hover); }
+.expand-row:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.expand-icon { color: var(--app-muted); flex-shrink: 0; }
+.expand-name { font-size: var(--text-sm); font-weight: 600; color: var(--app-strong); }
+.chev {
+  margin-left: auto;
+  color: var(--app-subtle);
+  flex-shrink: 0;
+  transition: transform var(--motion-fast) var(--ease-standard);
+}
+.expand-row[aria-expanded='true'] .chev { transform: rotate(90deg); }
+
+// 危险行的图标与名称用 danger 色
+.danger-row .expand-icon,
+.danger-row .expand-name { color: var(--danger); }
+
+// 展开的表单体：与行 hairline 分隔，内容缩进对齐名称
+.expand-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4) var(--space-3) calc(var(--space-4) + 21px);
+  border-top: 1px dashed var(--app-border-soft);
+}
 
 .field { display: flex; flex-direction: column; gap: var(--space-1); }
 .field-label { font-size: var(--text-xs); color: var(--app-muted); }
@@ -244,18 +346,14 @@ async function onClearSync() {
   padding: 0 4px;
   border-radius: var(--radius-sm);
 }
-.reset-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  border-radius: var(--radius-sm);
-  background: var(--app-panel-2);
-}
-.confirm-row { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.btn-row { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.confirm-row { display: inline-flex; gap: var(--space-2); flex-wrap: wrap; }
 
 .link-btn {
   align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   background: none;
   border: none;
   padding: 0;
@@ -266,8 +364,6 @@ async function onClearSync() {
 }
 .link-btn:hover { color: var(--accent-hover); text-decoration: underline; }
 .link-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--radius-sm); }
-.danger-link { color: var(--danger); }
-.danger-link:hover { color: var(--danger); }
 
 .note {
   margin: 0;
@@ -275,31 +371,32 @@ async function onClearSync() {
   line-height: 1.6;
   color: var(--app-muted);
 }
-.note strong { color: var(--app-strong); }
-.note.is-quiet { color: var(--app-subtle); }
 .note.is-danger { color: var(--danger); }
-.danger-zone { border-top-color: var(--app-border); }
 
-// 恢复密码明文：等宽、可整段选中，方便用户自己另存一份
-.reveal {
+// 换机恢复里的「要填的东西」一行：标签 + 值（等宽可复制/可整段选中）
+.restore-item {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: var(--space-2);
+  flex-wrap: wrap;
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-sm);
-  background: var(--accent-soft);
+  background: var(--app-panel-2);
 }
-.reveal-code {
+.group.danger .restore-item { background: var(--app-panel); }
+.restore-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--app-muted);
+  flex-shrink: 0;
+}
+.restore-code {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--app-strong);
   user-select: all;
   word-break: break-all;
 }
-.reveal-label {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  color: var(--accent);
-}
+.restore-value { font-size: var(--text-xs); }
 </style>
