@@ -267,10 +267,10 @@ myshelltool/
 ├── crates/myshelltool-core/    # 共享核心库（无 Tauri 依赖，独立 cargo test：资产/凭据/危险命令/脱敏/proc 解析）
 ├── tests/                      # Playwright UI 测试
 ├── scripts/                    # fact-guards 事实门禁 / bump-version / gen-changelog
-└── docs/                       # mcp-setup / architecture-log / 工程指南 / specs / plans
+└── docs/                       # 目录结构详解 / IPC契约与数据模型 / 已知边界与修复史 / 工程指南 / architecture-log / 规格 / 计划 / 访谈
 ```
 
-> AI 协作约定的单一信息源是 [`AGENTS.md`](./AGENTS.md)（目录职责、IPC 契约、数据模型、质量红线全量维护）。
+> AI 协作约定的单一信息源是 [`AGENTS.md`](./AGENTS.md)：常驻指令（协作方式/约定/命令/质量红线）全量维护在本文件；目录职责、IPC 契约、数据模型、修复史分层在 `docs/` 按需加载，由 `AGENTS.md` 顶部指针表索引。
 
 ---
 
@@ -326,7 +326,7 @@ cd src-tauri && cargo check   # Rust 类型检查
 
 ## 架构决策
 
-- **Tauri 2（ADR v3）**：加权评分 48.5 胜 Electron 41 / Qt 36，详见 `.omc/plans/framework-choice-tauri-vs-qt-vs-electron.md`
+- **Tauri 2（ADR v3）**：加权评分 48.5 胜 Electron 41 / Qt 36，详见 [`docs/计划/framework-choice-tauri-vs-qt-vs-electron.md`](./docs/计划/framework-choice-tauri-vs-qt-vs-electron.md)
 - **MCP 内嵌 GUI + Streamable HTTP**：server 是 GUI 进程内 axum service，与 SSH 会话/资产/凭据同进程访问，无桥接复杂度；取代早期「双二进制 + stdio + named pipe」方案（根治僵尸进程/打包缺口），详见 `docs/architecture-log.md`
 - **前端全量 TypeScript（v0.11.0）**：`vue-tsc` strict 检查进 `npm run build` 门禁
 - **多窗口（v0.10.0）**：每窗口独立 webview/Pinia、共享 Rust 后端；会话迁移走 scrollback 序列化 + Rust 内存中转，不重连
