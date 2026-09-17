@@ -60,7 +60,12 @@ pub struct ConnectionAssetStore {
     pub groups: Vec<String>,
 }
 
-pub fn default_asset_store() -> ConnectionAssetStore {
+/// 【仅测试】演示种子数据。**绝不能作为产品默认值**：曾因
+/// `load_connection_asset_store` 在资产文件不存在时返回本函数，导致每次全新
+/// 安装都凭空出现 8 台不可连的 demo 主机（还可能随用户第一次保存被持久化、
+/// 随推送被写进云端备份）。产品语义是「文件不存在 = 零资产」。
+#[cfg(test)]
+pub(crate) fn demo_asset_store() -> ConnectionAssetStore {
     ConnectionAssetStore {
         assets: vec![
             asset(
@@ -156,8 +161,9 @@ pub fn default_asset_store() -> ConnectionAssetStore {
     }
 }
 
-pub fn sample_assets() -> Vec<ConnectionAsset> {
-    default_asset_store().assets
+#[cfg(test)]
+pub(crate) fn sample_assets() -> Vec<ConnectionAsset> {
+    demo_asset_store().assets
 }
 
 pub fn validate_connection_asset(asset: &ConnectionAsset) -> Result<(), String> {
@@ -332,7 +338,12 @@ pub fn reorder_asset_groups(store: &mut ConnectionAssetStore, ordered_paths: &[S
 pub fn load_connection_asset_store(path: impl AsRef<Path>) -> Result<ConnectionAssetStore, String> {
     let path = path.as_ref();
     if !path.exists() {
-        return Ok(default_asset_store());
+        // 首次安装 / 文件尚未创建 = 用户还没有任何资产。这里曾返回
+        // demo_asset_store()（8 台演示主机），是「全新安装一堆 demo 资产」的根因。
+        return Ok(ConnectionAssetStore {
+            assets: vec![],
+            groups: vec![],
+        });
     }
     let raw = fs::read_to_string(path).map_err(|error| error.to_string())?;
     let store: ConnectionAssetStore = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
@@ -394,7 +405,8 @@ pub fn save_connection_asset_store(
     write_atomic(path, json)
 }
 
-/// 测试与示例数据的构造助手（default_asset_store/sample_assets 与 lib_tests 共用）。
+/// 测试用资产构造助手（demo_asset_store/sample_assets 专用）。
+#[cfg(test)]
 pub(crate) fn asset(
     id: &str,
     name: &str,

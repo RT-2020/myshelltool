@@ -47,7 +47,7 @@ use crate::secret_store::{is_new_format, xor_transform};
 
     #[test]
     fn upserts_assets_by_id() {
-        let mut store = default_asset_store();
+        let mut store = demo_asset_store();
         let mut asset = store.assets[0].clone();
         asset.name = "Renamed Bastion".to_string();
 
@@ -60,7 +60,7 @@ use crate::secret_store::{is_new_format, xor_transform};
     #[test]
     fn saves_and_loads_assets_from_json() {
         let path = temp_store_path("roundtrip");
-        let mut store = default_asset_store();
+        let mut store = demo_asset_store();
         let mut asset = store.assets[0].clone();
         asset.id = "new-local".to_string();
         asset.name = "New Local".to_string();
@@ -74,9 +74,21 @@ use crate::secret_store::{is_new_format, xor_transform};
         assert!(loaded.assets.iter().any(|asset| asset.id == "new-local"));
     }
 
+    // 回归锁：资产文件不存在（首次安装）必须得到空 store。
+    // 曾因返回 demo 种子数据导致全新安装凭空出现 8 台演示主机。
+    #[test]
+    fn load_without_file_yields_empty_store_not_demo_assets() {
+        let path = temp_store_path("missing-file-empty-store");
+
+        let store = load_connection_asset_store(&path).expect("load succeeds");
+
+        assert!(store.assets.is_empty(), "首次安装不得出现 demo 资产");
+        assert!(store.groups.is_empty());
+    }
+
     #[test]
     fn stored_assets_do_not_include_secret_fields() {
-        let store = default_asset_store();
+        let store = demo_asset_store();
         let json = serde_json::to_string(&store).expect("store serializes");
         let lowered = json.to_lowercase();
 
@@ -92,7 +104,7 @@ use crate::secret_store::{is_new_format, xor_transform};
 
     #[test]
     fn removes_connection_asset_by_id() {
-        let mut store = default_asset_store();
+        let mut store = demo_asset_store();
         let id = store.assets[0].id.clone();
         let before = store.assets.len();
 
@@ -146,7 +158,7 @@ use crate::secret_store::{is_new_format, xor_transform};
 
     #[test]
     fn rename_group_rejects_reserved_ungrouped() {
-        let mut store = default_asset_store();
+        let mut store = demo_asset_store();
         // 「未分组」保留，不可重命名
         assert!(rename_asset_group(&mut store, "未分组", "Other").is_err());
     }
@@ -184,7 +196,7 @@ use crate::secret_store::{is_new_format, xor_transform};
 
     #[test]
     fn ensure_group_persists_empty_group() {
-        let mut store = default_asset_store();
+        let mut store = demo_asset_store();
         ensure_asset_group(&mut store, "生产/数据库").expect("ensure ok");
         assert!(store.groups.contains(&"生产/数据库".to_string()));
         // 幂等：再 ensure 不重复
@@ -408,7 +420,7 @@ use crate::secret_store::{is_new_format, xor_transform};
     fn save_connection_asset_store_is_atomic_and_readable() {
         let dir = temp_secret_dir("assets-atomic");
         let path = dir.join("connection-assets.json");
-        let mut store = default_asset_store();
+        let mut store = demo_asset_store();
         save_connection_asset_store(&path, &store).expect("save");
         let loaded = load_connection_asset_store(&path).expect("load");
         assert_eq!(loaded.assets.len(), store.assets.len());
