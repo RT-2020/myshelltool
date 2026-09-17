@@ -235,7 +235,7 @@ pub fn parse_proc_net_dev(content: &str) -> Result<(u64, u64), String> {
 /// 为什么不能全量累加：隧道（tun*/wg*）、容器桥（docker0/br-*）与 veth 对和
 /// 物理网卡记的是**同一份**字节流——一次容器进出流量在 veth、docker0、物理网卡
 /// 的计数器上各加一次，VPN 流量在 tun0 与物理网卡上各加一次，全量求和会把网速
-/// 虚高约 2 倍（AGENTS.md v2.6 审计 backlog #1）。默认路由接口是流量真正离开
+/// 虚高约 2 倍（修复史见 docs/已知边界与修复史.md 的 v2.6 审计 backlog #1）。默认路由接口是流量真正离开
 /// 主机的出口，按它求和每字节只计一次。
 ///
 /// 两个回退（都退回全量口径 [`parse_proc_net_dev`]，不靠接口名前缀猜角色——

@@ -6,7 +6,7 @@
 
 ## 必读
 
-开始改动前先读 [`AGENTS.md`](../AGENTS.md)（注意顶部「质量红线」节）与 [`docs/llm-engineering-guidelines.md`](../docs/llm-engineering-guidelines.md)（工程质量最佳实践 + 本项目反模式实证）。特别是：技术栈（§2）、目录结构（§3）、约定（§4）、构建/测试命令（§5）、IPC 契约（§6）、数据模型（§7）、安全红线（§8）。
+开始改动前先读 [`AGENTS.md`](../AGENTS.md)（注意顶部「质量红线」节）与 [`docs/llm-engineering-guidelines.md`](../docs/llm-engineering-guidelines.md)（工程质量最佳实践 + 本项目反模式实证）。特别是：技术栈（§2）、约定（§4）、构建/测试命令（§5）、安全红线（§8）。目录结构详解、IPC 契约清单、数据模型、修复史已分层到 `docs/`（[`目录结构详解`](../docs/目录结构详解.md) / [`IPC契约与数据模型`](../docs/IPC契约与数据模型.md) / [`已知边界与修复史`](../docs/已知边界与修复史.md)），任务触及对应区域时按 `AGENTS.md` 顶部指针表必读。
 
 ## 高频踩坑点（Copilot 易出错处）
 
@@ -23,7 +23,7 @@
 **完整规则见 [`docs/llm-engineering-guidelines.md`](../docs/llm-engineering-guidelines.md)**（含本项目反模式实证）。Copilot 尤其易犯以下错误，务必避免：
 
 - **先搜后写**：生成新逻辑/样式/正则前先搜现有实现，已有就复用。本项目实证：tag 正则曾 ×3、`.dot` CSS ×4、`terminalController.js` 死代码。
-- **文件不过大**：Vue/store ≤500 行、Rust ≤800 行。`ssh.rs`(2158)、`sessions.ts`(1311)、`GlobalModals.vue`(1182) 已超标，往里加功能前先评估拆分。
+- **文件不过大**：Vue/store ≤500 行、Rust ≤800 行。当前超标清单以 `docs/architecture-log.md` 的 Baseline snapshot 为准，往里加功能前先评估拆分。
 - **禁空 catch / window.alert**：错误走 `announce` 或显式注释；校验/确认走 `GlobalModals`，不用浏览器原生弹窗。
 - **别用 switch 链**：新增分支 >5 个用注册表（`GlobalModals` 加 modal 曾要改 4 处）。
 - **死代码即删**：未被 import 的模块确认后删除。
@@ -41,4 +41,4 @@
 
 - 不自动 `git commit` / `git push`（除非用户明确要求）。
 - 不为"风格统一"重写已工作的代码（先确认有真实收益）。
-- 不在本文件或 `.cursor/rules/*` 写与 `AGENTS.md` 漂移的内容——架构变更改 `AGENTS.md` 这个唯一信息源。
+- 不在本文件写与 `AGENTS.md` 漂移的内容——架构变更改 `AGENTS.md` 这个唯一信息源。
