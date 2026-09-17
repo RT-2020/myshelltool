@@ -28,7 +28,6 @@ import { useWorkbenchStore } from '@/stores/workbench';
 import { THEME_ORDER, THEME_LABELS } from '@/composables/useTheme';
 import type { useAutoUpdate } from '@/composables/useAutoUpdate';
 import { errorMessage } from '@/lib/errorMessage';
-import AppTabGroup from '@/components/ui/AppTabGroup.vue';
 import AppButton from '@/components/ui/AppButton.vue';
 import AppSelect from '@/components/ui/AppSelect.vue';
 import AppBrandLogo from '@/components/ui/AppBrandLogo.vue';
@@ -99,8 +98,9 @@ watch(() => modalExtras.value.tab, next => {
 
 watch(activeTab, id => {
   if (!visitedTabs.value.includes(id)) visitedTabs.value.push(id);
-  // 长 pane（如同步）滚到底部后切到短 pane，浏览器钳位后视口位置不可预期，统一回顶
-  panelRef.value?.closest('.app-modal-body')?.scrollTo({ top: 0 });
+  // 长 pane（如同步）滚到底部后切到短 pane，浏览器钳位后视口位置不可预期，统一回顶。
+  // 滚动容器是本组件的 .settings-content（左导航 + 右内容布局后不再是 modal-body）。
+  panelRef.value?.querySelector('.settings-content')?.scrollTo({ top: 0 });
 });
 
 // —— 版本号（关于与更新 tab）——
@@ -132,14 +132,31 @@ function selectTheme(value: string) {
 
 <template>
   <div ref="panelRef" class="settings-panel">
-    <!-- Tab 导航 -->
-    <AppTabGroup :tabs="TABS" v-model:active="activeTab" />
+    <div class="settings-body">
+      <!-- 左侧竖导航：设置的顶级分类（关于/外观/同步/MCP 是不同主题，竖列表语义 = 分类树） -->
+      <nav class="settings-nav" aria-label="设置分类">
+        <button
+          v-for="t in TABS"
+          :key="t.id"
+          type="button"
+          class="nav-item"
+          :class="{ active: activeTab === t.id }"
+          :aria-current="activeTab === t.id ? 'page' : undefined"
+          @click="activeTab = t.id"
+        >
+          <component :is="t.icon" :size="14" />
+          {{ t.label }}
+        </button>
+      </nav>
 
-    <div class="tab-body">
+      <!-- 右侧内容区（独立滚动；页面标题与左导航选中项呼应，告诉用户「现在在哪」） -->
+      <main class="settings-content">
+      <div class="tab-body">
       <!-- ① 关于与更新（默认 tab，用户最常找的更新入口） -->
       <section v-if="visitedTabs.includes('about')" v-show="activeTab === 'about'" class="stack tab-pane">
+        <header class="page-title"><Info :size="15" />关于与更新</header>
         <div class="about-hero">
-          <AppBrandLogo :size="48" class="about-logo" />
+          <AppBrandLogo :size="36" class="about-logo" />
           <div class="about-text">
             <span class="about-name">myshelltool</span>
             <span class="about-ver num">v{{ appVersion }}</span>
@@ -178,6 +195,7 @@ function selectTheme(value: string) {
 
       <!-- ② 外观（主题三选） -->
       <section v-if="visitedTabs.includes('appearance')" v-show="activeTab === 'appearance'" class="stack tab-pane">
+        <header class="page-title"><Palette :size="15" />外观</header>
         <header class="block-head"><Palette :size="12" />主题</header>
         <div class="theme-grid">
           <button
@@ -229,10 +247,18 @@ function selectTheme(value: string) {
       </section>
 
       <!-- ③ 同步（复用 SyncPanelContent + PatConfigCard，零 props 自包含） -->
-      <SyncPanelContent v-if="visitedTabs.includes('sync')" v-show="activeTab === 'sync'" class="tab-pane" />
+      <section v-if="visitedTabs.includes('sync')" v-show="activeTab === 'sync'" class="stack tab-pane">
+        <header class="page-title"><RefreshCw :size="15" />同步</header>
+        <SyncPanelContent />
+      </section>
 
       <!-- ④ MCP（复用 McpPanelContent，零 props 自包含） -->
-      <McpPanelContent v-if="visitedTabs.includes('mcp')" v-show="activeTab === 'mcp'" class="tab-pane" />
+      <section v-if="visitedTabs.includes('mcp')" v-show="activeTab === 'mcp'" class="stack tab-pane">
+        <header class="page-title"><Plug :size="15" />MCP</header>
+        <McpPanelContent />
+      </section>
+      </div>
+      </main>
     </div>
   </div>
 </template>
@@ -243,15 +269,87 @@ function selectTheme(value: string) {
 .settings-panel {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  // 不自带滚动：AppModal body 是唯一滚动容器，避免外层大滚动条嵌内层小滚动条
+  // 高度撑满 modal-body（modal-body 是滚动容器，这里改为内部右侧独立滚动）
+  height: 100%;
+  min-height: 0;
 }
+
+.settings-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+// —— 左侧竖导航：设置的顶级分类 ——
+.settings-nav {
+  width: 172px;
+  flex-shrink: 0;
+  padding: var(--space-3) var(--space-2);
+  border-right: 1px solid var(--app-border-soft);
+  background: var(--app-chrome);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 7px var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--app-muted);
+  cursor: pointer;
+  text-align: left;
+  position: relative;
+  transition: background var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard);
+}
+.nav-item :deep(svg) { flex-shrink: 0; opacity: 0.8; }
+.nav-item:hover { background: var(--app-hover); color: var(--app-strong); }
+.nav-item.active {
+  background: var(--app-selected);
+  color: var(--accent);
+  font-weight: 500;
+}
+.nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: calc(-1 * var(--space-2));
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.nav-item.active :deep(svg) { opacity: 1; }
+.nav-item:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+// —— 右侧内容区（独立滚动） ——
+.settings-content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: var(--space-5) var(--space-6);
+}
+// 页面标题：当前分类名，与左导航选中项呼应（用户点「同步」→ 右侧立刻确认「你在同步」）
+.page-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--app-strong);
+}
+.page-title :deep(svg) { color: var(--app-muted); flex-shrink: 0; }
 
 .tab-body {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding-top: 4px;
 }
 
 // —— 通用 section header（对齐 McpPanelContent/OpsSummaryPanel 视觉语言）——
@@ -291,17 +389,17 @@ function selectTheme(value: string) {
   }
 }
 
-// —— 关于 hero ——
+// —— 关于 hero（降级为一行，不再当页面大标题） ——
 .about-hero {
   display: flex;
   align-items: center;
   gap: 12px;
 }
 .about-logo {
-  width: 48px;
-  height: 48px;
+  width: 36px;
+  height: 36px;
   flex-shrink: 0;
-  filter: drop-shadow(0 4px 12px rgba(44, 95, 229, 0.25));
+  filter: drop-shadow(0 2px 8px rgba(44, 95, 229, 0.25));
 }
 .about-text {
   display: flex;
@@ -309,7 +407,7 @@ function selectTheme(value: string) {
   gap: 2px;
 }
 .about-name {
-  font-size: 18px;
+  font-size: var(--text-sm);
   font-weight: 600;
 }
 .about-ver {

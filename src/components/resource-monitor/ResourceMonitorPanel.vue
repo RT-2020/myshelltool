@@ -41,13 +41,20 @@ const placeholder = computed(() => {
 });
 
 const emptyText = computed(() => {
-  if (placeholder.value === 'desktop-required') return '需要桌面端 · 监控待机';
+  if (placeholder.value === 'desktop-required') return '需要桌面端运行时 · 监控待机';
   if (placeholder.value === 'waiting') return '等待首次采样 · 指标收集中';
-  return '未连接到会话 · 采样待机';
+  return '未连接会话 · 连接后开始采样';
 });
 
 const snapshot = computed(() => rm.snapshot);
 const hasData = computed(() => Boolean(rm.snapshot));
+
+// 待机/失败占位态只留单条横幅，不再渲染四张「—」空仪表（一屏一种空态语言）；
+// 例外：monitor-error 时若已有快照，保留最后一份真实数据供参照（横幅解释原因）。
+const showGrid = computed(() => {
+  if (!placeholder.value) return true;
+  return placeholder.value === 'monitor-error' && hasData.value;
+});
 
 async function onRetry() {
   await rm.retry().catch(() => {});
@@ -83,7 +90,7 @@ async function onRetry() {
       部分指标不可用：{{ rm.degradedNotice }}
     </div>
 
-    <div class="metric-grid">
+    <div v-if="showGrid" class="metric-grid">
       <CpuChart
         :points="rm.cpuHistoryPoints"
         :current="snapshot?.cpuUsage || 0"

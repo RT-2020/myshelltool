@@ -8,11 +8,12 @@ const assets = useAssetsStore();
 const tunnels = useTunnelsStore();
 const sessions = useSessionsStore();
 
-/** 摘要行（模板 dt/dd 渲染，muted 可选弱化）。 */
+/** 摘要行（模板 dt/dd 渲染，muted 可选弱化，title 可选悬浮说明）。 */
 interface SummaryRow {
   label: string;
   value: string;
   muted?: boolean;
+  title?: string;
 }
 
 /** 系统功能行（badge tone 语义色类名）。 */
@@ -55,9 +56,9 @@ const summaryRows = computed<SummaryRow[]>(() => {
   const sessionId = activeSession.value?.sessionId || (activeSession.value as { id?: string } | null)?.id || '';
 
   return [
-    { label: '会话', value: activeSession.value ? `${sessionId.slice(0, 8)} · ${connected ? '已连接' : '连接中'}` : '— · 未连接', muted: !activeSession.value },
+    { label: '会话', value: activeSession.value ? `${sessionId.slice(0, 8)} · ${connected ? '已连接' : '连接中'}` : '未连接', muted: !activeSession.value },
     { label: '主机', value: `${selected.value.username || '—'}@${selected.value.host || '—'}:${selected.value.port || 22}` },
-    { label: '隧道', value: `${tunnelsActive.value} / ${tunnelsTotal.value}`, muted: tunnelsTotal.value === 0 }
+    { label: '隧道', value: `${tunnelsActive.value} / ${tunnelsTotal.value}`, muted: tunnelsTotal.value === 0, title: `活动 ${tunnelsActive.value} / 共 ${tunnelsTotal.value} 条` }
   ];
 });
 
@@ -104,7 +105,7 @@ const systemRows = computed<SystemRow[]>(() => [
       <dl class="summary-list">
         <div v-for="row in summaryRows" :key="row.label" class="summary-row">
           <dt>{{ row.label }}</dt>
-          <dd class="val" :class="{ muted: row.muted }">{{ row.value }}</dd>
+          <dd class="val" :class="{ muted: row.muted }" :title="row.title || ''">{{ row.value }}</dd>
         </div>
       </dl>
     </template>

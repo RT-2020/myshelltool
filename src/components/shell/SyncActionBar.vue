@@ -70,7 +70,7 @@ async function onPull() {
       />
     </label>
     <p v-if="needsPassword" class="pw-hint">
-      输一次即可：之后这台电脑免密推拉（换机时用主密码恢复）。
+      输一次即可，之后这台电脑免密。
     </p>
 
     <div class="row">

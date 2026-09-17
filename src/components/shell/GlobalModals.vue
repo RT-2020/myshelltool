@@ -304,7 +304,7 @@ const { onBackdropClick } = useModalDismiss(
       - .modal-actions .btn.danger  (host-key test step reject)
   -->
   <div class="modal-layer" id="modalLayer" :class="{ open: modal.type }" :aria-hidden="!modal.type ? 'true' : 'false'" @click.self="onBackdropClick">
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal" :class="`modal--${modal.type}`" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
       <div class="modal-head">
         <h2 id="modalTitle">{{ modalTitle }}</h2>
         <button class="icon-btn" id="modalClose" aria-label="关闭" @click="closeModal">×</button>

@@ -1,6 +1,12 @@
 {
-  "generatedAt": "2026-09-14T09:33:35.061Z",
+  "generatedAt": "2026-09-17T03:28:41.759Z",
   "entries": [
+    {
+      "version": "0.15.2",
+      "tag": "v0.15.2",
+      "date": "2026-09-14",
+      "notes": "## v0.15.2\n\n_区间: v0.15.1 → v0.15.2_\n\n### ✨ 新功能\n- **settings**: 应用内常驻更新日志入口——构建时打包全历史 changelog.json，设置面板离线回看任意版本\n- **files**: 文件面板新增属主/属组列——SFTP 长名解析 user:group，后端未提供时显 '—' 不猜\n\n### 🐛 修复\n- **ui**: MCP 面板去掉 overflow:hidden——拦截行 AppSelect 下拉被圆角裁切截断\n\n### 📚 文档\n- **readme**: 版本演进同步 v0.15.2\n\n### 📦 其他\n- v0.15.2\n"
+    },
     {
       "version": "0.15.1",
       "tag": "v0.15.1",

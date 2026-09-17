@@ -34,12 +34,7 @@ async function onToggle(event: Event) {
           <em v-if="syncCredentialsEnabled" class="badge"><ShieldCheck :size="10" />已开启</em>
         </span>
         <span class="note">
-          <template v-if="syncCredentialsEnabled">
-            主机密码与托管私钥随资产一起加密上传，新机器恢复后可直接连接。关闭后只同步主机列表。
-          </template>
-          <template v-else>
-            只备份主机列表（IP、端口、用户名）。换机后需要重新输入每台服务器的密码。
-          </template>
+          开启后，主机密码随资产一起加密上传，新电脑恢复后可直接连接；关闭则只备份主机列表。
         </span>
       </span>
     </label>
