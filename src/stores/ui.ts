@@ -30,6 +30,7 @@ import { parseSshTarget } from '../lib/parseSshTarget';
 const THEME_STORAGE_KEY = 'myshelltool-theme';
 const ASSETS_COLLAPSED_KEY = 'myshelltool-assets';
 const RIGHT_COLLAPSED_KEY = 'myshelltool-right';
+const MIDDLE_AUTOSCROLL_KEY = 'myshelltool-middle-autoscroll';
 
 // 独立资产窗口（?win=asset）：模块加载即定（无响应性需求）。asset 窗口的右栏
 // 折叠不得写共享 localStorage——否则会泄漏到主窗口下次启动；dataset 照写
@@ -147,6 +148,7 @@ interface UiWorkbenchBridge {
  * localStorage keys（CRITICAL Critic 改进 3，禁重命名）：
  *   - 'myshelltool-theme' 主题持久化
  *   - 'myshelltool-assets' 左栏折叠状态持久化
+ *   - 'myshelltool-middle-autoscroll' 中键自动滚动开关持久化
  */
 export const useUiStore = defineStore('ui', () => {
   // ============================================================
@@ -158,6 +160,7 @@ export const useUiStore = defineStore('ui', () => {
   const systemPrefersDark = ref(readSystemPrefersDark());
   const assetsCollapsed = ref(readStored(ASSETS_COLLAPSED_KEY) === 'collapsed');
   const rightCollapsed = ref(readStored(RIGHT_COLLAPSED_KEY) === 'collapsed');
+  const middleClickAutoscroll = ref(readStored(MIDDLE_AUTOSCROLL_KEY) === 'on');
   const statusMessage = ref('就绪：连接资产可收起，双击主机打开 SSH 会话。');
   const modal = ref<ModalState>({ type: null, asset: null });
   const searchState = ref<SearchState>({ open: false, query: '', suggestions: [] });
@@ -294,6 +297,20 @@ export const useUiStore = defineStore('ui', () => {
     rightCollapsed.value = !rightCollapsed.value;
     applyRightState(rightCollapsed.value, true);
     announce(rightCollapsed.value ? '右侧面板已收起' : '右侧面板已展开');
+  }
+
+  // ============================================================
+  // Actions — 中键自动滚动（webview 级输入行为）
+  // ============================================================
+  // main.ts 的全局中键抑制器在事件时读本值，故改动即时生效、无需重注册监听。
+  function setMiddleClickAutoscroll(enabled: boolean) {
+    middleClickAutoscroll.value = enabled;
+    try {
+      localStorage.setItem(MIDDLE_AUTOSCROLL_KEY, enabled ? 'on' : 'off');
+    } catch {
+      /* localStorage 不可用时静默忽略 */
+    }
+    announce(enabled ? '中键自动滚动已开启' : '中键自动滚动已关闭');
   }
 
   // ============================================================
@@ -440,6 +457,7 @@ export const useUiStore = defineStore('ui', () => {
     systemPrefersDark,
     assetsCollapsed,
     rightCollapsed,
+    middleClickAutoscroll,
     statusMessage,
     toasts,
     modal,
@@ -458,6 +476,7 @@ export const useUiStore = defineStore('ui', () => {
     // 面板折叠 actions
     toggleAssets,
     toggleRight,
+    setMiddleClickAutoscroll,
     setTab,
     // search actions
     openGlobalSearch,

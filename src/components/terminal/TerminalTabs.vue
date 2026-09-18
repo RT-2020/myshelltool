@@ -88,8 +88,14 @@ onMounted(() => {
     ro.observe(barRef.value);
   }
   nextTick(updateOverflow);
+  document.addEventListener('keydown', onDocKeydown);
+  window.addEventListener('blur', onWindowBlur);
 });
-onBeforeUnmount(() => { if (ro) ro.disconnect(); });
+onBeforeUnmount(() => {
+  if (ro) ro.disconnect();
+  document.removeEventListener('keydown', onDocKeydown);
+  window.removeEventListener('blur', onWindowBlur);
+});
 watch(() => props.sessions.length, () => nextTick(updateOverflow));
 
 function onTabClick(sessionId: string) { emit('select', sessionId); }
@@ -104,6 +110,19 @@ function onContextMenu(e: MouseEvent, sessionId: string) {
 function closeAllMenus() {
   contextMenu.value.open = false;
   overflowMenuOpen.value = false;
+}
+
+// Esc 关闭与失焦关闭。TerminalSurface 的统一 Esc 解散链只管 search/cheatsheet/
+// palette/dangerousPaste，够不到本组件的本地菜单状态，故自处理（速查表承诺
+// 「Esc 关闭浮层」）；窗口失焦（系统浮层/任务栏抢焦点）时菜单无法交互，必须收起。
+function onDocKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Escape') return;
+  if (!contextMenu.value.open && !overflowMenuOpen.value) return;
+  e.preventDefault();
+  closeAllMenus();
+}
+function onWindowBlur() {
+  closeAllMenus();
 }
 
 // tablist roving tabindex：方向键在可见 tab 间移动焦点，Enter/Space 触发选择

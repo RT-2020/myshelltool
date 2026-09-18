@@ -261,6 +261,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     systemPrefersDark: computed(() => uiStore.systemPrefersDark),
     assetsCollapsed: computed(() => uiStore.assetsCollapsed),
     rightCollapsed: computed(() => uiStore.rightCollapsed),
+    middleClickAutoscroll: computed(() => uiStore.middleClickAutoscroll),
     statusMessage: computed(() => uiStore.statusMessage),
     toasts: computed(() => uiStore.toasts),
     // modal 必须可写：App.vue onCreateAsset / GlobalModals closeModal 等通过
@@ -350,6 +351,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     setTheme: uiStore.setTheme,
     toggleAssets: uiStore.toggleAssets,
     toggleRight: uiStore.toggleRight,
+    setMiddleClickAutoscroll: uiStore.setMiddleClickAutoscroll,
     openGlobalSearch: uiStore.openGlobalSearch,
     closeGlobalSearch: uiStore.closeGlobalSearch,
     setGlobalSearchQuery: uiStore.setGlobalSearchQuery,

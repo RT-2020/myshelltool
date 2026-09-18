@@ -207,6 +207,18 @@ function onContextMenu(event: MouseEvent, entry: RemoteFileEntry) {
   emit('context-menu-open', entry, event.clientX, event.clientY);
 }
 
+// 栏内空白处右键（hint 文案承诺的「空白处查看更多操作」）：行内右键已被行处理器
+// preventDefault（靠 defaultPrevented 区分，避免一行右键开两次菜单）；输入框放行原生
+// 编辑菜单；其余空白区域打开栏级菜单（entry=null，构建器只产目录级操作项）。
+function onAreaContextMenu(event: MouseEvent) {
+  if (event.defaultPrevented) return;
+  const target = event.target as HTMLElement | null;
+  if (target?.closest('input, textarea, [contenteditable="true"]')) return;
+  event.preventDefault();
+  if (isBusy.value) return;
+  filesStore.openContextMenu({ x: event.clientX, y: event.clientY, side: props.kind, entry: null });
+}
+
 function onListClickSelf() {
   if (isBusy.value) return;
   if (isLocal.value) filesStore.clearLocalSelection();
@@ -406,6 +418,7 @@ function crumbClick(seg: { path: string }) {
     :class="[`file-column--${kind}`, { 'is-local-disabled': isLocal && disabledHint }]"
     @mouseenter="onColumnMouseEnter"
     @mouseleave="onColumnMouseLeave"
+    @contextmenu="onAreaContextMenu"
   >
     <!-- Header: 单行 title+count / 路径(面包屑或编辑input) / 过滤按钮 / 上级目录+刷新。
          过滤框已移到列表右上角浮动小窗，路径框内部显示可点击面包屑（点✎切原始 input）。 -->
