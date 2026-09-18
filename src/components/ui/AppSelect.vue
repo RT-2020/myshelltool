@@ -108,6 +108,18 @@ function onDocClick(e: MouseEvent) {
   }
 }
 
+// 与 AppContextMenu 同一模式：右键不产生 click，「菜单外右键」要靠 mousedown 覆盖。
+function onDocMouseDown(e: MouseEvent) {
+  if (rootRef.value && !rootRef.value.contains(e.target as Node)) {
+    closeMenu();
+  }
+}
+
+// 系统浮层/任务栏抢走焦点时下拉无法交互，必须收起，否则挂在失焦窗口上。
+function onWindowBlur() {
+  if (open.value) closeMenu();
+}
+
 function onKeydown(e: KeyboardEvent) {
   if (!open.value) return;
   if (e.key === 'Escape') {
@@ -144,11 +156,15 @@ function onKeydown(e: KeyboardEvent) {
 
 onMounted(() => {
   document.addEventListener('click', onDocClick);
+  document.addEventListener('mousedown', onDocMouseDown);
   document.addEventListener('keydown', onKeydown);
+  window.addEventListener('blur', onWindowBlur);
 });
 onBeforeUnmount(() => {
   document.removeEventListener('click', onDocClick);
+  document.removeEventListener('mousedown', onDocMouseDown);
   document.removeEventListener('keydown', onKeydown);
+  window.removeEventListener('blur', onWindowBlur);
   if (typeaheadTimer) clearTimeout(typeaheadTimer);
 });
 </script>

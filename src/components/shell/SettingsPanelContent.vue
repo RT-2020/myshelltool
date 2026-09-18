@@ -23,7 +23,7 @@
 import { ref, computed, onMounted, watch } from 'vue';
 import type { Component } from 'vue';
 import { storeToRefs } from 'pinia';
-import { Info, LayoutGrid, Palette, RefreshCw, Plug, Sun, Moon, Monitor, ExternalLink, TerminalSquare } from 'lucide-vue-next';
+import { Info, LayoutGrid, Palette, RefreshCw, Plug, Sun, Moon, Monitor, ExternalLink, TerminalSquare, Mouse } from 'lucide-vue-next';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { THEME_ORDER, THEME_LABELS } from '@/composables/useTheme';
 import type { useAutoUpdate } from '@/composables/useAutoUpdate';
@@ -49,7 +49,7 @@ interface SettingsModalExtras {
 }
 
 const store = useWorkbenchStore();
-const { theme, modal } = storeToRefs(store);
+const { theme, modal, middleClickAutoscroll } = storeToRefs(store);
 
 const modalExtras = computed<SettingsModalExtras>(() => (modal.value ?? {}) as unknown as SettingsModalExtras);
 
@@ -234,6 +234,20 @@ function selectTheme(value: string) {
             </label>
           </div>
           <p class="muted">即时生效并持久化；字号也可在终端内 Ctrl+滚轮 / Ctrl+= / Ctrl+- 调整。</p>
+        </section>
+
+        <!-- 中键自动滚动：webview 级输入行为（ui store 权威值，main.ts 抑制器事件时读取） -->
+        <section class="block">
+          <header class="block-head"><Mouse :size="12" />鼠标</header>
+          <label class="autoscroll-toggle">
+            <input
+              type="checkbox"
+              :checked="middleClickAutoscroll"
+              @change="store.setMiddleClickAutoscroll(($event.target as HTMLInputElement).checked)"
+            />
+            中键自动滚动
+          </label>
+          <p class="muted">按住鼠标中键拖动即可滚动页面（浏览器式自动滚动，作用于所有可滚动区域）。默认关闭；更改即时生效并持久化。</p>
         </section>
 
         <!-- 恢复默认布局：次要操作（低频不常驻），无 resetLayout 回调时不渲染 -->
@@ -427,6 +441,16 @@ function selectTheme(value: string) {
   flex-direction: column;
   gap: var(--space-1);
   min-width: 120px;
+}
+
+.autoscroll-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--app-text);
+  cursor: pointer;
+  user-select: none;
 }
 .setting-label {
   font-size: var(--text-xs);

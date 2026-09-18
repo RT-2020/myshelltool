@@ -62,6 +62,20 @@ function onDocClick() {
   if (props.open) close();
 }
 
+// mousedown 早于 contextmenu/click 触发：右键不算 click，靠它才能覆盖「菜单外右键
+// 别处」的收起路径；且先关旧菜单，后续 contextmenu 打开的新菜单不会被误关。
+function onDocMouseDown(event: MouseEvent) {
+  if (!props.open) return;
+  if (menuRef.value?.contains(event.target as Node)) return;
+  close();
+}
+
+// 系统浮层（共享面板/文件对话框）或任务栏抢走焦点时菜单无法交互，必须收起，
+// 否则会一直挂在失焦窗口上（本组件不消费 blur 之后的任何点击）。
+function onWindowBlur() {
+  if (props.open) close();
+}
+
 function onKeydown(e: KeyboardEvent) {
   if (!props.open) return;
   if (e.key === 'Escape') {
@@ -121,11 +135,15 @@ watch(
 
 onMounted(() => {
   document.addEventListener('click', onDocClick);
+  document.addEventListener('mousedown', onDocMouseDown);
   document.addEventListener('keydown', onKeydown);
+  window.addEventListener('blur', onWindowBlur);
 });
 onBeforeUnmount(() => {
   document.removeEventListener('click', onDocClick);
+  document.removeEventListener('mousedown', onDocMouseDown);
   document.removeEventListener('keydown', onKeydown);
+  window.removeEventListener('blur', onWindowBlur);
 });
 </script>
 
