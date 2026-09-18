@@ -168,7 +168,7 @@ function selectTheme(value: string) {
              状态机文案/进度条/更新日志已拆至 UpdateSection.vue（500 行 SFC 硬上限约束）。 -->
         <UpdateSection v-if="autoUpdate" :auto-update="autoUpdate" :app-version="appVersion" />
 
-        <!-- 更新日志（常驻）：任意状态下可回看当前/历史版本的更新内容，
+        <!-- 更新日志（常驻）：只渲染当前版本一条的更新内容（离线），
              数据为构建时打包的全历史 changelog.json（组件内自取，仅依赖 appVersion）。 -->
         <ChangelogSection :app-version="appVersion" />
 
