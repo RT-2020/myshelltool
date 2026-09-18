@@ -75,6 +75,8 @@ node scripts/gen-changelog.mjs --from v0.5.0 --to v0.6.0
 
 可追加到 `CHANGELOG.md` 或本地留存。**此步纯预览**——发布说明由 workflow 自动生成注入，跳过不影响发版。
 
+**发布说明有三个消费方（自 v0.16.1 起）**：除 Release body 与 latest.json notes（待安装新版展示）外，设置面板「更新日志」区块（`ChangelogSection.vue`）**只渲染当前安装版本那一条**，数据源是构建时 `npm run build` 首步跑 `gen-changelog-history.mjs` 生成的 `src/generated/changelog.json`（全历史产物，区块内按 appVersion 精确取一条；CI 在 tag checkout 上重新生成，故正式包必然包含本版本）。三者同源于同一份 git log 解析——**Release body 对了，应用内两处就都对**，无需单独验证。这也意味着：commit message 的 type(scope)/中文描述质量直接决定用户看到的更新日志。
+
 ### 步骤 4：本地验证 config schema（必做，防坑）
 
 ```bash
@@ -125,7 +127,7 @@ curl -s "https://api.github.com/repos/RT-2020/myshelltool/releases/tags/vX.Y.Z" 
 - `myshelltool-X.Y.Z-portable.zip` — 便携版
 - `latest.json` — 应用内自更新清单
 
-**发布说明双路检查**（latest.json notes 现由 workflow 内 `gen-changelog.mjs` 生成注入，Release body 同源 `body_path`）：
+**发布说明双路检查**（latest.json notes 现由 workflow 内 `gen-changelog.mjs` 生成注入，Release body 同源 `body_path`；设置面板「更新日志」的当前版本条目同样同源——构建时重新生成的 changelog.json——这两项检查已覆盖，无需单独验证）：
 1. Release 页面 body 非空（应为中文分组格式，不是 GitHub 默认英文 PR 平铺）；
 2. latest.json 的 `notes` 字段与 body 内容一致且非空：
 ```bash
