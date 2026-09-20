@@ -45,6 +45,7 @@ import { dispatchModalSubmit, type ModalSubmitContext } from '@/lib/modalSubmit'
 import { cloneAsset, emptyAsset, emptyCredential, emptyTunnelForm } from '@/lib/modalForms';
 import { modalTitleFor } from '@/lib/modalTitles';
 import { useModalDismiss } from '@/composables/useModalDismiss';
+import { useModalView } from '@/composables/useModalView';
 import type {
   AssetEditorForm,
   ConnectionAssetInput,
@@ -68,7 +69,7 @@ interface ModalExtras extends ModalState {
 
 const store = useWorkbenchStore();
 const modalTitle = computed(() =>
-  modalTitleFor(modal.value.type, { editingExistingAsset: Boolean(editingAsset.id) })
+  modalTitleFor(view.value.type, { editingExistingAsset: Boolean(editingAsset.id) })
 );
 const {
   modal: modalRef,
@@ -80,10 +81,12 @@ const {
   pendingFileDelete
 } = storeToRefs(store);
 const modal = computed(() => modalRef.value as ModalExtras);
+// 退场动画视图层：关闭瞬间 store 已置空，view 滞留最后载荷让淡出播完（状态即时、渲染滞后）
+const { view, closing, onExitAnimationEnd } = useModalView(modal);
 
 // ============================================================
 // Local form state — mirrors the App.vue reactive forms we deleted.
-// All of these are only ever visible while modal.type matches their
+// All of these are only ever visible while view.type matches their
 // respective branch, so they don't bleed across types.
 // ============================================================
 const editingAsset = reactive(emptyAsset());
@@ -302,9 +305,10 @@ const { onBackdropClick } = useModalDismiss(
       - #modalBody         (host-key test step 3)
       - #modalPrimary      (host-key test step 4)
       - .modal-actions .btn.danger  (host-key test step reject)
+    closing 态：store 已关闭、退场动画播放中（view 滞留最后载荷，见 useModalView）
   -->
-  <div class="modal-layer" id="modalLayer" :class="{ open: modal.type }" :aria-hidden="!modal.type ? 'true' : 'false'" @click.self="onBackdropClick">
-    <div class="modal" :class="`modal--${modal.type}`" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+  <div class="modal-layer" id="modalLayer" :class="{ open: view.type, closing }" :aria-hidden="!view.type ? 'true' : 'false'" @click.self="onBackdropClick" @animationend="onExitAnimationEnd">
+    <div class="modal" :class="`modal--${view.type}`" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
       <div class="modal-head">
         <h2 id="modalTitle">{{ modalTitle }}</h2>
         <button class="icon-btn" id="modalClose" aria-label="关闭" @click="closeModal">×</button>
@@ -312,7 +316,7 @@ const { onBackdropClick } = useModalDismiss(
       <div class="modal-body" id="modalBody">
         <!-- assetEditor（表单体抽到 AssetEditorContent；校验/保存在 submitModal） -->
         <AssetEditorContent
-          v-if="modal.type === 'assetEditor'"
+          v-if="view.type === 'assetEditor'"
           :asset="editingAsset"
           :credential="editingCredential"
           :group-options="groupOptions"
@@ -322,19 +326,19 @@ const { onBackdropClick } = useModalDismiss(
 
         <!-- reauthPassword（表单体抽到 ReauthPasswordContent；提交在 submitModal） -->
         <ReauthPasswordContent
-          v-else-if="modal.type === 'reauthPassword'"
-          :asset="modal.asset!"
+          v-else-if="view.type === 'reauthPassword'"
+          :asset="view.asset!"
           :form="reauthForm"
         />
 
         <!-- tunnelCreate（表单体抽到 TunnelCreateContent；提交在 submitModal） -->
         <TunnelCreateContent
-          v-else-if="modal.type === 'tunnelCreate'"
+          v-else-if="view.type === 'tunnelCreate'"
           :form="tunnelForm"
         />
 
         <!-- hostKeyVerify -->
-        <div v-else-if="modal.type === 'hostKeyVerify'" class="stack">
+        <div v-else-if="view.type === 'hostKeyVerify'" class="stack">
           <p class="muted">检测到主机密钥，请确认是否信任该主机。</p>
           <dl class="context-grid">
             <dt>主机</dt><dd>{{ hostKeyPrompt?.host_port }}</dd>
@@ -346,7 +350,7 @@ const { onBackdropClick } = useModalDismiss(
         </div>
 
         <!-- mcpApproval（v1.5）：MCP 高危工具审批，客户端不支持 elicitation 时弹此窗 -->
-        <div v-else-if="modal.type === 'mcpApproval'" class="stack">
+        <div v-else-if="view.type === 'mcpApproval'" class="stack">
           <p class="muted">外部 AI 客户端（如 ZCode）请求执行高危命令，请确认三段信息是否一致：</p>
           <dl class="context-grid">
             <dt>AI 声明意图</dt><dd>{{ mcpApprovalPrompt?.intent || '(未声明)' }}</dd>
@@ -357,7 +361,7 @@ const { onBackdropClick } = useModalDismiss(
         </div>
 
         <!-- keyboardInteractive -->
-        <div v-else-if="modal.type === 'keyboardInteractive'" class="stack">
+        <div v-else-if="view.type === 'keyboardInteractive'" class="stack">
           <p class="muted">服务器需要键盘交互认证，请根据提示输入：</p>
           <p v-if="keyboardPrompt?.name"><strong>{{ keyboardPrompt.name }}</strong></p>
           <p v-if="keyboardInstructions" class="muted">{{ keyboardInstructions }}</p>
@@ -369,45 +373,45 @@ const { onBackdropClick } = useModalDismiss(
         </div>
 
         <!-- v1.2 mcpPanel：MCP 服务可观测与配置引导（内容抽到子组件，避免本 SFC 超 500 行） -->
-        <McpPanelContent v-else-if="modal.type === 'mcpPanel'" />
+        <McpPanelContent v-else-if="view.type === 'mcpPanel'" />
 
         <!-- v1.3 syncPanel：Gist 资产同步管理（setup/push/pull/冲突/重置/清空） -->
-        <SyncPanelContent v-else-if="modal.type === 'syncPanel'" />
+        <SyncPanelContent v-else-if="view.type === 'syncPanel'" />
 
         <!-- v1.8 settings：统一设置中心（关于与更新/外观/同步/MCP，内容抽到子组件避免本 SFC 超 500 行） -->
-        <SettingsPanelContent v-else-if="modal.type === 'settings'" />
+        <SettingsPanelContent v-else-if="view.type === 'settings'" />
 
         <!-- mkdir / localMkdir / rename / localRename（表单体抽到 FileOpFormsContent；
              触发逻辑在 FileSurface，提交在 submitModal） -->
         <FileOpFormsContent
-          v-else-if="modal.type === 'mkdir' || modal.type === 'localMkdir'"
-          :kind="modal.type"
-          :base-path="modal.type === 'mkdir' ? remotePath : localPath"
+          v-else-if="view.type === 'mkdir' || view.type === 'localMkdir'"
+          :kind="view.type"
+          :base-path="view.type === 'mkdir' ? remotePath : localPath"
           :rename-target="renameTarget"
           :file-form="fileForm"
         />
         <FileOpFormsContent
-          v-else-if="modal.type === 'rename' || modal.type === 'localRename'"
-          :kind="modal.type"
-          :base-path="modal.type === 'rename' ? remotePath : localPath"
+          v-else-if="view.type === 'rename' || view.type === 'localRename'"
+          :kind="view.type"
+          :base-path="view.type === 'rename' ? remotePath : localPath"
           :rename-target="renameTarget"
           :file-form="fileForm"
         />
 
         <!-- terminalSearch (fallback — TerminalSurface handles inline) -->
-        <div v-else-if="modal.type === 'terminalSearch'" class="stack">
+        <div v-else-if="view.type === 'terminalSearch'" class="stack">
           <p class="muted">终端搜索由工具栏触发，此入口仅作兼容。</p>
         </div>
 
         <!-- confirmDelete -->
-        <div v-else-if="modal.type === 'confirmDelete'" class="stack">
-          <p>将永久删除连接「<strong>{{ modal.asset?.name }}</strong>」
-            <span class="num muted">（{{ modal.asset?.host }} · {{ modal.asset?.username }}）</span></p>
+        <div v-else-if="view.type === 'confirmDelete'" class="stack">
+          <p>将永久删除连接「<strong>{{ view.asset?.name }}</strong>」
+            <span class="num muted">（{{ view.asset?.host }} · {{ view.asset?.username }}）</span></p>
           <p class="muted">同时清除已保存的密码 / 密钥凭据。此操作不可撤销。</p>
         </div>
 
         <!-- confirmFileDelete（S2：文件删除确认链，替代 window.confirm） -->
-        <div v-else-if="modal.type === 'confirmFileDelete'" class="stack">
+        <div v-else-if="view.type === 'confirmFileDelete'" class="stack">
           <p>将删除以下 <strong>{{ pendingFileDelete?.paths?.length || 0 }}</strong> 项：</p>
           <ul class="delete-file-list">
             <li v-for="name in pendingFileNames" :key="name" class="num">{{ name }}</li>
@@ -417,18 +421,18 @@ const { onBackdropClick } = useModalDismiss(
         </div>
 
         <!-- confirmFileOverwrite（S2：上传覆盖同名确认） -->
-        <div v-else-if="modal.type === 'confirmFileOverwrite'" class="stack">
+        <div v-else-if="view.type === 'confirmFileOverwrite'" class="stack">
           <p>远程已存在同名文件，覆盖将替换其内容：</p>
-          <p class="num overwrite-path">{{ modal.payload?.path }}</p>
+          <p class="num overwrite-path">{{ view.payload?.path }}</p>
           <p class="muted">此操作不可撤销。</p>
         </div>
 
         <!-- renameGroup / createGroup / moveAsset（表单体抽到 GroupFormsContent） -->
         <GroupFormsContent
-          v-else-if="modal.type === 'renameGroup' || modal.type === 'createGroup' || modal.type === 'moveAsset'"
-          :kind="modal.type"
-          :path="modal.path"
-          :asset-name="modal.asset?.name"
+          v-else-if="view.type === 'renameGroup' || view.type === 'createGroup' || view.type === 'moveAsset'"
+          :kind="view.type"
+          :path="view.path"
+          :asset-name="view.asset?.name"
           :group-options="groupOptions"
           :inputs="groupInputs"
           :form-error="groupFormError"
@@ -436,34 +440,34 @@ const { onBackdropClick } = useModalDismiss(
 
         <!-- confirmCloseAssetWindow（Phase 1-A：独立资产窗口关闭确认，body 在子组件） -->
         <ConfirmCloseAssetWindowContent
-          v-else-if="modal.type === 'confirmCloseAssetWindow'"
-          :count="modal.count || 0"
+          v-else-if="view.type === 'confirmCloseAssetWindow'"
+          :count="view.count || 0"
         />
 
         <!-- default: tokenConfig（PAT 表单已抽到 PatConfigCard，供此处与 settings 同步 tab 复用） -->
         <PatConfigCard v-else />
       </div>
       <div class="modal-actions">
-        <button v-if="modal.type === 'hostKeyVerify'" class="btn danger" :disabled="submitting" @click="denyHostKey">拒绝</button>
-        <button v-else-if="modal.type === 'mcpApproval'" class="btn danger" :disabled="submitting" @click="denyMcpApproval">拒绝执行</button>
+        <button v-if="view.type === 'hostKeyVerify'" class="btn danger" :disabled="submitting" @click="denyHostKey">拒绝</button>
+        <button v-else-if="view.type === 'mcpApproval'" class="btn danger" :disabled="submitting" @click="denyMcpApproval">拒绝执行</button>
         <!-- mcpPanel / syncPanel / settings 等自包含面板隐藏「取消」（操作在面板内部完成） -->
-        <button v-if="modal.type !== 'mcpPanel' && modal.type !== 'syncPanel' && modal.type !== 'settings'" class="btn" id="modalSecondary" :disabled="submitting" @click="secondaryAction">取消</button>
+        <button v-if="view.type !== 'mcpPanel' && view.type !== 'syncPanel' && view.type !== 'settings'" class="btn" id="modalSecondary" :disabled="submitting" @click="secondaryAction">取消</button>
         <button
-          v-if="modal.type === 'confirmDelete'"
+          v-if="view.type === 'confirmDelete'"
           class="btn danger"
           data-modal-primary-danger
           :disabled="submitting"
           @click="submitModal"
         >删除</button>
         <button
-          v-else-if="modal.type === 'confirmCloseAssetWindow'"
+          v-else-if="view.type === 'confirmCloseAssetWindow'"
           class="btn danger"
           data-modal-primary-danger
           :disabled="submitting"
           @click="submitModal"
         >断开并关闭</button>
         <button
-          v-else-if="modal.type === 'confirmFileDelete'"
+          v-else-if="view.type === 'confirmFileDelete'"
           class="btn danger"
           data-modal-primary-danger
           :disabled="submitting"
@@ -472,14 +476,14 @@ const { onBackdropClick } = useModalDismiss(
           <span v-if="submitting" class="btn-spinner" aria-hidden="true"></span>删除
         </button>
         <button
-          v-else-if="modal.type === 'confirmFileOverwrite'"
+          v-else-if="view.type === 'confirmFileOverwrite'"
           class="btn primary"
           id="modalPrimary"
           :disabled="submitting"
           @click="store.confirmFileOverwrite"
         >覆盖</button>
         <!-- v1.2 mcpPanel / v1.3 syncPanel / v1.8 settings：自包含面板，主按钮「关闭」 -->
-        <button v-else-if="modal.type === 'mcpPanel' || modal.type === 'syncPanel' || modal.type === 'settings'" class="btn primary" id="modalPrimary" :disabled="submitting" @click="submitModal">关闭</button>
+        <button v-else-if="view.type === 'mcpPanel' || view.type === 'syncPanel' || view.type === 'settings'" class="btn primary" id="modalPrimary" :disabled="submitting" @click="submitModal">关闭</button>
         <button v-else class="btn primary" id="modalPrimary" :disabled="submitting" @click="submitModal">
           <span v-if="submitting" class="btn-spinner" aria-hidden="true"></span>确认
         </button>

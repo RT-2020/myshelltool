@@ -1,0 +1,114 @@
+// TerminalTabs 浮动菜单样式（overflow 更多会话菜单 + tab 右键菜单 + 点击捕获层）。
+// 独立成文件的原因：TerminalTabs.vue 本体已贴近 SFC 500 行硬上限，样式外置腾出余量
+//（模式同 ConnectionSidebar.sidebar.scss / GlobalModals.modal.css）。
+@use '@/styles/_tokens' as *;
+
+.overflow-menu,
+.tab-context-menu {
+  position: fixed;
+  z-index: var(--z-dropdown);
+  background: var(--app-panel);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--elev-raised);
+  padding: 4px;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  // 进场 scale 基点：菜单自展开点向右下生长
+  transform-origin: top left;
+}
+
+// 浮动菜单进出场（与 AppContextMenu 同一语言：进场缩放上浮、出场只淡出）
+.tab-menu-enter-active {
+  transition: opacity var(--dur-base) var(--ease-standard),
+    transform var(--dur-base) var(--ease-standard);
+}
+.tab-menu-leave-active {
+  transition: opacity var(--dur-fast) var(--ease-standard);
+  pointer-events: none;
+}
+.tab-menu-enter-from {
+  opacity: 0;
+  transform: scale(0.96) translateY(-4px);
+}
+.tab-menu-leave-to {
+  opacity: 0;
+}
+
+.overflow-item,
+.tab-context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px var(--space-2);
+  background: transparent;
+  border: none;
+  color: var(--app-text);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  text-align: left;
+}
+
+.overflow-item:hover,
+.tab-context-menu button:hover { background: var(--app-hover); }
+
+.overflow-item.active {
+  background: color-mix(in oklab, var(--accent) 15%, transparent);
+  color: var(--accent);
+}
+
+.overflow-name {
+  font-size: var(--text-xs);
+  font-weight: 500;
+}
+
+.overflow-host {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  margin-left: auto;
+}
+
+.overflow-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+  color: var(--app-muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  flex: 0 0 auto;
+  transition: background var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
+}
+.overflow-close:hover {
+  background: color-mix(in oklab, var(--danger) 18%, transparent);
+  color: var(--danger);
+}
+
+.tab-context-menu button.danger:hover {
+  background: color-mix(in oklab, var(--danger) 18%, transparent);
+  color: var(--danger);
+}
+
+.tab-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-dropdown) - 1);
+  background: transparent;
+}
+
+// 菜单背后的透明点击捕获层：跟随菜单同拍淡入淡出
+.tab-fade-enter-active,
+.tab-fade-leave-active {
+  transition: opacity var(--dur-fast) var(--ease-standard);
+}
+.tab-fade-enter-from,
+.tab-fade-leave-to {
+  opacity: 0;
+}

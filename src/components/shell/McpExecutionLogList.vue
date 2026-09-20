@@ -299,7 +299,7 @@ function hostTitle(row: McpExecutionLogEntry) {
   font: inherit;
   text-align: left;
   cursor: pointer;
-  transition: background var(--motion-fast) var(--ease-standard);
+  transition: background var(--dur-fast) var(--ease-standard);
 
   &:hover {
     background: var(--app-hover);
@@ -419,8 +419,8 @@ function hostTitle(row: McpExecutionLogEntry) {
   font-size: var(--text-xs);
   cursor: pointer;
   transition:
-    color var(--motion-fast) var(--ease-standard),
-    border-color var(--motion-fast) var(--ease-standard);
+    color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard);
 
   &:hover {
     color: var(--accent);

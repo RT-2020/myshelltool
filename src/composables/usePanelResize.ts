@@ -281,11 +281,10 @@ export function usePanelResize(options: UsePanelResizeOptions = {}) {
     } else {
       root.style.setProperty('--right-w', `${rightW.value}px`);
     }
-    if (centerTopH.value != null) {
-      setTerminalHeight(centerTopH.value, root);
-    } else {
-      setTerminalHeight(getTerminalHeightFromRatio(), root);
-    }
+    // --terminal-h：始终按视口重算写入（有持久化取持久化值，否则按 ratio）——
+    // 必须恒为 px 长度（含无持久化时按当前视口重算），否则 grid 行/列过渡会绊在
+    // 「变换中列列表含 non-interpolable」上整段失效（见 workbench-shell.scss 注释）。
+    setTerminalHeight(centerTopH.value ?? getTerminalHeightFromRatio(), root);
   }
 
   function persist() {

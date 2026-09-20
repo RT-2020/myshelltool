@@ -149,34 +149,36 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="body">
-    <ul
-      v-if="open"
-      ref="menuRef"
-      class="app-context-menu"
-      role="menu"
-      :style="{ left: pos.left + 'px', top: pos.top + 'px' }"
-      @click="onMenuClick"
-      @contextmenu.prevent
-    >
-      <template v-for="(item, idx) in items" :key="idx">
-        <li v-if="item.separator" class="app-context-menu-separator"></li>
-        <li
-          v-else
-          class="app-context-menu-item"
-          :class="{
-            danger: item.danger,
-            disabled: item.disabled,
-            'is-active': activeIndex >= 0 && selectable[activeIndex] && selectable[activeIndex].index === idx
-          }"
-          role="menuitem"
-          tabindex="-1"
-          :aria-disabled="item.disabled ? 'true' : undefined"
-          @click="onItemClick(item)"
-        >
-          {{ item.label }}
-        </li>
-      </template>
-    </ul>
+    <Transition name="app-ctx">
+      <ul
+        v-if="open"
+        ref="menuRef"
+        class="app-context-menu"
+        role="menu"
+        :style="{ left: pos.left + 'px', top: pos.top + 'px' }"
+        @click="onMenuClick"
+        @contextmenu.prevent
+      >
+        <template v-for="(item, idx) in items" :key="idx">
+          <li v-if="item.separator" class="app-context-menu-separator"></li>
+          <li
+            v-else
+            class="app-context-menu-item"
+            :class="{
+              danger: item.danger,
+              disabled: item.disabled,
+              'is-active': activeIndex >= 0 && selectable[activeIndex] && selectable[activeIndex].index === idx
+            }"
+            role="menuitem"
+            tabindex="-1"
+            :aria-disabled="item.disabled ? 'true' : undefined"
+            @click="onItemClick(item)"
+          >
+            {{ item.label }}
+          </li>
+        </template>
+      </ul>
+    </Transition>
   </Teleport>
 </template>
 
@@ -198,6 +200,25 @@ onBeforeUnmount(() => {
   border: 1px solid var(--app-border);
   border-radius: var(--radius-md);
   box-shadow: var(--app-shadow);
+  // 进场 scale 的基点：菜单从点击处向右下展开
+  transform-origin: top left;
+}
+
+// 菜单进出场：进场轻微缩放上浮（200ms，可感知），出场只淡出——瞬态菜单收得越快越顺手
+.app-ctx-enter-active {
+  transition: opacity var(--dur-base) var(--ease-standard),
+    transform var(--dur-base) var(--ease-standard);
+}
+.app-ctx-leave-active {
+  transition: opacity var(--dur-fast) var(--ease-standard);
+  pointer-events: none;
+}
+.app-ctx-enter-from {
+  opacity: 0;
+  transform: scale(0.96) translateY(-4px);
+}
+.app-ctx-leave-to {
+  opacity: 0;
 }
 
 .app-context-menu-item {

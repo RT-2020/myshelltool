@@ -44,10 +44,10 @@ withDefaults(
   border: 1px solid transparent;
   background: transparent;
   color: var(--app-text);
-  transition: background var(--motion-fast) var(--ease-standard),
-    border-color var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard),
-    opacity var(--motion-fast) var(--ease-standard);
+  transition: background var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    opacity var(--dur-fast) var(--ease-standard);
 }
 
 // .app-btn-label 是图标(slot)+文字的容器。设为 inline-flex 并垂直居中，

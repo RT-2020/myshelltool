@@ -394,9 +394,9 @@ function isAuthFailure(connectError: string | null) {
   color: var(--app-text);
   cursor: pointer;
   font-size: var(--text-xs);
-  transition: background var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard),
-    border-color var(--motion-fast) var(--ease-standard);
+  transition: background var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard);
 }
 .term-error-btn:hover {
   background: var(--app-hover);

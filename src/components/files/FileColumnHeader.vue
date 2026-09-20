@@ -304,8 +304,8 @@ onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
   white-space: nowrap;
   flex: 0 0 auto;
   transition:
-    background var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard);
+    background var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
 }
 
 .crumb:hover {
@@ -337,8 +337,8 @@ onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
   flex: 0 0 auto;
   margin-inline-start: 2px;
   transition:
-    background var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard);
+    background var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
 }
 
 .crumb-edit:hover {
@@ -368,8 +368,8 @@ onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
   font-family: var(--font-mono);
   outline: none;
   transition:
-    border-color var(--motion-fast) var(--ease-standard),
-    box-shadow var(--motion-fast) var(--ease-standard);
+    border-color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
 }
 
 // 光环跟随本输入框自身的圆角（区别于 _base.scss 根治的裸 input 直角光环）
@@ -421,8 +421,8 @@ onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
   font-size: var(--text-xs);
   font-family: var(--font-body);
   transition:
-    border-color var(--motion-fast) var(--ease-standard),
-    box-shadow var(--motion-fast) var(--ease-standard);
+    border-color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
 }
 
 .filter-popover-input::placeholder {

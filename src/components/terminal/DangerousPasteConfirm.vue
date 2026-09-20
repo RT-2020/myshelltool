@@ -48,7 +48,8 @@ const preview = computed(() => {
 
 <template>
   <Teleport to="body">
-    <div v-if="open" class="danger-overlay" @click.self="emit('cancel')" @keydown="onKeydown" role="alertdialog" aria-modal="true" aria-label="危险命令确认">
+    <Transition name="danger-pop">
+      <div v-if="open" class="danger-overlay" @click.self="emit('cancel')" @keydown="onKeydown" role="alertdialog" aria-modal="true" aria-label="危险命令确认">
       <div class="danger-modal">
         <header class="danger-header">
           <AlertTriangle :size="22" class="danger-icon" />
@@ -69,7 +70,8 @@ const preview = computed(() => {
           <button ref="confirmRef" class="btn danger" @click="confirm">仍然粘贴</button>
         </footer>
       </div>
-    </div>
+      </div>
+    </Transition>
   </Teleport>
 </template>
 
@@ -85,6 +87,30 @@ const preview = computed(() => {
   justify-content: center;
   z-index: var(--z-modal);
   backdrop-filter: blur(4px);
+}
+
+// 面板进出场：告警弹窗的进场幅度刻意小于普通弹窗（scale 0.97）——
+// 危险确认要的是「稳」而不是「蹦」；出场快档只淡出
+.danger-pop-enter-active {
+  transition: opacity var(--dur-base) var(--ease-standard);
+}
+.danger-pop-enter-active .danger-modal {
+  transition: transform var(--dur-base) var(--ease-emphasized),
+    opacity var(--dur-base) var(--ease-emphasized);
+}
+.danger-pop-enter-from {
+  opacity: 0;
+}
+.danger-pop-enter-from .danger-modal {
+  transform: scale(0.97);
+  opacity: 0;
+}
+.danger-pop-leave-active {
+  transition: opacity var(--dur-fast) var(--ease-standard);
+  pointer-events: none;
+}
+.danger-pop-leave-to {
+  opacity: 0;
 }
 
 .danger-modal {

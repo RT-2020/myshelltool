@@ -111,7 +111,11 @@ const sessionStatus = computed(() => {
 // 徽标 class：connected/idle 复用全局 .badge.success/.muted，另两个本组件补
 const SESSION_STATUS_LABELS = { connected: '已连接', connecting: '连接中', error: '连接错误', idle: '未连接' };
 const SESSION_BADGE_CLASS = { connected: 'success', connecting: 'connecting', error: 'error', idle: 'muted' };
-const shellClasses = computed(() => ({ 'right-collapsed': props.store.rightCollapsed }));
+const shellClasses = computed(() => ({
+  'right-collapsed': props.store.rightCollapsed,
+  // 拖拽 divider 期间关闭 grid 列宽过渡（下方 .asset-shell 的折叠动画）
+  'is-resizing': Boolean(props.panelResize?.resizing?.value)
+}));
 const desktopWindowControlsVisible = computed(() => isTauriRuntime());
 
 function onToggleRight() {
@@ -396,7 +400,11 @@ onBeforeUnmount(() => {
   background: var(--app-bg);
   color: var(--app-text);
   font-family: var(--font-body);
+  // 右栏折叠平滑过渡（与主窗口 .workbench-shell 同语言）；拖拽中经 .is-resizing 关闭
+  transition: grid-template-columns var(--dur-base) var(--ease-emphasized);
 }
+
+.asset-shell.is-resizing { transition: none; }
 
 // 右栏折叠：ui store 的 dataset 写在本窗口 documentElement（per-window 隔离），
 // 视觉折叠由组件 class 覆盖 --right-w（与 WorkbenchShell 的 .right-collapsed 模式一致）

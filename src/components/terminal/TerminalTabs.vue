@@ -242,27 +242,33 @@ function dupSuffixFor(session: SessionTabItem) {
     </div>
 
     <Teleport to="body">
-      <div v-if="overflowMenuOpen && hiddenSessions.length" class="overflow-menu" :style="overflowMenuStyle" @click.stop role="menu" aria-label="更多会话">
-        <div
-          v-for="session in hiddenSessions"
-          :key="session.sessionId"
-          :class="['overflow-item', { active: session.sessionId === activeSessionId }]"
-          role="menuitem"
-          @click="() => { onTabClick(session.sessionId); overflowMenuOpen = false; }"
-        >
-          <span :class="['dot', statusFor(session)]"></span>
-          <span class="overflow-name">{{ session.asset?.name }}{{ dupSuffixFor(session) }}</span>
-          <span class="overflow-host muted">{{ session.asset?.host }}</span>
-          <button class="overflow-close" aria-label="关闭会话" @click.stop="emit('close', session.sessionId)"><X :size="12" /></button>
+      <Transition name="tab-menu">
+        <div v-if="overflowMenuOpen && hiddenSessions.length" class="overflow-menu" :style="overflowMenuStyle" @click.stop role="menu" aria-label="更多会话">
+          <div
+            v-for="session in hiddenSessions"
+            :key="session.sessionId"
+            :class="['overflow-item', { active: session.sessionId === activeSessionId }]"
+            role="menuitem"
+            @click="() => { onTabClick(session.sessionId); overflowMenuOpen = false; }"
+          >
+            <span :class="['dot', statusFor(session)]"></span>
+            <span class="overflow-name">{{ session.asset?.name }}{{ dupSuffixFor(session) }}</span>
+            <span class="overflow-host muted">{{ session.asset?.host }}</span>
+            <button class="overflow-close" aria-label="关闭会话" @click.stop="emit('close', session.sessionId)"><X :size="12" /></button>
+          </div>
         </div>
-      </div>
-      <div v-if="contextMenu.open" class="tab-context-menu" :style="contextMenuStyle" @click.stop>
-        <button @click="emit('copy-host', contextMenu.sessionId); closeAllMenus()"><Copy :size="14" /> 复制主机地址</button>
-        <button @click="emit('close-others', contextMenu.sessionId); closeAllMenus()"><FolderX :size="14" /> 关闭其他</button>
-        <button @click="emit('close-right', contextMenu.sessionId); closeAllMenus()"><SquareX :size="14" /> 关闭右侧</button>
-        <button class="danger" @click="emit('close', contextMenu.sessionId); closeAllMenus()"><X :size="14" /> 关闭此标签</button>
-      </div>
-      <div v-if="overflowMenuOpen || contextMenu.open" class="tab-overlay" @click="closeAllMenus" @contextmenu.prevent="closeAllMenus"></div>
+      </Transition>
+      <Transition name="tab-menu">
+        <div v-if="contextMenu.open" class="tab-context-menu" :style="contextMenuStyle" @click.stop>
+          <button @click="emit('copy-host', contextMenu.sessionId); closeAllMenus()"><Copy :size="14" /> 复制主机地址</button>
+          <button @click="emit('close-others', contextMenu.sessionId); closeAllMenus()"><FolderX :size="14" /> 关闭其他</button>
+          <button @click="emit('close-right', contextMenu.sessionId); closeAllMenus()"><SquareX :size="14" /> 关闭右侧</button>
+          <button class="danger" @click="emit('close', contextMenu.sessionId); closeAllMenus()"><X :size="14" /> 关闭此标签</button>
+        </div>
+      </Transition>
+      <Transition name="tab-fade">
+        <div v-if="overflowMenuOpen || contextMenu.open" class="tab-overlay" @click="closeAllMenus" @contextmenu.prevent="closeAllMenus"></div>
+      </Transition>
     </Teleport>
   </div>
 </template>
@@ -310,8 +316,8 @@ function dupSuffixFor(session: SessionTabItem) {
   cursor: pointer;
   border-radius: 0;
   border-right: 1px solid var(--app-border-soft);
-  transition: background var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard);
+  transition: background var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
 
   &:hover {
     color: var(--accent);
@@ -334,8 +340,8 @@ function dupSuffixFor(session: SessionTabItem) {
   min-width: 0;
   border-right: 1px solid var(--app-border-soft);
   position: relative;
-  transition: background var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard);
+  transition: background var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
 
   &:hover {
     background: var(--app-hover);
@@ -382,8 +388,8 @@ function dupSuffixFor(session: SessionTabItem) {
   cursor: pointer;
   border-radius: var(--radius-sm);
   opacity: 0;
-  transition: opacity var(--motion-fast) var(--ease-standard),
-    background var(--motion-fast) var(--ease-standard);
+  transition: opacity var(--dur-fast) var(--ease-standard),
+    background var(--dur-fast) var(--ease-standard);
   flex: 0 0 auto;
 }
 
@@ -410,88 +416,8 @@ function dupSuffixFor(session: SessionTabItem) {
   color: var(--accent);
   background: var(--app-hover);
 }
-
-// ============================================================
-// Floating menus (overflow + context) — low-weight, single border
-// ============================================================
-.overflow-menu,
-.tab-context-menu {
-  position: fixed;
-  z-index: var(--z-dropdown);
-  background: var(--app-panel);
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-sm);
-  box-shadow: var(--elev-raised);
-  padding: 4px;
-  min-width: 180px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.overflow-item,
-.tab-context-menu button {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px var(--space-2);
-  background: transparent;
-  border: none;
-  color: var(--app-text);
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-  font-size: var(--text-sm);
-  text-align: left;
-}
-
-.overflow-item:hover,
-.tab-context-menu button:hover { background: var(--app-hover); }
-
-.overflow-item.active {
-  background: color-mix(in oklab, var(--accent) 15%, transparent);
-  color: var(--accent);
-}
-
-.overflow-name {
-  font-size: var(--text-xs);
-  font-weight: 500;
-}
-
-.overflow-host {
-  font-size: 10px;
-  font-family: var(--font-mono);
-  margin-left: auto;
-}
-
-.overflow-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border: none;
-  background: transparent;
-  color: var(--app-muted);
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-  flex: 0 0 auto;
-  transition: background var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard);
-}
-.overflow-close:hover {
-  background: color-mix(in oklab, var(--danger) 18%, transparent);
-  color: var(--danger);
-}
-
-.tab-context-menu button.danger:hover {
-  background: color-mix(in oklab, var(--danger) 18%, transparent);
-  color: var(--danger);
-}
-
-.tab-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: calc(var(--z-dropdown) - 1);
-  background: transparent;
-}
 </style>
+
+<!-- 浮动菜单（overflow/右键菜单/捕获层）样式外置：本文件贴近 500 行硬上限，
+     见 TerminalTabs.menus.scss 头注释 -->
+<style scoped lang="scss" src="./TerminalTabs.menus.scss"></style>

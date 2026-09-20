@@ -239,7 +239,7 @@ const emptyDesc = computed(() => {
   cursor: pointer;
   user-select: none;
   border-block-end: 1px solid var(--app-border-soft);
-  transition: background var(--motion-fast) var(--ease-standard);
+  transition: background var(--dur-fast) var(--ease-standard);
 }
 
 .file-row:last-child {
@@ -417,8 +417,8 @@ const emptyDesc = computed(() => {
   font-size: var(--text-xs);
   cursor: pointer;
   transition:
-    background var(--motion-fast) var(--ease-standard),
-    border-color var(--motion-fast) var(--ease-standard);
+    background var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard);
 }
 .empty-retry:hover {
   background: var(--app-hover);

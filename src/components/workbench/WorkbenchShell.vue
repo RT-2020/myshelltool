@@ -72,7 +72,9 @@ const mcpText = computed(() => props.store.mcpClientConnected ? 'MCP 可用' : '
 const updateState = computed(() => unref(props.autoUpdate?.state) || 'idle');
 const appClasses = computed(() => ({
   'sidebar-collapsed': props.store.assetsCollapsed,
-  'right-collapsed': props.store.rightCollapsed
+  'right-collapsed': props.store.rightCollapsed,
+  // 拖拽 divider 期间关闭 grid 列宽过渡（workbench-shell.scss 的折叠动画）
+  'is-resizing': Boolean(props.panelResize?.resizing?.value)
 }));
 const desktopWindowControlsVisible = computed(() => isTauriRuntime());
 const searchState = computed(() => props.store.searchState || { open: false, query: '', suggestions: [] });
@@ -276,22 +278,24 @@ onMounted(() => {
             <X :size="12" />
           </button>
           <kbd>Ctrl K</kbd>
-          <ul v-if="searchOpen" class="tb-suggestions" role="listbox">
-            <li
-              v-for="(item, idx) in searchSuggestions"
-              :key="item.kind === 'asset' ? item.asset.id : `${item.kind}-${item.host}-${idx}`"
-              :class="{ active: idx === activeSearchIndex }"
-              role="option"
-              :aria-selected="idx === activeSearchIndex ? 'true' : 'false'"
-              @mouseenter="activeSearchIndex = idx"
-              @mousedown.prevent="activateSearchSuggestion(item)"
-            >
-              <strong>{{ item.kind === 'asset' ? item.asset.name : item.label }}</strong>
-              <span>
-                {{ item.kind === 'asset' ? `${item.asset.username}@${item.asset.host}` : `${item.username}@${item.host}:${item.port}` }}
-              </span>
-            </li>
-          </ul>
+          <Transition name="tb-suggest">
+            <ul v-if="searchOpen" class="tb-suggestions" role="listbox">
+              <li
+                v-for="(item, idx) in searchSuggestions"
+                :key="item.kind === 'asset' ? item.asset.id : `${item.kind}-${item.host}-${idx}`"
+                :class="{ active: idx === activeSearchIndex }"
+                role="option"
+                :aria-selected="idx === activeSearchIndex ? 'true' : 'false'"
+                @mouseenter="activeSearchIndex = idx"
+                @mousedown.prevent="activateSearchSuggestion(item)"
+              >
+                <strong>{{ item.kind === 'asset' ? item.asset.name : item.label }}</strong>
+                <span>
+                  {{ item.kind === 'asset' ? `${item.asset.username}@${item.asset.host}` : `${item.username}@${item.host}:${item.port}` }}
+                </span>
+              </li>
+            </ul>
+          </Transition>
         </div>
       </div>
 

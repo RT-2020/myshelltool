@@ -155,6 +155,13 @@ async function onExport() {
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--app-border-strong) transparent;
+  // 展开右栏（列宽 0→280 平滑过渡）时内容淡出接入；纯时长 token 防 animation
+  // 双缓动被整行丢弃（_tokens.scss 的 --motion-* 是「时长+缓动」合体）。
+  animation: rs-fade-in var(--dur-base) var(--ease-standard);
+}
+@keyframes rs-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .rs-body::-webkit-scrollbar { width: 8px; }
