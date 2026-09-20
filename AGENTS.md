@@ -124,6 +124,7 @@ myshelltool/
 - **样式用 SCSS + 设计 token**（`@/styles/_tokens.scss`）。组件内 `<style scoped lang="scss">` 顶部 `@use '@/styles/_tokens' as *;`。
   - 颜色/间距/圆角/阴影/动效/z-index **必须用 `var(--xxx)` token**，不要硬编码。z-index 用 `var(--z-base|dropdown|sticky|drawer|modal|toast|tooltip)`。
   - 新增 token 加到 `_tokens.scss` 的 map 并暴露为 `:root` CSS 变量。
+- **hover/focus 反馈铁律（纯绘制属性）**：交互态只允许改 `color`/`background`/`border-color`/`opacity`/`box-shadow`/`outline-color`/`filter`/`transform`；**禁止**改一切盒模型与文档流属性（`padding`/`margin`/`border-width`/`width`/`height`/`min|max-*`/`font-size`/`font-weight`/`line-height`/`letter-spacing`/`gap`/`flex`/`grid-template`/`display`/`position`/`overflow`/`top|left|right|bottom`）——那会触发重排，hover 一行代码周边元素全位移（页面抖动）。悬停显隐元素必须**常驻占位**（默认 `opacity:0`/`visibility:hidden`，hover 改 `opacity:1`），**禁止** `display:none ↔ flex/grid` 切换；需要位移反馈用 `transform`（合成器属性，不重排）。排查记录与验证方法见 [`docs/已知边界与修复史.md`](./docs/已知边界与修复史.md)「hover 抖动排查」节。
 - **路径别名 `@`** → `src/`（vite.config.ts 配置）。import 用 `@/stores/...`、`@/components/...`。
 - **组件分层**：`ui/` 是无业务的基础组件（`App*` 命名，barrel 导出）；业务组件按域放 `shell/`、`terminal/`、`files/`、`resource-monitor/`。
 - **通用操作入口模式**：右键菜单用 `AppContextMenu`（`items: [{label, action, danger, separator, disabled}]`），参照 `FileSurface.vue` 用法。危险操作用 `danger: true`（红色）或 `AppButton variant="danger"`。

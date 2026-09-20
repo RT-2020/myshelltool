@@ -123,6 +123,11 @@
 // 消费方（WorkbenchShell 标题栏 / ConnectionSidebar / FileSurface /
 // FileColumnHeader / TerminalToolbar / RightSidebar）只挂 class，不再自带 scoped 副本。
 // 圆角 6px 为 icon-btn 专用（radius token 无此档：sm=8px 起步），全部消费方原值一致。
+// ⚠ hover/focus 反馈铁律（AGENTS.md §4.1）：交互态只允许绘制属性（本类的
+// background/color/border-color 即合规）；改 padding/margin/border-width/width/height/
+// font-*/display/position/overflow/gap 等盒模型属性会触发重排 → hover 即页面抖动，
+// 悬停显隐一律 opacity 常驻占位，位移反馈只用 transform。2026-09-20 全仓排查记录见
+// docs/已知边界与修复史.md「hover 抖动排查」节。
 .icon-btn {
   width: 28px;
   height: 28px;
