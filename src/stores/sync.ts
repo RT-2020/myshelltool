@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 import type {
+  NotifyOptions,
   RemoteUpdateStatus,
   SyncConflictStash,
   SyncPullResult,
@@ -14,7 +15,7 @@ import { errorMessage } from '../lib/errorMessage';
 /** sync store 实际消费的 workbench bridge 最小结构。
  *  assetsStore：拉取/冲突解决后必须重载前端资产内存态（见 reloadAssetsFromBackend）。 */
 interface SyncWorkbenchBridge {
-  announce?(message: string): unknown;
+  announce?(message: string, opts?: NotifyOptions): unknown;
   assetsStore?(): { reloadAssets(): Promise<void> } | null;
 }
 
@@ -28,7 +29,7 @@ interface SyncWorkbenchBridge {
  * - v1.6 自动同步：enable/disable + 会话密钥路径 push/pull（无需主密码）+ 远端更新探测
  *
  * 与 assets store 的关系：assets 的写操作完成后调 maybeAutoPush（经 workbench bridge），
- * 触发本 store 的 autoPushIfEnabled —— 若 autoSyncEnabled 则后台 push（不弹窗，失败静默 announce）。
+ * 触发本 store 的 autoPushIfEnabled —— 若 autoSyncEnabled 则后台 push（不打断用户操作，结果经 toast 告知）。
  */
 export const useSyncStore = defineStore('sync', () => {
   // ============================================================
@@ -90,13 +91,13 @@ export const useSyncStore = defineStore('sync', () => {
     const assetsStore = workbenchBridge?.assetsStore?.();
     if (!assetsStore) {
       // 不静默吞：toast 已说「拉取成功」而列表是旧的，正是本轮要修的缺陷形态
-      flashMessage('✗ 已拉取远端数据，但资产列表未重载（assets bridge 未注入），请重新打开应用', true);
+      flashMessage('✗ 已拉取远端数据，但资产列表未重载（assets bridge 未注入），请重新打开应用', 'error');
       return;
     }
     try {
       await assetsStore.reloadAssets();
     } catch (error) {
-      flashMessage(`✗ 已拉取远端数据，但本地资产列表重载失败：${errorMessage(error)}`, true);
+      flashMessage(`✗ 已拉取远端数据，但本地资产列表重载失败：${errorMessage(error)}`, 'error');
     }
   }
 
@@ -131,10 +132,10 @@ export const useSyncStore = defineStore('sync', () => {
       if (result.kind === 'PulledRemote') await reloadAssetsFromBackend();
       flashMessage(result.kind === 'Created' ? '✓ 同步已配置（新 Gist）'
         : result.kind === 'PulledRemote' ? '✓ 已拉取远端数据'
-        : '同步已配置，无需重复设置');
+        : '同步已配置，无需重复设置', result.kind === 'AlreadyConfigured' ? 'info' : 'success');
       return result;
     } catch (error) {
-      flashMessage(`✗ ${errorMessage(error)}`, true);
+      flashMessage(`✗ ${errorMessage(error)}`, 'error');
       return null;
     } finally {
       loading.value = false;
@@ -153,12 +154,12 @@ export const useSyncStore = defineStore('sync', () => {
     try {
       const result = await invokeBackend<SyncPushResult>('sync_push', { masterPassword });
       await refreshStatus();
-      flashMessage(result.message);
+      flashMessage(result.message, 'success');
       // v1.6：push 成功后远端已是最新的，清除更新提示
       remoteHasUpdates.value = false;
       return result;
     } catch (error) {
-      flashMessage(`✗ 推送失败：${errorMessage(error)}`, true);
+      flashMessage(`✗ 推送失败：${errorMessage(error)}`, 'error');
       return null;
     } finally {
       loading.value = false;
@@ -182,7 +183,7 @@ export const useSyncStore = defineStore('sync', () => {
       await refreshStatus();
       switch (result.decision) {
         case 'NoChange':
-          flashMessage('已是最新（双方都无变更）');
+          flashMessage('已是最新（双方都无变更）', 'info');
           remoteHasUpdates.value = false;
           break;
         case 'Pulled':
@@ -194,15 +195,15 @@ export const useSyncStore = defineStore('sync', () => {
           if (result.credentials_failed) {
             flashMessage(
               `✓ 已拉取远端数据（rev ${result.new_rev}），但 ${result.credentials_failed} 项凭据未能恢复到本机（这些资产连接时会认证失败，请重新输入密码）`,
-              true
+              'warn'
             );
           } else {
-            flashMessage(`✓ 已拉取远端数据（rev ${result.new_rev}）`);
+            flashMessage(`✓ 已拉取远端数据（rev ${result.new_rev}）`, 'success');
           }
           remoteHasUpdates.value = false;
           break;
         case 'LocalNewer':
-          flashMessage('本地比远端新，建议推送');
+          flashMessage('本地比远端新，建议推送', 'info');
           break;
         case 'Conflict':
           // 存入冲突暂存区，前端据此弹冲突框
@@ -215,7 +216,7 @@ export const useSyncStore = defineStore('sync', () => {
       }
       return result;
     } catch (error) {
-      flashMessage(`✗ 拉取失败：${errorMessage(error)}`, true);
+      flashMessage(`✗ 拉取失败：${errorMessage(error)}`, 'error');
       return null;
     } finally {
       loading.value = false;
@@ -244,9 +245,9 @@ export const useSyncStore = defineStore('sync', () => {
       // 选「远端覆盖本地」时后端已改写 connection-assets.json：必须重载前端列表。
       // （choice='local' 时本地数据未变，重载是幂等的，不做分支以免漏掉未来语义变化）
       await reloadAssetsFromBackend();
-      flashMessage(choice === 'local' ? '✓ 已用本地覆盖远端' : '✓ 已用远端覆盖本地');
+      flashMessage(choice === 'local' ? '✓ 已用本地覆盖远端' : '✓ 已用远端覆盖本地', 'success');
     } catch (error) {
-      flashMessage(`✗ 冲突解决失败：${errorMessage(error)}`, true);
+      flashMessage(`✗ 冲突解决失败：${errorMessage(error)}`, 'error');
       return;
     } finally {
       loading.value = false;
@@ -262,9 +263,9 @@ export const useSyncStore = defineStore('sync', () => {
         oldPassword,
         newPassword
       });
-      flashMessage('✓ 主密码已重置');
+      flashMessage('✓ 主密码已重置', 'success');
     } catch (error) {
-      flashMessage(`✗ ${errorMessage(error)}`, true);
+      flashMessage(`✗ ${errorMessage(error)}`, 'error');
       return null;
     } finally {
       loading.value = false;
@@ -279,9 +280,9 @@ export const useSyncStore = defineStore('sync', () => {
       await invokeBackend('sync_clear');
       conflict.value = null;
       await refreshStatus();
-      flashMessage('已清空同步配置');
+      flashMessage('已清空同步配置', 'info');
     } catch (error) {
-      flashMessage(`✗ ${errorMessage(error)}`, true);
+      flashMessage(`✗ ${errorMessage(error)}`, 'error');
       return null;
     } finally {
       loading.value = false;
@@ -317,6 +318,8 @@ export const useSyncStore = defineStore('sync', () => {
       await invokeBackend('sync_enable_auto_sync', { masterPassword });
       await refreshStatus();
       let note = '';
+      // 「启用成功但云端升级失败」是 warn：启用没坏，但用户必须再手动推一次才有一份可恢复的备份
+      let level: SyncNoticeLevel = 'success';
       if (configured.value) {
         try {
           // 不调 push()：loading 已置位，push() 会在「操作进行中」守卫处直接返回 null
@@ -326,12 +329,13 @@ export const useSyncStore = defineStore('sync', () => {
           note = '，并已把云端备份升级为主密码可恢复的格式';
         } catch (error) {
           note = `；但升级云端备份失败（${errorMessage(error)}），请稍后在「立即同步」里手动推送一次`;
+          level = 'warn';
         }
       }
-      flashMessage('✓ 自动同步已启用' + note);
+      flashMessage('✓ 自动同步已启用' + note, level);
       return true;
     } catch (error) {
-      flashMessage(`✗ ${errorMessage(error)}`, true);
+      flashMessage(`✗ ${errorMessage(error)}`, 'error');
       return false;
     } finally {
       loading.value = false;
@@ -346,10 +350,10 @@ export const useSyncStore = defineStore('sync', () => {
     try {
       await invokeBackend('sync_disable_auto_sync');
       await refreshStatus();
-      flashMessage('已关闭自动同步');
+      flashMessage('已关闭自动同步', 'info');
       return true;
     } catch (error) {
-      flashMessage(`✗ ${errorMessage(error)}`, true);
+      flashMessage(`✗ ${errorMessage(error)}`, 'error');
       return false;
     } finally {
       loading.value = false;
@@ -367,7 +371,7 @@ export const useSyncStore = defineStore('sync', () => {
       remoteHasUpdates.value = Boolean(result.has_updates);
       if (result.has_updates) {
         // 经 workbench bridge announce（若已注入）
-        workbenchBridge?.announce?.('远端 Gist 有更新，点击同步面板拉取最新');
+        workbenchBridge?.announce?.('远端 Gist 有更新，点击同步面板拉取最新', { level: 'info' });
       }
     } catch (error) {
       // 探测失败不阻塞启动，静默
@@ -408,17 +412,23 @@ export const useSyncStore = defineStore('sync', () => {
     void (async () => {
       try {
         let rerun = true;
+        // 合并多次资产写为一次 push，成功 toast 也只在队列排空后弹一条；全失败则不弹成功
+        let anySuccess = false;
         while (rerun) {
           rerun = false;
           try {
             await invokeBackend('sync_push', { masterPassword: '' });
+            anySuccess = true;
             await refreshStatus();
             remoteHasUpdates.value = false;
           } catch (error) {
-            // 自动同步失败 announce，不打断用户（典型：冲突，让用户手动处理）
-            workbenchBridge?.announce?.('自动同步失败：' + errorMessage(error) + '（请到同步面板处理）');
+            // 自动同步失败 announce error，不打断用户（典型：冲突，让用户手动处理）
+            workbenchBridge?.announce?.('自动同步失败：' + errorMessage(error) + '（请到同步面板处理）', { level: 'error' });
           }
           if (autoPushPending) { autoPushPending = false; rerun = true; }
+        }
+        if (anySuccess) {
+          workbenchBridge?.announce?.('✓ 资产已自动同步到云端', { level: 'success' });
         }
       } finally {
         autoPushInFlight = false;
@@ -434,10 +444,17 @@ export const useSyncStore = defineStore('sync', () => {
     workbenchBridge = bridge;
   }
 
-  function flashMessage(msg: string, isError = false) {
-    lastMessage.value = msg;
-    if (!isError) setTimeout(() => { if (lastMessage.value === msg) lastMessage.value = ''; }, 4000);
+type SyncNoticeLevel = 'info' | 'success' | 'warn' | 'error';
+
+function flashMessage(msg: string, level: SyncNoticeLevel = 'info') {
+  lastMessage.value = msg;
+  // 状态栏徽章沿用旧行为：提示/成功类 4 秒后自动清除，警告/错误保留待用户处理
+  if (level === 'info' || level === 'success') {
+    setTimeout(() => { if (lastMessage.value === msg) lastMessage.value = ''; }, 4000);
   }
+  // 同步是后台动作，结果只在状态栏徽章上一闪而过等于没有反馈——同时出 toast
+  workbenchBridge?.announce?.(msg, { level });
+}
 
   /**
    * 切换是否同步凭据与托管私钥。
@@ -448,9 +465,9 @@ export const useSyncStore = defineStore('sync', () => {
     try {
       await invokeBackend('sync_set_credentials_enabled', { enabled });
       await refreshStatus();
-      flashMessage(enabled ? '✓ 已开启凭据与私钥同步' : '已关闭凭据与私钥同步（仅同步资产元数据）');
+      flashMessage(enabled ? '✓ 已开启凭据与私钥同步' : '已关闭凭据与私钥同步（仅同步资产元数据）', enabled ? 'success' : 'info');
     } catch (error) {
-      flashMessage(`✗ 操作失败：${errorMessage(error)}`, true);
+      flashMessage(`✗ 操作失败：${errorMessage(error)}`, 'error');
     }
   }
 

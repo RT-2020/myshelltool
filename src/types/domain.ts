@@ -311,6 +311,12 @@ export interface RemoteUpdateStatus {
   remote_rev?: number | null;
 }
 
+/** sync_discover_gists 返回项：按文件名标记识别出的备份 Gist 候选（换机恢复免填 Gist ID）。 */
+export interface SyncGistCandidate {
+  gist_id: string;
+  updated_at?: string | null;
+}
+
 /** sync store 的冲突暂存（pull 返回 Conflict 时存双方 JSON，字段宽松可选：透传给 IPC）。 */
 export interface SyncConflictStash {
   localJson?: string;

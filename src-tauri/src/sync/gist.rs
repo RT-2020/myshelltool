@@ -127,6 +127,70 @@ pub async fn gist_update(pat: &str, gist_id: &str, content: &str) -> Result<Opti
     let gist: GistResponse = resp
         .json()
         .await
-        .map_err(|e| format!("Gist update 响应解析失败 (HTTP {status}): {e}"))?;
+        .map_err(|e| format!("Gist update 响应解析失败: {e}"))?;
     Ok(gist.updated_at)
+}
+
+// ─── 备份发现（换机恢复免填 Gist ID） ───
+
+/// GET /gists 列表项（只声明发现所需字段；files 的 value 在列表响应里是
+/// 文件元数据对象，不含 content，结构无需展开）。
+#[derive(Deserialize, Debug)]
+struct GistListItem {
+    id: String,
+    updated_at: Option<String>,
+    files: Option<std::collections::HashMap<String, serde_json::Value>>,
+}
+
+/// 发现的备份候选（sync_discover_gists 返回项）。
+#[derive(Serialize, Debug, Clone)]
+pub struct DiscoveredGist {
+    pub gist_id: String,
+    pub updated_at: Option<String>,
+}
+
+/// 列出授权用户自己的 Gist，过滤出含本应用同步文件的备份候选。
+///
+/// 判定标记是**文件名**（`GIST_FILENAME`，应用写入的稳定键）而非 description——
+/// description 用户可以在 GitHub 上随手改掉。分页拉满（per_page=100，返回不足一页
+/// 即为末页，硬上限 10 页），只返回元数据不读内容。顺序不做承诺，按时间排序交给
+/// 前端解析 updated_at 后比较。
+pub async fn gist_list(pat: &str) -> Result<Vec<DiscoveredGist>, String> {
+    let client = crate::http::shared_client()?;
+    let mut found = Vec::new();
+    for page in 1..=10u32 {
+        let resp = client
+            .get(format!("{GITHUB_API_BASE}/gists?per_page=100&page={page}"))
+            .header("Authorization", format!("Bearer {pat}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+            .map_err(|e| format!("Gist list 请求失败: {}", crate::http::error_chain(&e)))?;
+
+        let status = resp.status();
+        if status.as_u16() == 401 {
+            // token 被 revoke / 用户改密：明确指向重新登录，而不是笼统的 HTTP 错误
+            return Err("GitHub 授权已失效（401），请在同步面板「账号」中重新登录".to_string());
+        }
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("Gist list 失败 (HTTP {status}): {text}"));
+        }
+        let page_items: Vec<GistListItem> = resp
+            .json()
+            .await
+            .map_err(|e| format!("Gist list 响应解析失败: {e}"))?;
+        let is_last_page = page_items.len() < 100;
+        found.extend(
+            page_items
+                .into_iter()
+                .filter(|g| g.files.as_ref().is_some_and(|f| f.contains_key(GIST_FILENAME)))
+                .map(|g| DiscoveredGist { gist_id: g.id, updated_at: g.updated_at }),
+        );
+        if is_last_page {
+            break;
+        }
+    }
+    Ok(found)
 }

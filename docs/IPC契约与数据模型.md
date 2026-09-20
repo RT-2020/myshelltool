@@ -24,6 +24,7 @@
 **Gist 资产同步**（`sync.rs`，v1.3）
 - `sync_status` → 同步配置状态（是否已配置 / 上次同步时间 / gist_id 掩码 / `auto_sync_enabled`＝本机已记住免密密钥 / **`local_has_changes`【v2.7】＝本机有未推送改动**，面板据此决定「推送到云端 / 从云端拉取」谁是主按钮）
 - `sync_setup({ masterPassword, gistId? })` → 首次设置（主密码派生密钥 + 可选拉取已有 Gist）。**【v2.7】成功后自动调用 `remember_session_key`**：按该载荷的 salt 重建 key、DPAPI 存盘并置 `auto_sync_enabled = true` —— 主密码只输这一次（或换机时），此后 push/pull 与自动同步全免密
+- **`sync_discover_gists()`** → 换机恢复免填 Gist ID：列出当前 GitHub 账号下的备份候选（`GET /gists` 分页拉满，per_page=100 上限 10 页），**按文件名 `myshelltool-sync.json` 过滤**（description 用户可改，不是判定标记），只读元数据不碰加密载荷。返回 `[{ gist_id, updated_at }]`，顺序不做承诺（前端 `Date.parse` 解析后排序，未知/非法时间排尾）。PAT 未配置 → Err 引导先登录；HTTP 401（token 被 revoke）→ Err 指向「账号」区重新登录。选中候选后仍走 `sync_setup` 提交（签名未变）
 - `sync_push({ masterPassword })` / `sync_pull({ masterPassword })` → 加密推送 / 拉取解密（pull 返回 Conflict 时前端弹框）。`masterPassword` **留空 = 走本机会话密钥**（免密路径，需已启用）；**带密码且本机还没有密钥时顺手记住**（`remember_session_key`，按该载荷的 salt）——「输一次密码」就够开启免密
 - `sync_resolve_conflict({ masterPassword, choice })` → 冲突解决（local_overwrite / remote_overwrite）
 - `sync_reset_master_password({ old, new })` / `sync_clear`
