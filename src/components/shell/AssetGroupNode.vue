@@ -220,8 +220,8 @@ function assetIndicatorClasses(asset: NormalizedConnectionAsset) {
   font-size: 12.5px;
   font-weight: 600;
   border-radius: 8px;
-  transition: color var(--motion-fast) var(--ease-standard),
-    background var(--motion-fast) var(--ease-standard);
+  transition: color var(--dur-fast) var(--ease-standard),
+    background var(--dur-fast) var(--ease-standard);
 }
 
 .group-header:hover {
@@ -245,9 +245,9 @@ function assetIndicatorClasses(asset: NormalizedConnectionAsset) {
   cursor: pointer;
   padding: 0;
   opacity: 0;
-  transition: opacity var(--motion-fast) var(--ease-standard),
-    background var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard);
+  transition: opacity var(--dur-fast) var(--ease-standard),
+    background var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
 }
 
 .group-head-row:hover .group-add-btn,
@@ -277,7 +277,7 @@ function assetIndicatorClasses(asset: NormalizedConnectionAsset) {
 .group-chevron {
   flex: 0 0 auto;
   color: var(--app-subtle);
-  transition: transform var(--motion-fast) var(--ease-standard);
+  transition: transform var(--dur-fast) var(--ease-standard);
 }
 
 .group-name {
@@ -327,8 +327,8 @@ function assetIndicatorClasses(asset: NormalizedConnectionAsset) {
   border-radius: var(--radius-sm);
   cursor: pointer;
   position: relative;
-  transition: background var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard);
+  transition: background var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
 
   &::before {
     content: '';
@@ -340,8 +340,8 @@ function assetIndicatorClasses(asset: NormalizedConnectionAsset) {
     height: 16px;
     border-radius: 2px;
     background: var(--accent);
-    transition: transform var(--motion-fast) var(--ease-standard),
-      opacity var(--motion-fast) var(--ease-standard);
+    transition: transform var(--dur-fast) var(--ease-standard),
+      opacity var(--dur-fast) var(--ease-standard);
     opacity: 0;
   }
 }
@@ -418,7 +418,7 @@ function assetIndicatorClasses(asset: NormalizedConnectionAsset) {
   align-items: center;
   gap: 2px;
   opacity: 0;
-  transition: opacity var(--motion-fast) var(--ease-standard);
+  transition: opacity var(--dur-fast) var(--ease-standard);
 }
 
 .asset-node:hover .asset-quick-actions,
@@ -438,9 +438,9 @@ function assetIndicatorClasses(asset: NormalizedConnectionAsset) {
   color: var(--app-muted);
   cursor: pointer;
   padding: 0;
-  transition: background var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard),
-    border-color var(--motion-fast) var(--ease-standard);
+  transition: background var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard);
 }
 
 .quick-btn:hover {

@@ -50,7 +50,8 @@ const groups = [
 
 <template>
   <Teleport to="body">
-    <div v-if="open" class="shortcut-overlay" @click.self="emit('close')" role="dialog" aria-modal="true" aria-label="快捷键速查">
+    <Transition name="shortcut">
+      <div v-if="open" class="shortcut-overlay" @click.self="emit('close')" role="dialog" aria-modal="true" aria-label="快捷键速查">
       <div class="shortcut-modal">
         <header class="shortcut-header">
           <h2>快捷键速查</h2>
@@ -70,7 +71,8 @@ const groups = [
           </section>
         </div>
       </div>
-    </div>
+      </div>
+    </Transition>
   </Teleport>
 </template>
 
@@ -86,6 +88,29 @@ const groups = [
   justify-content: center;
   z-index: var(--z-modal);
   backdrop-filter: blur(4px);
+}
+
+// 面板进出场：居中弹窗的标准缩放淡入，出场快档只淡出
+.shortcut-enter-active {
+  transition: opacity var(--dur-base) var(--ease-standard);
+}
+.shortcut-enter-active .shortcut-modal {
+  transition: transform var(--dur-base) var(--ease-emphasized),
+    opacity var(--dur-base) var(--ease-emphasized);
+}
+.shortcut-enter-from {
+  opacity: 0;
+}
+.shortcut-enter-from .shortcut-modal {
+  transform: scale(0.96) translateY(4px);
+  opacity: 0;
+}
+.shortcut-leave-active {
+  transition: opacity var(--dur-fast) var(--ease-standard);
+  pointer-events: none;
+}
+.shortcut-leave-to {
+  opacity: 0;
 }
 
 .shortcut-modal {

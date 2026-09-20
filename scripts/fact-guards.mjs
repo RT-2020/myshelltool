@@ -32,6 +32,9 @@ const TARGETS = {
     exts: new Set(['.rs'])
   },
   tests: { roots: ['tests'], exts: new Set(['.mjs', '.js', '.ts']) },
+  // 样式文件单独一个 target：现有规则多为代码形态，不想因扩展名扩容让旧规则意外
+  // 扫到样式文本；样式专属规则（no-double-easing-animation-shorthand）按需挂 styles。
+  styles: { roots: ['src'], exts: new Set(['.css', '.scss']) },
   // 门禁自身也守规矩。唯一例外是本文件：正反样例字符串本身就是「故意违规」的
   // 代码文本，扫自己必然自伤；样例的正确性由 --self-test 保障，故排除自身。
   scripts: {
@@ -298,6 +301,28 @@ const RULES = [
         'log::info!("ssh_exec: command={:?}", myshelltool_core::redact_command(command));',
         'log::info!("MCP call_tool: {} args={}", name, redacted_args_summary(&arguments));',
         'log::info!("approval: command allowed under minimal level: {:?}", myshelltool_core::redact_command(command));'
+      ]
+    }
+  },
+  {
+    id: 'no-double-easing-animation-shorthand',
+    title: 'animation/transition 简写禁止 var(--motion-*) 再叠 var(--ease-*)（--motion-* 是「时长+缓动」合体 token，再叠一个缓动 = 出现两个缓动函数，违反语法、整条声明解析期被静默丢弃——动画/过渡不跑且零报错）',
+    fix: '需要自定义缓动用纯时长 token：`animation: <name> var(--dur-base) var(--ease-emphasized);` / `transition: opacity var(--dur-base) var(--ease-standard);`；只用合体 token 自带缓动则写 `animation: <name> var(--motion-base);` / `transition: opacity var(--motion-base);`。事故：① animation——GlobalModals 打开动画、设置面板 pane-in、连接点 dot-pulse 三处同一坏模式从未运行（靠运行时探针定位）；② transition——全仓 58 处 `transition: X var(--motion-*) var(--ease-*)`（含 .workbench-shell 网格列宽、AppButton/AppInput hover 等），computed transition-duration=0s 全被丢弃，用户感知所有交互硬切。',
+    targets: ['styles', 'app'],
+    pattern: /(?:animation|transition)(?:-[a-z]+)?\s*:[^;{}]*var\(--motion-[^;{}]*var\(--ease-/,
+    samples: {
+      bad: [
+        'animation: modal-pop var(--motion-base) var(--ease-emphasized);',
+        'animation: settings-pane-in var(--motion-base) var(--ease-standard);',
+        'transition: grid-template-columns var(--motion-base) var(--ease-emphasized);',
+        'transition: opacity var(--motion-fast) var(--ease-standard);'
+      ],
+      good: [
+        'animation: modal-pop var(--dur-base) var(--ease-emphasized);',
+        'animation: modal-layer-fade var(--motion-fast);',
+        'transition: grid-template-columns var(--dur-base) var(--ease-emphasized);',
+        'transition: opacity var(--motion-fast);',
+        'transition: opacity var(--dur-base) var(--ease-standard);'
       ]
     }
   }

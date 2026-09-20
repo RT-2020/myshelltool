@@ -52,8 +52,8 @@ function onClick() {
   font-family: var(--font-body);
   cursor: pointer;
   position: relative;
-  transition: color var(--motion-fast) var(--ease-standard),
-    background-color var(--motion-fast) var(--ease-standard);
+  transition: color var(--dur-fast) var(--ease-standard),
+    background-color var(--dur-fast) var(--ease-standard);
 }
 .app-tab:hover {
   color: var(--app-strong);

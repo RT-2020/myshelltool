@@ -16,7 +16,15 @@
   background: var(--app-bg);
   color: var(--app-text);
   font-family: var(--font-body);
+  // 侧栏/右栏折叠（或重置布局）时列宽平滑过渡；拖拽中必须关闭（.is-resizing），
+  // 否则列宽跟不上指针。两端必须都是可插值的长度——行高（--terminal-h）经
+  // usePanelResize 初始化后恒为 px（含无持久化时按视口重算写入，见该文件），
+  // 故不 transition rows；若哪天把它改回 1fr，过渡会整段失效（transform 同理）。
+  transition: grid-template-columns var(--dur-base) var(--ease-emphasized);
 }
+
+// 拖拽 divider 期间逐帧写 CSS 变量，过渡会拖慢跟随感，必须禁掉
+.workbench-shell.is-resizing { transition: none; }
 
 .workbench-shell.sidebar-collapsed { --sidebar-w: var(--sidebar-w-collapsed); }
 .workbench-shell.right-collapsed { --right-w: var(--right-w-collapsed); }
@@ -208,6 +216,23 @@
   font: 11px var(--font-mono);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+// 搜索建议浮层进出场：自输入框下方轻轻下探淡入，出场快档淡出
+.tb-suggest-enter-active {
+  transition: opacity var(--dur-base) var(--ease-standard),
+    transform var(--dur-base) var(--ease-standard);
+}
+.tb-suggest-leave-active {
+  transition: opacity var(--dur-fast) var(--ease-standard);
+  pointer-events: none;
+}
+.tb-suggest-enter-from {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+.tb-suggest-leave-to {
+  opacity: 0;
 }
 
 // 通用 icon-btn（含 .primary/:disabled）已收敛为全局类（_utilities.scss）

@@ -107,7 +107,7 @@ onBeforeUnmount(() => {
 
 .app-tooltip-enter-active,
 .app-tooltip-leave-active {
-  transition: opacity var(--motion-fast) var(--ease-standard);
+  transition: opacity var(--dur-fast) var(--ease-standard);
 }
 .app-tooltip-enter-from,
 .app-tooltip-leave-to {

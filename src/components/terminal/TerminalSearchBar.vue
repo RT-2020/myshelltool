@@ -105,8 +105,8 @@ const matchText = computed(() => {
   font-size: var(--text-sm);
   color: var(--app-strong);
   outline: none;
-  transition: border-color var(--motion-fast) var(--ease-standard),
-    box-shadow var(--motion-fast) var(--ease-standard);
+  transition: border-color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
 }
 
 .terminal-searchbar input:focus {
@@ -125,9 +125,9 @@ const matchText = computed(() => {
   background: var(--app-panel);
   color: var(--app-muted);
   cursor: pointer;
-  transition: background var(--motion-fast) var(--ease-standard),
-    border-color var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard);
+  transition: background var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
 }
 
 .search-toggle:hover {

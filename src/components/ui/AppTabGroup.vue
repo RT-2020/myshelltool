@@ -117,7 +117,7 @@ onBeforeUnmount(() => {
   background: var(--accent);
   border-radius: 2px 2px 0 0;
   pointer-events: none;
-  transition: transform var(--motion-base) var(--ease-standard),
-    width var(--motion-base) var(--ease-standard);
+  transition: transform var(--dur-base) var(--ease-standard),
+    width var(--dur-base) var(--ease-standard);
 }
 </style>

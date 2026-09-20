@@ -13,8 +13,10 @@
 }
 .modal-layer.open {
   display: flex;
-  /* 开合动效：display 切换时触发（勿改 v-if 结构，保持 legacy 选择器） */
-  animation: modal-layer-fade var(--motion-fast) var(--ease-standard);
+  /* 开合动效：display 切换时触发（勿改 v-if 结构，保持 legacy 选择器）。
+     animation 简写只能带一个缓动：时长用纯时长 token --dur-*（--motion-* 合体
+     token 再叠 var(--ease-*) 会因双缓动整条声明被静默丢弃，见 _tokens.scss）。 */
+  animation: modal-layer-fade var(--dur-base) var(--ease-standard);
 }
 @keyframes modal-layer-fade {
   from { opacity: 0; }
@@ -30,16 +32,40 @@
   max-height: calc(100vh - 80px);
   display: flex;
   flex-direction: column;
-  animation: modal-pop var(--motion-base) var(--ease-emphasized);
+  animation: modal-pop var(--dur-slow) var(--ease-emphasized);
 }
 @keyframes modal-pop {
   from {
     opacity: 0;
-    transform: scale(0.96) translateY(4px);
+    transform: scale(0.96) translateY(10px);
   }
   to {
     opacity: 1;
     transform: scale(1) translateY(0);
+  }
+}
+/* 退场：.closing 期间维持 flex（.open 仍在），播放进场动画的逆过程后由
+   useModalView 摘掉 .open 撤层。出场 200ms 比进场收得快、但肉眼可辨；
+   pointer-events:none 挡住退场窗口期的误点。 */
+.modal-layer.open.closing {
+  pointer-events: none;
+  animation: modal-layer-fade-out var(--dur-base) var(--ease-standard);
+}
+.modal-layer.open.closing .modal {
+  animation: modal-pop-out var(--dur-base) var(--ease-standard);
+}
+@keyframes modal-layer-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes modal-pop-out {
+  from {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.97) translateY(6px);
   }
 }
 .modal-head {
@@ -202,8 +228,8 @@
   font-size: var(--text-sm);
   font-family: var(--font-body);
   outline: none;
-  transition: border-color var(--motion-fast) var(--ease-standard),
-    box-shadow var(--motion-fast) var(--ease-standard);
+  transition: border-color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
 }
 .native-input:focus {
   border-color: var(--accent);

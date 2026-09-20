@@ -148,7 +148,7 @@ const detailed = computed(() => {
   display: inline-block;
   vertical-align: middle;
   flex-shrink: 0;
-  transition: transform var(--motion-fast, 120ms) var(--ease-standard, ease);
+  transition: transform var(--dur-fast, 120ms) var(--ease-standard, ease);
 
   &.has-glow:hover {
     transform: scale(1.05);

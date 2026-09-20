@@ -233,8 +233,8 @@ onBeforeUnmount(() => {
   font-family: var(--font-body);
   cursor: pointer;
   text-align: left;
-  transition: border-color var(--motion-fast) var(--ease-standard),
-    box-shadow var(--motion-fast) var(--ease-standard);
+  transition: border-color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
 }
 .app-select-trigger.is-open {
   border-color: var(--accent);
@@ -259,7 +259,7 @@ onBeforeUnmount(() => {
 .app-select-caret {
   color: var(--app-muted);
   flex: 0 0 auto;
-  transition: transform var(--motion-fast) var(--ease-standard);
+  transition: transform var(--dur-fast) var(--ease-standard);
 }
 .app-select-trigger.is-open .app-select-caret {
   transform: rotate(180deg);
@@ -313,8 +313,8 @@ onBeforeUnmount(() => {
 
 .app-select-menu-enter-active,
 .app-select-menu-leave-active {
-  transition: opacity var(--motion-fast) var(--ease-standard),
-    transform var(--motion-fast) var(--ease-standard);
+  transition: opacity var(--dur-fast) var(--ease-standard),
+    transform var(--dur-fast) var(--ease-standard);
 }
 .app-select-menu-enter-from,
 .app-select-menu-leave-to {

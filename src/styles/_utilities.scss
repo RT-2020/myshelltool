@@ -100,7 +100,7 @@
   &.connecting,
   &.reconnecting {
     background: var(--warn);
-    animation: dot-pulse var(--motion-base) infinite alternate var(--ease-standard);
+    animation: dot-pulse var(--dur-base) var(--ease-standard) infinite alternate;
   }
 
   // 断开 / 错误

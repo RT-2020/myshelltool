@@ -319,8 +319,8 @@ function selectTheme(value: string) {
   cursor: pointer;
   text-align: left;
   position: relative;
-  transition: background var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard);
+  transition: background var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
 }
 .nav-item :deep(svg) { flex-shrink: 0; opacity: 0.8; }
 .nav-item:hover { background: var(--app-hover); color: var(--app-strong); }
@@ -488,10 +488,10 @@ function selectTheme(value: string) {
   cursor: pointer;
   font: inherit;
   font-size: 13px;
-  transition: border-color var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard),
-    background var(--motion-fast) var(--ease-standard),
-    box-shadow var(--motion-fast) var(--ease-standard);
+  transition: border-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    background var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
 
   &:hover {
     border-color: var(--accent);
@@ -529,7 +529,7 @@ function selectTheme(value: string) {
 
 // pane 进入动画：v-show 从 display:none 翻回可见时 animation 自动重播，无需 Vue Transition
 .tab-pane {
-  animation: settings-pane-in var(--motion-base) var(--ease-standard);
+  animation: settings-pane-in var(--dur-base) var(--ease-standard);
 }
 @keyframes settings-pane-in {
   from { opacity: 0; transform: translateY(4px); }

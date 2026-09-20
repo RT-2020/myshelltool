@@ -309,7 +309,7 @@ async function onClearSync() {
   text-align: left;
   color: var(--app-text);
   cursor: pointer;
-  transition: background var(--motion-fast) var(--ease-standard);
+  transition: background var(--dur-fast) var(--ease-standard);
 }
 .expand-row:hover { background: var(--app-hover); }
 .expand-row:focus-visible { outline: none; box-shadow: var(--focus-ring); }
@@ -319,7 +319,7 @@ async function onClearSync() {
   margin-left: auto;
   color: var(--app-subtle);
   flex-shrink: 0;
-  transition: transform var(--motion-fast) var(--ease-standard);
+  transition: transform var(--dur-fast) var(--ease-standard);
 }
 .expand-row[aria-expanded='true'] .chev { transform: rotate(90deg); }
 

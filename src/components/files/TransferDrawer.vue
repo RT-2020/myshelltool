@@ -215,7 +215,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
 }
 .transfer-backdrop-enter-active,
 .transfer-backdrop-leave-active {
-  transition: opacity var(--motion-base) var(--ease-standard);
+  transition: opacity var(--dur-base) var(--ease-standard);
 }
 .transfer-backdrop-enter-from,
 .transfer-backdrop-leave-to {
@@ -270,7 +270,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
   color: var(--app-muted);
   cursor: pointer;
   border-radius: var(--radius-sm);
-  transition: background var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
+  transition: background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
 }
 .transfer-sheet-close:hover {
   background: var(--app-hover);
@@ -316,7 +316,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
   padding: var(--space-2);
   background: transparent;
   border-radius: var(--radius-sm);
-  transition: background var(--motion-fast) var(--ease-standard);
+  transition: background var(--dur-fast) var(--ease-standard);
 }
 .transfer-row:hover {
   background: var(--app-hover);
@@ -373,7 +373,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
   height: 100%;
   border-radius: var(--radius-pill);
   background: var(--accent);
-  transition: width 0.2s ease, background var(--motion-fast) var(--ease-standard);
+  transition: width 0.2s ease, background var(--dur-fast) var(--ease-standard);
 }
 .transfer-row-bar-fill.is-done { background: var(--success); }
 .transfer-row-bar-fill.is-error { background: var(--danger); }
@@ -411,7 +411,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
   border-radius: var(--radius-sm);
   color: var(--app-muted);
   cursor: pointer;
-  transition: background var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
+  transition: background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
 }
 .transfer-row-action:hover {
   background: var(--app-hover);
@@ -449,8 +449,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
 // Sheet slide-up transition.
 .transfer-sheet-enter-active,
 .transfer-sheet-leave-active {
-  transition: transform var(--motion-base) var(--ease-standard),
-    opacity var(--motion-base) var(--ease-standard);
+  transition: transform var(--dur-base) var(--ease-standard),
+    opacity var(--dur-base) var(--ease-standard);
 }
 .transfer-sheet-enter-from,
 .transfer-sheet-leave-to {

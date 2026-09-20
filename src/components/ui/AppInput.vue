@@ -124,8 +124,8 @@ function togglePassword() {
   font-size: var(--text-sm);
   font-family: var(--font-body);
   outline: none;
-  transition: border-color var(--motion-fast) var(--ease-standard),
-    box-shadow var(--motion-fast) var(--ease-standard);
+  transition: border-color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
 }
 
 .app-input.is-mono .app-input-field {

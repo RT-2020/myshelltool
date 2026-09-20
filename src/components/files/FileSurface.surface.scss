@@ -57,9 +57,9 @@
   border-radius: 6px;
   cursor: pointer;
   font-family: var(--font-body);
-  transition: background var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard),
-    box-shadow var(--motion-fast) var(--ease-standard);
+  transition: background var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
 }
 .view-pill:hover {
   color: var(--app-text);

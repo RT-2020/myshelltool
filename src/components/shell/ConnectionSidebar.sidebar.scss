@@ -13,6 +13,14 @@
   color: var(--app-text);
   font-family: var(--font-body);
   overflow: hidden;
+  // 折叠/展开时 rail ↔ 内容互斥：display 不可过渡，用 animation 兜底回放
+  // （display 翻转瞬间触发 animation；时长只走纯时长 token，防 animation 简写
+  // 双缓动被整行丢弃——fact-guards no-double-easing-animation-shorthand）
+  animation: sb-view-in var(--dur-base) var(--ease-standard);
+}
+@keyframes sb-view-in {
+  from { opacity: 0; transform: translateX(-6px); }
+  to { opacity: 1; transform: translateX(0); }
 }
 
 // ============================================================
@@ -235,6 +243,9 @@
 // Collapsed rail（实用优先偏离点：保留竖排图标列）
 // app.html 设计稿折叠态几乎空白，但保留竖排图标列保证折叠后仍可操作（展开/新建分组/新增）
 // ============================================================
+// 折叠/展开动效：rail ↔ 内容区块互斥，display 不可过渡，只能交叉淡入——
+// 显现侧用 sb-view-in 淡入 + 横移（网格列宽全程平滑下消 snap）；消失侧直接切换（
+// 不可过渡）。animation 时长只走纯时长 token，防双缓动被整行丢弃（_tokens.scss）。
 .sidebar.is-collapsed {
   grid-template-rows: 1fr;
   padding: 8px 0;
@@ -243,9 +254,7 @@
 .sidebar.is-collapsed .sb-header,
 .sidebar.is-collapsed .sb-search-wrap,
 .sidebar.is-collapsed .sb-tree,
-.sidebar.is-collapsed .sb-footer {
-  display: none;
-}
+.sidebar.is-collapsed .sb-footer { display: none; }
 .sidebar.is-collapsed .sb-rail {
   display: flex;
   flex-direction: column;
@@ -253,6 +262,14 @@
   gap: 8px;
   width: 100%;
   padding-top: 4px;
+  animation: sb-view-in var(--dur-base) var(--ease-standard);
+}
+.sidebar:not(.is-collapsed) .sb-rail { display: none; }
+.sidebar:not(.is-collapsed) .sb-header,
+.sidebar:not(.is-collapsed) .sb-search-wrap,
+.sidebar:not(.is-collapsed) .sb-tree,
+.sidebar:not(.is-collapsed) .sb-footer {
+  animation: sb-view-in var(--dur-base) var(--ease-standard);
 }
 .sb-rail-divider {
   width: 18px;

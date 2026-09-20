@@ -91,7 +91,7 @@ const columns = [
   font-size: var(--text-xs);
   text-align: start;
   user-select: none;
-  transition: color var(--motion-fast) var(--ease-standard);
+  transition: color var(--dur-fast) var(--ease-standard);
   min-width: 0;
 }
 

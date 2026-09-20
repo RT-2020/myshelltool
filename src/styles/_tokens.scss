@@ -149,14 +149,22 @@ $z-indexes: (base: 1, dropdown: 100, sticky: 200, popover: 250, drawer: 300, mod
   --sidebar-w-collapsed: 44px;
   --right-w:            280px;
   --right-w-collapsed:  0px;
-  --terminal-h:         1fr;   // 中上下分栏，默认上下各占一半
+  --terminal-h:         540px; // 中上下分栏默认高度；usePanelResize 初始化按视口重算写入。
 
   // 动效（带缓动，app.css L72-74）
+  //   ⚠ --motion-* 是「时长+缓动」合体值：只能整串占位**一个**时间位（transition 项或
+  //   animation 的单个时长位）。animation 简写若写成 `name var(--motion-x) var(--ease-y)`
+  //   会展开成「两个缓动函数」→ 违反语法、**整条声明解析期被静默丢弃**（动画不跑且无
+  //   报错，fact-guards 规则 no-double-easing-animation-shorthand 拦截）。需要自定义
+  //   缓动的 animation 用下面的纯时长 token --dur-*。
   --motion-fast: 120ms cubic-bezier(.4, 0, .2, 1);
   --motion-base: 200ms cubic-bezier(.4, 0, .2, 1);
   --motion-slow: 320ms cubic-bezier(.4, 0, .2, 1);
   --ease-standard:   cubic-bezier(.4, 0, .2, 1);
   --ease-emphasized: cubic-bezier(0.05, 0, 0.2, 1);
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 320ms;
 
   // z-index
   //   popover 专给「teleport 到 body 的瞬态浮层」（右键菜单等）：它必须压住 app 内

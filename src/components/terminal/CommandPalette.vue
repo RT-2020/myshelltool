@@ -128,7 +128,8 @@ function pick(item?: PaletteItem) {
 
 <template>
   <Teleport to="body">
-    <div v-if="open" class="palette-overlay" @click.self="emit('close')">
+    <Transition name="palette">
+      <div v-if="open" class="palette-overlay" @click.self="emit('close')">
       <div class="palette-modal" role="dialog" aria-modal="true" aria-label="命令面板">
         <div class="palette-input-wrap">
           <Search :size="18" class="palette-search-icon" />
@@ -163,7 +164,8 @@ function pick(item?: PaletteItem) {
           <span class="palette-hint">Esc 关闭</span>
         </footer>
       </div>
-    </div>
+      </div>
+    </Transition>
   </Teleport>
 </template>
 
@@ -180,6 +182,30 @@ function pick(item?: PaletteItem) {
   padding-block-start: 12vh;
   z-index: var(--z-modal);
   backdrop-filter: blur(2px);
+}
+
+// 面板进出场：遮罩淡入 + 面板自上滑落定位（起点对应 12vh 顶部锚定的悬浮感），
+// 出场快档只淡出
+.palette-enter-active {
+  transition: opacity var(--dur-base) var(--ease-standard);
+}
+.palette-enter-active .palette-modal {
+  transition: transform var(--dur-base) var(--ease-emphasized),
+    opacity var(--dur-base) var(--ease-emphasized);
+}
+.palette-enter-from {
+  opacity: 0;
+}
+.palette-enter-from .palette-modal {
+  transform: translateY(-10px) scale(0.98);
+  opacity: 0;
+}
+.palette-leave-active {
+  transition: opacity var(--dur-fast) var(--ease-standard);
+  pointer-events: none;
+}
+.palette-leave-to {
+  opacity: 0;
 }
 
 .palette-modal {
