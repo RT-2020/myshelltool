@@ -617,6 +617,8 @@ pub fn run() {
             sync::sync_disable_auto_sync,
             sync::sync_check_remote_updates,
             sync::sync_set_credentials_enabled,
+            // 备份发现（换机恢复免填 Gist ID：按文件名标记列出账号下的备份候选）
+            sync::sync_discover_gists,
             // v2.7：恢复密码（应用生成高熵密码 → DPAPI 保存 → 换机时可查看/复制带走）
             sync::sync_generate_recovery_password,
             sync::sync_reveal_recovery_password,

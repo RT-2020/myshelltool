@@ -5,13 +5,14 @@
  * 关键改动：**一次只问一件事**。
  *   - 默认（新建）：设一个主密码 → [创建备份]。主密码是你给这份备份定的钥匙，
  *     系统无法替你生成（它同时也是换机恢复的唯一凭据）。
- *   - 点「从已有备份恢复」才出现 Gist ID，并要求填**原来那台电脑上的**主密码；
+ *   - 点「从已有备份恢复」进入恢复流程：登录 GitHub 后自动发现备份候选
+ *     （SyncBackupFinder，免填 Gist ID），选一份 + 填**原来那台电脑上的**主密码；
  *     恢复模式不要"确认密码"——解密成功本身就是校验，多一个字段只是多一次误判机会。
  *
  * 术语纪律：界面上只出现「主密码」「Gist ID」两个专有名词，不再出现
  * 会话密钥/DPAPI/载荷 这类实现词（那些属于高级设置与文档）。
  */
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { ArrowLeft, CloudDownload, CloudUpload, WandSparkles } from 'lucide-vue-next';
 import { useWorkbenchStore } from '@/stores/workbench';
@@ -20,6 +21,7 @@ import { useClipboard } from '@/composables/useClipboard';
 import AppButton from '@/components/ui/AppButton.vue';
 import AppInput from '@/components/ui/AppInput.vue';
 import PatConfigCard from '@/components/shell/PatConfigCard.vue';
+import SyncBackupFinder from '@/components/shell/SyncBackupFinder.vue';
 
 const store = useWorkbenchStore();
 const { syncLoading, githubPatConfigured } = storeToRefs(store);
@@ -48,6 +50,16 @@ function toggleRestoring() {
   gistId.value = '';
   passwordConfirm.value = '';
   generated.value = '';
+}
+
+// 恢复模式 + 未登录：自动展开账号区引导先登录（已登录时不打扰，finder 会自动查找）
+watch(restoring, r => {
+  if (r && !githubPatConfigured.value) showAccount.value = true;
+});
+
+/** finder 里选中/手填了备份——gistId 由 finder 上抛，本表单只负责收集后随 setup 提交。 */
+function onBackupSelect(id: string) {
+  gistId.value = id;
 }
 
 /** 生成高熵密码：后端生成 + 存本机 DPAPI（换机时可查看/复制），同时填入两个字段。 */
@@ -98,10 +110,7 @@ async function onSubmit() {
       </template>
     </p>
 
-    <label v-if="restoring" class="field">
-      <span class="field-label">Gist ID</span>
-      <AppInput v-model="gistId" placeholder="在 GitHub 上那份 Gist 的 ID" />
-    </label>
+    <SyncBackupFinder v-if="restoring" @select="onBackupSelect" />
 
     <label class="field">
       <span class="field-label">

@@ -3,11 +3,12 @@
 //! 粘合 core 层（crypto + sync 纯逻辑）与 HTTP（reqwest 调 Gist API）+ 本地文件
 //! （connection-assets.json + sync-state.json）+ 凭据（SecretStore 读 github-pat）。
 //!
-//! 7 个命令（前端经 invokeBackend 调用）：
+//! 命令（前端经 invokeBackend 调用；v1.3 起随版本逐步扩充）：
 //! - sync_setup：首次设置（主密码 + 可选 gist_id 拉取已有）
 //! - sync_push：加密本地资产 → 上传 Gist
 //! - sync_pull：拉 Gist → 解密 → 冲突检测 → 返回决策（前端据此弹窗或直接覆盖）
 //! - sync_status：返回同步配置状态（是否已配置/上次同步时间/gist_id）
+//! - sync_discover_gists：列出当前 GitHub 账号下的备份候选（换机恢复免填 Gist ID）
 //! - sync_reset_master_password：重置主密码（需旧密码验证）
 //! - sync_clear：清空同步配置（忘了主密码的逃生口）
 
@@ -211,6 +212,16 @@ pub async fn sync_check_remote_updates(state: State<'_, AppState>) -> Result<Rem
         local_rev: sync_state.local_rev,
         remote_rev,
     })
+}
+
+/// 列出当前 GitHub 账号下的备份候选（换机恢复免填 Gist ID）。
+///
+/// 纯元数据发现：按文件名标记过滤（见 gist_list），不读 Gist 内容、不触碰加密
+/// 载荷。PAT 未配置 → Err 引导先登录；401（token 失效）由 gist_list 给出重登指引。
+#[tauri::command]
+pub async fn sync_discover_gists(state: State<'_, AppState>) -> Result<Vec<DiscoveredGist>, String> {
+    let pat = read_github_pat(&state)?;
+    gist_list(&pat).await
 }
 
 // ─── 辅助 ───
