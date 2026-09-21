@@ -131,9 +131,10 @@ curl -s "https://api.github.com/repos/RT-2020/myshelltool/releases/tags/vX.Y.Z" 
 1. Release 页面 body 非空（应为中文分组格式，不是 GitHub 默认英文 PR 平铺）；
 2. latest.json 的 `notes` 字段与 body 内容一致且非空：
 ```bash
-curl -s "https://github.com/RT-2020/myshelltool/releases/latest/download/latest.json" \
+curl -sL "https://github.com/RT-2020/myshelltool/releases/latest/download/latest.json" \
   | node -e "const j=JSON.parse(require('fs').readFileSync(0,'utf8'));console.log('version:',j.version,'notes 长度:',(j.notes||'').length);console.log((j.notes||'').split('\n').slice(0,3).join('\n'))"
 ```
+（`-L` 必须带：该 URL 是 302 重定向到 objects.githubusercontent.com，不带 `-L` 拿到空响应，JSON 解析报 "Unexpected end of input"，别误判成 notes 未注入。）
 任一为空/是 `myshelltool X.Y.Z` 占位串，回 run 日志查 `Generate release notes` / `Inject notes into latest.json` 两步。
 
 ---
