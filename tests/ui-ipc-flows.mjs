@@ -11,6 +11,8 @@
 //   1. 连接成功 + ssh-output 流写入终端 + 状态事件断开 → 自动重连再次 connect
 //   2. 流式上传全链路（fs_local_stat → 单条 sftp_upload_from_file → 队列收敛 done）
 //   2b. 上传取消链（cancelTransfer → sftp_upload_cancel → 后端中止 reject → 队列 cancelled）
+//   2c. 上传收尾刷新当前面板目录（深层目录上传后面板不跳回服务器默认目录/家目录）
+//   2d. UploadProgressStrip：自动出现/展开详情/关闭不取消/新批次重现/独立取消+重试入口
 //   3. 覆盖确认链（probe 命中存在 → 弹窗确认 → 覆盖上传）
 //   4. host key 事件 → 弹窗 → resolve 回传
 
@@ -61,6 +63,11 @@ window.__TAURI__ = {
           gate.reject(new Error('upload cancelled by user'));
         }
         return null;
+      }
+      // 目录列表回显：请求哪个目录就返回哪个目录（模拟后端真实语义——
+      // sftp_list_dir 的 result.path 是服务器解析后的绝对路径）。
+      if (spec.dynamic === 'list-echo') {
+        return { path: args.path || '/root', entries: [] };
       }
       return spec.value;
     },
@@ -221,6 +228,110 @@ console.error('[step] scenario-2b');
   const cancelCallCount = await page.evaluate(() => window.__tauriMock.calls.filter(c => c.command === 'sftp_upload_cancel').length);
   if (cancelCallCount !== 1) throw new Error('sftp_upload_cancel not called exactly once: ' + cancelCallCount);
 
+console.error('[step] scenario-2c');
+  // ════ 场景 2c：上传批次收尾刷新「当前面板目录」，绝不跳回服务器默认目录 ════
+  // 回归（2026-09-21 用户视频实测）：修复前批次收尾 refreshRemoteFiles(null) 直通
+  // 空 path，后端 canonicalize(".") 解析出登录家目录——用户在深层目录上传成功/
+  // 失败后，面板都被拽回「第一次进服务器的路径」。同理波及刷新按钮/「刷新当前目录」
+  // 右键/编辑器保存后刷新。断言三层：上传目标 = 深层目录；收尾刷新请求的 path =
+  // 当前目录（非空串）；面板最终仍停在当前目录。
+  await fixtureBackend(page, {
+    'fs_local_stat': spec({ name: 'deep-upload.bin', path: 'C:\\fake\\deep-upload.bin', kind: 'file', size: 1024, modified: '', permissions: null, user: null, group: null }),
+    'sftp_upload_from_file': spec(null),
+    'sftp_stat': spec(null),
+    'sftp_list_dir': { dynamic: 'list-echo' },
+  });
+  await page.evaluate(() => window.__myshelltool.files.navigateRemotePath('/var/log'));
+  await page.waitForFunction(() => window.__myshelltool.files.remotePath === '/var/log', null, { timeout: 5000 });
+  const listCountBeforeDeep = await page.evaluate(() => window.__tauriMock.calls.filter(c => c.command === 'sftp_list_dir').length);
+  await page.evaluate(() => window.__myshelltool.files.uploadLocalPaths(['C:\\fake\\deep-upload.bin']));
+  await page.waitForFunction(
+    () => window.__tauriMock.calls.some(c => c.command === 'sftp_upload_from_file' && c.args.remotePath === '/var/log/deep-upload.bin'),
+    null,
+    { timeout: 10000 }
+  );
+  await page.waitForFunction(count => window.__tauriMock.calls.filter(c => c.command === 'sftp_list_dir').length > count, listCountBeforeDeep, { timeout: 10000 });
+  const deepUpload = await page.evaluate(() => window.__tauriMock.calls.find(c => c.command === 'sftp_upload_from_file' && String(c.args.remotePath).endsWith('deep-upload.bin'))?.args?.remotePath);
+  if (deepUpload !== '/var/log/deep-upload.bin') throw new Error('deep upload target wrong: ' + deepUpload);
+  const deepRefreshPaths = await page.evaluate(count => window.__tauriMock.calls.filter(c => c.command === 'sftp_list_dir').slice(count).map(c => c.args.path), listCountBeforeDeep);
+  if (!deepRefreshPaths.length || !deepRefreshPaths.every(p => p === '/var/log')) {
+    throw new Error('batch-end refresh left current dir (home-jump regression): ' + JSON.stringify(deepRefreshPaths));
+  }
+  const deepFinalPath = await page.evaluate(() => window.__myshelltool.files.remotePath);
+  if (deepFinalPath !== '/var/log') throw new Error('panel jumped after upload: ' + deepFinalPath);
+
+console.error('[step] scenario-2d');
+  // ════ 场景 2d：UploadProgressStrip（上传区下方进度提示条）════
+  // 验收链路：开始上传自动出现（收起态=状态+百分比+概要）→ 点主体展开详情
+  // （文件名/大小/独立「取消上传」按钮）→ 点 ✕ 只关提示**不取消**（后台闸门
+  // 仍挂起、无 sftp_upload_cancel 调用）→ 放行后队列在后台收敛 done → 新批次
+  // 自动重现 → 行内取消按钮走 sftp_upload_cancel 且状态收敛 cancelled + 重试入口。
+  await fixtureBackend(page, {
+    'fs_local_stat': spec({ name: 'strip.bin', path: 'C:\\fake\\strip.bin', kind: 'file', size: 4096, modified: '', permissions: null, user: null, group: null }),
+    'sftp_upload_from_file': { dynamic: 'upload-gate' },
+    'sftp_upload_cancel': { dynamic: 'cancel-upload' },
+    'sftp_stat': spec(null),
+    'sftp_list_dir': { dynamic: 'list-echo' },
+  });
+  await page.evaluate(() => {
+    window.__myshelltool.files.uploadLocalPaths(['C:\\fake\\strip.bin']).catch(e => console.error('[test] strip upload rejected: ' + e.message));
+  });
+  await page.waitForFunction(() => document.querySelector('[data-up-progress]'), null, { timeout: 5000 });
+  const stripCollapsed = await page.evaluate(() => ({
+    toggle: !!document.querySelector('[data-up-progress-toggle]'),
+    close: !!document.querySelector('[data-up-progress-close]'),
+    text: document.querySelector('[data-up-progress]')?.textContent || ''
+  }));
+  if (!stripCollapsed.toggle || !stripCollapsed.close) throw new Error('strip collapsed controls missing: ' + JSON.stringify(stripCollapsed));
+  if (!stripCollapsed.text.includes('上传中') || !stripCollapsed.text.includes('strip.bin')) {
+    throw new Error('strip collapsed state wrong: ' + stripCollapsed.text);
+  }
+  // 展开详情：aria-expanded 翻转 + 行内容（文件名/大小/取消按钮）
+  await page.evaluate(() => document.querySelector('[data-up-progress-toggle]').click());
+  await page.waitForFunction(() => document.querySelector('[data-up-progress-toggle]')?.getAttribute('aria-expanded') === 'true', null, { timeout: 3000 });
+  const stripDetail = await page.evaluate(() => ({
+    rows: document.querySelectorAll('#ups-detail .ups-row').length,
+    text: document.getElementById('ups-detail')?.textContent || '',
+    cancelBtn: !!document.querySelector('#ups-detail [aria-label^="取消上传"]')
+  }));
+  if (stripDetail.rows !== 1) throw new Error('strip detail rows wrong: ' + stripDetail.rows);
+  if (!stripDetail.text.includes('4 KB') || !stripDetail.text.includes('strip.bin')) {
+    throw new Error('strip detail content wrong: ' + stripDetail.text);
+  }
+  if (!stripDetail.cancelBtn) throw new Error('strip detail cancel button missing');
+  // 关闭提示 ≠ 取消：闸门仍挂起、无新增 cancel 调用（calls 表跨场景累计，取差值）
+  const cancelCallsBeforeClose = await page.evaluate(() => window.__tauriMock.calls.filter(c => c.command === 'sftp_upload_cancel').length);
+  await page.evaluate(() => document.querySelector('[data-up-progress-close]').click());
+  await page.waitForFunction(() => !document.querySelector('[data-up-progress]'), null, { timeout: 3000 });
+  const cancelCallsAfterClose = await page.evaluate(() => window.__tauriMock.calls.filter(c => c.command === 'sftp_upload_cancel').length);
+  if (cancelCallsAfterClose !== cancelCallsBeforeClose) throw new Error('closing hint triggered upload cancel: ' + (cancelCallsAfterClose - cancelCallsBeforeClose));
+  await page.evaluate(() => {
+    const gates = window.__tauriMock.uploadGates;
+    const id = Object.keys(gates)[0];
+    gates[id]?.resolve(null);
+  });
+  await page.waitForFunction(() => window.__myshelltool.files.transferQueue.some(i => i.name === 'strip.bin' && i.status === 'done'), null, { timeout: 5000 });
+  const stillClosed = await page.evaluate(() => !document.querySelector('[data-up-progress]'));
+  if (!stillClosed) throw new Error('strip reappeared after dismiss without new batch');
+  // 新批次自动重现 + 行内独立取消：sftp_upload_cancel 恰好一次，状态收敛 cancelled
+  await page.evaluate(() => {
+    window.__myshelltool.files.uploadLocalPaths(['C:\\fake\\strip.bin']).catch(e => console.error('[test] strip upload 2 rejected: ' + e.message));
+  });
+  await page.waitForFunction(() => document.querySelector('[data-up-progress]'), null, { timeout: 5000 });
+  await page.evaluate(() => document.querySelector('[data-up-progress-toggle]').click());
+  await page.waitForFunction(() => document.querySelector('[data-up-progress-toggle]')?.getAttribute('aria-expanded') === 'true', null, { timeout: 3000 });
+  const rowCancelPresent = await page.evaluate(() => {
+    const btn = document.querySelector('#ups-detail [aria-label^="取消上传"]');
+    btn?.click();
+    return !!btn;
+  });
+  if (!rowCancelPresent) throw new Error('per-row cancel button missing');
+  await page.waitForFunction(() => window.__myshelltool.files.transferQueue.some(i => i.name === 'strip.bin' && i.status === 'cancelled'), null, { timeout: 5000 });
+  const cancelCallsTotal = await page.evaluate(() => window.__tauriMock.calls.filter(c => c.command === 'sftp_upload_cancel').length);
+  if (cancelCallsTotal !== cancelCallsAfterClose + 1) throw new Error('per-row cancel did not call sftp_upload_cancel exactly once: ' + (cancelCallsTotal - cancelCallsAfterClose));
+  const retryPresent = await page.evaluate(() => !!document.querySelector('#ups-detail [aria-label^="重试上传"]'));
+  if (!retryPresent) throw new Error('retry entry missing after cancel');
+
 console.error('[step] scenario-3');
   // ════ 场景 3：覆盖确认链（probe 命中 → modal → 确认 → 流式上传）════
   await fixtureBackend(page, {
@@ -229,6 +340,9 @@ console.error('[step] scenario-3');
     'sftp_upload_from_file': spec(null),
     'sftp_list_dir': spec({ path: '/root', entries: [] }),
   });
+  // 面板显式回 /root：2c 把面板留在了 /var/log，覆盖链断言沿用 /root 目标
+  await page.evaluate(() => window.__myshelltool.files.navigateRemotePath('/root'));
+  await page.waitForFunction(() => window.__myshelltool.files.remotePath === '/root', null, { timeout: 5000 });
   // uploadLocalPaths 在覆盖确认处挂起等用户选择——不能在 evaluate 里 await 它
   // （evaluate 永不返回 = 测试死锁）。fire-and-forget，由下方确认步骤放行。
   await page.evaluate(() => {
@@ -259,7 +373,7 @@ console.error('[step] scenario-4');
   await page.evaluate(() => window.__myshelltool.sessions.resolveHostKeyPrompt('rk-1', true));
   await page.waitForFunction(() => window.__tauriMock.calls.some(c => c.command === 'ssh_confirm_host_key' && c.args.accepted === true), null, { timeout: 5000 });
 
-  console.log('IPC flow tests passed (connect+stream+reconnect / streaming upload / upload cancel / overwrite confirm / host-key resolve)');
+  console.log('IPC flow tests passed (connect+stream+reconnect / streaming upload / upload cancel / refresh-current-dir after upload / upload progress strip / overwrite confirm / host-key resolve)');
 } finally {
   await browser.close();
 }
