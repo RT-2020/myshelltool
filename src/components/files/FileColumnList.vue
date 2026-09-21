@@ -52,8 +52,9 @@ const emit = defineEmits<{
 // ============================================================
 // 栏间拖拽上传（本地 → 远程）：仅本地行可拖，dragstart 写自定义 MIME。
 // 与 ConnectionSidebar 的 DRAG_MIME 同模式；drop 侧判定在 FileSurface。
+// v0.18：常量上移 lib/fileTypes（单一事实源，EditorSurface 拖拽打开共用）。
 // ============================================================
-const FILE_DRAG_MIME = 'application/x-myshelltool-file';
+import { FILE_DRAG_MIME } from '@/lib/fileTypes';
 
 function onRowDragStart(event: DragEvent, entry: RemoteFileEntry) {
   if (!props.isLocal || !event.dataTransfer) return;

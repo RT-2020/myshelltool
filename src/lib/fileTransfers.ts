@@ -6,9 +6,10 @@
 import { ref, type Ref } from 'vue';
 import type { NormalizedConnectionAsset, NotifyOptions, RemoteFileEntry, TransferProgressPayload } from '@/types/domain';
 import { invokeBackend, isTauriRuntime, listenBackendEvent } from '@/services/backend';
-import { joinLocalPath, joinPath } from '@/stores/workbench';
-import { buildTransferItem } from '@/lib/transferUtils';
+import { joinLocalPath, joinPath, parentLocalPath } from '@/stores/workbench';
+import { buildTransferItem, formatBytes } from '@/lib/transferUtils';
 import { errorMessage } from '@/lib/errorMessage';
+import { openLocalPath, revealLocalItem } from '@/lib/openLocalFile';
 import type { FilesSessionLike, FilesWorkbenchBridge, QueueItem } from '@/lib/fileTypes';
 
 const TRANSFER_PROGRESS_EVENT = 'sftp-transfer-progress';
@@ -512,6 +513,76 @@ export async function downloadEntry(entry: RemoteFileEntry, destDir?: string | n
   await withTransfer(transferId, () => runDownload(item, session));
 }
 
+// ============================================================
+// 下载完成通知（右下角 toast + 点击打开）
+//
+// 聚合：同一目录 1.5s 窗口内的完成合并为一条——批量下载逐文件弹会把
+// toast 上限 5 条顶掉，用户根本来不及点「打开」。这里的 setTimeout 是
+// 纯 UI 去抖（只 flush，不做「赌 N ms 后状态就绪」的探测等待）。
+// 时长 10s：比带按钮默认 8s 再宽一点，给足移动鼠标点击的窗口。
+// ============================================================
+interface DownloadDoneRecord {
+  name: string;
+  localPath: string;
+  size: number;
+}
+
+const DOWNLOAD_DONE_WINDOW_MS = 1500;
+const DOWNLOAD_TOAST_DURATION_MS = 10_000;
+const downloadDoneBuffer = new Map<string, DownloadDoneRecord[]>();
+const downloadDoneFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function queueDownloadDoneToast(destDir: string, record: DownloadDoneRecord) {
+  const list = downloadDoneBuffer.get(destDir) ?? [];
+  list.push(record);
+  downloadDoneBuffer.set(destDir, list);
+  const existing = downloadDoneFlushTimers.get(destDir);
+  if (existing) clearTimeout(existing);
+  downloadDoneFlushTimers.set(
+    destDir,
+    setTimeout(() => flushDownloadDoneToasts(destDir), DOWNLOAD_DONE_WINDOW_MS)
+  );
+}
+
+function flushDownloadDoneToasts(destDir: string) {
+  downloadDoneFlushTimers.delete(destDir);
+  const records = downloadDoneBuffer.get(destDir) ?? [];
+  downloadDoneBuffer.delete(destDir);
+  if (records.length === 0) return;
+  if (records.length === 1) {
+    const rec = records[0]!;
+    const sizeLabel = rec.size > 0 ? `（${formatBytes(rec.size)}）` : '';
+    tc().announce(`已下载：${rec.name}${sizeLabel} → ${destDir}`, {
+      level: 'success',
+      duration: DOWNLOAD_TOAST_DURATION_MS,
+      actions: [
+        { label: '打开', run: () => void runLocalOpenAction('file', rec.localPath) },
+        { label: '所在文件夹', run: () => void runLocalOpenAction('reveal', rec.localPath) }
+      ]
+    });
+    return;
+  }
+  tc().announce(`已下载 ${records.length} 个文件 → ${destDir}`, {
+    level: 'success',
+    duration: DOWNLOAD_TOAST_DURATION_MS,
+    actions: [{ label: '打开文件夹', run: () => void runLocalOpenAction('folder', destDir) }]
+  });
+}
+
+/** toast 按钮 → plugin-opener；浏览器预览模式降级提示，opener 失败如实报原因。 */
+async function runLocalOpenAction(kind: 'file' | 'reveal' | 'folder', path: string) {
+  try {
+    const result =
+      kind === 'reveal' ? await revealLocalItem(path) : await openLocalPath(path);
+    if (result === 'unsupported') {
+      tc().announce('浏览器预览模式没有本地文件系统能力，请在桌面版中使用该操作', { level: 'warn' });
+    }
+  } catch (error) {
+    const what = kind === 'reveal' ? '打开所在文件夹' : '打开';
+    tc().announce(`${what}失败：${errorMessage(error)}`, { level: 'error' });
+  }
+}
+
 /**
  * 下载执行体（downloadEntry 与 retryTransfer 共用）。
  *
@@ -578,7 +649,14 @@ async function runDownload(item: QueueItem, session: FilesSessionLike) {
       entry.finishedAt = Date.now();
       pruneFinishedTransfers();
     }
-    tc().announce('已下载：' + item.name + ' → ' + tc().localPath.value, { level: 'success' });
+    // 完成通知走聚合器（同目录合并 + 「打开/所在文件夹」按钮）；
+    // 目标路径用真实落盘位置，不再误显示本地面板当前目录
+    const destDir = op?.destDir ?? parentLocalPath(resolvedPath);
+    queueDownloadDoneToast(destDir, {
+      name: item.name,
+      localPath: resolvedPath,
+      size: item.total || 0
+    });
   } catch (error) {
     markTransferError(transferId, errorMessage(error));
     tc().announce('下载失败：' + item.name + '：' + errorMessage(error), {

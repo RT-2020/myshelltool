@@ -93,3 +93,10 @@ sessionsStore(): FilesSessionsStoreLike | null;
 assets(): NormalizedConnectionAsset[];
 }
 
+
+/**
+ * 栏间拖拽的内部 MIME（v0.18 起为单一事实源，从 FileSurface/FileColumnList
+ * 的两份同值常量上移）：dragstart 载荷 = JSON.stringify({ entries: RemoteFileEntry[] })。
+ * EditorSurface 也以它作为「拖文件进编辑器打开」的判定。
+ */
+export const FILE_DRAG_MIME = 'application/x-myshelltool-file';

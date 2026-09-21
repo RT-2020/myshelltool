@@ -18,3 +18,6 @@ rand = "0.8"
 # v2.6 危险命令分类 + shell 分段（纯逻辑，从 src-tauri 迁入以便独立 cargo test ——
 # src-tauri 测试二进制受 Tauri runtime DLL 限制在本机跑不起来，安全判据必须可测）
 regex = "1"
+# v0.18 内置编辑器编码内核（GBK/Big5/Shift_JIS 等本地编码的严格解码/编码，
+# had_errors 当硬错误——绝不 lossy 产出「看起来正常的损坏内容」）
+encoding_rs = "0.8"

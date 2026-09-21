@@ -58,6 +58,18 @@ export interface BuildTransferItemArgs {
 }
 
 /**
+ * 格式化字节数（B → "12 KB" / "3 MB"）。
+ * 从 TransferDrawer 的私有实现上移至此（下载完成 toast 也要展示大小，
+ * 避免第三份拷贝）；0/非法值返回 "0 B"。
+ */
+export function formatBytes(bytes: number | null | undefined): string {
+  const size = Number(bytes) || 0;
+  if (size >= 1024 * 1024) return Math.round(size / 1024 / 1024) + ' MB';
+  if (size >= 1024) return Math.round(size / 1024) + ' KB';
+  return size + ' B';
+}
+
+/**
  * 格式化瞬时速度（B/s → "1.2 MB/s" / "350 KB/s"）。
  * <=0 或非法值返回 ''，调用方据此隐藏速度行。
  */

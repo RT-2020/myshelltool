@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, unref, watch } from 'vue';
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, unref, watch } from 'vue';
 import {
   ArrowUpDown,
   Minus,
@@ -18,9 +18,12 @@ import ConnectionSidebar from '@/components/shell/ConnectionSidebar.vue';
 import RightSidebar from '@/components/shell/RightSidebar.vue';
 import TerminalSurface from '@/components/terminal/TerminalSurface.vue';
 import FileSurface from '@/components/files/FileSurface.vue';
+// v0.18 内置编辑器：懒加载（CodeMirror 及语言包不进主 bundle），覆盖中央区
+const EditorSurface = defineAsyncComponent(() => import('@/components/editor/EditorSurface.vue'));
 import { AppBrandLogo } from '@/components/ui';
 import {
   closeTauriWindow,
+  getTauriWindow,
   isTauriRuntime,
   isTauriWindowMaximized,
   minimizeTauriWindow,
@@ -28,6 +31,7 @@ import {
   toggleTauriWindowMaximize
 } from '@/services/backend';
 import type { useWorkbenchStore } from '@/stores/workbench';
+import { useEditorStore } from '@/stores/editor';
 import type { usePanelResize, ResizeRegion } from '@/composables/usePanelResize';
 import type { useAutoUpdate } from '@/composables/useAutoUpdate';
 import type { NormalizedConnectionAsset, ModalState, SearchSuggestion } from '@/types/domain';
@@ -224,8 +228,75 @@ async function closeWindow() {
   await closeTauriWindow();
 }
 
+// ============================================================
+// v0.18：主窗口关闭的编辑器 dirty 守卫。
+// 标题栏 X / Alt+F4 / 系统菜单都触发 onCloseRequested：有未保存的编辑器
+// tab 时拦截并三选（全部保存并关闭 / 放弃更改并关闭 / 取消）；选择后经
+// destroy() 绕过 close-requested 防递归（与 AssetWindowShell 同模式）。
+// ============================================================
+let unlistenMainWindowClose: (() => void) | null = null;
+
+function openEditorCloseDialog() {
+  const editorStore = useEditorStore();
+  editorStore.openDialog({
+    title: '未保存的修改',
+    message: `编辑器中有 ${props.store.editorDirtyCount} 个文件未保存。`,
+    detail: '全部保存将逐个写回原位置（任一失败会中止关闭）；放弃更改不保存直接关闭。',
+    buttons: [
+      { label: '取消' },
+      {
+        label: '放弃更改并关闭',
+        danger: true,
+        action: () => {
+          editorStore.discardAllDirty();
+          void destroyMainWindow();
+        }
+      },
+      {
+        label: '全部保存并关闭',
+        primary: true,
+        action: () => {
+          void editorStore.saveAllEditorTabs().then(ok => {
+            if (ok) void destroyMainWindow();
+            else props.store.announce('有文件未能保存（冲突或校验未通过），关闭已中止', { level: 'warn' });
+          });
+        }
+      }
+    ]
+  });
+}
+
+async function destroyMainWindow() {
+  try {
+    await (getTauriWindow() as unknown as { destroy?: () => Promise<void> } | null)?.destroy?.();
+  } catch (error) {
+    console.error('[WorkbenchShell] destroy window failed:', error);
+  }
+}
+
 onMounted(() => {
   syncWindowState();
+  // 编辑器 dirty 关窗守卫（仅 Tauri runtime；预览模式无窗口事件）
+  if (isTauriRuntime()) {
+    void (async () => {
+      const currentWindow = getTauriWindow() as unknown as {
+        onCloseRequested?: (handler: (event: { preventDefault(): void }) => void | Promise<void>) => Promise<() => void>;
+      } | null;
+      if (typeof currentWindow?.onCloseRequested === 'function') {
+        unlistenMainWindowClose = await currentWindow.onCloseRequested(event => {
+          if (props.store.editorDirtyCount > 0) {
+            event.preventDefault();
+            openEditorCloseDialog();
+          }
+          // 无 dirty：不 preventDefault，走系统默认关闭
+        });
+      }
+    })();
+  }
+});
+
+onUnmounted(() => {
+  if (typeof unlistenMainWindowClose === 'function') unlistenMainWindowClose();
 });
 </script>
 
@@ -397,6 +468,8 @@ onMounted(() => {
     <main class="main">
       <TerminalSurface data-region="center-top" />
       <FileSurface data-region="center-bottom" />
+      <!-- v0.18 内置编辑器覆盖面板（surfaceVisible 时渲染于中央区之上） -->
+      <EditorSurface />
     </main>
 
     <div

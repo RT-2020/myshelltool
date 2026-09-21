@@ -9,6 +9,8 @@ mod dpapi_codec;
 /// 出站 HTTP 单例客户端（GitHub Gist / OAuth 共用）+ reqwest 错误链工具。
 mod http;
 pub(crate) mod fs_local; // format_modified 被 ssh.rs 复用（SFTP mtime → Unix 秒）
+// v0.18 内置编辑器的草稿/备份存储（app-data；ssh::text_file 与 fs_local 写命令共用）
+pub(crate) mod editor_store;
 mod mcp;
 mod resource_monitor;
 mod ssh;
@@ -646,6 +648,9 @@ pub fn run() {
             ssh::sftp_rename,
             ssh::sftp_remove,
             ssh::sftp_stat,
+            // v0.18 内置编辑器：远端文本读写（2MiB 上限/二进制嗅探/编码白名单/冲突检测/原子写）
+            ssh::sftp_read_text,
+            ssh::sftp_write_text,
             ssh::tunnel_create,
             ssh::tunnel_start,
             ssh::tunnel_stop,
@@ -657,6 +662,15 @@ pub fn run() {
             fs_local::fs_local_delete,
             fs_local::fs_local_rename,
             fs_local::fs_local_stat,
+            // v0.18 内置编辑器：本地文本读写（同远端链路的防线与冲突语义）
+            fs_local::fs_local_read_text,
+            fs_local::fs_local_write_text,
+            // v0.18 内置编辑器：备份/草稿（app-data 滚动存储）
+            editor_store::editor_backup_list,
+            editor_store::editor_backup_read,
+            editor_store::editor_draft_save,
+            editor_store::editor_draft_get,
+            editor_store::editor_draft_delete,
             resource_monitor::resource_monitor_start,
             resource_monitor::resource_monitor_stop,
             resource_monitor::resource_monitor_snapshot,

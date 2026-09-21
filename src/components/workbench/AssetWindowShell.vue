@@ -22,13 +22,14 @@
  *  - Esc 取消的窗外拖拽可能误开窗（Phase 2 拖出交互，待实测）；
  *  - 主窗口关闭后本窗口存活，属 Tauri 多窗口正常生命周期。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue';
 import { ArrowUpDown, Minus, Moon, PanelRight, Square, Sun, Undo2, X } from 'lucide-vue-next';
 import TerminalSurface from '@/components/terminal/TerminalSurface.vue';
 import FileSurface from '@/components/files/FileSurface.vue';
 import RightSidebar from '@/components/shell/RightSidebar.vue';
 import { AppBrandLogo } from '@/components/ui';
 import { useSessionsStore } from '@/stores/sessions';
+import { useEditorStore } from '@/stores/editor';
 import { pushSessionToMainWindow } from '@/lib/sessionHandoff';
 import {
   closeTauriWindow,
@@ -49,6 +50,12 @@ interface CloseableTauriWindow {
   onCloseRequested?: (handler: (event: { preventDefault(): void }) => void | Promise<void>) => Promise<() => void>;
   destroy?: () => Promise<void>;
 }
+
+// v0.18 内置编辑器：懒加载覆盖面板（与 WorkbenchShell 共用组件）
+const EditorSurface = defineAsyncComponent(() => import('@/components/editor/EditorSurface.vue'));
+const editorStore = useEditorStore();
+/** 编辑器 dirty 守卫已放行（本轮关窗流程内不重复弹）。 */
+let editorDirtyHandled = false;
 
 const props = withDefaults(defineProps<{
   store: ReturnType<typeof useWorkbenchStore>;
@@ -182,6 +189,12 @@ async function requestCloseAssetWindow() {
     );
     return;
   }
+  // v0.18 编辑器 dirty 守卫（在途传输之后、会话确认之前）：三选后经
+  // editorDirtyHandled 放行，不再重复弹。
+  if (!editorDirtyHandled && props.store.editorDirtyCount > 0) {
+    openEditorCloseDialog();
+    return;
+  }
   const active = (props.store.sessions || []).filter(
     s => s.status === 'connected' || s.status === 'connecting'
   );
@@ -194,6 +207,39 @@ async function requestCloseAssetWindow() {
     count: active.length,
     onConfirm: () => closeAfterConfirm()
   } as ModalState;
+}
+
+function openEditorCloseDialog() {
+  editorStore.openDialog({
+    title: '未保存的修改',
+    message: `编辑器中有 ${props.store.editorDirtyCount} 个文件未保存。`,
+    detail: '全部保存将逐个写回原位置（任一失败会中止关闭）；放弃更改不保存直接进入后续关闭流程。',
+    buttons: [
+      { label: '取消' },
+      {
+        label: '放弃更改并继续',
+        danger: true,
+        action: () => {
+          editorDirtyHandled = true;
+          void requestCloseAssetWindow();
+        }
+      },
+      {
+        label: '全部保存并继续',
+        primary: true,
+        action: () => {
+          void editorStore.saveAllEditorTabs().then(ok => {
+            if (!ok) {
+              props.store.announce?.('有文件未能保存（冲突或校验未通过），关闭已中止', { level: 'warn' });
+              return;
+            }
+            editorDirtyHandled = true;
+            void requestCloseAssetWindow();
+          });
+        }
+      }
+    ]
+  });
 }
 
 // 确认关闭：connecting 会话的 sessionId 还是 pending 占位（断不开，会留
@@ -325,6 +371,8 @@ onBeforeUnmount(() => {
     <main class="main">
       <TerminalSurface :show-tabs="false" data-region="center-top" />
       <FileSurface data-region="center-bottom" />
+      <!-- v0.18 内置编辑器覆盖面板 -->
+      <EditorSurface />
     </main>
 
     <div

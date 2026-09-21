@@ -22,6 +22,9 @@ pub mod shell;
 // 过滤/分段失败语义）。原在 src-tauri/src/resource_monitor.rs，迁入 core 让
 // 测试真正运行（同 dangerous_commands 迁入纪律，见模块注释）
 pub mod proc_parse;
+// v0.18 内置编辑器编码内核：本地编码白名单解码/编码（绝不 lossy）+ EOL 三态
+// 检测/应用 + UTF-8 BOM 剥离/还原（见模块注释的「宁严不猜」纪律）
+pub mod text_codec;
 
 // 便捷再导出：调用方写 `myshelltool_core::redact_command(...)`（日志落盘点最常用）
 pub use redact::redact_command;

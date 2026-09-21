@@ -302,3 +302,33 @@
 @keyframes modal-btn-spin {
   to { transform: rotate(360deg); }
 }
+
+/* editorDialog（v0.18 编辑器通用弹窗）：消息/说明/路径输入 */
+.editor-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.editor-dialog-message {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--app-text);
+  overflow-wrap: break-word;
+}
+.editor-dialog-detail {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--app-muted);
+  overflow-wrap: break-word;
+}
+.editor-dialog-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--app-muted);
+}
+.editor-dialog-field .native-input {
+  width: 100%;
+  box-sizing: border-box;
+}

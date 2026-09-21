@@ -68,9 +68,44 @@ interface ModalExtras extends ModalState {
 }
 
 const store = useWorkbenchStore();
-const modalTitle = computed(() =>
-  modalTitleFor(view.value.type, { editingExistingAsset: Boolean(editingAsset.id) })
+// ---- editorDialog（编辑器通用弹窗，v0.18）：标题/正文/可选路径输入 + 动态按钮 ----
+// 单一 type 承载编辑器全部弹窗（未保存三选/保存冲突/另存为/上传/草稿恢复/备份列表），
+// 按钮回调在 stores/editor.ts 组装（openDialog），此处只做渲染与回调分发。
+interface EditorDialogViewPayload {
+  title?: string;
+  message?: string;
+  detail?: string;
+  input?: { label: string; placeholder?: string; value?: string };
+  buttons?: { label: string; danger?: boolean; primary?: boolean }[];
+}
+const editorDialog = computed<EditorDialogViewPayload | null>(() =>
+  view.value.type === 'editorDialog'
+    ? ((view.value.payload as unknown as EditorDialogViewPayload | undefined) ?? {})
+    : null
 );
+const editorDialogInput = ref('');
+const editorDialogError = ref('');
+async function runEditorDialog(index: number) {
+  if (submitting.value) return;
+  if (!editorDialog.value?.buttons?.[index]) return;
+  submitting.value = true;
+  try {
+    // 返回错误串 = 内联展示、弹窗保持；否则关闭（关闭逻辑归 editor store 的 action）
+    const err = await store.editorResolveDialog(index, editorDialogInput.value);
+    if (err) {
+      editorDialogError.value = err;
+    } else {
+      store.modal = { type: null, asset: null };
+    }
+  } finally {
+    submitting.value = false;
+  }
+}
+const modalTitle = computed(() => {
+  // editorDialog 标题来自 payload（modalTitles 的 switch 不承载动态标题）
+  if (view.value.type === 'editorDialog') return editorDialog.value?.title || '编辑器';
+  return modalTitleFor(view.value.type, { editingExistingAsset: Boolean(editingAsset.id) });
+});
 const {
   modal: modalRef,
   hostKeyPrompt,
@@ -142,6 +177,12 @@ const pendingFileNamesMore = computed(() => {
 watch(() => modal.value.type, type => {
   // 每次切换弹窗清空分组表单校验错误（避免残留到下一弹窗）
   groupFormError.value = '';
+  if (type === 'editorDialog') {
+    // 路径输入预填 payload 初始值；错误态每次重开清零
+    const payload = modal.value.payload as unknown as EditorDialogViewPayload | undefined;
+    editorDialogInput.value = payload?.input?.value ?? '';
+    editorDialogError.value = '';
+  }
   if (type === 'assetEditor') {
     Object.assign(editingAsset, modal.value.asset ? cloneAsset(modal.value.asset) : emptyAsset());
     Object.assign(editingCredential, emptyCredential());
@@ -444,14 +485,31 @@ const { onBackdropClick } = useModalDismiss(
           :count="view.count || 0"
         />
 
+        <!-- editorDialog（v0.18 编辑器通用弹窗：消息 + 可选路径输入，按钮动态渲染） -->
+        <div v-else-if="view.type === 'editorDialog'" class="editor-dialog-body">
+          <p class="editor-dialog-message">{{ editorDialog?.message }}</p>
+          <p v-if="editorDialog?.detail" class="editor-dialog-detail">{{ editorDialog.detail }}</p>
+          <label v-if="editorDialog?.input" class="editor-dialog-field">
+            <span>{{ editorDialog.input.label }}</span>
+            <input
+              v-model="editorDialogInput"
+              class="native-input"
+              type="text"
+              spellcheck="false"
+              :placeholder="editorDialog.input.placeholder"
+            />
+          </label>
+          <p v-if="editorDialogError" class="form-error">{{ editorDialogError }}</p>
+        </div>
+
         <!-- default: tokenConfig（PAT 表单已抽到 PatConfigCard，供此处与 settings 同步 tab 复用） -->
         <PatConfigCard v-else />
       </div>
       <div class="modal-actions">
         <button v-if="view.type === 'hostKeyVerify'" class="btn danger" :disabled="submitting" @click="denyHostKey">拒绝</button>
         <button v-else-if="view.type === 'mcpApproval'" class="btn danger" :disabled="submitting" @click="denyMcpApproval">拒绝执行</button>
-        <!-- mcpPanel / syncPanel / settings 等自包含面板隐藏「取消」（操作在面板内部完成） -->
-        <button v-if="view.type !== 'mcpPanel' && view.type !== 'syncPanel' && view.type !== 'settings'" class="btn" id="modalSecondary" :disabled="submitting" @click="secondaryAction">取消</button>
+        <!-- mcpPanel / syncPanel / settings / editorDialog 等自包含面板隐藏「取消」（操作在面板内部完成） -->
+        <button v-if="view.type !== 'mcpPanel' && view.type !== 'syncPanel' && view.type !== 'settings' && view.type !== 'editorDialog'" class="btn" id="modalSecondary" :disabled="submitting" @click="secondaryAction">取消</button>
         <button
           v-if="view.type === 'confirmDelete'"
           class="btn danger"
@@ -482,6 +540,19 @@ const { onBackdropClick } = useModalDismiss(
           :disabled="submitting"
           @click="store.confirmFileOverwrite"
         >覆盖</button>
+        <!-- editorDialog：按钮完全由 payload 定义（danger/primary/顺序），逐个分发 -->
+        <template v-else-if="view.type === 'editorDialog'">
+          <button
+            v-for="(btn, i) in editorDialog?.buttons || []"
+            :key="btn.label + '-' + i"
+            class="btn"
+            :class="{ danger: btn.danger, primary: btn.primary }"
+            :disabled="submitting"
+            @click="runEditorDialog(i)"
+          >
+            <span v-if="submitting && btn.primary" class="btn-spinner" aria-hidden="true"></span>{{ btn.label }}
+          </button>
+        </template>
         <!-- v1.2 mcpPanel / v1.3 syncPanel / v1.8 settings：自包含面板，主按钮「关闭」 -->
         <button v-else-if="view.type === 'mcpPanel' || view.type === 'syncPanel' || view.type === 'settings'" class="btn primary" id="modalPrimary" :disabled="submitting" @click="submitModal">关闭</button>
         <button v-else class="btn primary" id="modalPrimary" :disabled="submitting" @click="submitModal">

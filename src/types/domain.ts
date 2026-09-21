@@ -352,6 +352,8 @@ export interface ToastItem {
   level: string;
   message: string;
   action: ToastAction | null;
+  /** 多按钮扩展（下载完成 toast 的「打开」「所在文件夹」）；旧 action 单按钮保持兼容。 */
+  actions?: ToastAction[];
 }
 
 /** notify 的可选参数（announce 不带 level，保持仅状态栏的旧行为）。 */
@@ -359,6 +361,7 @@ export interface NotifyOptions {
   level?: string;
   duration?: number;
   action?: ToastAction | null;
+  actions?: ToastAction[];
 }
 
 /** backend_status 命令返回（lib.rs BackendStatus）。 */

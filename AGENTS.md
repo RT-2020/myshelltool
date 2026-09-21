@@ -81,7 +81,7 @@
 | 状态管理 | **Pinia 3**（setup store 风格） | `pinia ^3.0.4` |
 | 图标 | **lucide-vue-next** | `^0.460.0` |
 | 终端 | **xterm.js 6** + addon-fit/search/serialize/web-links/webgl | `@xterm/xterm ^6` |
-| 远程编辑 | Monaco Editor 0.52（CDN 加载） | — |
+| 内置文本/配置编辑器 | **CodeMirror 6**（npm 打包、懒加载 chunk；json/yaml/xml/md 语言包 + legacy toml/properties） | `@codemirror/* ^6` |
 | 样式 | **SCSS + 设计 token 系统**（无 Tailwind） | `sass ^1.101`，自定义 `_tokens.scss` |
 | 构建 | **Vite 7** | `vite ^7.2.7`，root=`src/` |
 | 测试 | Playwright（UI smoke）+ `cargo test`（core 单元测试） | `playwright ^1.60` |
@@ -96,7 +96,7 @@
 myshelltool/
 ├── src/                     # 前端（Vite root）
 │   ├── components/          # shell / workbench / terminal / files / resource-monitor / ui（App* 基础组件）
-│   ├── stores/              # Pinia：7 领域 store + workbench 编排壳（resourceMonitor 不经编排）
+│   ├── stores/              # Pinia：8 领域 store + workbench 编排壳（resourceMonitor 不经编排）
 │   ├── composables/  lib/   # 组合式函数 / 纯函数模块
 │   ├── services/backend.ts  # Tauri IPC 桥（invokeBackend / listenBackendEvent / normalizeAsset）
 │   └── types/  styles/      # 共享类型 / SCSS token 体系
@@ -131,7 +131,7 @@ myshelltool/
 - **弹窗**：业务弹窗统一走 `GlobalModals.vue`（`store.modal = { type, ...payload }`），按 `modal.type` 分支。新增 type 需同步改 `modalTitle` / `submitModal` / `watch`。保留 legacy 选择器（`#modalLayer`/`#modalBody`/`.modal-actions .btn.danger`）以兼容测试。
 
 ### 4.2 状态管理（跨 store 桥接）
-- **`workbench.ts` 是编排壳**：实例化 7 个子 store（sessions/files/tunnels/assets/ui/mcp/sync），`initialize()` 编排启动加载，用 plain-object 返回 + `computed()` 包裹子 store 的响应式 state（**不要直接暴露子 store 的 ref**，会丢响应性）。**注意 `resourceMonitor.ts` 不经 workbench 编排**——它由 `ResourceMonitorPanel.vue` 直接 `useResourceMonitorStore()` 使用（独立轮询生命周期，与全局初始化解耦）。
+- **`workbench.ts` 是编排壳**：实例化 8 个子 store（sessions/files/tunnels/assets/ui/mcp/sync/editor，v0.18 起），`initialize()` 编排启动加载，用 plain-object 返回 + `computed()` 包裹子 store 的响应式 state（**不要直接暴露子 store 的 ref**，会丢响应性）。**注意 `resourceMonitor.ts` 不经 workbench 编排**——它由 `ResourceMonitorPanel.vue` 直接 `useResourceMonitorStore()` 使用（独立轮询生命周期，与全局初始化解耦）。
 - **跨 store 依赖用 lazy bridge**：子 store 通过 `attachWorkbench(bridge)` 注入跨 store 访问（如 assets store 调 workbench.announce / workbench.modal）。**禁止循环 import**。
 - **新 action 加到子 store**，再在 `workbench.ts` return 块 re-export（参照 `saveAsset`/`deleteAsset` 模式）。
 
@@ -163,9 +163,8 @@ npm run tauri:build  # 完整桌面安装包（Windows NSIS），beforeBuildComm
 
 # —— 测试 ——
 npm run test:core    # Rust core 单元测试：cargo test --manifest-path crates/myshelltool-core/Cargo.toml
-npm run test:ui      # UI 四套：ui-smoke / ui-host-key / ui-file-loading / **ui-ipc-flows**
-                     #（后者 mock window.__TAURI__ IPC 驱动真实 store 流：连接+输出流+自动重连/
-                     #   流式上传全链路与取消链/覆盖确认链/hostkey 认领与 resolve；需先 npm run dev 起服务）
+npm run test:ui      # UI 五套：smoke / host-key / file-loading / **ipc-flows** / **editor**（后两类 mock
+                     #   window.__TAURI__ 驱动真实 store 流；editor 覆盖 打开→保存参数→校验拦截→冲突→关 tab；需先 npm run dev）
 
 # —— 静态检查（各自单跑）——
 npm run lint:facts   # 「靠猜测代替事实」门禁：scripts/fact-guards.mjs（指南 §7）；build 首步即跑，CI/发版同步生效
@@ -228,6 +227,7 @@ cd src-tauri && cargo check       # 更快的类型检查
 - **改前端后必须先 `npm run build` 再编译 Rust**：`frontendDist` 在 Rust build script 阶段打进二进制；调试期用 `npm run tauri:dev`（前端走 devUrl，刷新即生效）。
 - **多窗口已知限制**：窗口不持久化恢复、资产删除不跨窗口同步、主题不跨窗口实时同步、Esc 取消的窗外拖拽可能误开窗；MERGE_ACK 宽限期后到达不自动移交（文案已诚实，维持现状）。
 - **MCP 端口**：release 恒 41235 / debug 默认 41500（`MYSHELLTOOL_MCP_PORT` 可覆盖）；dev 与正式版仍共享 `app_data_dir`。
+- **【v0.18】内置编辑器**（CodeMirror 6 覆盖面板，双击文本类文件进入）：单文件上限 2 MiB；编码白名单严格转码（GBK 等，绝不 lossy）；写回带 expected 守护（冲突三选）+ temp/rename 原子写（与 MCP 共享 rename 兜底）+ 可选写前备份（app-data 滚动 3 份）；草稿存 app-data（重开较新时引导恢复）。下载完成 toast 的「打开」= ShellExecute 系统默认程序（下载的 .exe 会执行，与浏览器下载条一致）。
 - **russh-sftp 是 vendored fork**（`third-party/russh-sftp`，把非 UTF-8 文件名可逆编码为 PUA-A）：升级 russh-sftp 需重放补丁（buf.rs/ser.rs 两处 + 往返单测）。
 - **MCP 会话复用未做**：`tools.rs::exec_on_asset` 直走 headless 建连；可注入 GUI 会话池复用（follow-up）。
 

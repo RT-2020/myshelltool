@@ -2,7 +2,7 @@
 import type { Component } from 'vue';
 import { AlertTriangle, CheckCircle2, Info, X, XCircle } from 'lucide-vue-next';
 import { useUiStore } from '@/stores/ui';
-import type { ToastItem } from '@/types/domain';
+import type { ToastAction, ToastItem } from '@/types/domain';
 
 // 直连 ui store 读 toast 队列（与 ResourceMonitorPanel 直连模式一致）
 const ui = useUiStore();
@@ -18,10 +18,10 @@ function iconFor(level: string): Component {
   return LEVEL_ICONS[level] || Info;
 }
 
-// action 按钮：先执行 run()，再关闭该 toast
-function runAction(toast: ToastItem) {
-  if (toast.action && typeof toast.action.run === 'function') {
-    toast.action.run();
+// action 按钮：先执行 run()，再关闭该 toast（单按钮 action 与多按钮 actions 共用）
+function runAction(toast: ToastItem, action: ToastAction) {
+  if (typeof action.run === 'function') {
+    action.run();
   }
   ui.dismissToast(toast.id);
 }
@@ -39,7 +39,7 @@ function dismiss(id: number) {
           v-for="toast in ui.toasts"
           :key="toast.id"
           class="toast-item"
-          :class="toast.level"
+          :class="[toast.level, { 'has-multi-actions': (toast.actions?.length || 0) > 1 }]"
           :role="toast.level === 'error' ? 'alert' : undefined"
         >
           <component :is="iconFor(toast.level)" :size="16" class="toast-icon" aria-hidden="true" />
@@ -48,9 +48,18 @@ function dismiss(id: number) {
             v-if="toast.action"
             class="toast-action"
             type="button"
-            @click="runAction(toast)"
+            @click="runAction(toast, toast.action)"
           >
             {{ toast.action.label }}
+          </button>
+          <button
+            v-for="act in toast.actions"
+            :key="act.label"
+            class="toast-action"
+            type="button"
+            @click="runAction(toast, act)"
+          >
+            {{ act.label }}
           </button>
           <button class="toast-close" type="button" aria-label="关闭提示" @click="dismiss(toast.id)">
             <X :size="14" />
@@ -89,6 +98,11 @@ function dismiss(id: number) {
   font-size: var(--text-sm);
   color: var(--app-text);
   pointer-events: auto;
+}
+
+// 多按钮（下载完成的「打开」「所在文件夹」）放宽宽度，避免消息被挤成竖排
+.toast-item.has-multi-actions {
+  max-width: 440px;
 }
 
 // 按 level 上色：边框 + 图标色；背景用语义色混入面板实色（深色主题的 *-soft 是半透明，

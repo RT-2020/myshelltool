@@ -490,6 +490,8 @@
   min-height: 0;
   min-width: 0;
   overflow: hidden;
+  /* v0.18：EditorSurface 以 absolute inset-0 覆盖本区（position 上下文） */
+  position: relative;
 }
 
 .resize {
