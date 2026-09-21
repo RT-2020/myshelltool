@@ -17,7 +17,7 @@ defineProps<{
 const tunnelKindOptions = [
   { label: 'Local（本地端口转发）', value: 'local' },
   { label: 'Dynamic SOCKS', value: 'dynamic' },
-  { label: 'Remote（暂未实现，将提示错误）', value: 'remote' }
+  { label: 'Remote（远程端口转发）', value: 'remote' }
 ];
 </script>
 

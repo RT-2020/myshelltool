@@ -36,7 +36,7 @@ export interface FileTransfersContext {
 
 /** 上传覆盖确认暂存（原 files store 的 PendingFileOverwrite，随域迁移）。 */
 export interface PendingOverwrite {
-  entry: File | RemoteFileEntry | null;
+  entry: RemoteFileEntry | null;
   remoteTarget: string;
   resolve: (choice: boolean) => void;
   settled: boolean;
@@ -127,10 +127,11 @@ export async function withTransfer<T>(itemId: string, task: () => Promise<T>) {
 }
 
 /**
- * 取消上传：置 cancelled 标记，分块循环在下一块前检查并停止。
- * 下载仍不可取消——流式化后字节不再经过 IPC（后端直接写本地文件），但
- * `sftp_download_to_file` 依旧是单次 invoke、后端没有中断通道，前端置标记也
- * 无法让后端停下。TransferDrawer 对下载行不渲染取消按钮（勿造假按钮）。
+ * 取消上传：置 cancelled 标记（UI 即时反馈）+ 调 `sftp_upload_cancel` 置后端
+ * 共享旗标——流式上传循环在下一个块边界（≤1 MiB）看到旗标即中止，并尽力
+ * 删除远端半截文件。后端 reject 后由 runPathUpload 按 cancelled 标记收敛状态。
+ * 下载仍不可取消——`sftp_download_to_file` 是单次 invoke、后端没有中断通道，
+ * TransferDrawer 对下载行不渲染取消按钮（勿造假按钮）。
  */
 export function cancelTransfer(id: string) {
   const item = tc().transferQueue.value.find(entry => entry.id === id);
@@ -139,6 +140,9 @@ export function cancelTransfer(id: string) {
   if (item.status !== 'running' && item.status !== 'pending') return;
   item.cancelled = true;
   tc().announce('正在取消上传：' + item.name, { level: 'warn' });
+  // 取消命令失败（会话已断等）可忽略：上传随即会因写失败以错误态收尾，
+  // 状态同样由 runPathUpload 收敛，不会因为取消命令丢失而卡 running。
+  invokeBackend('sftp_upload_cancel', { transferId: id }).catch(() => null);
 }
 
 /**
@@ -177,10 +181,8 @@ export async function retryTransfer(id: string) {
   item.finishedAt = null;
   try {
     if (item.direction === 'upload') {
-      if (item.op?.kind === 'localEntry') {
-        await runLocalEntryUpload(item, session);
-      } else if (item.op?.kind === 'file') {
-        await runFileUpload(item, session);
+      if (item.op?.kind === 'localPath') {
+        await runPathUpload(item, session);
       } else {
         // op 缺失（异常数据/旧队列项）：无法重试
         markTransferError(id, '传输参数缺失');
@@ -226,7 +228,7 @@ export async function probeRemoteTarget(remoteTarget: string): Promise<boolean |
  * 队列保证每个 Promise 都会 settle（用户选择、或批次中止时的收尾清理），
  * 不存在永久挂起的上传循环。
  */
-export function askFileOverwrite(entry: File | RemoteFileEntry, remoteTarget: string) {
+export function askFileOverwrite(entry: RemoteFileEntry, remoteTarget: string) {
   let settleOwn: (() => void) | null = null;
   const promise = new Promise<boolean>(resolve => {
     tc().overwriteQueue.value.push({ entry, remoteTarget, resolve, settled: false });
@@ -314,8 +316,10 @@ function requireRemotePath(): boolean {
   return false;
 }
 
-/** 上传浏览器 File（input/drag-drop）。顺序处理：每个文件先做覆盖检查，取消则跳过继续下一批。 */
-export async function uploadFiles(fileList?: FileList | File[] | null) {
+/** 上传入口①：本机路径批量上传（原生文件对话框 / OS 拖入，FileSurface 接线）。
+ *  逐条 fs_local_stat 拿名称/大小/类型——目录在此过滤跳过（与旧 File 路径的
+ *  目录跳过 UX 一致），大小作队列进度分母初始值（真实分母以进度事件为准）。 */
+export async function uploadLocalPaths(paths: string[]) {
   const session = tc().getActiveSession();
   if (!session) {
     tc().announce(tc().noSessionMessage('上传'), { level: 'warn' });
@@ -323,32 +327,66 @@ export async function uploadFiles(fileList?: FileList | File[] | null) {
     await tc().wb().sessionsStore()?.connectSelected();
     return;
   }
-  const files = Array.from(fileList || []);
-  if (!files.length) return;
+  const list = (paths || []).filter(p => typeof p === 'string' && p);
+  if (!list.length) return;
+  const fileEntries: RemoteFileEntry[] = [];
+  let dirCount = 0;
+  for (const p of list) {
+    try {
+      const st = await invokeBackend<RemoteFileEntry>('fs_local_stat', { path: p });
+      if (st && st.kind === 'file') fileEntries.push(st);
+      else dirCount += 1;
+    } catch (error) {
+      // 单条 stat 失败（权限/系统目录黑名单/不存在）不拖垮整批：报错跳过
+      tc().announce('无法读取本地文件：' + p + '：' + errorMessage(error), { level: 'error' });
+    }
+  }
+  if (dirCount) tc().announce('已跳过 ' + dirCount + ' 个目录（暂不支持目录上传）', { level: 'warn' });
+  if (fileEntries.length) await uploadLocalFileEntries(fileEntries, session);
+}
+
+/** 上传入口②：本地文件面板条目（FileColumn 双击 / 右键「上传到远程」/ 栏间拖拽）。 */
+export async function uploadLocalEntry(entry: RemoteFileEntry | null) {
+  const session = tc().getActiveSession();
+  if (!session) {
+    tc().announce(tc().noSessionMessage('上传'), { level: 'warn' });
+    tc().wb().setTab('terminal');
+    return;
+  }
+  if (!entry || entry.kind !== 'file') {
+    tc().announce('只能上传本地文件', { level: 'warn' });
+    return;
+  }
+  await uploadLocalFileEntries([entry], session);
+}
+
+/**
+ * 共用批次体（两入口汇合）：顺序处理，每个文件先做覆盖检查，取消则跳过继续
+ * 下一批。基准目录/资产快照 + 逐条复核的守卫与旧 uploadFiles 一致——覆盖确认
+ * 弹窗会长时间挂起本循环，期间用户切换资产（resetRemotePanel 清空 remotePath）
+ * 或终端 cd（OSC 7）都会改写实时值，用实时值拼路径会让剩余文件落到远端根目录。
+ */
+async function uploadLocalFileEntries(entries: RemoteFileEntry[], session: FilesSessionLike) {
   if (!requireRemotePath()) return;
-  // 基准目录快照：remotePath 是全局单例，而覆盖确认弹窗会长时间挂起本循环——
-  // 期间用户切换资产（handleAssetSelected → resetRemotePanel 清空 remotePath）
-  // 或终端 cd（OSC 7）都会改写它。循环内读实时值会让剩余文件 joinPath('', name)
-  // 折叠成 '/name'，整批静默落到远端根目录。基准目录 + 资产归属校验一起兜住。
   const baseDir = tc().remotePath.value;
   const assetId = tc().wb().selectedAsset?.id ?? null;
-  // 已完成处理（传完或被用户跳过）的文件数：中止时 files.length - handledCount
+  // 已完成处理（传完或被用户跳过）的文件数：中止时 entries.length - handledCount
   // 就是「未处理」的剩余文件数。
   let handledCount = 0;
   let aborted = false;
-  for (const file of files) {
+  for (const entry of entries) {
     // 每轮开始先校验归属：资产已变（或面板被清空）就中止整批剩余文件，
     // 绝不把用户给 A 资产选的文件传到 B 资产/根目录。
     if (aborted || (tc().wb().selectedAsset?.id ?? null) !== assetId || !baseDir) {
       aborted = true;
       break;
     }
-    const remoteTarget = joinPath(baseDir, file.name);
+    const remoteTarget = joinPath(baseDir, entry.name);
     // 本次文件自己的覆盖确认句柄：中止收尾时只结算这一条（不碰并发批次/其它文件的 pending）。
     let overwrite: { promise: Promise<boolean>; settle: () => void } | null = null;
     // null（无法确认）按「可能存在」处理：宁可多问一次，不无提示覆盖远端文件
     if ((await probeRemoteTarget(remoteTarget)) !== false) {
-      overwrite = askFileOverwrite(file, remoteTarget);
+      overwrite = askFileOverwrite(entry, remoteTarget);
       if (!(await overwrite.promise)) {
         handledCount += 1;
         continue;
@@ -366,14 +404,14 @@ export async function uploadFiles(fileList?: FileList | File[] | null) {
     const item = buildTransferItem({
       id: transferId,
       direction: 'upload',
-      name: file.name,
+      name: entry.name,
       assetId,
       remotePath: remoteTarget,
-      total: file.size,
-      op: { kind: 'file', file, remoteTarget }
+      total: Number(entry.size) || 0,
+      op: { kind: 'localPath', localPath: entry.path, remoteTarget }
     });
     tc().transferQueue.value.push(item);
-    await withTransfer(transferId, () => runFileUpload(item, session));
+    await withTransfer(transferId, () => runPathUpload(item, session));
     handledCount += 1;
   }
   if (aborted) {
@@ -381,211 +419,72 @@ export async function uploadFiles(fileList?: FileList | File[] | null) {
     // 这里刻意**不**清空整个 overwriteQueue：队列里可能有并发批次或其它资产的
     // pending，清空会把它们静默判成「取消」。另一条 break（循环头守卫）发生在
     // 请求确认之前，本条目根本没有 pending，因此不存在遗漏。
-    tc().announce('已切换资产，剩余 ' + (files.length - handledCount) + ' 个文件未上传', { level: 'warn' });
+    tc().announce('已切换资产，剩余 ' + (entries.length - handledCount) + ' 个文件未上传', { level: 'warn' });
   }
   // 无论是否中止，都刷新「当前面板」（当前资产的目录）：本批可能已传完一部分，
   // 列表要如实反映落盘结果。不能拿 baseDir 去刷——那可能已不属于当前面板。
   await tc().refreshRemoteFiles(null).catch(() => null);
 }
 
-/** 分块上传执行体（uploadFiles 与 retryTransfer 共用）。 */
-async function runFileUpload(item: QueueItem, session: FilesSessionLike) {
+/**
+ * 流式上传执行体（uploadLocalFileEntries 与 retryTransfer 共用）。
+ *
+ * 单条 `sftp_upload_from_file` invoke 跑全程：后端读盘直写 SFTP，字节不经 IPC
+ * （旧分块链路 8 MiB 块经 JSON 数字数组序列化约 4 倍膨胀）。进度由
+ * `sftp-transfer-progress` 事件驱动（含最终一条）；取消经 cancelTransfer →
+ * `sftp_upload_cancel` 旗标，后端中止并删远端半截后以错误 reject，这里按
+ * item.cancelled 标记归到取消态而非错误态。
+ */
+async function runPathUpload(item: QueueItem, session: FilesSessionLike) {
   const transferId = item.id;
-  // 调用契约：仅 op.kind === 'file' 的队列项进入本函数（uploadFiles/retryTransfer 分发保证）
-  const uploadFile = (item.op as { file: File } | null)?.file;
+  // 调用契约：仅 op.kind === 'localPath' 的队列项进入本函数
+  const localPath = (item.op as { localPath?: string } | null)?.localPath;
+  if (!localPath) {
+    markTransferError(transferId, '传输参数缺失');
+    return;
+  }
   try {
-    await invokeBackend('sftp_upload_start', {
+    await invokeBackend('sftp_upload_from_file', {
       sessionId: session.sessionId,
+      localPath,
       remotePath: item.remotePath,
       transferId
     });
-    const CHUNK_SIZE = 8 * 1024 * 1024;
-    // 以「短块(<CHUNK_SIZE)/0 字节」为真 EOF，不信任 drop 时刻的 file.size：
-    // 文件传输期间增长（日志/导出中）不截断，照 runLocalEntryUpload 契约。
-    let offset = 0;
-    while (true) {
-      if (item.cancelled) break; // cancelTransfer 标记 → 停在当前 chunk 边界
-      const bytes = new Uint8Array(await uploadFile!.slice(offset, offset + CHUNK_SIZE).arrayBuffer());
-      if (!bytes.length) break; // 0 字节 = 空文件或已读完
-      offset += bytes.length;
-      await invokeBackend('sftp_upload_chunk', {
-        sessionId: session.sessionId,
-        chunk: bytes,
-        transferId,
-        bytesTransferred: offset,
-        // 进度条分母（item.total 仅作显示基准）：文件可能已增长，取 max 防超 100%
-        totalBytes: Math.max(item.total, offset)
-      });
-      if (bytes.length < CHUNK_SIZE) break; // 短块 = 真 EOF
+    // 进度事件通常已把 item 置 done；invoke 成功但事件缺失时兜底（同 runDownload）
+    const entry = tc().transferQueue.value.find(e => e.id === transferId);
+    if (entry && entry.status === 'running') {
+      entry.status = 'done';
+      entry.percent = 100;
+      entry.transferred = Math.max(entry.transferred, entry.total);
+      entry.speed = 0;
+      entry.eta = null;
+      entry.finishedAt = Date.now();
+      pruneFinishedTransfers();
     }
+    // 大小对账：stat 时刻的大小 vs 实际上传字节（文件传输期间增长不截断，
+    // 内容完整上传，仅 warn 提示差异；progress 事件缺失时 transferred 不可靠，不比）
+    const finalItem = entry || item;
+    if (finalItem.total > 0 && finalItem.transferred > 0 && finalItem.transferred !== finalItem.total) {
+      tc().announce('文件在传输期间发生变化：预期 ' + finalItem.total + ' 字节，实际 ' + finalItem.transferred + ' 字节：' + item.name, { level: 'warn' });
+    }
+    tc().announce('已上传：' + item.name, { level: 'success' });
+  } catch (error) {
     if (item.cancelled) {
+      // 取消经后端旗标生效（中止 + 删远端半截），reject 的错误串是「已取消」
+      // 而非真失败——归取消态，不挂重试按钮。
       item.status = 'cancelled';
       item.finishedAt = Date.now();
       item.speed = 0;
       item.eta = null;
       pruneFinishedTransfers();
       tc().announce('已取消上传：' + item.name, { level: 'warn' });
-      // 后端无 abort 通道：finalize 兜底释放分块会话（可能落盘部分数据，best-effort）
-      try {
-        await invokeBackend('sftp_upload_finalize', { transferId });
-      } catch {
-        // best-effort cleanup
-      }
       return;
     }
-    await invokeBackend('sftp_upload_finalize', { transferId });
-    item.status = 'done';
-    item.percent = 100;
-    item.transferred = offset;
-    // 文件大小在 drop 后变化（增长/收缩）：内容已按实际读到的完整上传，状态仍
-    // done，仅 warn 对账差异（item.total > 0 时才比对，0 起步的增长不弹）
-    if (item.total > 0 && offset !== item.total) {
-      tc().announce('文件在传输期间发生变化：预期 ' + item.total + ' 字节，实际 ' + offset + ' 字节：' + item.name, { level: 'warn' });
-    }
-    item.total = Math.max(item.total, offset);
-    item.eta = null;
-    item.finishedAt = Date.now();
-    pruneFinishedTransfers();
-    tc().announce('已上传：' + item.name, { level: 'success' });
-  } catch (error) {
     markTransferError(transferId, errorMessage(error));
     tc().announce('上传失败：' + item.name + '：' + errorMessage(error), {
       level: 'error',
       action: { label: '重试', run: () => retryTransfer(transferId) }
     });
-    try {
-      await invokeBackend('sftp_upload_finalize', { transferId });
-    } catch {
-      // best-effort cleanup
-    }
-  }
-}
-
-/** 上传本地条目（FileColumn 双击本地文件 / 右键「上传到远程」）。 */
-export async function uploadLocalEntry(entry: RemoteFileEntry | null) {
-  const session = tc().getActiveSession();
-  if (!session) {
-    tc().announce(tc().noSessionMessage('上传'), { level: 'warn' });
-    tc().wb().setTab('terminal');
-    return;
-  }
-  if (!entry || entry.kind !== 'file') {
-    tc().announce('只能上传本地文件', { level: 'warn' });
-    return;
-  }
-  if (!requireRemotePath()) return;
-  // 与 uploadFiles 同源：目标路径与所属资产必须取同一时刻的快照。
-  // 下面两个 await（stat 探测、同名确认）可能让用户切换资产或让终端 cd 触发
-  // resetRemotePanel 清空 remotePath —— 用实时 remotePath 继续拼路径会把文件
-  // 送到远端根（joinPath('', name) = '/name'），用实时会话则可能送到另一台机器。
-  const baseDir = tc().remotePath.value;
-  const assetId = tc().wb().selectedAsset?.id ?? null;
-  const remoteTarget = joinPath(baseDir, entry.name);
-  let overwrite: { promise: Promise<boolean>; settle: () => void } | null = null;
-  // null（无法确认）按「可能存在」处理：宁可多问一次，不无提示覆盖远端文件
-  if ((await probeRemoteTarget(remoteTarget)) !== false) {
-    overwrite = askFileOverwrite(entry, remoteTarget);
-    if (!(await overwrite.promise)) return;
-  }
-  // 迟到守卫：确认弹窗期间用户可能已切换资产，此时本次上传已不属于当前面板
-  if ((tc().wb().selectedAsset?.id ?? null) !== assetId) {
-    // 只结算「本次这一条」确认（句柄绑定的是本次的 resolve）。不能用
-    // handleFileOverwrite：它 pop 的是队首，若队首属于并发批次，就会把别人的
-    // 确认静默判成取消；同理也不能按路径字符串比对面首（并发同路径会撞上）。
-    overwrite?.settle();
-    tc().announce('已切换资产，已取消本次上传：' + entry.name, { level: 'warn' });
-    return;
-  }
-  const transferId = 'up-local-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-  const item = buildTransferItem({
-    id: transferId,
-    direction: 'upload',
-    name: entry.name,
-    assetId,
-    remotePath: remoteTarget,
-    total: Number(entry.size) || 0,
-    op: { kind: 'localEntry', entry, remoteTarget }
-  });
-  tc().transferQueue.value.push(item);
-  await withTransfer(transferId, () => runLocalEntryUpload(item, session));
-}
-
-/** 本地条目分块上传执行体（uploadLocalEntry 与 retryTransfer 共用）。 */
-async function runLocalEntryUpload(item: QueueItem, session: FilesSessionLike) {
-  const transferId = item.id;
-  // 调用契约：仅 op.kind === 'localEntry' 的队列项进入本函数
-  const localEntry = (item.op as { entry: RemoteFileEntry } | null)?.entry;
-  try {
-    await invokeBackend('sftp_upload_start', {
-      sessionId: session.sessionId,
-      remotePath: item.remotePath,
-      transferId
-    });
-    const chunkSize = 8 * 1024 * 1024;
-    // 以「短块」为 EOF 判据，不信任目录列表时刻的 item.total：文件在列表后
-    // 增长（日志/导出中）不截断，size 记 0 的非空文件也能传完整。后端契约：
-    // fs_local_read_chunk 返回长度 < 请求长度 ⟺ 真 EOF（读满或读到 0）。
-    let offset = 0;
-    while (true) {
-      if (item.cancelled) break;
-      const chunk = await invokeBackend<number[]>('fs_local_read_chunk', {
-        path: localEntry!.path,
-        offset,
-        length: chunkSize
-      });
-      const bytes = Array.isArray(chunk) ? chunk : Array.from(chunk || []);
-      if (!bytes.length) break; // 0 字节 = 空文件或已读完
-      offset += bytes.length;
-      await invokeBackend('sftp_upload_chunk', {
-        sessionId: session.sessionId,
-        chunk: bytes,
-        transferId,
-        bytesTransferred: offset,
-        // 进度条分母（item.total 仅作显示基准）：文件可能已增长，取 max 防超 100%
-        totalBytes: Math.max(item.total, offset)
-      });
-      if (bytes.length < chunkSize) break; // 短块 = 真 EOF
-    }
-    if (item.cancelled) {
-      item.status = 'cancelled';
-      item.finishedAt = Date.now();
-      item.speed = 0;
-      item.eta = null;
-      pruneFinishedTransfers();
-      tc().announce('已取消上传：' + item.name, { level: 'warn' });
-      try {
-        await invokeBackend('sftp_upload_finalize', { transferId });
-      } catch {
-        // best-effort cleanup
-      }
-      return;
-    }
-    await invokeBackend('sftp_upload_finalize', { transferId });
-    item.status = 'done';
-    item.percent = 100;
-    item.transferred = offset;
-    // 文件大小在列表后变化（增长/收缩）：内容已按当前读到的完整上传，状态仍
-    // done，仅 warn 提示差异（item.total > 0 时才比对，0 起步的增长不弹）
-    if (item.total > 0 && offset !== item.total) {
-      tc().announce('文件在上传期间大小已变化（列目录时 ' + item.total + ' 字节，实际上传 ' + offset + ' 字节）：' + item.name, { level: 'warn' });
-    }
-    item.total = Math.max(item.total, offset);
-    item.eta = null;
-    item.finishedAt = Date.now();
-    pruneFinishedTransfers();
-    tc().announce('已上传本地文件：' + item.name, { level: 'success' });
-    await tc().refreshRemoteFiles(tc().remotePath.value).catch(() => null);
-  } catch (error) {
-    markTransferError(transferId, errorMessage(error));
-    tc().announce('上传本地文件失败：' + item.name + '：' + errorMessage(error), {
-      level: 'error',
-      action: { label: '重试', run: () => retryTransfer(transferId) }
-    });
-    try {
-      await invokeBackend('sftp_upload_finalize', { transferId });
-    } catch {
-      // best-effort cleanup
-    }
   }
 }
 

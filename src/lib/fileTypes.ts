@@ -37,7 +37,7 @@ assetId: string | null;
 
 /** 上传覆盖确认暂存（resolve 由 confirmFileOverwrite/cancelFileOverwrite 调用）。 */
 export interface PendingFileOverwrite {
-entry: File | RemoteFileEntry | null;
+entry: RemoteFileEntry | null;
 remoteTarget: string;
 resolve: (choice: boolean) => void;
 /**

@@ -17,7 +17,6 @@
 // - list_dir 用 resolved.join(name) 返回 logical path，不暴露 symlink 物理路径
 
 use serde::Serialize;
-use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use tauri::command;
 
@@ -43,12 +42,14 @@ fn home_dir_string() -> Result<String, String> {
 
 // 规范化路径（解析 ~ / home / 相对路径），但不 canonicalize（不跟随 symlink、不要求存在）。
 // 然后用 is_sensitive_path 黑名单拒绝系统目录。
+// pub(crate)：ssh::sftp 的流式上传（sftp_upload_from_file）经同一入口解析本机
+// 源路径，黑名单与 ~ 展开语义与文件面板读取保持一致（单点事实源）。
 //
 // v2.5 短名归一：路径存在时补一次 std::fs::canonicalize 再判（NTFS 8.3 短名
 // 如 C:\PROGRA~1 经 canonicalize 还原为 C:\Program Files，字面比对封不住短名）。
 // canonicalize 返回 verbatim 形式（\\?\C:\...），由 is_sensitive_path 内部剥离。
 // 判定用 canonical 形态，返回值仍用 logical 路径（不暴露 symlink 物理路径）。
-fn resolve_input_path(input: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve_input_path(input: &str) -> Result<PathBuf, String> {
     let trimmed = input.trim();
     let candidate: PathBuf = if trimmed.is_empty() || trimmed == "." || trimmed == "~" {
         PathBuf::from(home_dir_string()?)
@@ -343,78 +344,45 @@ pub fn fs_local_rename(old_path: String, new_path: String) -> Result<(), String>
         .map_err(|e| format!("rename failed {} -> {}: {e}", from.display(), to.display()))
 }
 
+/// 单路径 stat：供上传入口（原生文件对话框 / OS 拖入的路径列表）拿
+/// 名称/大小/类型——目录在此被前端过滤跳过（当前不支持目录上传），
+/// 大小作为传输队列的进度分母初始值（真实分母以流式上传的进度事件为准）。
+/// symlink_metadata 不跟随 symlink（与 list_dir 一致）。
 #[command]
-pub fn fs_local_read_chunk(path: String, offset: u64, length: u64) -> Result<Vec<u8>, String> {
+pub fn fs_local_stat(path: String) -> Result<RemoteFileEntry, String> {
     let target = resolve_input_path(&path)?;
     let meta = std::fs::symlink_metadata(&target)
         .map_err(|e| format!("stat failed for {}: {e}", target.display()))?;
-    if meta.file_type().is_symlink() || !meta.is_file() {
-        return Err(format!("not a regular file: {}", target.display()));
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| target.to_string_lossy().into_owned());
+    let kind = if meta.file_type().is_symlink() {
+        "symlink"
+    } else if meta.is_dir() {
+        "directory"
+    } else {
+        "file"
     }
-
-    let mut file = std::fs::File::open(&target)
-        .map_err(|e| format!("open failed for {}: {e}", target.display()))?;
-    file.seek(SeekFrom::Start(offset))
-        .map_err(|e| format!("seek failed for {}: {e}", target.display()))?;
-    let len = length.min(8 * 1024 * 1024) as usize;
-    let mut buf = vec![0; len];
-    // 读满请求长度或读到真 EOF（read 返回 0）为止。单次 read 不保证填满缓冲，
-    // 短读会让前端把「短块」误判为 EOF 提前终止上传循环。
-    // 契约：返回 Vec 长度 < 请求长度 ⟺ 真 EOF。
-    let mut filled = 0usize;
-    while filled < len {
-        let n = file
-            .read(&mut buf[filled..])
-            .map_err(|e| format!("read failed for {}: {e}", target.display()))?;
-        if n == 0 {
-            break; // 真 EOF
-        }
-        filled += n;
-    }
-    buf.truncate(filled);
-    Ok(buf)
-}
-
-/// 把一块字节写到本地文件：`offset == 0` 创建/截断，`offset > 0` 在既有内容上续写。
-///
-/// 为什么一个命令同时负责「建文件」和「续写」：下载侧不再把整份内容经 IPC 送回前端
-/// （1 GiB 文件经 JSON 数字数组序列化会膨胀成约 4 GiB 文本，前后端各驻留一份必然
-/// OOM），改为分块读远端、分块落盘。调用方只需「第一块 offset=0、其余块
-/// offset=已写字节数」这一条契约，不必先单独发一次 create（多一次 IPC 往返、
-/// 多一个「建了文件却没写内容」的中间态）。
-///
-/// 语义细节：
-/// - `offset == 0`：CREATE + TRUNCATE，覆盖同名旧文件（用户已在保存对话框确认过路径）。
-/// - `offset > 0`：不 CREATE，seek 到 offset 后写入。**文件不存在即报错**（不自动补建
-///   空文件）——否则「写第一块失败（例如本地磁盘满）+ 续写恰好成功」会产出一个头部
-///   空洞的坏文件，那种文件看起来完整、打开才发现损坏。
-/// - `offset` 超出当前长度：write 会先补零再写（与 POSIX/Windows 原生行为一致），
-///   显式接受这一行为而不是自作主张拒绝，因为补零区段是调用方算错 offset 的显式证据。
-///
-/// 失败一律返回可诊断错误串（含本地路径），不 panic：目录不存在、无权限、磁盘满、
-/// 目标被占用都会走到 `map_err` 上。此处不做系统目录白名单——沿用本文件 `fs_local_*`
-/// 的既有模型（黑名单由 resolve_input_path / is_sensitive_path 单点负责）。
-#[command]
-pub fn fs_local_write_chunk(path: String, offset: u64, bytes: Vec<u8>) -> Result<(), String> {
-    let target = resolve_input_path(&path)?;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true);
-    if offset == 0 {
-        // 首块负责建文件；后续块（offset > 0）刻意不带 create，语义由此与
-        // 「续写一个已存在的文件」绑定，文件被中途删掉时续写会显式失败而不是
-        // 悄悄建出一个只有尾部内容的短文件。
-        options.create(true).truncate(true);
-    }
-    let mut file = options
-        .open(&target)
-        .map_err(|e| format!("open failed for {}: {e}", target.display()))?;
-    if offset > 0 {
-        file.seek(SeekFrom::Start(offset))
-            .map_err(|e| format!("seek failed for {}: {e}", target.display()))?;
-    }
-    file.write_all(&bytes)
-        .map_err(|e| format!("write failed for {}: {e}", target.display()))?;
-    Ok(())
+    .to_string();
+    #[cfg(unix)]
+    let permissions = {
+        use std::os::unix::fs::PermissionsExt;
+        Some(format!("{:04o}", meta.permissions().mode() & 0o7777))
+    };
+    #[cfg(not(unix))]
+    let permissions = None;
+    Ok(RemoteFileEntry {
+        name,
+        path: target.to_string_lossy().into_owned(),
+        kind,
+        size: meta.len(),
+        modified: format_modified(meta.modified()),
+        permissions,
+        user: None,
+        group: None,
+    })
 }
 
 #[cfg(test)]

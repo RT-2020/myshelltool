@@ -44,20 +44,22 @@
 **SFTP**（`ssh.rs`）
 - `sftp_list_dir` / `sftp_read_file` / `sftp_write_file`
 - `sftp_list_dir` 的 **path 为空串 = 服务器默认目录**：后端 `canonicalize(".")` 解析登录用户真实家目录（root → /root）并在返回的 `path` 字段回传绝对路径；前端不再猜测 home（旧版 `/home/<username>` 对 root 必错、tag 硬编码目录不存在即 No such file，已废弃）
-- 分块上传：`sftp_upload_start` / `sftp_upload_chunk` / `sftp_upload_finalize`（防 IPC OOM）
+- 流式上传：`sftp_upload_from_file({ sessionId, localPath, remotePath, transferId })`（【v2.9】替代旧 `sftp_upload_start/chunk/finalize` 三件套）——前端只传本机路径，后端读盘直写 SFTP（1 MiB 读块 + russh-sftp 写流水线），**字节不再经 IPC**（旧 8 MiB 分块经 JSON 数字数组序列化约 4 倍膨胀）。进度经 `sftp-transfer-progress` 事件节流上报（与下载同口径：1 MiB / 200ms + 收尾必发）；`total` 取打开时刻的本地文件长度（传输期间增长不截断，读到 EOF）。本机路径经 `fs_local::resolve_input_path` 解析（系统目录黑名单与面板读取同源）。取消/中途失败会**尽力删除远端半截文件**（对称下载侧的半截清理）。
+- `sftp_upload_cancel({ transferId })` → 置共享取消旗标，上传循环在下一个读块边界中止（幂等，找不到条目不报错）；前端 `cancelTransfer` 先置本地标记再调本命令，后端 reject 后按取消态收敛（不挂重试）。
 - `sftp_download_to_file` / `sftp_mkdir` / `sftp_rename` / `sftp_remove` / `sftp_stat`
   - 下载已改为**流式落盘**（后端分块读 → `tokio::fs` 直接写本地文件，进度事件节流 1 MiB / 200ms）；字节不再经过 IPC，也不返回 `Vec<u8>`。前端用 `plugin:dialog|open`（`directory: true`）让用户选**保存目录**、文件名沿用远端名，再调用它；批量下载整批只弹一次目录框（不是每文件一次）。
 
 **隧道**（`ssh.rs`，仅内存）
 - `tunnel_create` / `tunnel_start` / `tunnel_stop` / `tunnel_list` / `tunnel_delete`
+- **【v2.9】remote（远程端口转发）已实现**：`TunnelConfig.asset_id`（serde default None）是 remote 的必填认证上下文——`tunnel_start` 按 asset_id 从本地资产库解析认证（与 MCP `exec_on_asset` 同路径），经 `connect_headless_with` 建**专用连接**后发 `tcpip-forward`（russh 0.49 的该方法要 `&mut Handle`，共享 `Arc<Handle>` 给不出）；host key 用 headless 同款「仅 known_hosts 精确匹配」策略（后台连接不弹窗）。到达的 `forwarded-tcpip` 通道只在「端口与已登记转发匹配且地址相容」时接管桥接到 `local_addr:local_port`，未登记通道一律丢弃（防恶意服务器借客户端探测本机服务）。停止/删除/会话清理 abort 驻守任务 → drop Handle → 服务器监听随连接消失；驻守任务发现连接死亡会回写 `active=false` + error（tunnel_list 不谎报）。local/dynamic 不变（复用会话句柄）。
 
 **资源监控**（`resource_monitor.rs`）
 - `resource_monitor_start` / `_stop` / `_snapshot` / `_list_active`
 
 **本地文件**（`fs_local.rs`）
-- `fs_local_home_dir` / `fs_local_list_dir` / `fs_local_mkdir` / `fs_local_delete` / `fs_local_rename` / `fs_local_read_chunk` / `fs_local_write_chunk`
-  - `fs_local_write_chunk(path, offset, bytes)`：`offset == 0` 时创建/截断，`offset > 0` 时以读写方式打开并 seek 续写（文件不存在返回 Err，不隐式创建）。与 `fs_local_read_chunk` 配对，供分块读写本地文件。
-  - 说明：流式下载（`sftp_download_to_file`）后端用**单个写句柄**全程追加，不逐块走本命令——本命令是给前端分块写本地文件用的通用能力，当前暂无调用方。
+- `fs_local_home_dir` / `fs_local_list_dir` / `fs_local_mkdir` / `fs_local_delete` / `fs_local_rename` / `fs_local_stat`
+  - `fs_local_stat(path)` → 单路径 stat（`RemoteFileEntry`：name/path/kind/size/modified），供上传入口（原生文件对话框 / OS 拖入）过滤目录并取进度分母初始值。
+  - 【v2.9 已删】`fs_local_read_chunk` / `fs_local_write_chunk`：分块上传链路消亡后双双无调用方（后者本就无），按死代码红线移除。
 
 **MCP 服务**（`lib.rs` 调 `mcp/http_server.rs` + `mcp/probe.rs`）
 - `mcp_status` → 【v1.4】HTTP 健康检查 + 聚合能力清单。返回 `McpStatus { serverName, serverVersion, endpoint, dataDir, probe: McpProbeResult, tools[], resources[], prompts[] }`。`probe.ok` 是状态灯唯一信号源（向自己的 HTTP endpoint 发 initialize 握手，不再 spawn 子进程）。`endpoint` 是 MCP HTTP URL（如 `http://127.0.0.1:41235/mcp`），供用户配置 MCP host。

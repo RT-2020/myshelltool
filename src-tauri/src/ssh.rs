@@ -53,14 +53,13 @@ pub struct SshSessionManager {
     sftp_cache: HashMap<String, Arc<Mutex<SftpSession>>>,
     tunnels: HashMap<String, TunnelStatus>,
     tunnel_handles: HashMap<String, tokio::task::JoinHandle<()>>,
-    /// transfer_id → 上传 writer 任务入口。
+    /// transfer_id → 上传取消旗标。
     ///
-    /// 这里**不存** `Box<dyn AsyncWrite>`：写盘是要 await 的网络 IO，若把 writer
-    /// 放在表里，每次 `sftp_upload_chunk` 都得在持有传输表锁（以及它的宿主——
-    /// 全局 `ssh_sessions` 锁）的情况下 await 写入，于是 `ssh_write` / `ssh_resize`
-    /// 这些抢同一把全局锁的命令全部排队——一上传整个应用的终端输入就会卡住。
-    /// 现在锁内只 clone sender，IO 在锁外由独立任务做。
-    upload_files: Arc<Mutex<HashMap<String, UploadEntry>>>,
+    /// 流式上传（sftp_upload_from_file）是单条 invoke 跑全程，没有独立 writer
+    /// 任务可 abort：取消靠这面共享旗标（循环逐块检查）。条目带 session_id，
+    /// cleanup_session_tables 据此把会话的在途上传全部置旗——否则断连后
+    /// 上传循环要等产品级写超时（120s）才停。
+    upload_cancels: Arc<Mutex<HashMap<String, UploadCancelEntry>>>,
     app: AppHandle,
     secret_store_dir: PathBuf,
     known_hosts_path: PathBuf,
@@ -78,7 +77,7 @@ impl SshSessionManager {
             sftp_cache: HashMap::new(),
             tunnels: HashMap::new(),
             tunnel_handles: HashMap::new(),
-            upload_files: Arc::new(Mutex::new(HashMap::new())),
+            upload_cancels: Arc::new(Mutex::new(HashMap::new())),
             app,
             secret_store_dir,
             known_hosts_path,
@@ -283,36 +282,20 @@ pub(crate) async fn cleanup_session_tables(
         }
         mgr.tunnels.remove(&tid);
     }
-    // 该会话的在途上传：移除并 abort writer 任务。
-    //
-    // 为什么是 abort 而不是只 drop sender：drop sender 只能让**空闲**的 writer
-    // 的 `rx.recv()` 返回 None 而退出；若它此刻正阻塞在 `write_all`（远端不响应），
-    // drop 不会打断它，远端 channel 继续被占。abort 直接终止任务 → drop File →
-    // 关闭 SFTP channel，才真正把 MaxSessions 配额还回去。
-    // 找不到该会话的传输时是纯 no-op（本函数可重入）。
-    let transfer_ids_to_abort: Vec<String> = mgr
-        .upload_files
-        .lock()
-        .await
-        .iter()
-        .filter(|(_, entry)| entry.session_id == session_id)
-        .map(|(id, _)| id.clone())
-        .collect();
-    if !transfer_ids_to_abort.is_empty() {
-        // 摘条目与取句柄在同一临界区内完成（两者都是同步操作，不涉及 IO）：
-        // 只要任务存在，它的句柄就随条目一起在表里，因此这里必定取得到。
-        let mut handles_to_abort = Vec::new();
-        {
-            let mut uploads = mgr.upload_files.lock().await;
-            for tid in transfer_ids_to_abort {
-                if let Some(entry) = uploads.remove(&tid) {
-                    handles_to_abort.push(entry.handle);
-                }
+    // 该会话的在途上传：置取消旗标并摘条目。流式上传没有 writer 任务可 abort，
+    // 循环在下一个块边界看到旗标即停（随后的 SFTP 写多半也会因会话已死而失败，
+    // 两条路径殊途同归）。找不到该会话的传输时是纯 no-op（本函数可重入）。
+    {
+        let mut cancels = mgr.upload_cancels.lock().await;
+        let transfer_ids: Vec<String> = cancels
+            .iter()
+            .filter(|(_, entry)| entry.session_id == session_id)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for tid in transfer_ids {
+            if let Some(entry) = cancels.remove(&tid) {
+                entry.flag.store(true, Ordering::SeqCst);
             }
-        }
-        // 锁已释放，再逐个 abort（abort 不需要任何锁，也不涉及 IO）。
-        for h in handles_to_abort {
-            h.abort();
         }
     }
 }

@@ -170,10 +170,9 @@ function requestClose() {
 // ============================================================
 async function requestCloseAssetWindow() {
   // 传输中守卫（置于最前，早于会话统计与确认弹窗）：销毁窗口会连 JS 上下文
-  // 一起销毁，但 Rust 侧 SshSessionManager 里 sftp_upload_start 建立的写入句柄
-  // 无人清理——远端留下的是「半截文件」（不是没传、也不是传完，而是损坏的不
-  // 完整文件），且每个泄漏句柄持续占用远端 OpenSSH 的 MaxSessions 配额（默认
-  // 10），耗尽后该服务器上所有 SFTP/监控通道都报 Channel open failed。
+  // 一起销毁，但 Rust 侧的流式上传（sftp_upload_from_file）仍在跑——取消旗标
+  // 存在本窗口的 Pinia 上下文里，窗口没了就没人再能取消它，远端可能留下
+  // 「半截文件」（不是没传、也不是传完，而是损坏的不完整文件）。
   // 因此有在途/排队传输时直接阻断关窗，不进入会话确认流程、不销毁窗口。
   // （不做主动取消/断开：编排不在关窗流程范围内，交由用户在传输列表处理。）
   if (activeTransferCount.value > 0) {

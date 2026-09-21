@@ -1,37 +1,19 @@
-//! SFTP 文件操作（列目录/读写/分块上传/流式下载/建删改名/stat）。
+//! SFTP 文件操作（列目录/读写/流式上传/流式下载/建删改名/stat）。
 //! 从 ssh.rs 按域拆出（architecture-log Target 1），零逻辑变更。
 
 use super::*;
 
-/// 上传 writer 任务的帧：数据块，或「收尾并回传 flush 结果」的控制帧。
+/// 上传取消表条目：所属会话 + 取消旗标。
 ///
-/// 为什么不能只用 `Vec<u8>`：收尾必须能把 `shutdown()` 的**真实**错误回传给调用方
-/// ——`send()` 成功只证明帧进了队列，不代表数据已落盘（写失败发生在任务侧），
-/// 所以控制帧需要一个一次性回传通道把 `Result` 送回 `sftp_upload_finalize`。
-enum UploadFrame {
-    Data(Vec<u8>),
-    /// 收尾：writer 收到后 `shutdown()`，把结果经该 sender 回传，然后退出循环。
-    Finish(oneshot::Sender<Result<(), String>>),
-}
-
-/// 上传传输表里的一条：发帧用的 sender + 该任务的身份/终止手段。
-///
-/// 表里只存 sender 是不够的：任务若正阻塞在 `write_all`（远端不应答），
-/// drop sender 并不能打断它（任务自持一份 sender，通道不会关闭），远端 SFTP
-/// channel 会一直被占着（每条吃一个 OpenSSH `MaxSessions` 配额）。因此同时留下
-/// `session_id`（供清理时筛出本会话）与 `JoinHandle`（供 `abort()` 真正终止任务
-/// → drop `File` → 关闭 channel）。
-///
-/// **为何句柄是必填而非可选槽位**：任务一旦存在，就必须能被打扫——所以句柄在
-/// 「插入表项」这一个临界区内就随条目一起写入，不存在「任务已 spawn 但句柄还没
-/// 登记」的中间态。为此 `sftp_upload_start` 的次序是「先 spawn 拿句柄 → 再加锁
-/// 查重并插入」；命中重复 id 时 abort 掉刚 spawn 的任务，而不是留下孤儿。
-pub struct UploadEntry {
-    /// 该传输所属的 SSH 会话，`cleanup_session_tables` 据此终止本会话的在途上传。
+/// 流式上传（sftp_upload_from_file）是单条 invoke 跑全程，没有旧三件套的 writer
+/// 任务可 abort；取消靠这面共享旗标——循环在块边界（≤1 MiB）看到即停。
+/// 条目必须带 session_id：cleanup_session_tables 据此把「本会话的在途上传」
+/// 全部置旗并摘除，避免会话销毁后旗标条目泄漏（transfer_id 不复用时无人再删）。
+pub struct UploadCancelEntry {
+    /// 该传输所属的 SSH 会话，`cleanup_session_tables` 据此筛出本会话的在途上传。
     pub session_id: String,
-    tx: tokio::sync::mpsc::Sender<UploadFrame>,
-    /// writer 任务的句柄，供 `cleanup_session_tables` abort（见上）。
-    pub handle: tokio::task::JoinHandle<()>,
+    /// 取消旗标：sftp_upload_cancel / 会话清理置位，上传循环逐块检查。
+    pub flag: Arc<AtomicBool>,
 }
 
 /// SFTP DirEntry → RemoteFileEntry 共享映射（sftp_list_dir 与
@@ -255,226 +237,203 @@ struct TransferProgressEvent {
     total_bytes: u64,
 }
 
+/// 流式上传：前端只传本机路径，后端读盘直写 SFTP，**字节不再经过 IPC**。
+///
+/// 替代旧三件套（`sftp_upload_start/chunk/finalize` + 前端 8 MiB 分块 invoke）：
+/// 旧链路每块经 JSON 数字数组序列化约 4 倍膨胀（8 MiB 块 ≈ 32 MB 文本），
+/// 前端 await 逐块串行还把所有传输压在一次事件循环里。本命令与
+/// `sftp_download_to_file` 对称：单条 invoke 跑全程，进度经
+/// `sftp-transfer-progress` 事件节流上报（常量与下载共用）。
+///
+/// 取消：`sftp_upload_cancel` 置共享旗标，循环在块边界（≤ UPLOAD_CHUNK_SIZE）
+/// 看到即停。取消与中途失败都会**尽力删除远端半截文件**（对称下载侧的半截
+/// 清理：一个「看起来完整」的截断文件比没有文件更危险）。
 #[tauri::command]
-pub async fn sftp_upload_start(
+pub async fn sftp_upload_from_file(
     state: State<'_, AppState>,
     session_id: String,
+    local_path: String,
     remote_path: String,
     transfer_id: String,
 ) -> Result<(), String> {
-    // lossy 守卫（同 sftp_write_file：create 的覆盖语义分不清新建与覆盖）
+    // lossy 守卫（create = O_CREAT|O_TRUNC 覆盖语义，分不清新建与覆盖——
+    // 失真名可能静默覆盖字面含 U+FFFD 的另一个真实文件）
     if myshelltool_core::is_lossy_remote_path(&remote_path) {
         return Err(myshelltool_core::lossy_remote_path_error(&remote_path));
     }
-    // 时序不能变：先在 sftp_arc 锁内建好远端文件，**之后**才取 ssh_sessions 锁。
-    let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
-    let sftp = sftp_arc.lock().await;
-    let file = sftp
-        .create(&remote_path)
+    // 本机路径走 fs_local 同一入口：系统目录黑名单（is_sensitive_path 单点事实源）
+    // 与 ~ 展开/规范化语义和文件面板读取完全一致。
+    let local = crate::fs_local::resolve_input_path(&local_path)?;
+    let meta = std::fs::symlink_metadata(&local)
+        .map_err(|e| format!("stat local file failed for {}: {e}", local.display()))?;
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        return Err(format!("not a regular file: {}", local.display()));
+    }
+    let mut local_file = tokio::fs::File::open(&local)
         .await
-        .map_err(|e| format!("SFTP create failed: {e}"))?;
-    drop(sftp);
+        .map_err(|e| format!("open local file failed for {}: {e}", local.display()))?;
+    // total 取打开时刻的长度，仅作进度条分母：文件在传输期间增长不截断（读到 EOF
+    // 为止），与旧分块契约（短块 = EOF，不信任既有 size）一致。
+    let total = local_file
+        .metadata()
+        .await
+        .map(|m| m.len())
+        .unwrap_or(meta.len());
 
-    // 任务里拿不到 AppState，所以预先 clone 出 Arc 与 id。
-    let sessions_arc = state.ssh_sessions.clone();
-    let task_transfer_id = transfer_id.clone();
+    // 时序不能变：先在 sftp_arc 锁内建好远端文件（create 有一次远端往返），
+    // **之后**才取 ssh_sessions 锁登记取消条目。
+    let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
+    let mut remote_file = {
+        let sftp = sftp_arc.lock().await;
+        sftp.create(&remote_path)
+            .await
+            .map_err(|e| format!("SFTP create failed: {e}"))?
+    };
 
-    // 有界通道（容量 4）形成背压：慢链路上 chunk 会在 send 处等待，而不是在内存里
-    // 无上限堆积成 OOM。
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<UploadFrame>(4);
-    // 任务自持一份 sender（用于退出时比对「表项还是不是自己这一条」）。
-    let task_tx = tx.clone();
-
-    // **先 spawn、再在同一临界区里查重并插入**，理由：
-    // - 句柄只能由 spawn 产生，而表项必须从一开始就带着句柄 —— 否则会出现「任务已
-    //   存在但清理侧拿不到句柄」的窗口（历史实现用空槽位缓解，但「复核归属」与
-    //   「填槽」仍在两次加锁之间，中间照样能被 cleanup 插进来，留下永不退出的孤儿）。
-    // - 先 spawn 的唯一代价是「命中重复 id 时要自己收尾」：所以下面那个分支会
-    //   abort 掉刚 spawn 的任务，而不是像最初版本那样直接 return 泄漏一个孤儿。
-    let writer_handle = tokio::spawn(async move {
-        use tokio::io::AsyncWriteExt;
-        let mut file = file;
-        // 单次写入 120s 上限：死连接（半开 TCP）上 write_all 永不返回，没有这个
-        // 时限任务会永久挂住并一直占着远端 channel。
-        const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
-        // 收尾上限（更短）：`shutdown()` 要把排队的 write ack 全部排空，半开 TCP 下
-        // 这个等待理论无界。它由 `finalize` 的 oneshot 直接等（见 sftp_upload_finalize
-        // 的 120s 上限），若不在这里收口，任务会在 finalize 超时之后继续占着 File 与
-        // 远端 channel。60s 给「慢链路但活着」的连接留足余量。
-        const FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
-        while let Some(frame) = rx.recv().await {
-            match frame {
-                UploadFrame::Data(bytes) => {
-                    let write = file.write_all(&bytes);
-                    match tokio::time::timeout(WRITE_TIMEOUT, write).await {
-                        Ok(Ok(())) => {}
-                        Ok(Err(e)) => {
-                            // 写失败后这条传输无法继续：结束任务（下面的自移除会清掉表项），
-                            // 由前端收到错误后重新发起。
-                            error!(
-                                "sftp upload {task_transfer_id}: write failed: {e}; aborting writer task"
-                            );
-                            break;
-                        }
-                        Err(_) => {
-                            error!(
-                                "sftp upload {task_transfer_id}: write timed out after {}s; aborting writer task",
-                                WRITE_TIMEOUT.as_secs()
-                            );
-                            break;
-                        }
-                    }
-                }
-                UploadFrame::Finish(resp) => {
-                    // 收尾必须回传 shutdown() 的真实结果：send() 成功只代表入队。
-                    // 外面再包一层超时：半开连接上排空 write ack 可能永不完成，
-                    // 没有它这个任务会一直占着 File 与远端 channel（见 FLUSH_TIMEOUT）。
-                    let result = match tokio::time::timeout(FLUSH_TIMEOUT, file.shutdown()).await {
-                        Ok(Ok(())) => Ok(()),
-                        Ok(Err(e)) => Err(format!("SFTP flush failed: {e}")),
-                        Err(_) => Err(format!(
-                            "SFTP flush timeout ({}s): remote not draining write acks",
-                            FLUSH_TIMEOUT.as_secs()
-                        )),
-                    };
-                    let _ = resp.send(result);
-                    break;
-                }
-            }
-        }
-        // 已经 shutdown 过的 File 再 drop 是幂等的。走到这里有两种情况：
-        // 1) 正常的 Finish 收尾；2) 通道关闭（`rx.recv()` 返回 None）—— 只会发生在
-        //    表项被移除（finalize 取走）或被 abort 之后，此时 drop(file) 关闭远端 channel。
-        drop(file);
-
-        // 自移除：任务退出时必须把表项摘掉，否则 upload_files 会随每次上传泄漏条目
-        // （写失败的任务、以及前端忘了 finalize 的传输都会留下垃圾）。
-        // 这条路径只取内层 upload_files 锁（不经全局 ssh_sessions 锁的方式见下）：
-        // 顺序与全仓一致（先 ssh_sessions 后 upload_files），不构成死锁环。
-        let mgr = sessions_arc.lock().await;
-        let mut uploads = mgr.upload_files.lock().await;
-        // 只摘「还是自己这一条」的：同一个 transfer_id 可能已被后续上传重新占用，
-        // 直接 remove 会把新传输的 sender 删掉。
-        // （tokio::sync::mpsc::Sender::same_channel 自 tokio 1.36 起可用，本仓库锁定 1.52。）
-        if uploads
-            .get(&task_transfer_id)
-            .is_some_and(|entry| entry.tx.same_channel(&task_tx))
-        {
-            uploads.remove(&task_transfer_id);
-        }
-    });
-
-    // 查重、**会话存活校验**、插入在**同一次持锁期间**完成（中间无 await），
-    // 因此「插入成功」才是这条传输真正的提交点：在此之前它不属于任何会话表，
-    // 在此之后它必定带着可 abort 的句柄、且所属会话仍然存在。
-    //
-    // 为什么必须校验会话存活：`create()` 那一步要跑一次远端往返（可能数百毫秒到
-    // 数秒），这期间 `cleanup_session_tables` 完全可能把整个会话拆掉（远端 EOF 的
-    // PTY 自清理、或用户点断开）。若此处只查 transfer_id 重复就插入，条目会挂在
-    // 一个**已被销毁**的会话上：session_id 是 uuid v4 不会复用，此后没有任何一次
-    // cleanup 会再匹配到它（该会话的清理早已跑完，而全局清理永不遍历旧 id），
-    // writer 又自持 sender（`rx.recv()` 永不返回 None）→ 永久阻塞并占住远端 channel。
+    // 取消登记 + 重复 id 查重 + 会话存活校验在**同一临界区**（中间无 await）。
+    // 必须校验会话存活：上面 create 的远端往返期间 cleanup_session_tables 完全可能
+    // 已把整个会话拆掉；若登记到一个已销毁的会话上，该会话的清理早已跑完，
+    // 这条取消条目将永远不会被任何清理碰到（泄漏到进程结束）。
+    let flag = Arc::new(AtomicBool::new(false));
     {
         let ssh_mgr = state.ssh_sessions.lock().await;
-        let session_alive = ssh_mgr.sessions.contains_key(&session_id);
-        let mut uploads = ssh_mgr.upload_files.lock().await;
-        // 重复 id（前端在「重试」弹出后抢跑）：收掉刚 spawn 的任务再报错。
-        // abort → drop `file` → 关闭刚 create 的远端文件句柄；本地的 tx/rx 也随栈释放。
-        // 注意重复调用**已经**在更早处 `create` 过一次（truncate），属既存行为。
-        if uploads.contains_key(&transfer_id) {
-            writer_handle.abort();
+        let mut cancels = ssh_mgr.upload_cancels.lock().await;
+        if cancels.contains_key(&transfer_id) {
             return Err(format!("transfer_id {transfer_id} already in progress"));
         }
-        if !session_alive {
-            writer_handle.abort();
+        if !ssh_mgr.sessions.contains_key(&session_id) {
             return Err(format!("session {session_id} closed during upload start"));
         }
-        uploads.insert(
-            transfer_id,
-            UploadEntry {
-                session_id,
-                tx,
-                handle: writer_handle,
+        cancels.insert(
+            transfer_id.clone(),
+            UploadCancelEntry {
+                session_id: session_id.clone(),
+                flag: flag.clone(),
             },
         );
-        // 作用域到此结束：两把锁都在这里释放，绝不跨越任何 await。
     }
-    Ok(())
-}
 
-#[tauri::command]
-pub async fn sftp_upload_chunk(
-    state: State<'_, AppState>,
-    _session_id: String,
-    chunk: Vec<u8>,
-    transfer_id: String,
-    bytes_transferred: u64,
-    total_bytes: u64,
-) -> Result<(), String> {
-    // 锁内只 clone 出 sender 与 app，**不做任何 IO**。
-    let (tx, app) = {
+    let app = { state.ssh_sessions.lock().await.app.clone() };
+
+    // 主体放进 async 块：取消/失败统一走下面的清理分支（删远端半截文件）。
+    let transfer = async {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut buf = vec![0u8; UPLOAD_CHUNK_SIZE];
+        let mut written: u64 = 0;
+        let mut last_emit = tokio::time::Instant::now();
+        let mut last_emit_bytes: u64 = 0;
+
+        loop {
+            // 取消检查在块边界：一个块最多 UPLOAD_CHUNK_SIZE，取消延迟有上界。
+            if flag.load(Ordering::SeqCst) {
+                return Err("upload cancelled by user".to_string());
+            }
+            let n = local_file
+                .read(&mut buf)
+                .await
+                .map_err(|e| format!("read local file failed for {}: {e}", local.display()))?;
+            if n == 0 {
+                break; // 真 EOF
+            }
+            // 单次写入 120s 上限：死连接（半开 TCP）上 write_all 永不返回
+            // （旧 writer 任务同一契约，随流式化平移）。
+            match tokio::time::timeout(WRITE_TIMEOUT, remote_file.write_all(&buf[..n])).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => return Err(format!("SFTP write failed: {e}")),
+                Err(_) => {
+                    return Err(format!(
+                        "SFTP write timeout ({}s): remote not responding",
+                        WRITE_TIMEOUT.as_secs()
+                    ))
+                }
+            }
+            written += n as u64;
+
+            // 节流（与下载同口径）：满 1 MiB 且满 200ms 才发；写完必发（收尾）。
+            let due_by_bytes = written - last_emit_bytes >= PROGRESS_EMIT_MIN_BYTES;
+            let due_by_time = last_emit.elapsed() >= PROGRESS_EMIT_MIN_INTERVAL;
+            if due_by_bytes && due_by_time {
+                let _ = app.emit(
+                    "sftp-transfer-progress",
+                    TransferProgressEvent {
+                        transfer_id: transfer_id.clone(),
+                        bytes_transferred: written,
+                        total_bytes: total,
+                    },
+                );
+                last_emit = tokio::time::Instant::now();
+                last_emit_bytes = written;
+            }
+        }
+
+        // 收尾必发一次（尾部不足阈值时的最终进度）。
+        let _ = app.emit(
+            "sftp-transfer-progress",
+            TransferProgressEvent {
+                transfer_id: transfer_id.clone(),
+                bytes_transferred: written,
+                total_bytes: total,
+            },
+        );
+
+        // 显式 shutdown 并回传真实结果（旧 finalize 的 120s 等 ack 契约随流式化
+        // 平移为本地的 60s 上限）：远端不应答时不能让这条 invoke 永久挂住。
+        match tokio::time::timeout(FLUSH_TIMEOUT, remote_file.shutdown()).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(format!("SFTP flush failed: {e}")),
+            Err(_) => Err(format!(
+                "SFTP flush timeout ({}s): remote not draining write acks",
+                FLUSH_TIMEOUT.as_secs()
+            )),
+        }
+    }
+    .await;
+
+    // 摘取消条目：只摘「还是自己这一条」的（Arc 同一性比对）——取消已在
+    // cleanup_session_tables 摘除（会话断开）时不误删后续同 id 的新传输。
+    {
         let ssh_mgr = state.ssh_sessions.lock().await;
-        let app = ssh_mgr.app.clone();
-        let uploads = ssh_mgr.upload_files.lock().await;
-        let entry = uploads
+        let mut cancels = ssh_mgr.upload_cancels.lock().await;
+        if cancels
             .get(&transfer_id)
-            .ok_or_else(|| format!("transfer_id {transfer_id} not started"))?;
-        (entry.tx.clone(), app)
-        // 两把锁在此 drop；send 在锁外 await。
-    };
+            .is_some_and(|entry| Arc::ptr_eq(&entry.flag, &flag))
+        {
+            cancels.remove(&transfer_id);
+        }
+    }
 
-    tx.send(UploadFrame::Data(chunk))
-        .await
-        .map_err(|_| format!("SFTP write failed: transfer task for {transfer_id} is gone"))?;
+    if let Err(e) = transfer {
+        // 先释放远端文件句柄再删半截文件（drop 不向远端等待应答，顺序仅为清晰）。
+        drop(remote_file);
+        // 尽力删除远端半截文件：不删的话远端会留下一个**看起来完整**的截断文件，
+        // 下次有人打开才发现内容不全，且无从分辨是上传失败还是源文件本身损坏。
+        // 删除失败只记日志不上报——真正的失败原因（e）比清理失败更值得占用错误串。
+        let sftp = sftp_arc.lock().await;
+        if let Err(cleanup_err) = sftp.remove_file(&remote_path).await {
+            warn!("sftp upload cleanup failed for {remote_path}: {cleanup_err}");
+        }
+        return Err(e);
+    }
 
-    let _ = app.emit(
-        "sftp-transfer-progress",
-        TransferProgressEvent {
-            transfer_id,
-            bytes_transferred,
-            total_bytes,
-        },
-    );
     Ok(())
 }
 
+/// 取消在途上传：置共享旗标，上传循环在下一个块边界停止并清理远端半截文件。
+///
+/// 找不到条目**不报错**：传输可能刚好已完成/已被会话清理摘掉，取消是幂等的
+/// 尽力而为——前端队列状态由 runPathUpload 按 invoke 的最终结果收敛。
 #[tauri::command]
-pub async fn sftp_upload_finalize(
+pub async fn sftp_upload_cancel(
     state: State<'_, AppState>,
     transfer_id: String,
 ) -> Result<(), String> {
-    // 取出即从表里摘掉：之后该 id 可以立刻被新上传复用，所以 writer 任务退出时的
-    // 自移除必须容忍「键已不存在」（见 sftp_upload_start 里的 same_channel 判断）。
-    let tx = {
-        let ssh_mgr = state.ssh_sessions.lock().await;
-        let mut uploads = ssh_mgr.upload_files.lock().await;
-        uploads
-            .remove(&transfer_id)
-            .ok_or_else(|| format!("transfer_id {transfer_id} not started"))?
-            .tx
-    };
-
-    // 收尾等真实结果，同样加超时：远端不应答时不能让这个 invoke 永久挂住。
-    const FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
-    let (resp_tx, resp_rx) = oneshot::channel::<Result<(), String>>();
-    // send 失败 = writer 任务已退出（例如写失败后自杀），此时没人会回传结果。
-    if tx.send(UploadFrame::Finish(resp_tx)).await.is_err() {
-        return Err(format!(
-            "SFTP flush failed: upload task for {transfer_id} is gone"
-        ));
+    let ssh_mgr = state.ssh_sessions.lock().await;
+    let cancels = ssh_mgr.upload_cancels.lock().await;
+    if let Some(entry) = cancels.get(&transfer_id) {
+        entry.flag.store(true, Ordering::SeqCst);
     }
-    match tokio::time::timeout(FLUSH_TIMEOUT, resp_rx).await {
-        Ok(Ok(Ok(()))) => Ok(()),
-        Ok(Ok(Err(e))) => Err(e),
-        // 回传通道被 drop = 任务异常结束（abort / panic），没拿到真实结论。
-        Ok(Err(_)) => Err(format!(
-            "SFTP flush failed: upload task for {transfer_id} ended unexpectedly"
-        )),
-        Err(_) => Err(format!(
-            "SFTP flush failed: upload task for {transfer_id} timed out after {}s",
-            FLUSH_TIMEOUT.as_secs()
-        )),
-    }
+    Ok(())
 }
 
 /// 分块读取远端文件并直接流式落盘到本地，**不再把文件内容经 IPC 返回前端**。
@@ -491,6 +450,13 @@ const DOWNLOAD_CHUNK_SIZE: usize = 64 * 1024;
 const PROGRESS_EMIT_MIN_BYTES: u64 = 1024 * 1024;
 /// 距上次 emit 至少这么久才允许再发一次（大文件按时间给反馈，避免块数决定事件数）。
 const PROGRESS_EMIT_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+/// 流式上传的本地读块大小：russh-sftp 的 write_all 内部按 max_concurrent_writes
+/// 窗口流水线发 SSH_FXP_WRITE，1 MiB 块兼顾吞吐与取消响应（旗标在块边界检查）。
+const UPLOAD_CHUNK_SIZE: usize = 1024 * 1024;
+/// 单次 SFTP 写入上限：死连接（半开 TCP）上 write_all 永不返回。
+const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// 上传收尾（shutdown 排空 write ack）上限：半开连接上这个等待理论无界。
+const FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[tauri::command]
 pub async fn sftp_download_to_file(

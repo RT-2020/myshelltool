@@ -171,7 +171,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
                   />
                   <span>{{ pillLabel(item) }}</span>
                 </span>
-                <!-- 取消：仅上传可分块取消（下载为整块 invoke，后端无中断通道，不渲染按钮） -->
+                <!-- 取消：仅上传可取消（sftp_upload_cancel 旗标通道）；下载为整块 invoke，后端无中断通道，不渲染按钮 -->
                 <button
                   v-if="item.direction === 'upload' && (item.status === 'running' || item.status === 'pending')"
                   class="transfer-row-action"

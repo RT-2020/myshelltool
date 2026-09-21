@@ -22,7 +22,9 @@ import {
 interface TunnelsWorkbenchBridge {
   announce(message: string): unknown;
   modal: ModalState;
-  sessionsStore(): { activeSession: { sessionId: string } | null } | null;
+  sessionsStore(): {
+    activeSession: { sessionId: string; asset?: { id?: string | null } | null } | null;
+  } | null;
 }
 
 export const useTunnelsStore = defineStore('tunnels', () => {
@@ -66,10 +68,13 @@ export const useTunnelsStore = defineStore('tunnels', () => {
 
   async function createTunnel(form: Record<string, unknown>) {
     const sessionsStore = wb().sessionsStore();
-    const sessionId = sessionsStore?.activeSession?.sessionId || '';
+    const active = sessionsStore?.activeSession;
+    const sessionId = active?.sessionId || '';
     const config = normalizeTunnelConfig({
       id: 'tunnel-' + Date.now(),
       session_id: sessionId,
+      // 远程转发走专用连接（后端按资产库重认证），必须携带资产 id 作为认证上下文
+      asset_id: active?.asset?.id ?? null,
       ...form
     });
     await invokeBackend('tunnel_create', { config });

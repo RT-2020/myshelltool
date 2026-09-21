@@ -25,7 +25,10 @@ interface TauriWindowLike {
   /** 窗口 label（跨窗口握手就绪判定用：`main` / `asset-<sanitized id>`）。 */
   label?: string;
   listen?: (event: string, handler: TauriEventHandler) => Promise<TauriUnlistenFn>;
+  /** OS 文件拖放事件（dragDropEnabled 默认开启时由 Tauri 拦截并转发：enter/over/drop/leave）。 */
+  onDragDropEvent?: (handler: (event: TauriEvent<{ type: string; paths?: string[] }>) => void) => Promise<TauriUnlistenFn>;
   minimize?: () => Promise<void>;
+  maximize?: () => Promise<void>;
   toggleMaximize?: () => Promise<void>;
   close?: () => Promise<void>;
   isMaximized?: () => Promise<boolean>;

@@ -32,6 +32,8 @@ export interface NormalizedTunnelConfig {
   remote_port: number;
   session_id: string;
   auto_start: boolean;
+  /** 远程转发（kind === 'remote'）的认证资产来源（本地资产库 id）；其余类型为 null。 */
+  asset_id: string | null;
 }
 
 /** normalizeTunnelStatus 的返回契约。 */
