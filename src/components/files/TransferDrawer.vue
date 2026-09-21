@@ -16,7 +16,7 @@ import type { Component } from 'vue';
 import { storeToRefs } from 'pinia';
 import { Upload, Download, ChevronDown, AlertCircle, CheckCircle2, Loader2, XCircle, X, RotateCcw, ArrowUpDown } from 'lucide-vue-next';
 import { useFilesStore } from '@/stores/files';
-import { formatSpeed, formatEta } from '@/lib/transferUtils';
+import { formatBytes, formatSpeed, formatEta } from '@/lib/transferUtils';
 import type { TransferQueueItem } from '@/lib/transferUtils';
 import AppTabGroup from '@/components/ui/AppTabGroup.vue';
 
@@ -52,13 +52,6 @@ const filteredQueue = computed(() => {
     case 'failed': return q.filter(i => i.status === 'error' || i.status === 'cancelled');
   }
 });
-
-function formatBytes(bytes: number | null | undefined) {
-  const size = Number(bytes) || 0;
-  if (size >= 1024 * 1024) return Math.round(size / 1024 / 1024) + ' MB';
-  if (size >= 1024) return Math.round(size / 1024) + ' KB';
-  return size + ' B';
-}
 
 function statusMeta(item: TransferQueueItem): { icon: Component; spin: boolean; label: string; tone: string } {
   if (item.status === 'running') return { icon: Loader2, spin: true, label: '传输中', tone: 'running' };

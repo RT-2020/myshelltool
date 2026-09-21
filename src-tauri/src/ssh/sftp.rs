@@ -47,7 +47,8 @@ pub fn dir_entry_to_remote_file_entry(entry: russh_sftp::client::fs::DirEntry) -
 
 // --- SFTP operations ---
 
-async fn get_or_create_sftp(
+// pub(crate)：编辑器文本链路（ssh::text_file）复用同一 SFTP 通道缓存
+pub(crate) async fn get_or_create_sftp(
     state: &State<'_, AppState>,
     session_id: &str,
 ) -> Result<Arc<Mutex<SftpSession>>, String> {

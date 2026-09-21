@@ -64,6 +64,9 @@ tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 # v1.3 Gist 同步 save_session_key 生成随机 salt（与 core 同版本 0.8，避免依赖分裂）。
 rand = "0.8"
+# v0.18 内置编辑器：ssh/text_file.rs 直接消费 Encoding 类型（解码内核在 core，
+# 这里只是类型与零散转换，同版本 0.8 共享一份）
+encoding_rs = "0.8"
 # MCP 文件传输校验和计算
 sha2 = "0.10"
 

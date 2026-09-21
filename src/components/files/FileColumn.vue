@@ -24,6 +24,7 @@ import {
   buildPathCrumbs,
   inferFileEntryType
 } from './fileColumnUtils';
+import { isTextExtension } from '@/lib/editor/editorLanguages';
 import type { ModalState, RemoteFileEntry } from '@/types/domain';
 
 const props = withDefaults(defineProps<{
@@ -43,6 +44,8 @@ const emit = defineEmits<{
   'context-menu-open': [entry: RemoteFileEntry, x: number, y: number];
   'selection-change': [];
   'drag-start': [count: number];
+  /** v0.18：双击已知文本类型文件 → 上层（FileSurface）打开编辑器。 */
+  'open-text': [entry: RemoteFileEntry];
 }>();
 
 const filesStore = useFilesStore();
@@ -182,11 +185,16 @@ function onRowDblClick(entry: RemoteFileEntry) {
   if (isLocal.value) {
     if (entry.kind === 'directory') {
       filesStore.navigateLocalPath(entry.path);
+    } else if (isTextExtension(entry.name)) {
+      // v0.18：已知文本类型双击进编辑器（上传入口仍在：右键 / 拖拽 / 工具栏）
+      emit('open-text', entry);
     } else {
       filesStore.uploadLocalEntry(entry);
     }
   } else if (entry.kind === 'directory' || entry.kind === 'symlink') {
     filesStore.navigateRemotePath(entry.path);
+  } else if (isTextExtension(entry.name)) {
+    emit('open-text', entry);
   } else {
     filesStore.downloadEntry(entry);
   }

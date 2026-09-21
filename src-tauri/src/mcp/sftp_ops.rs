@@ -265,54 +265,11 @@ impl HeadlessSftpSession {
 
     /// rename 覆盖兜底（write_file_atomic / upload_stream 共用）。
     ///
-    /// russh-sftp 只发标准 FXP_RENAME（无 posix-rename@openssh.com 扩展），
-    /// 规范严格的服务器（SFTP v3 语义）会拒绝覆盖已存在目标。兜底：rename
-    /// 失败时 stat 目标——存在则先 remove 目标再重试 rename 一次；目标不
-    /// 存在（rename 因其他原因失败）或重试仍失败才报错。
-    ///
-    /// **失败路径不删 temp**：重试 rename 失败时原目标已被 remove，temp 是
-    /// 新数据唯一副本——调用方若顺手删 temp 会造成「原文件 + 新数据」双重
-    /// 丢失。因此所有错误信息都带 temp 路径，指引用户手动恢复。
-    ///
-    /// **已知并发边界**：两个并发上传/写同一目标时，各自 temp 含随机 uuid
-    /// 不会互踩，但本兜底的「remove 目标」可能删掉对方刚 rename 过去的新
-    /// 文件（remove 与 retry rename 之间无跨连接锁，SFTP 协议也无原子
-    /// rename-overwrite）——后完成者胜出；被删一方的新数据按上段语义保留
-    /// 在它自己的 temp 中，不丢失。
+    /// v0.18 起实现提取到 `ssh::text_file::sftp_rename_with_overwrite_fallback`
+    /// （GUI 编辑器原子写与 MCP 共用同一份语义），此处仅委托——两边的
+    /// 「失败不删 temp」「remove 后重试」等关键行为见该函数注释。
     async fn rename_with_overwrite_fallback(&self, temp: &str, target: &str) -> Result<(), String> {
-        if let Err(rename_err) = self.sftp.rename(temp, target).await {
-            match self.sftp.metadata(target).await {
-                Ok(_) => {
-                    // 目标已存在 → 删除后重试一次（目标为目录时 remove_file
-                    // 会失败，原 rename 错误随错误信息带出，不静默）。
-                    if let Err(remove_err) = self.sftp.remove_file(target).await {
-                        return Err(format!(
-                            "原子替换失败 (rename to {target}): {rename_err}; \
-                             回退删除已存在目标也失败（原文件未删除）: {remove_err}; \
-                             新数据保留在临时文件 {temp}，排除故障后可手动恢复或重试"
-                        ));
-                    }
-                    log::warn!(
-                        "sftp rename 覆盖兜底: 目标 {target} 已存在，remove 后重试 rename"
-                    );
-                    if let Err(retry_err) = self.sftp.rename(temp, target).await {
-                        return Err(format!(
-                            "原子替换失败 (rename to {target}): 首次 {rename_err}; \
-                             删除目标后重试仍失败: {retry_err}; \
-                             原文件已删除，新数据保留在临时文件 {temp}，请手动恢复"
-                        ));
-                    }
-                }
-                Err(_) => {
-                    // stat 失败视为目标不存在，rename 失败另有原因，直接报原错误。
-                    return Err(format!(
-                        "原子替换文件失败 (rename to {target}): {rename_err}; \
-                         新数据保留在临时文件 {temp}，排除故障后可手动恢复或重试"
-                    ));
-                }
-            }
-        }
-        Ok(())
+        crate::ssh::sftp_rename_with_overwrite_fallback(&self.sftp, temp, target).await
     }
 
     /// 原子写入文件（写入 `<path>.myshelltool.<uuid>.tmp` 后原子 rename）。

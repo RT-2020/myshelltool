@@ -21,6 +21,8 @@ import { useAssetsStore } from './assets';
 import { useUiStore } from './ui';
 import { useMcpStore } from './mcp';
 import { useSyncStore } from './sync';
+import { useEditorStore } from './editor';
+import { attachEditorBridge } from '@/lib/editor/editorBridge';
 
 export const useWorkbenchStore = defineStore('workbench', () => {
   // ============================================================
@@ -37,6 +39,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   const uiStore = useUiStore();
   const mcpStore = useMcpStore();
   const syncStore = useSyncStore();
+  const editorStore = useEditorStore();
 
   // ============================================================
   // 公共 announce — 委托到 uiStore（statusMessage 的 owner）
@@ -248,6 +251,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     announce,
     assetsStore: () => assetsStore
   });
+  // v0.18：编辑器 store（第 8 个子 store）；桥接接线在 lib/editor/editorBridge.ts（本文件 ≤500 红线）。
+  attachEditorBridge({ announce, uiStore, assetsStore, filesStore });
 
   return {
     // --- workbench-owned computed ---
@@ -448,8 +453,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     resolveHostKeyPrompt: sessionsStore.resolveHostKeyPrompt,
     resolveKeyboardPrompt: sessionsStore.resolveKeyboardPrompt,
     // --- v1.2：MCP 服务可观测性 (re-export from useMcpStore) ---
-    mcpStatus: computed(() => mcpStore.status),
-    mcpProbe: computed(() => mcpStore.probe),
+    mcpStatus: computed(() => mcpStore.status),    mcpProbe: computed(() => mcpStore.probe),
     mcpClientConnected: computed(() => mcpStore.clientConnected),
     mcpLoading: computed(() => mcpStore.loading),
     mcpTools: computed(() => mcpStore.tools),
@@ -472,7 +476,13 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     setTerminalFontSize: sessionsStore.setTerminalFontSize,
     resetTerminalFontSize: sessionsStore.resetTerminalFontSize,
     setTerminalLineHeight: sessionsStore.setTerminalLineHeight,
-    writeToActiveTerminal: sessionsStore.writeToActiveTerminal
+    writeToActiveTerminal: sessionsStore.writeToActiveTerminal,
+    // --- v0.18：编辑器 re-export（最小面：组件直连 useEditorStore，这里只留跨域消费方用的 5 个） ---
+    editorOpenTarget: editorStore.openTarget,
+    editorResolveDialog: editorStore.resolveEditorDialog,
+    editorDirtyCount: computed(() => editorStore.dirtyCount),
+    editorSaveAllTabs: editorStore.saveAllEditorTabs,
+    editorDiscardAllDirty: editorStore.discardAllDirty
   };
 });
 

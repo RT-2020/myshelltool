@@ -15,7 +15,10 @@ import { storeToRefs } from 'pinia';
 import { PanelLeft, FolderOpen } from 'lucide-vue-next';
 import { useFilesStore } from '@/stores/files';
 import { useUiStore } from '@/stores/ui';
+import { useWorkbenchStore } from '@/stores/workbench';
 import { getTauriWindow, invokeBackend, isTauriRuntime } from '@/services/backend';
+import { isKnownBinaryExtension } from '@/lib/editor/editorLanguages';
+import { FILE_DRAG_MIME } from '@/lib/fileTypes';
 import FileColumn from './FileColumn.vue';
 import AppContextMenu from '@/components/ui/AppContextMenu.vue';
 import type { ModalState, RemoteFileEntry } from '@/types/domain';
@@ -31,6 +34,26 @@ interface FileMenuItem {
 
 const filesStore = useFilesStore();
 const uiStore = useUiStore();
+const workbench = useWorkbenchStore();
+
+// v0.18：双击/右键「编辑」→ 打开内置编辑器（远程挂当前选中资产的会话）
+function openInEditor(entry: RemoteFileEntry, side: 'local' | 'remote') {
+  void workbench.editorOpenTarget(
+    side === 'remote'
+      ? { kind: 'remote', assetId: workbench.selectedAsset?.id ?? null, path: entry.path }
+      : { kind: 'local', assetId: null, path: entry.path }
+  );
+}
+
+/** 「编辑」菜单项：已知二进制禁用并说明；未知扩展允许按纯文本尝试（后端嗅探兜底）。 */
+function editMenuItem(entry: RemoteFileEntry, side: 'local' | 'remote'): FileMenuItem {
+  const binary = isKnownBinaryExtension(entry.name);
+  return {
+    label: binary ? '编辑（二进制文件）' : '编辑',
+    action: () => openInEditor(entry, side),
+    disabled: binary
+  };
+}
 const { remoteListMode, contextMenu, selectedRemotePaths, localPaneVisible, remoteBusy } = storeToRefs(filesStore);
 
 const isTauriCore = computed(() => isTauriRuntime());
@@ -94,8 +117,9 @@ onUnmounted(() => {
 // 栏间拖拽上传（本地 → 远程）：本地行 dragstart（FileColumnList）写自定义 MIME，
 // 远程栏 wrapper 判定后放行 drop，逐条走 filesStore.uploadLocalEntry 现有管线
 // （分块上传 / 同名覆盖确认 / 传输队列 / toast 均复用，不新增 store 逻辑）。
+// v0.18：MIME 常量上移 lib/fileTypes（EditorSurface 拖拽打开也判定它）。
 // ============================================================
-const FILE_DRAG_MIME = 'application/x-myshelltool-file';
+
 const columnDragging = ref(false);
 const dragEntryCount = ref(0);
 let columnDragLeaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -193,6 +217,9 @@ const contextMenuItems = computed<FileMenuItem[]>(() => {
         if (isDir) filesStore.navigateRemotePath(entry.path);
         else filesStore.downloadEntry(entry);
       }));
+      if (!isDir) {
+        items.push(editMenuItem(entry, 'remote'));
+      }
       items.push({ separator: true });
       items.push(make('重命名', () => { uiStore.modal = { type: 'rename', entry } as ModalState; }));
       items.push(make('删除', () => filesStore.removeRemote(entry), { danger: true }));
@@ -218,6 +245,9 @@ const contextMenuItems = computed<FileMenuItem[]>(() => {
       if (isDir) filesStore.navigateLocalPath(entry.path);
       else filesStore.uploadLocalEntry(entry);
     }));
+    if (!isDir) {
+      items.push(editMenuItem(entry, 'local'));
+    }
     items.push({ separator: true });
     items.push(make('重命名', () => { uiStore.modal = { type: 'localRename', entry } as ModalState; }));
     items.push(make('删除', () => filesStore.localDelete([entry.path]), { danger: true }));
@@ -285,6 +315,7 @@ const contextMenuItems = computed<FileMenuItem[]>(() => {
         :disabled-hint="isTauriCore ? '' : '桌面客户端运行时才支持本地浏览（npm run tauri:dev）'"
         class="file-pane file-pane-local"
         @drag-start="onLocalDragStart"
+        @open-text="entry => openInEditor(entry, 'local')"
       />
       <div v-if="localPaneVisible" class="file-divider" aria-hidden="true"></div>
       <!-- 远程栏 wrapper：栏间拖拽（自定义 MIME）的 drop 目标，与整面 OS 文件 dropzone 分离 -->
@@ -294,7 +325,7 @@ const contextMenuItems = computed<FileMenuItem[]>(() => {
         @dragleave="onRemoteColumnDragLeave"
         @drop="onRemoteColumnDrop"
       >
-        <FileColumn kind="remote">
+        <FileColumn kind="remote" @open-text="entry => openInEditor(entry, 'remote')">
           <!-- 远程列表头弱提示（S2）：常显，最少打扰 -->
           <template #actions-leading>
             <span class="file-column-hint" title="右键文件或空白处查看更多操作">右键查看更多操作</span>

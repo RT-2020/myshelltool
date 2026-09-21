@@ -217,7 +217,13 @@ export const useUiStore = defineStore('ui', () => {
     // 仅带 level 的通知进 toast 队列（announce 不带 level，保持旧行为）
     if (!opts.level || !TOAST_LEVELS.includes(opts.level)) return null;
     const id = ++toastSeq;
-    const toast: ToastItem = { id, level: opts.level, message, action: opts.action ?? null };
+    const toast: ToastItem = {
+      id,
+      level: opts.level,
+      message,
+      action: opts.action ?? null,
+      actions: opts.actions
+    };
     toasts.value.push(toast);
     // 上限 5 条，超出移除最早一条并清理其 timer
     if (toasts.value.length > 5) {
@@ -229,11 +235,12 @@ export const useUiStore = defineStore('ui', () => {
   }
 
   function scheduleToastDismiss(id: number, opts: NotifyOptions) {
-    // 默认时长：info/success 3500ms、warn/error 6000ms、带 action 8000ms；
-    // opts.duration 可覆盖。带 action 也可超时消失（保持简单）。
+    // 默认时长：info/success 3500ms、warn/error 6000ms、带 action（含 actions 多按钮）8000ms；
+    // opts.duration 可覆盖（下载完成 toast 用 10s 给足点击窗口）。带 action 也可超时消失（保持简单）。
     let duration: number | undefined = opts.duration;
     if (typeof duration !== 'number') {
-      duration = opts.action
+      const hasAction = Boolean(opts.action) || Boolean(opts.actions && opts.actions.length);
+      duration = hasAction
         ? 8000
         : (opts.level === 'warn' || opts.level === 'error' ? 6000 : 3500);
     }

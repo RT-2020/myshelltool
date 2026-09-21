@@ -385,6 +385,192 @@ pub fn fs_local_stat(path: String) -> Result<RemoteFileEntry, String> {
     })
 }
 
+// ─── v0.18 内置编辑器：本地文本读写（与 ssh::text_file 的远端链路同构）───
+//
+// 防线：resolve_input_path（黑名单/归一，与文件面板同源）+ 2 MiB 上限 +
+// 二进制嗅探 + 编码白名单 + stat 冲突检测 + 写前备份 + 同目录 temp 原子替换。
+// 错误前缀协议见 ssh/text_file.rs 模块注释。
+
+use crate::ssh::{decode_for_editor, encode_for_editor, eol_kind_to_str, ReadTextResult, WriteTextResult, MAX_EDIT_BYTES};
+use tauri::AppHandle;
+
+/// io::Error 的编辑器分类（本地不存在/无权限可用 ErrorKind 可靠判定，
+/// 不需要像 SFTP 那样匹配错误文本）。
+fn classify_io_error(context: &str, e: &std::io::Error, path: &std::path::Path) -> String {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => {
+            format!("[editor:not-found] {context}: 文件不存在 {}", path.display())
+        }
+        std::io::ErrorKind::PermissionDenied => {
+            format!("[editor:permission] {context}: 无权限访问 {}", path.display())
+        }
+        _ => format!("{context}: {e} ({})", path.display()),
+    }
+}
+
+#[command]
+pub fn fs_local_read_text(
+    path: String,
+    encoding: Option<String>,
+) -> Result<ReadTextResult, String> {
+    let resolved = resolve_input_path(&path)?;
+    let meta = std::fs::metadata(&resolved)
+        .map_err(|e| classify_io_error("stat failed", &e, &resolved))?;
+    if meta.is_dir() {
+        return Err(format!("[editor:dir] 目标路径是目录：{}", resolved.display()));
+    }
+    if meta.len() > MAX_EDIT_BYTES {
+        return Err(format!(
+            "[editor:too-large] 文件 {} 字节，超过编辑器上限 {} 字节（2 MiB）",
+            meta.len(),
+            MAX_EDIT_BYTES
+        ));
+    }
+    let bytes = std::fs::read(&resolved)
+        .map_err(|e| classify_io_error("read failed", &e, &resolved))?;
+
+    let enc = match &encoding {
+        Some(label) => match myshelltool_core::text_codec::encoding_for_label(label) {
+            Ok(e) => Some(e),
+            Err(e) => return Err(format!("[editor:encoding] {e}")),
+        },
+        None => None,
+    };
+
+    // readonly() 语义跨平台：Windows=只读属性；Unix=mode 无任何 w 位
+    let read_only = Some(meta.permissions().readonly());
+    let (content, has_bom, used_label) = decode_for_editor(&bytes, enc)?;
+    let eol = eol_kind_to_str(myshelltool_core::text_codec::detect_eol(&content)).to_string();
+    Ok(ReadTextResult {
+        content,
+        encoding: used_label,
+        has_bom,
+        eol,
+        size: meta.len(),
+        modified: format_modified(meta.modified()),
+        read_only,
+    })
+}
+
+#[command]
+#[allow(clippy::too_many_arguments)]
+pub fn fs_local_write_text(
+    app: AppHandle,
+    path: String,
+    content: String,
+    encoding: Option<String>,
+    eol: Option<String>,
+    keep_bom: Option<bool>,
+    expected_size: Option<u64>,
+    expected_modified: Option<String>,
+    backup: Option<bool>,
+) -> Result<WriteTextResult, String> {
+    let resolved = resolve_input_path(&path)?;
+    let enc = match &encoding {
+        Some(label) => match myshelltool_core::text_codec::encoding_for_label(label) {
+            Ok(e) => Some(e),
+            Err(e) => return Err(format!("[editor:encoding] {e}")),
+        },
+        None => None,
+    };
+    let bytes = encode_for_editor(&content, enc, &eol, keep_bom.unwrap_or(false))?;
+
+    // 冲突检测语义与远端一致：expected 任一提供即守护写；都为 None=强制写
+    //（新建/另存为，前端已做自己的覆盖确认）
+    match std::fs::metadata(&resolved) {
+        Ok(meta) => {
+            if meta.is_dir() {
+                return Err(format!("[editor:dir] 目标路径是目录：{}", resolved.display()));
+            }
+            if meta.permissions().readonly() {
+                return Err(format!(
+                    "[editor:permission] 目标文件是只读（Windows 属性）：{}",
+                    resolved.display()
+                ));
+            }
+            if expected_size.is_some() || expected_modified.is_some() {
+                let modified = format_modified(meta.modified());
+                let size_match = expected_size.map_or(true, |v| v == meta.len());
+                let mtime_match = expected_modified.as_deref().map_or(true, |v| v == modified);
+                if !size_match || !mtime_match {
+                    return Ok(WriteTextResult {
+                        status: "conflict",
+                        size: meta.len(),
+                        modified,
+                        conflict_note: Some("本地文件在打开后已被修改（大小或修改时间变化）。".to_string()),
+                    });
+                }
+            }
+            if backup.unwrap_or(false) {
+                let old_bytes = std::fs::read(&resolved)
+                    .map_err(|e| classify_io_error("read failed（备份读取）", &e, &resolved))?;
+                crate::editor_store::put_backup(&app, "local", &resolved.to_string_lossy(), &old_bytes)?;
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if expected_size.is_some() || expected_modified.is_some() {
+                return Ok(WriteTextResult {
+                    status: "conflict",
+                    size: 0,
+                    modified: String::new(),
+                    conflict_note: Some("本地文件已被删除。".to_string()),
+                });
+            }
+            // 新建：父目录必须已存在（不静默建目录——错路径早暴露）
+            if let Some(parent) = resolved.parent() {
+                if !parent.is_dir() {
+                    return Err(format!(
+                        "[editor:not-found] 保存目录不存在：{}",
+                        parent.display()
+                    ));
+                }
+            }
+        }
+        Err(e) => return Err(classify_io_error("stat failed", &e, &resolved)),
+    }
+
+    // 原子写：同目录 temp + rename。Windows 的 std::fs::rename 不覆盖已存在
+    // 目标 → 先 remove 再 rename（两步之间存在短暂无文件窗口，桌面单机场景
+    // 可接受；temp 失败清理见下）。temp 失败时保留（新数据唯一副本，同 SFTP 侧语义）。
+    let temp = resolved.with_file_name(format!(
+        "{}.myshelltool.{}.tmp",
+        resolved.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        uuid::Uuid::new_v4()
+    ));
+    if let Err(e) = std::fs::write(&temp, &bytes) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!(
+            "写入临时文件失败 {}: {e}",
+            temp.display()
+        ));
+    }
+    if resolved.exists() {
+        if let Err(e) = std::fs::remove_file(&resolved) {
+            return Err(format!(
+                "替换前移除旧文件失败（新内容保留在 {}）: {e}",
+                temp.display()
+            ));
+        }
+    }
+    if let Err(e) = std::fs::rename(&temp, &resolved) {
+        return Err(format!(
+            "原子替换失败（新内容保留在 {}）: {e}",
+            temp.display()
+        ));
+    }
+
+    let (new_size, new_modified) = match std::fs::metadata(&resolved) {
+        Ok(meta) => (meta.len(), format_modified(meta.modified())),
+        Err(_) => (bytes.len() as u64, String::new()),
+    };
+    Ok(WriteTextResult {
+        status: "written",
+        size: new_size,
+        modified: new_modified,
+        conflict_note: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

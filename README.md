@@ -62,7 +62,7 @@ myshelltool 有**两种身份**：
 - **多认证方式** — 密码、私钥（文件选择器选取）、passphrase、keyboard-interactive
 - **凭据安全存储** — 密码/passphrase 走本地 SecretStore（Windows DPAPI），不进资产 JSON / 日志
 - **SFTP 文件管理** — 浏览、上传/下载、新建/重命名/删除（带确认）、权限列、UNC 路径面包屑
-- **Monaco 远程编辑** — 语法高亮、Ctrl+S 保存、按扩展名识别语言
+- **内置文本/配置编辑器**（CodeMirror 6）— 语法高亮、查找替换、跳行、JSON 校验/格式化、Markdown 分屏预览、GBK 等编码切换、冲突检测与原子保存、草稿/备份
 - **文件传输队列** — 分块传输、实时进度、失败重试、上传后字节对账
 - **终端与文件面板联动** — 连接后自动加载远程目录；终端 `cd` 经 OSC 7 跟随切换文件面板目录
 - **SSH 隧道** — Local forwarding、Dynamic SOCKS5 代理
@@ -135,7 +135,7 @@ npm run tauri:build
 | 独立窗口打开 | 右键资产 → 「在独立窗口打开」，或把资产拖出主窗口边界 |
 | 迁移终端到其他窗口 | 拖住已连接的终端 tab 拖出主窗口（回迁用独立窗口标题栏「移回主窗口」） |
 | 传输文件 | 连接后切到「文件」区域，拖拽上传 / 双击下载 |
-| 远程编辑 | 文件区右键 → 「编辑」（Monaco 编辑器打开） |
+| 内置编辑器 | 双击文本类文件 / 右键「编辑」/ 拖入编辑器 / 工具栏输入本地或远端路径打开 |
 | 开隧道 | 侧栏「隧道」→ 新增 → 选类型（local/SOCKS5） |
 | 资源监控 | 连接后右侧「资源监控」面板自动刷新 |
 
@@ -245,7 +245,7 @@ myshelltool 内嵌 MCP server（Streamable HTTP，随 GUI 启停，无独立 exe
 | 语言 | **TypeScript strict 全量**（vue-tsc 类型门禁） | `typescript ^5.9.3` |
 | 状态管理 | **Pinia 3**（setup store） | `pinia ^3.0.4` |
 | 终端 | xterm.js 6 + addon-fit/search/serialize/web-links/webgl | `@xterm/xterm ^6` |
-| 图标 / 远程编辑 | lucide-vue-next / Monaco Editor（CDN） | `^0.460.0` / 0.52 |
+| 图标 / 内置编辑器 | lucide-vue-next / CodeMirror 6（npm 打包） | `^0.460.0` / `^6` |
 | 样式 | SCSS + 设计 token 系统（无 Tailwind） | `sass ^1.101` |
 | 构建 | Vite 7（root=`src/`） | `vite ^7.2.7` |
 | 测试 | Playwright（UI，mock IPC 驱动真实 store 流）+ cargo test（core） | `playwright ^1.60` |

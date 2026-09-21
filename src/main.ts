@@ -42,9 +42,12 @@ if (import.meta.env.DEV) {
   const { useWorkbenchStore } = await import('./stores/workbench');
   const { useSessionsStore } = await import('./stores/sessions');
   const { useFilesStore } = await import('./stores/files');
+  // v0.18：编辑器 store（tests/ui-editor.mjs 驱动 打开→编辑→保存→冲突 链路）
+  const { useEditorStore } = await import('./stores/editor');
   (window as unknown as Record<string, unknown>).__myshelltool = {
     workbench: useWorkbenchStore(),
     sessions: useSessionsStore(),
-    files: useFilesStore()
+    files: useFilesStore(),
+    editor: useEditorStore()
   };
 }

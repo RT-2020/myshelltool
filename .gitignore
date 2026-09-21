@@ -33,3 +33,7 @@ LPT4
 
 # ZCode 本地会话状态
 .zcode/
+
+# stub-gcc 应急 cargo check 的独立 target 目录（本机 gcc 损坏 + dev 实例锁 target 时的
+# 本机验证缓存，见 docs/已知边界与修复史.md v0.18 节；不进仓库）
+src-tauri/target-check/

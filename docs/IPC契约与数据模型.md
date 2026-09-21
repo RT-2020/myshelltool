@@ -49,6 +49,16 @@
 - `sftp_download_to_file` / `sftp_mkdir` / `sftp_rename` / `sftp_remove` / `sftp_stat`
   - 下载已改为**流式落盘**（后端分块读 → `tokio::fs` 直接写本地文件，进度事件节流 1 MiB / 200ms）；字节不再经过 IPC，也不返回 `Vec<u8>`。前端用 `plugin:dialog|open`（`directory: true`）让用户选**保存目录**、文件名沿用远端名，再调用它；批量下载整批只弹一次目录框（不是每文件一次）。
 
+**编辑器文本读写**（`ssh/text_file.rs` + `fs_local.rs` + `editor_store.rs`，v0.18 内置编辑器专用链路）
+- `sftp_read_text({ sessionId, path, encoding? })` / `fs_local_read_text({ path, encoding? })` → `ReadTextResult { content, encoding, hasBom, eol("lf"|"crlf"|"mixed"), size, modified, readOnly? }`。防线：lossy 路径守卫 → 句柄/路径 stat 判 **2 MiB 上限**（超过 `[editor:too-large]`，确定性错误不给重试）→ 二进制嗅探（`core::remote_text` 三态，选了 GBK 也救不了 PNG）→ 未指定编码仅接受 UTF-8（非 UTF-8 报 `[editor:not-utf8]` 含首个非法偏移，前端提供「按 GBK 重试」）→ 指定编码走 `core::text_codec` 白名单严格转码（encoding_rs `had_errors` 当硬错误，绝不 lossy）。UTF-8 BOM 读入剥离、写回按 keepBom 还原。
+- `sftp_write_text` / `fs_local_write_text`（参数多一组：`{ ..., content, encoding?, eol?("lf"|"crlf"|null=原样), keepBom?, expectedSize?, expectedModified?, backup? }`）→ `WriteTextResult { status: "written"|"conflict", size, modified, conflictNote? }`。语义：
+  - **expected 守护写**：`expectedSize`/`expectedModified` 任一提供即守护（stat 不一致返回 `status:"conflict"`，**不写任何字节**，前端三选：覆盖=expected 置空重写 / 另存为 / 重新加载）；两者都为 null = 强制写（新建/另存为，前端已做自己的覆盖确认）。
+  - **原子写**：`<path>.myshelltool.<uuid>.tmp` + rename 覆盖兜底（`ssh::sftp_rename_with_overwrite_fallback`，从 MCP `sftp_ops.rs` 提取共享；**失败不删 temp**——temp 是新数据唯一副本，错误信息带 temp 路径）。本地侧 Windows rename 不覆盖 → 先 remove 再 rename（注释说明窗口期）。
+  - **写前备份**：`backup=true` 且目标存在 → 旧字节先快照进 app-data `editor-backups/`（每文件滚动 3 份）；备份写失败**中止保存**（fail-closed：没有备份的覆盖等于裸覆盖）。
+- 错误前缀协议（前端 `lib/editor/editorIo.ts` 分类依据）：Err(String) 正文以 `[editor:kind]` 开头，kind ∈ too-large / binary / not-utf8 / encoding / lossy / not-found / dir / permission；无前缀按网络类（可重试）。
+- `editor_backup_list({ target, path })` / `editor_backup_read({ target, path, id, encoding? })`：备份元数据与只读读取（id 为纯数字毫秒时间戳，进文件名前校验防穿越）。
+- `editor_draft_save({ target, path, content, encoding, eol })` / `editor_draft_get` / `editor_draft_delete`：草稿存 app-data `editor-drafts/`（UTF-8 正文 + meta；key=FNV-1a64(target+path)，meta 回存原文并校验防串）。
+
 **隧道**（`ssh.rs`，仅内存）
 - `tunnel_create` / `tunnel_start` / `tunnel_stop` / `tunnel_list` / `tunnel_delete`
 - **【v2.9】remote（远程端口转发）已实现**：`TunnelConfig.asset_id`（serde default None）是 remote 的必填认证上下文——`tunnel_start` 按 asset_id 从本地资产库解析认证（与 MCP `exec_on_asset` 同路径），经 `connect_headless_with` 建**专用连接**后发 `tcpip-forward`（russh 0.49 的该方法要 `&mut Handle`，共享 `Arc<Handle>` 给不出）；host key 用 headless 同款「仅 known_hosts 精确匹配」策略（后台连接不弹窗）。到达的 `forwarded-tcpip` 通道只在「端口与已登记转发匹配且地址相容」时接管桥接到 `local_addr:local_port`，未登记通道一律丢弃（防恶意服务器借客户端探测本机服务）。停止/删除/会话清理 abort 驻守任务 → drop Handle → 服务器监听随连接消失；驻守任务发现连接死亡会回写 `active=false` + error（tunnel_list 不谎报）。local/dynamic 不变（复用会话句柄）。

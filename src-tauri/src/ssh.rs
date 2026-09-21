@@ -224,6 +224,7 @@ mod known_hosts;
 mod monitor;
 mod session;
 mod sftp;
+mod text_file;
 mod tunnel;
 
 // 子模块公开符号经本模块路径再导出（lib.rs generate_handler / mcp 调用点不变）。
@@ -234,6 +235,7 @@ pub use monitor::*;
 pub use headless::*;
 pub use session::*;
 pub use sftp::*;
+pub use text_file::*;
 pub use tunnel::*;
 
 /// 会话级清理（对外入口）：摘掉全局表项 + 停掉该会话的隧道与资源监控。
