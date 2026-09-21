@@ -109,7 +109,12 @@ async function doRefreshRemoteFiles(path: string | null = null, { silent = false
     await pc().withFileOperation('remote', '正在读取远程目录...', async () => {
       const asset = pc().wb().selectedAsset;
       if (!asset) return;
-      const targetPath = path || remotePathForAsset(asset);
+      // path=null 的语义 = 「刷新当前面板目录」（与 refreshLocalFiles 的本地侧一致）。
+      // 只允许面板未加载（remotePath 为空）时回落到服务器默认目录——空 path 会让
+      // 后端 canonicalize(".") 解析出登录家目录；若面板已加载仍传空，上传批次收尾/
+      // 刷新按钮/编辑器保存后刷新都会把用户从深层目录拽回「第一次进服务器的路径」
+      // （2026-09-21 用户视频实测：/var 上传失败、下载目录上传成功，面板两次跳回家目录）。
+      const targetPath = path || pc().remotePath.value || remotePathForAsset(asset);
       const activeSession = resolveSessionForAsset(asset);
       if (activeSession) {
         // 会话在途（首连/重连中，sessionId 仍是 pending- 占位）：后端 ssh_handles
