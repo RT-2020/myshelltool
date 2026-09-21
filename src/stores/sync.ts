@@ -11,6 +11,7 @@ import type {
 } from '@/types/domain';
 import { invokeBackend, isTauriRuntime } from '../services/backend';
 import { errorMessage } from '../lib/errorMessage';
+import { bindAutoSyncQueueContext, enqueueAutoPush } from '@/lib/autoSyncQueue';
 
 /** sync store 实际消费的 workbench bridge 最小结构。
  *  assetsStore：拉取/冲突解决后必须重载前端资产内存态（见 reloadAssetsFromBackend）。 */
@@ -385,55 +386,14 @@ export const useSyncStore = defineStore('sync', () => {
    *
    * - 仅在 autoSyncEnabled 时触发；走会话密钥路径（masterPassword 留空）
    * - **不弹窗、不阻塞**：不 await（调用方 fire-and-forget），不打断用户资产操作
-   * - 串行化（enqueueAutoPush）：并发 push 会让后端各自 load_sync_state 算出**同一个
-   *   new_rev**（sync.rs 无 CAS，Gist PATCH 也无），晚到的旧载荷覆盖新载荷 → 远端
-   *   少一次保存，而本地 local_rev/last_synced_at 已记为「已同步」，换机器也看不出冲突。
-   *   因此自动 push 绝不并发：在途时只置 pending 标记，当前 push 结束后重放一次
-   *   （合并多次资产写为一次 push）。
+   * - 串行化在 lib/autoSyncQueue（并发 push 会算出同一个 new_rev 静默丢远端保存，
+   *   见该文件头注释）；本函数只做触发前置守卫。
    */
   async function autoPushIfEnabled() {
     if (!isTauriRuntime()) return;
     if (!autoSyncEnabled.value) return;
     if (conflict.value) return; // 有未解决冲突，不自动 push（避免覆盖用户待决策的数据）
     enqueueAutoPush();
-  }
-
-  /** auto-push 在途标记 + 重放标记（本 store 内串行队列，见 autoPushIfEnabled 注释）。 */
-  let autoPushInFlight = false;
-  let autoPushPending = false;
-
-  function enqueueAutoPush() {
-    if (autoPushInFlight) {
-      // 合并：在途 push 结束后重放一次，不并发、也不静默丢弃
-      autoPushPending = true;
-      return;
-    }
-    autoPushInFlight = true;
-    void (async () => {
-      try {
-        let rerun = true;
-        // 合并多次资产写为一次 push，成功 toast 也只在队列排空后弹一条；全失败则不弹成功
-        let anySuccess = false;
-        while (rerun) {
-          rerun = false;
-          try {
-            await invokeBackend('sync_push', { masterPassword: '' });
-            anySuccess = true;
-            await refreshStatus();
-            remoteHasUpdates.value = false;
-          } catch (error) {
-            // 自动同步失败 announce error，不打断用户（典型：冲突，让用户手动处理）
-            workbenchBridge?.announce?.('自动同步失败：' + errorMessage(error) + '（请到同步面板处理）', { level: 'error' });
-          }
-          if (autoPushPending) { autoPushPending = false; rerun = true; }
-        }
-        if (anySuccess) {
-          workbenchBridge?.announce?.('✓ 资产已自动同步到云端', { level: 'success' });
-        }
-      } finally {
-        autoPushInFlight = false;
-      }
-    })();
   }
 
   // ============================================================
@@ -443,6 +403,14 @@ export const useSyncStore = defineStore('sync', () => {
   function attachWorkbench(bridge: SyncWorkbenchBridge) {
     workbenchBridge = bridge;
   }
+
+  // 自动推送队列的依赖透传（绑定式 ctx，先例 terminalLifecycle）：
+  // announce 经闭包惰性读 workbenchBridge，attachWorkbench 前调用也不悬空。
+  bindAutoSyncQueueContext({
+    refreshStatus,
+    clearRemoteUpdates: () => { remoteHasUpdates.value = false; },
+    announce: (message, opts) => workbenchBridge?.announce?.(message, opts)
+  });
 
 type SyncNoticeLevel = 'info' | 'success' | 'warn' | 'error';
 

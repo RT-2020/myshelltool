@@ -325,6 +325,39 @@ const RULES = [
         'transition: opacity var(--dur-base) var(--ease-standard);'
       ]
     }
+  },
+  {
+    id: 'no-box-model-in-hover',
+    title: ':hover 块内禁止盒模型/文档流属性（hover 改尺寸/边距/显隐 = 重排，页面抖动）',
+    fix: '交互态只改绘制属性（color/background/border-color/opacity/box-shadow/outline-color/filter/transform）；悬停显隐用 opacity/visibility 常驻占位（禁 display:none↔flex 切换），位移只用 transform。见 AGENTS.md §4.1「hover/focus 反馈铁律」与 docs/已知边界与修复史.md「hover 抖动排查」。',
+    targets: ['styles', 'app'],
+    // 块级规则（2026-09-20 引擎升级）：selector 命中链（含 SCSS 嵌套 &:hover、
+    // 后代选择器 .a:hover .b）内出现 declaration 属性即违规。已知边界：
+    // ① border 简写带宽度字面值（border: 2px …）不拦（按属性名判定，不解析值）；
+    // ② 跨行块注释（/* … */）里的花括号会干扰选择器栈（仓内无此形态，自检覆盖
+    //    同行注释剥离）；③ :not(:hover) 会被视同 :hover（基态布局写在里面的情况
+    //    仓内不存在，误报时用豁免语法）。
+    block: {
+      selector: /:hover\b/,
+      // AGENTS.md §4.1 禁改清单：padding/margin 全家、border-*-width、宽高与
+      // min/max、font-size/weight、line-height、letter-spacing、gap、flex、
+      // grid-template、display、position、overflow、top/left/right/bottom/inset
+      declaration: /^(?:padding(?:-\w+)?|margin(?:-\w+)?|border(?:-\w+)?-width|width|height|min-\w+|max-\w+|font-size|font-weight|line-height|letter-spacing|(?:row-|column-)?gap|flex(?:-\w+)?|grid-template(?:-\w+)?|display|position|overflow(?:-\w+)?|top|left|right|bottom|inset(?:-\w+)?)$/,
+      samples: {
+        bad: [
+          '.btn:hover {\n  padding: 4px 8px;\n}',
+          '.item {\n  color: red;\n  &:hover {\n    height: 32px;\n  }\n}',
+          '.menu li:hover .icon { display: flex; }',
+          '.tab:hover { border-bottom-width: 2px; }'
+        ],
+        good: [
+          '.btn:hover {\n  background: var(--bg-hover);\n  color: var(--fg);\n  border-color: var(--accent);\n  opacity: 0.85;\n}',
+          '.btn:hover { transform: translateY(-1px); box-shadow: var(--shadow-1); }',
+          '.btn .icon { opacity: 0; }\n.btn:hover .icon { opacity: 1; }',
+          '.a:hover { padding: 4px; } /* fact-guard:allow no-box-model-in-hover 刻意的宽度呼吸动效 */'
+        ]
+      }
+    }
   }
 ];
 
@@ -340,6 +373,84 @@ function judgeLine(rule, line) {
   if (rule.unless && rule.unless.test(line)) return 'unless';
   if (allowFor(line, rule.id)) return 'allowed';
   return 'violation';
+}
+
+// ============================================================
+// 块级扫描（2026-09-20 引擎升级）：为「选择器块 + 声明」形态的规则服务
+// （首条：no-box-model-in-hover）。行级正则无法把声明行关联到其上方的
+// :hover 选择器（会全仓误报），因此升级为轻量选择器栈跟踪：
+//   - 逐字符按 { } 分段：「{」前的段 = 选择器（入栈），「}」出栈；
+//   - 块内文本按 ; 切声明，取属性名（[a-zA-Z][a-zA-Z-]*，$scss 变量与
+//     --自定义属性天然不匹配）交给规则判定；
+//   - 命中链上**任一**帧含 :hover 即视为 hover 块（覆盖 SCSS 嵌套 &:hover
+//     与后代选择器 .a:hover .b 两种形态）；
+//   - .vue 只扫 <style> 段（script/template 的花括号会干扰栈）；
+//     .css/.scss 全文；其它扩展名不适用块规则。
+// ============================================================
+
+/** 提取可扫描的样式区间：返回 [{ startLine, text }]，startLine 为 text 首行在原文件的 0 基行号。 */
+function styleRegions(file, content) {
+  if (/\.(?:css|scss)$/.test(file)) return [{ startLine: 0, text: content }];
+  if (file.endsWith('.vue')) {
+    const regions = [];
+    const openRe = /<style\b[^>]*>/g;
+    let m;
+    while ((m = openRe.exec(content))) {
+      const openEnd = m.index + m[0].length;
+      const close = content.indexOf('</style>', openEnd);
+      if (close === -1) break;
+      regions.push({
+        startLine: content.slice(0, openEnd).split(/\r?\n/).length - 1,
+        text: content.slice(openEnd, close)
+      });
+    }
+    return regions;
+  }
+  return [];
+}
+
+/**
+ * 用块级规则扫描一个文件。violations/allowCount 语义与行级路径一致；
+ * 行号是原文件的 1 基行号（region.startLine + 区内部行号 + 1）。
+ */
+function scanStyleBlocks(rule, file, content, violations, allowCount) {
+  const rel = path.relative(ROOT, file);
+  for (const region of styleRegions(file, content)) {
+    const lines = region.text.split(/\r?\n/);
+    const selectorStack = [];
+    for (let i = 0; i < lines.length; i += 1) {
+      const rawLine = lines[i];
+      // 剥离同行注释后再入栈跟踪（注释里的花括号/属性文本不执行语义）
+      const code = rawLine.replace(/\/\/.*$/, '').replace(/\/\*.*?\*\//g, '');
+      let seg = '';
+      const checkSegment = text => {
+        if (!selectorStack.some(sel => rule.block.selector.test(sel))) return;
+        for (const decl of text.split(';')) {
+          const m = decl.match(/^\s*([a-zA-Z][a-zA-Z-]*)\s*:/);
+          if (!m) continue;
+          if (!rule.block.declaration.test(m[1].toLowerCase())) continue;
+          if (allowFor(rawLine, rule.id)) {
+            allowCount[rule.id] = (allowCount[rule.id] ?? 0) + 1;
+          } else {
+            violations.push({ rule, file: rel, line: region.startLine + i + 1, text: rawLine.trim() });
+          }
+        }
+      };
+      for (const ch of code) {
+        if (ch === '{') {
+          selectorStack.push(seg.trim());
+          seg = '';
+        } else if (ch === '}') {
+          checkSegment(seg); // 单行的「选择器 { 声明 }」形态
+          seg = '';
+          selectorStack.pop();
+        } else {
+          seg += ch;
+        }
+      }
+      checkSegment(seg); // 多行块内的普通声明行（无花括号）
+    }
+  }
 }
 
 function walk(dir, exts, out) {
@@ -400,6 +511,27 @@ function collectFiles() {
 function selfTest() {
   let failed = 0;
   for (const rule of RULES) {
+    if (rule.block) {
+      // 块级规则：样例是多行样式文本，经虚拟文件走完整扫描路径判定
+      const probe = text => {
+        const violations = [];
+        scanStyleBlocks(rule, path.join(ROOT, 'selftest.scss'), text, violations, {});
+        return violations.length > 0;
+      };
+      for (const text of rule.block.samples.bad) {
+        if (!probe(text)) {
+          console.log(`  ✗ 自检失败 [${rule.id}] 应命中但未命中: ${JSON.stringify(text)}`);
+          failed += 1;
+        }
+      }
+      for (const text of rule.block.samples.good) {
+        if (probe(text)) {
+          console.log(`  ✗ 自检失败 [${rule.id}] 不应命中但命中: ${JSON.stringify(text)}`);
+          failed += 1;
+        }
+      }
+      continue;
+    }
     for (const line of rule.samples.bad) {
       if (judgeLine(rule, line) !== 'violation') {
         console.log(`  ✗ 自检失败 [${rule.id}] 应命中但未命中: ${line}`);
@@ -428,7 +560,14 @@ function scan() {
   for (const rule of RULES) {
     for (const target of rule.targets) {
       for (const file of filesByTarget[target]) {
-        const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+        const content = fs.readFileSync(file, 'utf8');
+        if (rule.block) {
+          // 块级规则：按文件扩展名自取样式区间（.vue 的 <style> / .css/.scss 全文），
+          // 其余扩展名在 styleRegions 返回空后自然跳过
+          scanStyleBlocks(rule, file, content, violations, allowCount);
+          continue;
+        }
+        const lines = content.split(/\r?\n/);
         for (let i = 0; i < lines.length; i += 1) {
           const verdict = judgeLine(rule, lines[i]);
           if (verdict === 'allowed') {
@@ -470,5 +609,5 @@ if (selfTestFailures > 0) {
   console.log(`\n规则自检失败 ${selfTestFailures} 项——规则已腐烂，请先修 scripts/fact-guards.mjs`);
   process.exit(1);
 }
-console.log(`✔ 规则自检通过（${RULES.length} 条规则，正反样例共 ${RULES.reduce((n, r) => n + r.samples.bad.length + r.samples.good.length, 0)} 项）\n`);
+console.log(`✔ 规则自检通过（${RULES.length} 条规则，正反样例共 ${RULES.reduce((n, r) => { const s = r.block ? r.block.samples : r.samples; return n + s.bad.length + s.good.length; }, 0)} 项）\n`);
 if (!selfTestOnly) process.exit(scan());

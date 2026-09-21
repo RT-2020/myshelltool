@@ -7,8 +7,8 @@
 
 /** retryTransfer 复用的原始操作参数（见 buildTransferItem 注释）。 */
 export type TransferOp =
-  | { kind: 'file'; file: File; remoteTarget: string }             // 上传（浏览器 File）
-  | { kind: 'localEntry'; entry: unknown; remoteTarget: string }   // 上传（本地条目，形状由 files store 决定）
+  // 上传（本机路径）：字节不经 IPC，后端 sftp_upload_from_file 读盘直写 SFTP。
+  | { kind: 'localPath'; localPath: string; remoteTarget: string }
   // 下载：下载已改为「后端流式写入本地文件」，因此需要记住用户选定的落盘路径。
   // localPath 为 null 表示「尚未选定」——首次执行时弹系统目录选择框，
   // 重试时复用已解析路径（避免重试让用户重选一次）。
@@ -88,9 +88,8 @@ export function formatEta(seconds: number | null | undefined): string {
 
 /**
  * 构造传输队列项。op 保存原始操作参数，供 retryTransfer 复用：
- *   - 上传（浏览器 File）  : { kind: 'file', file, remoteTarget }
- *   - 上传（本地条目）     : { kind: 'localEntry', entry, remoteTarget }
- *   - 下载                : { kind: 'download', entry }
+ *   - 上传（本机路径，服务端流式）: { kind: 'localPath', localPath, remoteTarget }
+ *   - 下载                        : { kind: 'download', entry, localPath, destDir }
  */
 export function buildTransferItem({ id, direction, name, remotePath, total, op, assetId }: BuildTransferItemArgs): TransferQueueItem {
   return {

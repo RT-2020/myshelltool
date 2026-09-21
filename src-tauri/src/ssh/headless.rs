@@ -19,6 +19,30 @@ pub struct HeadlessSshClient {
     known_hosts_path: PathBuf,
 }
 
+/// 后台连接（headless / 远程转发）的 host key 判定：仅 known_hosts 精确匹配才
+/// 接受，未记录/变更一律拒绝（无弹窗通道，D4 不静默信任）。
+/// 返回 true = 匹配受信。日志在此处统一打（调用方不再各自重复）。
+pub(crate) fn check_known_host_exact(
+    host_port: &str,
+    known_hosts_path: &PathBuf,
+    server_public_key: &russh::keys::ssh_key::PublicKey,
+) -> bool {
+    let key_bytes = server_public_key.public_key_bytes();
+    let key_hex = bytes_to_hex(&key_bytes);
+    let known = load_known_hosts(known_hosts_path);
+
+    if let Some(entry) = known.get(host_port) {
+        if entry.key_hex == key_hex {
+            info!("headless check_server_key: {host_port} matched known_hosts, accepting");
+            return true;
+        }
+        warn!("headless check_server_key: {host_port} key mismatch (expected {}, got {key_hex})", entry.key_hex);
+    } else {
+        warn!("headless check_server_key: {host_port} not in known_hosts, rejecting (headless mode requires pre-trust via GUI)");
+    }
+    false
+}
+
 #[async_trait::async_trait]
 impl client::Handler for HeadlessSshClient {
     type Error = russh::Error;
@@ -27,30 +51,12 @@ impl client::Handler for HeadlessSshClient {
         &mut self,
         server_public_key: &russh::keys::ssh_key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        let key_bytes = server_public_key.public_key_bytes();
-        let key_hex = bytes_to_hex(&key_bytes);
-        let known = load_known_hosts(&self.known_hosts_path);
-
-        if let Some(entry) = known.get(&self.host_port) {
-            if entry.key_hex == key_hex {
-                info!(
-                    "headless check_server_key: {} matched known_hosts, accepting",
-                    self.host_port
-                );
-                return Ok(true);
-            }
-            warn!(
-                "headless check_server_key: {} key mismatch (expected {}, got {})",
-                self.host_port, entry.key_hex, key_hex
-            );
-        } else {
-            warn!(
-                "headless check_server_key: {} not in known_hosts, rejecting (headless mode requires pre-trust via GUI)",
-                self.host_port
-            );
-        }
         // D4：headless 模式不弹窗，未知/变更主机直接拒绝。
-        Ok(false)
+        Ok(check_known_host_exact(
+            &self.host_port,
+            &self.known_hosts_path,
+            server_public_key,
+        ))
     }
 }
 
@@ -77,12 +83,26 @@ pub struct HeadlessConnectParams {
 pub async fn connect_headless(
     params: &HeadlessConnectParams,
 ) -> Result<client::Handle<HeadlessSshClient>, String> {
-    let config = build_client_config();
-    let host_port = format!("{}:{}", params.host, params.port);
     let handler = HeadlessSshClient {
-        host_port: host_port.clone(),
+        host_port: format!("{}:{}", params.host, params.port),
         known_hosts_path: params.known_hosts_path.clone(),
     };
+    connect_headless_with(params, handler).await
+}
+
+/// 泛型版 headless 建连：handler 由调用方注入（远程转发用它挂上
+/// forwarded-tcpip 接管，见 tunnel.rs RemoteForwardClient）。
+/// 认证流程与 connect_headless 完全一致（密码/私钥/keyboard-interactive 密码类
+/// prompt 自动响应），host key 策略由注入的 handler 决定。
+pub async fn connect_headless_with<H>(
+    params: &HeadlessConnectParams,
+    handler: H,
+) -> Result<client::Handle<H>, String>
+where
+    H: client::Handler<Error = russh::Error> + Send + 'static,
+{
+    let config = build_client_config();
+    let host_port = format!("{}:{}", params.host, params.port);
 
     let mut handle = client::connect(config, (params.host.as_str(), params.port), handler)
         .await

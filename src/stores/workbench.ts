@@ -373,7 +373,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     refreshRemoteFiles: filesStore.refreshRemoteFiles,
     navigateRemotePath: filesStore.navigateRemotePath,
     navigateRemoteUp: filesStore.navigateRemoteUp,
-    uploadFiles: filesStore.uploadFiles,
+    uploadLocalPaths: filesStore.uploadLocalPaths,
     downloadEntry: filesStore.downloadEntry,
     mkdirRemote: filesStore.mkdirRemote,
     renameRemote: filesStore.renameRemote,

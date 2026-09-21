@@ -6,16 +6,16 @@
  *
  * v3 变化：
  *  - 默认折叠本地列（localPaneVisible=false），远程栏独享全宽。
- *  - 支持从 Windows 资源管理器拖拽文件到文件区上传（drop/dragover + dragover 视觉提示）。
+ *  - 支持从 Windows 资源管理器拖拽文件到文件区上传（Tauri 窗口级 onDragDropEvent + 浮层提示）。
  *
  * Store-bound: directly reads useFilesStore / useUiStore. No prop drilling.
  */
-import { computed, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { PanelLeft, FolderOpen } from 'lucide-vue-next';
 import { useFilesStore } from '@/stores/files';
 import { useUiStore } from '@/stores/ui';
-import { isTauriRuntime } from '@/services/backend';
+import { getTauriWindow, invokeBackend, isTauriRuntime } from '@/services/backend';
 import FileColumn from './FileColumn.vue';
 import AppContextMenu from '@/components/ui/AppContextMenu.vue';
 import type { ModalState, RemoteFileEntry } from '@/types/domain';
@@ -35,65 +35,60 @@ const { remoteListMode, contextMenu, selectedRemotePaths, localPaneVisible, remo
 
 const isTauriCore = computed(() => isTauriRuntime());
 
-// Hidden file input for upload (triggered via context-menu or drag-drop).
-const fileInput = ref<HTMLInputElement | null>(null);
-
-function triggerFileUpload() {
+// 上传走原生文件对话框：webview 的 <input type="file"> 拿不到完整本地路径，
+// 而流式上传（sftp_upload_from_file）以后端读盘为准——路径是必需输入。
+async function triggerFileUpload() {
   if (remoteBusy.value) return;
-  fileInput.value?.click();
-}
-function onFilePick(event: Event) {
-  const target = event.target as HTMLInputElement;
-  const files = target.files;
-  if (files?.length && !remoteBusy.value) filesStore.uploadFiles(files);
-  if (event.target) target.value = '';
-}
-
-// 拖拽上传：Windows 资源管理器拖文件进来即触发 uploadFiles。
-// dragover 时显示半透明 accent 边框 + 「松开上传」浮层（dragging=true）。
-// 仅认 'Files' 类型：栏间拖拽（自定义 MIME）走下方独立通道，两条互不干扰。
-const dragging = ref(false);
-let dragLeaveTimer: ReturnType<typeof setTimeout> | null = null;
-
-function onDrop(event: DragEvent) {
-  event.preventDefault();
-  dragging.value = false;
-  if (dragLeaveTimer) { clearTimeout(dragLeaveTimer); dragLeaveTimer = null; }
-  if (remoteBusy.value) return;
-  // dataTransfer.files 对目录给出 size=0 的 File，直接上传会建出同名空文件还报
-  // 「已上传」。优先用 items 的 webkitGetAsEntry().isDirectory 过滤目录（必须在
-  // 同步阶段调用，事件结束后 items 失效）；能力不可用时回退 files。
-  const items = event.dataTransfer?.items;
-  if (items?.length && typeof items[0].webkitGetAsEntry === 'function') {
-    const files: File[] = [];
-    let dirCount = 0;
-    for (const item of Array.from(items)) {
-      if (item.webkitGetAsEntry()?.isDirectory) { dirCount++; continue; }
-      const file = item.getAsFile();
-      if (file) files.push(file);
-    }
-    if (dirCount) uiStore.notify(`已跳过 ${dirCount} 个目录（暂不支持目录上传）`, { level: 'warn' });
-    if (files.length) filesStore.uploadFiles(files);
+  if (!isTauriCore.value) {
+    uiStore.notify('浏览器预览不支持上传（需桌面客户端 npm run tauri:dev）', { level: 'warn' });
     return;
   }
-  const files = event.dataTransfer?.files;
-  if (files?.length) filesStore.uploadFiles(files);
+  const selected = await invokeBackend<string | string[] | null>('plugin:dialog|open', {
+    options: {
+      title: '选择要上传的文件',
+      multiple: true,
+      directory: false,
+      // 默认定位到面板当前的本地目录（与下载目录选择框同一约定）
+      defaultPath: filesStore.localPath || undefined
+    }
+  }).catch(err => {
+    uiStore.notify('打开文件对话框失败：' + (err?.message || err), { level: 'error' });
+    return null;
+  });
+  const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
+  if (paths.length) filesStore.uploadLocalPaths(paths);
 }
-function onDragOver(event: DragEvent) {
-  // 必须 preventDefault 才能触发 drop；仅含 OS 文件时才整面放行并显提示。
-  // 栏间拖拽的自定义 MIME 不在整面放行（远程栏 wrapper 单独判定），拖到非远程区域即浏览器默认禁止。
-  if (!event.dataTransfer?.types?.includes('Files')) return;
-  event.preventDefault();
-  if (!remoteBusy.value) {
-    dragging.value = true;
-    if (dragLeaveTimer) { clearTimeout(dragLeaveTimer); dragLeaveTimer = null; }
-  }
-}
-function onDragLeave() {
-  // 用 timer 延迟隐藏，避免子元素切换触发的误判 dragleave。
-  if (dragLeaveTimer) clearTimeout(dragLeaveTimer);
-  dragLeaveTimer = setTimeout(() => { dragging.value = false; }, 80);
-}
+
+// OS 拖拽上传：tauri.conf 未设 dragDropEnabled=false，OS 文件拖放由 Tauri 拦截
+// 并转发为窗口级事件（HTML5 drop 在 Windows 上不会触发——因此这里必须是
+// onDragDropEvent，而不是元素上的 @drop）。事件是窗口级的：拖入任意区域
+// （含终端）都会走上传，与旧「整面 dropzone」语义略有扩大但符合拖入意图。
+const dragging = ref(false);
+let unlistenOsDrag: (() => void) | null = null;
+
+onMounted(async () => {
+  if (!isTauriCore.value) return;
+  const win = getTauriWindow();
+  // 测试 mock（ui-ipc-flows）的窗口句柄没有 onDragDropEvent，直接跳过
+  if (typeof win?.onDragDropEvent !== 'function') return;
+  unlistenOsDrag = await win.onDragDropEvent(event => {
+    const payload = event.payload as { type: string; paths?: string[] };
+    if (payload.type === 'enter') {
+      if (!remoteBusy.value) dragging.value = true;
+    } else if (payload.type === 'leave') {
+      dragging.value = false;
+    } else if (payload.type === 'drop') {
+      dragging.value = false;
+      if (remoteBusy.value) return;
+      // 目录过滤（含跳过提示）在 store 侧经 fs_local_stat 统一完成
+      const paths = (payload.paths || []).filter(Boolean);
+      if (paths.length) filesStore.uploadLocalPaths(paths);
+    }
+  });
+});
+onUnmounted(() => {
+  if (unlistenOsDrag) { unlistenOsDrag(); unlistenOsDrag = null; }
+});
 
 // ============================================================
 // 栏间拖拽上传（本地 → 远程）：本地行 dragstart（FileColumnList）写自定义 MIME，
@@ -243,18 +238,8 @@ const contextMenuItems = computed<FileMenuItem[]>(() => {
   <div
     class="region-files"
     :class="{ 'is-dragging': dragging, 'local-open': localPaneVisible }"
-    @drop="onDrop"
-    @dragover="onDragOver"
-    @dragleave="onDragLeave"
     @dragend="onAnyDragEnd"
   >
-    <input
-      ref="fileInput"
-      type="file"
-      multiple
-      style="display:none"
-      @change="onFilePick"
-    />
 
     <!-- ============ file-header（app.css L694-701：view-pills + file-actions）============ -->
     <header class="file-header">

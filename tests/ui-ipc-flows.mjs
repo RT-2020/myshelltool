@@ -9,7 +9,8 @@
 //
 // 覆盖清单（每条都对应一次真实事故或高风险迁移）：
 //   1. 连接成功 + ssh-output 流写入终端 + 状态事件断开 → 自动重连再次 connect
-//   2. 分块上传全链路（start/chunk/finalize 顺序 + 短块 EOF + 进度事件）
+//   2. 流式上传全链路（fs_local_stat → 单条 sftp_upload_from_file → 队列收敛 done）
+//   2b. 上传取消链（cancelTransfer → sftp_upload_cancel → 后端中止 reject → 队列 cancelled）
 //   3. 覆盖确认链（probe 命中存在 → 弹窗确认 → 覆盖上传）
 //   4. host key 事件 → 弹窗 → resolve 回传
 
@@ -19,7 +20,8 @@ const baseUrl = process.env.MYSHELLTOOL_BASE_URL ?? 'http://127.0.0.1:41234/';
 
 /** 注入到页面的 mock 后端：invoke 按 command 分发表，listen 捕获 handler 供测试 emit。 */
 // mock 后端是**数据驱动**的（函数无法跨 evaluate 序列化）：
-// spec = { value } 静态返回 | { error } 抛错 | { dynamic: 'connect' } 生成递增 session id。
+// spec = { value } 静态返回 | { error } 抛错 | { dynamic: 'connect' } 生成递增 session id
+//      | { dynamic: 'upload-gate' } 挂起上传直到被取消 | { dynamic: 'cancel-upload' } 解除挂起并 reject。
 const MOCK_INIT = `
 window.__tauriMock = {
   calls: [],
@@ -33,6 +35,7 @@ window.__tauriMock = {
   },
   eventHandlers: {},
   connectCounter: 0,
+  uploadGates: {},
 };
 window.__TAURI__ = {
   core: {
@@ -44,6 +47,20 @@ window.__TAURI__ = {
       if (spec.dynamic === 'connect') {
         window.__tauriMock.connectCounter += 1;
         return { session_id: 'real-sess-' + window.__tauriMock.connectCounter, connected: true };
+      }
+      // 上传闸门：模拟「在途大文件上传」——invoke 挂起，直到 sftp_upload_cancel 解除
+      if (spec.dynamic === 'upload-gate') {
+        return new Promise((resolve, reject) => {
+          window.__tauriMock.uploadGates[args.transferId] = { resolve, reject };
+        });
+      }
+      if (spec.dynamic === 'cancel-upload') {
+        const gate = window.__tauriMock.uploadGates[args.transferId];
+        if (gate) {
+          delete window.__tauriMock.uploadGates[args.transferId];
+          gate.reject(new Error('upload cancelled by user'));
+        }
+        return null;
       }
       return spec.value;
     },
@@ -159,49 +176,68 @@ console.error('[step] scenario-1');
   if (statusAfterClose !== 'connected') throw new Error('auto-reconnect did not reconnect: ' + statusAfterClose);
 
 console.error('[step] scenario-2');
-  // ════ 场景 2：分块上传全链路 ════
+  // ════ 场景 2：流式上传全链路（stat → 单条 sftp_upload_from_file → done）════
   await fixtureBackend(page, {
-    'sftp_upload_start': spec(null),
-    'sftp_upload_chunk': spec(null),
-    'sftp_upload_finalize': spec(null),
+    'fs_local_stat': spec({ name: 'big-upload.bin', path: 'C:\\fake\\big-upload.bin', kind: 'file', size: 10 * 1024 * 1024, modified: '', permissions: null, user: null, group: null }),
+    'sftp_upload_from_file': spec(null),
+    'sftp_stat': spec(null), // 目标不存在 → 不弹覆盖确认
+    'sftp_list_dir': spec({ path: '/root', entries: [] }),
+  });
+  const uploaded = await page.evaluate(async () => {
+    await window.__myshelltool.files.uploadLocalPaths(['C:\\fake\\big-upload.bin']);
+    return true;
+  });
+  if (!uploaded) throw new Error('uploadLocalPaths rejected');
+  await page.waitForFunction(() => window.__tauriMock.calls.some(c => c.command === 'sftp_upload_from_file'), null, { timeout: 20000 });
+  const upCalls = await page.evaluate(() => window.__tauriMock.calls.filter(c => c.command === 'sftp_upload_from_file'));
+  if (upCalls.length !== 1) throw new Error('expected exactly one streaming upload call, got ' + upCalls.length);
+  const upArgs = upCalls[0].args;
+  if (upArgs.localPath !== 'C:\\fake\\big-upload.bin') throw new Error('localPath wrong: ' + JSON.stringify(upArgs));
+  if (upArgs.remotePath !== '/root/big-upload.bin') throw new Error('remotePath wrong: ' + JSON.stringify(upArgs));
+  if (!upArgs.transferId || !String(upArgs.sessionId).startsWith('real-sess-')) throw new Error('upload args incomplete: ' + JSON.stringify(upArgs));
+  // 字节不经 IPC：不应再出现任何分块命令
+  const legacyChunks = await page.evaluate(() => window.__tauriMock.calls.filter(c => c.command.startsWith('sftp_upload_') && c.command !== 'sftp_upload_from_file' && c.command !== 'sftp_upload_cancel').length);
+  if (legacyChunks !== 0) throw new Error('legacy chunked upload commands still called: ' + legacyChunks);
+  // invoke 成功 + 无进度事件（mock 不发）→ 兜底路径也应把队列项收敛为 done
+  const doneStatus = await page.evaluate(id => window.__myshelltool.files.transferQueue.find(i => i.id === id)?.status, upArgs.transferId);
+  if (doneStatus !== 'done') throw new Error('upload queue item not done: ' + doneStatus);
+
+console.error('[step] scenario-2b');
+  // ════ 场景 2b：上传取消链（cancelTransfer → sftp_upload_cancel → cancelled）════
+  await fixtureBackend(page, {
+    'fs_local_stat': spec({ name: 'slow.bin', path: 'C:\\fake\\slow.bin', kind: 'file', size: 5 * 1024 * 1024, modified: '', permissions: null, user: null, group: null }),
+    'sftp_upload_from_file': { dynamic: 'upload-gate' },
+    'sftp_upload_cancel': { dynamic: 'cancel-upload' },
     'sftp_stat': spec(null),
     'sftp_list_dir': spec({ path: '/root', entries: [] }),
   });
-  // 页面内构造 File（8MiB+1B 触发两块：8MiB 短块? 不——CHUNK=8MiB，10MiB → 8+2 两块）
-  const uploaded = await page.evaluate(async () => {
-    const files = window.__myshelltool.files;
-    const buf = new Uint8Array(10 * 1024 * 1024).fill(65);
-    const file = new File([buf], 'big-upload.bin');
-    await files.uploadFiles([file]);
-    return true;
+  await page.evaluate(() => {
+    window.__myshelltool.files.uploadLocalPaths(['C:\\fake\\slow.bin']).catch(e => console.error('[test] cancelled upload rejected: ' + e.message));
   });
-  if (!uploaded) throw new Error('uploadFiles rejected');
-  await page.waitForFunction(() => window.__tauriMock.calls.some(c => c.command === 'sftp_upload_finalize'), null, { timeout: 20000 });
-  const chunks = await page.evaluate(() => window.__tauriMock.calls.filter(c => c.command === 'sftp_upload_chunk').map(c => c.args.bytesTransferred));
-  if (chunks.length !== 2 || chunks[0] !== 8 * 1024 * 1024 || chunks[1] !== 10 * 1024 * 1024) {
-    throw new Error('chunk boundaries wrong: ' + JSON.stringify(chunks));
-  }
+  await page.waitForFunction(() => window.__tauriMock.calls.some(c => c.command === 'sftp_upload_from_file' && String(c.args.localPath).includes('slow')), null, { timeout: 5000 });
+  const slowTransferId = await page.evaluate(() => window.__tauriMock.calls.find(c => c.command === 'sftp_upload_from_file' && String(c.args.localPath).includes('slow')).args.transferId);
+  await page.evaluate(id => window.__myshelltool.files.cancelTransfer(id), slowTransferId);
+  await page.waitForFunction(id => window.__myshelltool.files.transferQueue.find(i => i.id === id)?.status === 'cancelled', slowTransferId, { timeout: 5000 });
+  const cancelCallCount = await page.evaluate(() => window.__tauriMock.calls.filter(c => c.command === 'sftp_upload_cancel').length);
+  if (cancelCallCount !== 1) throw new Error('sftp_upload_cancel not called exactly once: ' + cancelCallCount);
 
 console.error('[step] scenario-3');
-  // ════ 场景 3：覆盖确认链（probe 命中 → modal → 确认 → 上传）════
+  // ════ 场景 3：覆盖确认链（probe 命中 → modal → 确认 → 流式上传）════
   await fixtureBackend(page, {
     'sftp_stat': spec({ name: 'over.txt', kind: 'file', size: 1 }),  // 已存在
-    'sftp_upload_start': spec(null),
-    'sftp_upload_chunk': spec(null),
-    'sftp_upload_finalize': spec(null),
+    'fs_local_stat': spec({ name: 'over.txt', path: 'C:\\fake\\over.txt', kind: 'file', size: 3, modified: '', permissions: null, user: null, group: null }),
+    'sftp_upload_from_file': spec(null),
     'sftp_list_dir': spec({ path: '/root', entries: [] }),
   });
-  // uploadFiles 在覆盖确认处挂起等用户选择——不能在 evaluate 里 await 它
+  // uploadLocalPaths 在覆盖确认处挂起等用户选择——不能在 evaluate 里 await 它
   // （evaluate 永不返回 = 测试死锁）。fire-and-forget，由下方确认步骤放行。
   await page.evaluate(() => {
-    const files = window.__myshelltool.files;
-    const file = new File([new Uint8Array([1, 2, 3])], 'over.txt');
-    files.uploadFiles([file]).catch(e => console.error('[test] overwrite upload rejected: ' + e.message));
+    window.__myshelltool.files.uploadLocalPaths(['C:\\fake\\over.txt']).catch(e => console.error('[test] overwrite upload rejected: ' + e.message));
   });
   await page.waitForFunction(() => window.__myshelltool.workbench.modal.type === 'confirmFileOverwrite', null, { timeout: 5000 });
   await page.evaluate(() => window.__myshelltool.files.confirmFileOverwrite());
   await page.waitForFunction(
-    () => window.__tauriMock.calls.filter(c => c.command === 'sftp_upload_finalize').length >= 2,
+    () => window.__tauriMock.calls.some(c => c.command === 'sftp_upload_from_file' && c.args.remotePath === '/root/over.txt'),
     null,
     { timeout: 10000 }
   );
@@ -223,7 +259,7 @@ console.error('[step] scenario-4');
   await page.evaluate(() => window.__myshelltool.sessions.resolveHostKeyPrompt('rk-1', true));
   await page.waitForFunction(() => window.__tauriMock.calls.some(c => c.command === 'ssh_confirm_host_key' && c.args.accepted === true), null, { timeout: 5000 });
 
-  console.log('IPC flow tests passed (connect+stream+reconnect / chunked upload / overwrite confirm / host-key resolve)');
+  console.log('IPC flow tests passed (connect+stream+reconnect / streaming upload / upload cancel / overwrite confirm / host-key resolve)');
 } finally {
   await browser.close();
 }

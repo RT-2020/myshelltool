@@ -116,6 +116,15 @@ export async function startTauriWindowDragging(): Promise<boolean> {
   return false;
 }
 
+export async function maximizeTauriWindow(): Promise<boolean> {
+  const currentWindow = getTauriWindow();
+  if (typeof currentWindow?.maximize === 'function') {
+    await currentWindow.maximize();
+    return true;
+  }
+  return false;
+}
+
 // 创建新的 Tauri WebviewWindow（独立资产窗口等）。非 Tauri runtime 抛错，与 invokeBackend 行为一致。
 // 命名空间依据：withGlobalTauri 全局注入中 WebviewWindow 类在 __TAURI__.webviewWindow 子命名空间
 // （__TAURI__.webview 下只有 Webview 类），与上方 getTauriWindow 的取法一致。
@@ -184,7 +193,9 @@ export function normalizeTunnelConfig(config: Record<string, any> = {}): Normali
     remote_addr: kind === 'dynamic' ? '' : String(config.remote_addr || '127.0.0.1'),
     remote_port: kind === 'dynamic' ? 0 : Number(config.remote_port) || 0,
     session_id: String(config.session_id || ''),
-    auto_start: Boolean(config.auto_start)
+    auto_start: Boolean(config.auto_start),
+    // 远程转发的认证上下文来源（本地资产库 id）；local/dynamic 复用会话句柄，用不上
+    asset_id: config.asset_id ? String(config.asset_id) : null
   };
 }
 
