@@ -352,6 +352,7 @@ cd src-tauri && cargo check   # Rust 类型检查
 | v0.16.0 | 右键与鼠标行为治理：生产屏蔽 WebView2 默认右键菜单；中键自动滚动默认抑制、设置面板可开关；文件栏空白处右键菜单；右键/下拉/标签浮层收起路径补全（菜单外右键、失焦、Esc） |
 | v0.16.1 | 设置面板更新日志收敛为只显示当前版本一条（离线随包提供，历史版本改走 GitHub Releases）；发版技能同步该行为 |
 | v0.17.0 | 全站交互动效补全：浮层（弹窗退场/右键菜单/命令面板/速查/危险确认/标签菜单/搜索建议）进场退场动画、侧栏与右栏折叠列宽平滑过渡 + 交叉淡入；根治 --motion-* 合体 token 叠缓动致 transition/animation 声明被静默丢弃的潜伏 bug（全站过渡真正生效）；同步备份查找与同步流程增强 |
+| v0.18.0 | 内置 CodeMirror 6 编辑器替换 Monaco CDN（编码白名单严格转码、冲突守护 + 原子写、草稿/备份、查找替换、JSON 校验/MD 分屏预览）；上传服务端流式化 + 远程转发补全 + 门禁块级引擎；低分辨率源头自适应布局（断点折叠替换缩放）；窄窗 flyout 与空态溢出修复 |
 
 ---
 
@@ -366,9 +367,9 @@ cd src-tauri && cargo check   # Rust 类型检查
 
 ### GUI
 
-- 下载已流式化但**仍不可取消**（单次 invoke、后端无中断通道）
-- 上传仍走前端 8 MiB 分块经 IPC；改为服务端按路径流式上传是后续优化
-- `start_remote_forward` 是返回 Err 的桩（local/dynamic SOCKS5 已实现）；ProxyJump/跳板链未实现
+- 下载已流式化但**仍不可取消**（单次 invoke、后端无中断通道）；上传已服务端流式化、可取消
+- 远程转发已实现但每条走独立 SSH 连接（russh `tcpip_forward` 需要 `&mut Handle`）；host key 需先在 GUI 信任过、凭据需已存库；ProxyJump/跳板链未实现
+- 内置编辑器单文件上限 2 MiB；编码仅限白名单（UTF-8/UTF-16/GBK 系等，严格转码不 lossy）
 - 多窗口：窗口不持久化恢复、资产删除不跨窗口同步、主题跨窗口不实时同步
 - 终端 tab 迁移回放不含 alt 屏与软换行（vim/less 中拖出只还原进 alt 前内容）
 - 超标文件拆分计划见 [`docs/architecture-log.md`](./docs/architecture-log.md) 的 Baseline snapshot
