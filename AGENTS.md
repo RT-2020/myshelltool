@@ -165,7 +165,7 @@ npm run tauri:build  # 完整桌面安装包（Windows NSIS），beforeBuildComm
 npm run test:core    # Rust core 单元测试：cargo test --manifest-path crates/myshelltool-core/Cargo.toml
 npm run test:ui      # UI 四套：ui-smoke / ui-host-key / ui-file-loading / **ui-ipc-flows**
                      #（后者 mock window.__TAURI__ IPC 驱动真实 store 流：连接+输出流+自动重连/
-                     #   分块上传边界/覆盖确认链/hostkey 认领与 resolve；需先 npm run dev 起服务）
+                     #   流式上传全链路与取消链/覆盖确认链/hostkey 认领与 resolve；需先 npm run dev 起服务）
 
 # —— 静态检查（各自单跑）——
 npm run lint:facts   # 「靠猜测代替事实」门禁：scripts/fact-guards.mjs（指南 §7）；build 首步即跑，CI/发版同步生效
@@ -218,10 +218,11 @@ cd src-tauri && cargo check       # 更快的类型检查
 
 > 本节只保留**现在仍影响决策**的一行式边界。各版本修复史的完整来龙去脉与回归防线（改对应模块前先 grep 相关小节）见 [`docs/已知边界与修复史.md`](./docs/已知边界与修复史.md)。
 
-- **下载不可取消**：`sftp_download_to_file` 单次 invoke 无中断通道，`TransferDrawer` 对下载行不渲染取消按钮（勿造假按钮）。
-- **上传仍是前端分块经 IPC**（8 MiB/chunk，JSON 序列化约 4 倍膨胀）；服务端流式上传是后续优化。
+- **下载不可取消**：`sftp_download_to_file` 单次 invoke 无中断通道，`TransferDrawer` 对下载行不渲染取消按钮（勿造假按钮）。上传可取消（`sftp_upload_cancel` 旗标通道）。
+- **【2026-09-21】源头自适应布局（低分辨率适配）**：窗口 ≥800×600 全宽自适应，**无整体缩放**（字号不变，信息密度按断点降级）。断点（视口 CSS px）：≥1280 现状；<1280 纯 CSS 降档（`workbench-shell.narrow.scss`：标题栏搜索框/状态栏收紧）；<1024 自动折右栏、<860 侧栏收 44px rail（`useAdaptiveLayout.ts` 经 store `setRightCollapsed/setAssetsCollapsed`，persist=false 不污染用户偏好、只恢复自动折的、用户手势优先）。窗口最小 800×600（tauri.conf），首开超屏自动最大化。**改断点值/折叠机制前必读 useAdaptiveLayout.ts 头注释**（纯 CSS 断点会与 store/dataset/内联变量脱节破版，折叠必须走 store action；断点值在 narrow.scss 与 composable 两处保持一致）。回归红线：ui-smoke 窄视口断言（溢出量 `.workbench-shell` 盒宽——body overflow:hidden 使 documentElement.scrollWidth 恒等于 clientWidth，是假阴性）。
+- **【v2.9】上传已服务端流式化**：`sftp_upload_from_file`（本机路径直读，字节不经 IPC）；上传入口因此全部是路径型——本地面板条目、原生文件对话框（`plugin:dialog|open`）、OS 拖入（Tauri 窗口级 `onDragDropEvent`，**拖入窗口任意区域都会触发上传**，含终端区；HTML5 drop 在 Windows 上本就不触发）。旧分块三件套（`sftp_upload_start/chunk/finalize`）与 `fs_local_read_chunk/write_chunk` 已删。
 - **资产 id 消歧只改 `id`**、不动 `credential_id` 引用，凭据共用面未完全消除（暂不做）。
-- `start_remote_forward` 是返回 Err 的桩（local/dynamic SOCKS5 已实现）。
+- **【v2.9】远程转发已实现但走专用连接**（russh 0.49 `tcpip_forward` 要 `&mut Handle`，共享 `Arc<Handle>` 给不出）：每条 remote 隧道一条独立 SSH 连接（OpenSSH 的 MaxStartups/连接数配额视角下与 local/dynamic 不同）；host key 必须已被 GUI 信任过（known_hosts 精确匹配，后台连接不弹窗）；凭据必须已存库（`asset_id` 解析，私钥内容托管 `private_key_credential_id` 形态暂不支持——与 MCP headless 同边界）；`tunnel-traffic-*`/`tunnel-error-*` 事件前端无监听（与 local/dynamic 一致的存量缺口，异步失败靠 `tunnel_list` 的 active/error 字段呈现）。
 - `sanitize_credential_id` 是删除式清洗、不同 id 可碰撞（暂不改；改规则需迁移既有凭据文件）。
 - **Windows 工具链坑**：`cargo build` 偶被 windres build script 阻断 → `cargo check` 兜底；src-tauri 测试二进制缺 Tauri runtime DLL 跑不起来 → `cargo check --tests` 验编译，**安全判据测试必须放 core 真跑**。
 - **改前端后必须先 `npm run build` 再编译 Rust**：`frontendDist` 在 Rust build script 阶段打进二进制；调试期用 `npm run tauri:dev`（前端走 devUrl，刷新即生效）。

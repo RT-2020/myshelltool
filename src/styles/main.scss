@@ -16,6 +16,10 @@
 // 4. Workbench runtime shell
 @use './workbench-shell';
 
+// 5. 窄视口断点降档（必须在 workbench-shell 之后：同优先级靠后取胜；
+//    文件名第二段 .narrow 会被 sass 剥去，默认命名空间撞车，必须显式 as）
+@use './workbench-shell.narrow' as narrow;
+
 // ===========================================================================
 // Backward compatibility: 暴露 tokens 模块的 CSS 变量到全局
 // （@use 默认不输出 CSS；用 @forward 让 :root 块正常发出）

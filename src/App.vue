@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted } from 'vue';
 import { useWorkbenchStore } from './stores/workbench';
 import { isTauriRuntime } from './services/backend';
 import { usePanelResize } from './composables/usePanelResize';
+import { useAdaptiveLayout } from './composables/useAdaptiveLayout';
 import { useAutoUpdate } from './composables/useAutoUpdate';
 import { bootAssetWindow } from './lib/assetWindowBoot';
 import { isAssetWindowMode } from './lib/assetWindows';
@@ -24,6 +25,9 @@ const store = useWorkbenchStore();
 // 单实例（关键）：panelResize 必须全局唯一——两实例会互相覆盖 documentElement
 // CSS 变量与 resize 监听。资产窗口用独立 storageKey，布局不与主窗口互相泄漏。
 const panelResize = usePanelResize(isAssetWindow ? { storageKey: 'myshelltool:layout-asset:v1' } : undefined);
+// 自适应布局（窄窗自动折叠右栏/侧栏）：setup 阶段注册，首次评估在 store.initialize
+// 回放折叠偏好之前——auto 折叠直接写 store ref，回放读取 ref 结果一致，无冲突。
+useAdaptiveLayout();
 const autoUpdate = useAutoUpdate({ announce: (msg, opts) => store.announce(msg, opts) });
 const desktopRuntimeAvailable = computed(() => isTauriRuntime());
 

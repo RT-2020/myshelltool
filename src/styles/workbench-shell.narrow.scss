@@ -1,0 +1,23 @@
+// workbench-shell.narrow.scss — 窄视口断点降档（源头自适应布局的纯 CSS 部分）
+//
+// 断点契约（与 useAdaptiveLayout.ts 的 matchMedia 联动，值必须保持一致）：
+//   宽档   ≥1280        不降档，逐像素同旧版
+//   窄档   1024–1279    本文件降档（标题栏/状态栏收紧）
+//   紧凑档 860–1023     本文件 + 自动折右栏（composable）
+//   极限档 <860         本文件 + 折右栏 + 侧栏收 44px rail（composable）
+// 窗口最小尺寸契约：800×600（tauri.conf.json minWidth/minHeight）。
+//
+// 级联约束：本文件必须经 main.scss 在 workbench-shell.scss 之后加载——
+// 降档规则与原规则同优先级，靠后加载取胜（勿改成 !important）。
+
+// 窄档及以下（<1280）：标题栏/状态栏刚性件收紧
+@media (max-width: 1279.5px) {
+  // 标题栏搜索框：默认 320→280，focus 不再展开到 480（会把右侧窗口按钮群
+  // 挤出视口）。标题栏刚性需求从 ~730px 降到 ~660px，800px 最小窗口下
+  // 品牌区 + 搜索 + 按钮群完整可见。
+  .tb-search { width: 280px; }
+  .tb-search:focus-within { width: 320px; }
+
+  // 状态栏消息随视口收紧，给右侧传输/同步/MCP 徽标让位（原固定 480px）
+  .statusbar .sb-item.status-text { max-width: min(480px, 40vw); }
+}

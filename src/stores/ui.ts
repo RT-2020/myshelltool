@@ -299,6 +299,10 @@ export const useUiStore = defineStore('ui', () => {
     announce(rightCollapsed.value ? '右侧面板已收起' : '右侧面板已展开');
   }
 
+  // 自适应布局自动折叠入口（persist=false、不 announce，与 toggle* 用户手势严格区分）
+  function setAssetsCollapsed(collapsed: boolean) { assetsCollapsed.value = collapsed; applyAssetsState(collapsed, false); }
+  function setRightCollapsed(collapsed: boolean) { rightCollapsed.value = collapsed; applyRightState(collapsed, false); }
+
   // ============================================================
   // Actions — 中键自动滚动（webview 级输入行为）
   // ============================================================
@@ -476,6 +480,8 @@ export const useUiStore = defineStore('ui', () => {
     // 面板折叠 actions
     toggleAssets,
     toggleRight,
+    setAssetsCollapsed,
+    setRightCollapsed,
     setMiddleClickAutoscroll,
     setTab,
     // search actions
