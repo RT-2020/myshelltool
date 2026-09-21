@@ -360,7 +360,11 @@ const emptyDesc = computed(() => {
   justify-content: center;
   gap: 8px;
   // 占满列表剩余空间并允许收缩（不设 min-height 下限）：
-  // 固定分栏等矮容器里空态不再把列表撑出滚动条
+  // 固定分栏等矮容器里空态不再把列表撑出滚动条。
+  // overflow hidden：容器被极端 ratio 压到低于内容 min-content（图标+标题+描述
+  // ≈146px）时，内容在本框内收敛裁剪，不溢出到面板外（--terminal-h 已按视口
+  // 夹紧保底文件区 120px，此条只是拖拽极限下的兜底）。
+  overflow: hidden;
   flex: 1 1 auto;
   min-height: 0;
   padding: var(--space-6);

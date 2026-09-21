@@ -91,6 +91,23 @@ try {
     await np.close();
   }
 
+  // 终端高度视口夹紧回归（2026-09-21 文件区空态溢出修复）：持久化极端
+  // terminalRatio 后缩小窗口，--terminal-h 必须被当前视口夹紧（文件区保底
+  // CENTER_BOTTOM_MIN=120），否则文件区被挤出面板、空态内容溢出。
+  // applyCssVars 的 ratio 路径曾只算不夹——拖拽/恢复路径有 maxTop 上限，
+  // resize/常规写入路径漏了（见 usePanelResize.applyCssVars 注释）。
+  const clampPage = await browser.newPage({ viewport: { width: 800, height: 560 } });
+  await clampPage.addInitScript(() => {
+    localStorage.setItem('myshelltool:layout:v1', JSON.stringify({ sidebarW: 260, rightW: 280, terminalRatio: 0.85 }));
+  });
+  await clampPage.goto(baseUrl, { waitUntil: 'networkidle' });
+  const terminalH = await clampPage.evaluate(() => Number.parseFloat(document.documentElement.style.getPropertyValue('--terminal-h')));
+  const expectedMax = 560 - 52 /*titlebar*/ - 28 /*statusbar*/ - 120 /*CENTER_BOTTOM_MIN*/;
+  if (!Number.isFinite(terminalH) || terminalH > expectedMax + 0.5) {
+    throw new Error(`terminal-h not viewport-clamped: ${terminalH}px > ${expectedMax}px (file area starved → empty state overflows panel)`);
+  }
+  await clampPage.close();
+
   console.log('UI smoke test passed (Tauri-runtime-gated smoke + 5-region + resource-monitor placeholder + narrow-viewport adaptive)');
 } finally {
   await browser.close();

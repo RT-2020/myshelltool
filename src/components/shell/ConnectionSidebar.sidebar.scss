@@ -4,8 +4,11 @@
 // Sidebar 容器（app.css L397-404 严格同步）
 // ============================================================
 .sidebar {
+  position: relative; // 折叠态 flyout（absolute 弹出面板）的定位基准
   display: grid;
-  grid-template-rows: auto auto 1fr auto;
+  // 行：header(auto) + sb-flyout(弹性)。flyout 容器包住搜索/树/快速连接——
+  // 展开态是普通布局容器；折叠态变为 absolute 弹出面板（见下方 flyout 段）。
+  grid-template-rows: auto minmax(0, 1fr);
   width: 100%;
   height: 100%;
   min-height: 0;
@@ -111,6 +114,8 @@
 // Tree（app.css L448-451 sb-tree）
 // ============================================================
 .sb-tree {
+  // flyout 是 flex 列，树占 header/搜索之外全部剩余空间并内部滚动
+  flex: 1 1 auto;
   overflow-y: auto;
   padding: 4px 8px 12px;
   min-height: 0;
@@ -251,10 +256,66 @@
   padding: 8px 0;
   place-items: start center;
 }
-.sidebar.is-collapsed .sb-header,
-.sidebar.is-collapsed .sb-search-wrap,
-.sidebar.is-collapsed .sb-tree,
-.sidebar.is-collapsed .sb-footer { display: none; }
+// 折叠态只藏 header（其操作已在 rail 上）；搜索/树/快速连接归 flyout 面板
+.sidebar.is-collapsed .sb-header { display: none; }
+
+// ============================================================
+// 折叠态 flyout（antd 折叠菜单式）：hover/focus rail 顶部的「资产菜单」按钮
+// 弹出完整资产面板（搜索 + 资产树 + 快速连接），可直接点击资产连接。展开态
+// 它是普通布局容器（.sidebar 的第二行网格，flex 列）。
+// 显隐只动 opacity/visibility/transform（§4.1 hover 铁律：不碰盒模型/文档流；
+// 面板 fixed 定位不参与布局，grid 列宽与过渡不受影响）。
+// 触发面限定 .sb-rail-trigger——整列 hover 会在用户扫过侧栏时误触面板。
+// trigger 嵌在 .sb-rail 内、与面板非兄弟，`~` 够不着，用 :has() 桥（Chromium
+// 105+，Vite baseline 与 WebView2 均支持）；.sb-flyout:hover/:focus-within
+// 接住已移入面板的指针；点击按钮聚焦即钉住，点外部失焦即收；
+// 离场态 150ms transition-delay 是穿越宽限（按钮→面板间指针短暂时不闪断，
+// antd 同款 close 延迟），进场态 120ms 延迟防扫过误触。
+// ============================================================
+.sb-flyout {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.sidebar.is-collapsed .sb-flyout {
+  // fixed 而非 absolute：.sidebar 与 .sidebar-region 都 overflow:hidden，
+  // 面板定位在列外（left: rail 宽）会被祖先裁剪整块不可见。fixed 逃出一切
+  // 裁剪上下文，锚点用布局契约常量（标题栏 52 / 状态栏 28，与
+  // workbench-shell.scss、usePanelResize 同源）+ rail 折叠宽变量。
+  position: fixed;
+  top: 52px;
+  bottom: 28px;
+  left: var(--sidebar-w-collapsed, 44px);
+  width: 264px;
+  // 低于右键菜单（--z-popover 250）：面板内右键资产弹出的菜单必须盖住面板；
+  // 高于列头/--z-sticky(200) 与终端内容
+  z-index: calc(var(--z-popover) - 1);
+  overflow: hidden;
+  background: var(--app-window);
+  border: 1px solid var(--app-border);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  box-shadow: var(--shadow-pop);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(-6px);
+  transition:
+    opacity var(--dur-fast) var(--ease-standard),
+    transform var(--dur-fast) var(--ease-standard),
+    visibility var(--dur-fast) var(--ease-standard);
+  // 离场宽限：触发 hover 丢失后面板保留 150ms 才开始收，指针从按钮穿越到
+  // 面板的间隙不会闪断
+  transition-delay: 150ms;
+}
+.sidebar.is-collapsed:has(.sb-rail-trigger:hover) .sb-flyout,
+.sidebar.is-collapsed:has(.sb-rail-trigger:focus) .sb-flyout,
+.sidebar.is-collapsed .sb-flyout:hover,
+.sidebar.is-collapsed .sb-flyout:focus-within {
+  // 进场 120ms 延迟：扫过按钮不弹、停留才弹（antd 同款防误触）
+  transition-delay: 120ms;
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(0);
+}
 .sidebar.is-collapsed .sb-rail {
   display: flex;
   flex-direction: column;
