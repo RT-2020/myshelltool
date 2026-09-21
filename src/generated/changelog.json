@@ -1,6 +1,12 @@
 {
-  "generatedAt": "2026-09-21T08:31:04.614Z",
+  "generatedAt": "2026-09-21T09:45:50.610Z",
   "entries": [
+    {
+      "version": "0.18.0",
+      "tag": "v0.18.0",
+      "date": "2026-09-21",
+      "notes": "## v0.18.0\n\n_区间: v0.17.0 → v0.18.0_\n\n### ✨ 新功能\n- **editor**: CodeMirror 6 内置编辑器替换 Monaco CDN——编码白名单严格转码、expected 冲突守护 + 原子写、草稿/滚动备份、查找替换与 MD 分屏预览、单文件 2MiB 上限\n- **ui**: 低分辨率源头自适应布局——拆 1280 地板改断点折叠，替换 setZoom 缩放方案\n- **v2.9**: 上传服务端流式化 + 远程转发补全 + 门禁块级引擎 + sync 队列拆分\n\n### 🐛 修复\n- **ui**: 窄窗实测反馈两连修——折叠 rail 资产菜单 flyout + 文件区空态溢出\n\n### 📚 文档\n- **readme**: 版本演进同步 v0.18.0\n- hover 抖动排查结论沉淀——§4.1 hover/focus 反馈铁律 + 修复史记录 + icon-btn 锚点注释\n\n### 🔧 杂项\n- **changelog**: 重新生成更新日志（补 v0.17.0 条目，发版收尾遗漏）\n- 新增 .zcodeignore（同步 .gitignore + Windows 设备名防护）\n\n### 📦 其他\n- v0.18.0\n"
+    },
     {
       "version": "0.17.0",
       "tag": "v0.17.0",
