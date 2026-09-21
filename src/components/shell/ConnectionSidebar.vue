@@ -17,6 +17,7 @@
 import { computed, provide, ref } from 'vue';
 import {
   FolderPlus,
+  ListTree,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
@@ -333,10 +334,8 @@ provide('connectionSidebar', {
 </script>
 
 <template>
-  <div class="sidebar" :class="{ 'is-collapsed': assetsCollapsed }">
-    <!-- ============================================================
-         Header (sticky top): chrome-label + count + actions（app.html sb-header）
-         ============================================================ -->
+    <div class="sidebar" :class="{ 'is-collapsed': assetsCollapsed }">
+    <!-- Header（app.html sb-header）-->
     <header class="sb-header">
       <div class="sb-title">
         <span class="chrome-label">连接资产</span>
@@ -376,6 +375,17 @@ provide('connectionSidebar', {
     </header>
 
     <div class="sb-rail" role="toolbar" aria-orientation="vertical" aria-label="折叠侧栏快捷操作">
+      <!-- 资产菜单触发：hover/focus 弹出 flyout 面板（antd 折叠菜单式），点击聚焦可钉住 -->
+      <button
+        type="button"
+        class="icon-btn sb-rail-trigger"
+        aria-haspopup="true"
+        aria-label="资产菜单"
+        title="资产菜单（悬停展开）"
+      >
+        <ListTree :size="16" />
+      </button>
+      <div class="sb-rail-divider" aria-hidden="true"></div>
       <button
         type="button"
         class="icon-btn"
@@ -385,7 +395,6 @@ provide('connectionSidebar', {
       >
         <PanelLeftOpen :size="16" />
       </button>
-      <div class="sb-rail-divider" aria-hidden="true"></div>
       <button
         type="button"
         class="icon-btn"
@@ -406,9 +415,9 @@ provide('connectionSidebar', {
       </button>
     </div>
 
-    <!-- ============================================================
-         Search（app.html sb-search-wrap + sb-search-input）
-         ============================================================ -->
+    <!-- 折叠态为 fixed 弹出面板（trigger hover/focus 弹出），展开态是普通布局行 -->
+    <div class="sb-flyout">
+    <!-- Search（app.html sb-search-wrap + sb-search-input） -->
     <div class="sb-search-wrap">
       <Search :size="13" class="sb-search-icon" aria-hidden="true" />
       <input
@@ -421,9 +430,7 @@ provide('connectionSidebar', {
       />
     </div>
 
-    <!-- ============================================================
-         Tree (scrollable middle) — 递归渲染分组树（app.html sb-tree）
-         ============================================================ -->
+    <!-- Tree（app.html sb-tree，滚动中段，递归分组树） -->
     <div class="sb-tree" role="tree" aria-label="连接资产列表">
       <!-- Empty state: no assets at all（app.html sb-empty 虚线边框容器）-->
       <div v-if="!hasAssets" class="sb-empty">
@@ -451,9 +458,7 @@ provide('connectionSidebar', {
       </template>
     </div>
 
-    <!-- ============================================================
-         Footer (sticky bottom): quick connect（app.html sb-footer + sb-quick）
-         ============================================================ -->
+    <!-- Footer（app.html sb-footer + sb-quick，快速连接） -->
     <footer class="sb-footer">
       <div class="sb-quick">
         <Zap :size="13" aria-hidden="true" />
@@ -471,10 +476,9 @@ provide('connectionSidebar', {
       </div>
       <p v-if="quickConnectError" id="quick-connect-error" class="sb-quick-error" role="alert">{{ quickConnectError }}</p>
     </footer>
+    </div><!-- /sb-flyout -->
 
-    <!-- ============================================================
-         右键菜单（资产 / 分组共用 AppContextMenu，按 kind 切 items）
-         ============================================================ -->
+    <!-- 右键菜单（资产 / 分组共用 AppContextMenu，按 kind 切 items） -->
     <AppContextMenu
       :open="contextMenu.visible && contextMenu.kind === 'asset'"
       :items="assetMenuItems"

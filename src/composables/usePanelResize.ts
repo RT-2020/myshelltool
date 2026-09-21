@@ -284,7 +284,13 @@ export function usePanelResize(options: UsePanelResizeOptions = {}) {
     // --terminal-h：始终按视口重算写入（有持久化取持久化值，否则按 ratio）——
     // 必须恒为 px 长度（含无持久化时按当前视口重算），否则 grid 行/列过渡会绊在
     // 「变换中列列表含 non-interpolable」上整段失效（见 workbench-shell.scss 注释）。
-    setTerminalHeight(centerTopH.value ?? getTerminalHeightFromRatio(), root);
+    // 写入前按**当前视口**夹紧 [CENTER_TOP_MIN, maxTop]：ratio 路径与 legacy
+    // centerTopH 在窗口变小后都会越过上限，不夹会把文件区挤到 CENTER_BOTTOM_MIN
+    // 以下、空态等内容溢出面板（拖拽/启动恢复路径各有同源 clamp，唯独本路径此前
+    // 漏了）。只夹有效值不动偏好 ref——窗口拖回大屏时完整恢复用户想要的比例。
+    const desiredTop = centerTopH.value ?? getTerminalHeightFromRatio();
+    const viewportH = typeof window !== 'undefined' ? window.innerHeight : undefined;
+    setTerminalHeight(clamp(desiredTop, CENTER_TOP_MIN, getMaxTopHeight(viewportH)), root);
   }
 
   function persist() {
