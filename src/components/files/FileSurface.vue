@@ -20,6 +20,7 @@ import { getTauriWindow, invokeBackend, isTauriRuntime } from '@/services/backen
 import { isKnownBinaryExtension } from '@/lib/editor/editorLanguages';
 import { FILE_DRAG_MIME } from '@/lib/fileTypes';
 import FileColumn from './FileColumn.vue';
+import UploadProgressStrip from './UploadProgressStrip.vue';
 import AppContextMenu from '@/components/ui/AppContextMenu.vue';
 import type { ModalState, RemoteFileEntry } from '@/types/domain';
 
@@ -337,6 +338,10 @@ const contextMenuItems = computed<FileMenuItem[]>(() => {
         </div>
       </div>
     </div>
+
+    <!-- ============ 上传进度提示条（v0.19）：上传区域正下方，文档流内联不遮挡；
+         未上传时不渲染（组件内部 v-if，网格 auto 行塌缩为 0）============ -->
+    <UploadProgressStrip />
 
     <!-- ============ 拖拽上传视觉提示（app.css L770-785）============ -->
     <!-- dragging 时整面 accent 虚线 + 浮层提示目标路径；无拖拽时不渲染常驻提示 -->

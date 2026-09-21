@@ -32,6 +32,14 @@ export interface TransferQueueItem {
    * 可选：历史队列项（该字段引入前构造的）没有此值，调用方需容忍 undefined。
    */
   assetId?: string | null;
+  /**
+   * 上传批次 id（uploadLocalFileEntries 每次入口调用生成一个，批内所有文件共用）。
+   *
+   * 消费方：UploadProgressStrip（上传区域正下方的进度提示条）按批次聚合展示
+   * 「本次上传」的总体进度（总字节数加权）与逐文件分项；关闭提示也按批次记忆。
+   * 仅上传批次有值；下载与历史队列项为 undefined，消费方需容忍。
+   */
+  batchId?: string;
   remotePath: string;
   op: TransferOp | null;
   transferred: number;
@@ -55,6 +63,8 @@ export interface BuildTransferItemArgs {
   op?: TransferOp | null;
   /** 发起时的资产 id（见 TransferQueueItem.assetId）。 */
   assetId?: string | null;
+  /** 上传批次 id（见 TransferQueueItem.batchId），仅上传批次传入。 */
+  batchId?: string;
 }
 
 /**
@@ -103,12 +113,13 @@ export function formatEta(seconds: number | null | undefined): string {
  *   - 上传（本机路径，服务端流式）: { kind: 'localPath', localPath, remoteTarget }
  *   - 下载                        : { kind: 'download', entry, localPath, destDir }
  */
-export function buildTransferItem({ id, direction, name, remotePath, total, op, assetId }: BuildTransferItemArgs): TransferQueueItem {
+export function buildTransferItem({ id, direction, name, remotePath, total, op, assetId, batchId }: BuildTransferItemArgs): TransferQueueItem {
   return {
     id,
     direction,
     name,
     assetId: assetId ?? null,
+    batchId,
     remotePath,
     op: op || null,
     transferred: 0,

@@ -2,11 +2,13 @@
 
 // ============================================================
 // region-files：grid 32px 1fr（与三列头部高度统一）
+// 第三行 auto = UploadProgressStrip（上传进度提示条）：未上传时组件不渲染、
+// 行高塌缩为 0；上传中占自身高度，file-dual（1fr）相应收缩，全程文档流内联。
 // ============================================================
 .region-files {
   position: relative;
   display: grid;
-  grid-template-rows: 32px 1fr;
+  grid-template-rows: 32px 1fr auto;
   width: 100%;
   height: 100%;
   min-height: 0;

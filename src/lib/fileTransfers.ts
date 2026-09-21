@@ -371,6 +371,9 @@ async function uploadLocalFileEntries(entries: RemoteFileEntry[], session: Files
   if (!requireRemotePath()) return;
   const baseDir = tc().remotePath.value;
   const assetId = tc().wb().selectedAsset?.id ?? null;
+  // 批次 id：UploadProgressStrip（上传区下方进度条）按它聚合「本次上传」的
+  // 总体进度与逐文件分项；关闭提示按批次记忆，新批次自动重新出现。
+  const batchId = 'upbatch-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
   // 已完成处理（传完或被用户跳过）的文件数：中止时 entries.length - handledCount
   // 就是「未处理」的剩余文件数。
   let handledCount = 0;
@@ -407,6 +410,7 @@ async function uploadLocalFileEntries(entries: RemoteFileEntry[], session: Files
       direction: 'upload',
       name: entry.name,
       assetId,
+      batchId,
       remotePath: remoteTarget,
       total: Number(entry.size) || 0,
       op: { kind: 'localPath', localPath: entry.path, remoteTarget }
@@ -422,8 +426,10 @@ async function uploadLocalFileEntries(entries: RemoteFileEntry[], session: Files
     // 请求确认之前，本条目根本没有 pending，因此不存在遗漏。
     tc().announce('已切换资产，剩余 ' + (entries.length - handledCount) + ' 个文件未上传', { level: 'warn' });
   }
-  // 无论是否中止，都刷新「当前面板」（当前资产的目录）：本批可能已传完一部分，
-  // 列表要如实反映落盘结果。不能拿 baseDir 去刷——那可能已不属于当前面板。
+  // 无论是否中止，都刷新「当前面板」：本批可能已传完一部分，列表要如实反映落盘
+  // 结果。null = 刷新面板当前目录（filePanel 契约，未加载时才回落服务器默认目录）
+  // ——不能拿 baseDir 去刷（用户可能已导航走，会把别的目录错标成本批落点），
+  // 更不能把面板拽回登录家目录（修复前 null 直通空 path，canonicalize 即家目录）。
   await tc().refreshRemoteFiles(null).catch(() => null);
 }
 
