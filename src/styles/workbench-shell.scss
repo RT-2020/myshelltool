@@ -11,7 +11,9 @@
     'statusbar statusbar statusbar';
   width: 100vw;
   height: 100vh;
-  min-width: 1280px;
+  // 无 min-width：布局自 2026-09-21 起源头自适应（窄窗断点降档见
+  // workbench-shell.narrow.scss；栏位自动折叠见 useAdaptiveLayout.ts）。
+  // 曾有的 min-width:1280px 地板在 <1280 视口下经 overflow:hidden 直接裁剪右栏。
   overflow: hidden;
   background: var(--app-bg);
   color: var(--app-text);

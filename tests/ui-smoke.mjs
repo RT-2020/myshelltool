@@ -57,7 +57,41 @@ try {
   const opsVisible = await opsPanel.isVisible().catch(() => false);
   if (!opsVisible) throw new Error('ops-summary panel not visible');
 
-  console.log('UI smoke test passed (Tauri-runtime-gated smoke + 5-region + resource-monitor placeholder)');
+  // —— 窄视口源头自适应（2026-09-21）：无横向溢出 + 两级自动折叠 ——
+  // 红线背景：workbench-shell 曾有 min-width:1280px，<1280 视口 scrollWidth>clientWidth
+  // 必溢出裁右栏；契约改为 ≥800 宽自适应（断点见 workbench-shell.narrow.scss /
+  // useAdaptiveLayout.ts）。newPage 各自独立 context，localStorage 互不影响。
+  for (const vw of [{ width: 960, height: 600 }, { width: 800, height: 560 }]) {
+    const np = await browser.newPage({ viewport: vw });
+    await np.goto(baseUrl, { waitUntil: 'networkidle' });
+    await np.waitForSelector('.desktop-only-banner', { timeout: 5000 });
+    // 溢出判定量 shell 自身盒宽而非 scrollWidth：body overflow:hidden 会把视口
+    // 传播为不可滚动，documentElement.scrollWidth 恒等于 clientWidth（假阴性，
+    // 2026-09-21 实测）。shell 盒宽 > 视口 = 布局地板回潮 = 右栏被裁。
+    const noOverflow = await np.evaluate(() => {
+      const shell = document.querySelector('.workbench-shell');
+      return Boolean(shell) && shell.getBoundingClientRect().width <= window.innerWidth + 0.5;
+    });
+    if (!noOverflow) throw new Error(`narrow ${vw.width}px: horizontal overflow (shell wider than viewport)`);
+    // 关键区域仍可见（右栏 <1024 自动折叠为 0 宽、侧栏 <860 收 44px rail，均不断言可见性）
+    for (const region of ['titlebar', 'center-top', 'center-bottom', 'statusbar']) {
+      const visible = await np.locator(`[data-region="${region}"]`).first().isVisible().catch(() => false);
+      if (!visible) throw new Error(`narrow ${vw.width}px: data-region="${region}" not visible`);
+    }
+    // 自动折叠态（dataset）：<1024 右栏折叠；<860 侧栏也折叠
+    const rightState = await np.evaluate(() => document.documentElement.dataset.right);
+    if (rightState !== 'collapsed') {
+      throw new Error(`narrow ${vw.width}px: right rail should be auto-collapsed (got: ${rightState})`);
+    }
+    const sidebarExpected = vw.width < 860 ? 'collapsed' : 'expanded';
+    const sidebarState = await np.evaluate(() => document.documentElement.dataset.assets);
+    if (sidebarState !== sidebarExpected) {
+      throw new Error(`narrow ${vw.width}px: sidebar expected "${sidebarExpected}" (got: ${sidebarState})`);
+    }
+    await np.close();
+  }
+
+  console.log('UI smoke test passed (Tauri-runtime-gated smoke + 5-region + resource-monitor placeholder + narrow-viewport adaptive)');
 } finally {
   await browser.close();
 }
