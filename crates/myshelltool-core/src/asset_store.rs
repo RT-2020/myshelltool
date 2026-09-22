@@ -29,6 +29,19 @@ pub struct ConnectionAsset {
     /// PrivateKey 模式下，托管在 SecretStore 中的私钥内容引用 ID（如 "<asset_id>:private_key"）
     #[serde(default, alias = "privateKeyCredentialId")]
     pub private_key_credential_id: Option<String>,
+    /// v0.20（SSH P0-2）：ProxyJump 跳板主机标识（"host" 或 "host:port"，端口缺省 22）。
+    /// 连接时在资产库按 host+port 匹配跳板资产（复用其凭据/host key 信任）；
+    /// 匹配不到明确报错。链式跳板不支持（跳板资产自身再有 jump_host 会被忽略并告警）。
+    #[serde(default, alias = "jumpHost")]
+    pub jump_host: Option<String>,
+    /// v0.20（SSH P1）：TCP 建连超时（秒）。None = 不设超时（现状）；Some(n) =
+    /// n 秒内未完成 TCP+握手即失败。弱网/错误地址资产建议配 10-20。
+    #[serde(default, alias = "connectTimeoutSecs")]
+    pub connect_timeout_secs: Option<u32>,
+    /// v0.20（SSH P1）：应用层 keepalive 探测间隔（秒）。None = 默认 30；
+    /// 半开检测灵敏度与服务器负载的权衡（inactivity_timeout 固定 = keepalive×10）。
+    #[serde(default, alias = "keepaliveIntervalSecs")]
+    pub keepalive_interval_secs: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +52,10 @@ pub enum AuthMethod {
     PrivateKey,
     #[serde(alias = "token")]
     Token,
+    /// v0.20（SSH P1）：SSH agent 认证（Windows：OpenSSH named pipe 优先 →
+    /// Pageant 降级；私钥留在 agent 进程，本应用只收公钥与签名）。
+    #[serde(alias = "agent")]
+    Agent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -432,6 +449,9 @@ pub(crate) fn asset(
         credential_id: None,
         passphrase_credential_id: None,
         private_key_credential_id: None,
+        jump_host: None,
+            connect_timeout_secs: None,
+            keepalive_interval_secs: None,
         last_connected: last_connected.to_string(),
     }
 }
