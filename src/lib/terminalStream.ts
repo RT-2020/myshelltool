@@ -82,6 +82,9 @@ export async function attachSessionStream(session: SessionEntry) {
       passphrase: null,
       passphraseCredentialId: asset.passphrase_credential_id || null,
       privateKeyCredentialId: asset.private_key_credential_id || null,
+      jumpHost: asset.jump_host || null,
+      connectTimeoutSecs: asset.connect_timeout_secs ?? null,
+      keepaliveIntervalSecs: asset.keepalive_interval_secs ?? null,
       cols,
       rows
     });

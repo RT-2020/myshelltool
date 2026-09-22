@@ -33,6 +33,7 @@ import AppButton from '@/components/ui/AppButton.vue';
 import AppSelect from '@/components/ui/AppSelect.vue';
 import McpCapabilityList from '@/components/shell/McpCapabilityList.vue';
 import McpExecutionLogList from '@/components/shell/McpExecutionLogList.vue';
+import McpScopeSettings from '@/components/shell/McpScopeSettings.vue';
 
 const store = useWorkbenchStore();
 const {
@@ -78,22 +79,47 @@ const statusSub = computed(() => {
 const configOpen = ref(false);
 const configJson = computed(() => store.buildMcpConfig());
 
+// 复制反馈必须带 level：不带 level 的 announce 只写底部状态栏一行字、
+// 不进 toast 队列（uiStore.notify 的旧行为），面板/弹窗场景下用户根本
+// 看不到，会误以为没复制上。2026-09-22 修复。
 async function onCopyConfig() {
   const ok = await copy(configJson.value);
-  store.announce(ok ? '接入配置 JSON 已复制' : '复制失败');
+  store.announce(ok ? '接入配置 JSON 已复制' : '复制失败', { level: ok ? 'success' : 'error' });
 }
 async function onCopyEndpoint() {
   const url = status.value.endpoint;
   if (!url) return;
   const ok = await copy(url);
-  store.announce(ok ? 'Endpoint 已复制' : '复制失败');
+  store.announce(ok ? 'Endpoint 已复制' : '复制失败', { level: ok ? 'success' : 'error' });
 }
 async function onCopyDataDir() {
   if (!mcpDataDir.value) return;
   const ok = await copy(mcpDataDir.value);
-  store.announce(ok ? '数据目录路径已复制' : '复制失败');
+  store.announce(ok ? '数据目录路径已复制' : '复制失败', { level: ok ? 'success' : 'error' });
 }
 function onRefresh() { store.refreshMcpStatus(); }
+
+// —— 重置接入 token（v0.20，A1）：破坏性动作（旧配置立即失效），两步确认防误点 ——
+// 不用 window.confirm（项目红线），用按钮自身 3s 确认的轻量形态。
+const resetArmed = ref(false);
+const resetBusy = ref(false);
+let resetTimer: ReturnType<typeof setTimeout> | null = null;
+async function onResetToken() {
+  if (!resetArmed.value) {
+    resetArmed.value = true;
+    if (resetTimer) clearTimeout(resetTimer);
+    resetTimer = setTimeout(() => { resetArmed.value = false; }, 3000);
+    return;
+  }
+  resetArmed.value = false;
+  if (resetTimer) { clearTimeout(resetTimer); resetTimer = null; }
+  resetBusy.value = true;
+  try {
+    await mcpStore.resetToken();
+  } finally {
+    resetBusy.value = false;
+  }
+}
 
 // —— 危险命令拦截（收编自 McpInterceptionSettings）——
 const LEVEL_OPTIONS = [
@@ -170,13 +196,23 @@ onMounted(() => {
             <AppButton variant="primary" size="sm" @click="onCopyConfig">
               <Copy :size="12" />复制配置
             </AppButton>
+            <AppButton
+              variant="ghost"
+              size="sm"
+              :loading="resetBusy"
+              :title="resetArmed ? '再次点击确认重置：旧 token 立即失效，所有 MCP host 需重新配置' : '重置入口 token（怀疑泄露时使用）'"
+              @click="onResetToken"
+            >
+              {{ resetArmed ? '确认重置？' : '重置 token' }}
+            </AppButton>
           </div>
           <div v-if="configOpen" class="config-detail">
             <pre class="code-block"><code>{{ configJson }}</code></pre>
             <p class="muted detail-note">
               贴入 MCP host 配置文件：<strong>Claude Code</strong> 配置文件 ·
               <strong>Cursor</strong> <code>.cursor/mcp.json</code> · 其他合规 host 同理。
-              MCP server 随本应用启停。
+              MCP server 随本应用启停。URL 已内嵌一次性接入 token——本机无 token 的进程
+              一律 401，请把整条 URL 当凭据对待（泄露时点「重置 token」）。
             </p>
             <div class="datadir-row">
               <FolderOpen :size="12" class="chev" />
@@ -212,6 +248,9 @@ onMounted(() => {
               : '非白名单的命令与文件操作（上传/写入/下载/删除）一律弹窗确认；毁灭性命令两档恒拦。' }}
           </p>
         </div>
+
+        <!-- 授权范围行（v0.20/B1 GUI）：分组/标签/排除资产/本机 FS 编辑，组件自包含 -->
+        <McpScopeSettings />
       </section>
 
       <!-- ② 执行日志：审计区（列表限高滚动在子组件内） -->

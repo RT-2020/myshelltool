@@ -17,6 +17,12 @@ export interface NormalizedConnectionAsset {
   credential_id: string | null;
   passphrase_credential_id: string | null;
   private_key_credential_id: string | null;
+  /** v0.20（SSH P0-2）：ProxyJump 跳板主机标识（host / host:port，空=null） */
+  jump_host: string | null;
+  /** v0.20（SSH P1）：TCP 建连超时秒（空 = 不设） */
+  connect_timeout_secs: number | null;
+  /** v0.20（SSH P1）：keepalive 间隔秒（空 = 默认 30） */
+  keepalive_interval_secs: number | null;
 }
 
 export type TunnelKind = 'local' | 'remote' | 'dynamic';
@@ -216,6 +222,29 @@ export interface McpProbeResult {
 }
 
 /** mcp_status 返回（前端按 camelCase 读取，字段宽松可选）。 */
+// ============================================================
+// OpenSSH config 导入（v0.20，SSH P0-1）
+// ============================================================
+
+/** import_ssh_config_preview 返回的单个候选（camelCase 由 Rust serde 保证）。 */
+export interface SshImportCandidate {
+  alias: string;
+  host: string;
+  port: number;
+  username: string | null;
+  identityFile: string | null;
+  proxyJump: string | null;
+  /** 同 host:port:username 的现有资产 id（冲突提示用） */
+  conflictExistingId: string | null;
+  conflictExistingName: string | null;
+}
+
+/** import_ssh_config_preview 返回。 */
+export interface SshImportPreview {
+  sourcePath: string;
+  candidates: SshImportCandidate[];
+}
+
 export interface McpStatusResult {
   serverName?: string;
   serverVersion?: string;
@@ -238,6 +267,14 @@ export interface McpApprovalPrompt {
 /** mcp_get_config / mcp_set_config 返回。 */
 export interface McpConfigResult {
   level?: string | null;
+  /** v0.20（B1）：授权范围（allowedGroups/allowedTags/deniedAssetIds/allowLocalFs/denyAll）；旧配置无此字段 */
+  scope?: {
+    allowedGroups?: string[];
+    allowedTags?: string[];
+    deniedAssetIds?: string[];
+    allowLocalFs?: boolean;
+    denyAll?: boolean;
+  };
 }
 
 /** mcp_list_execution_logs 返回条目（execution_log.rs，rename_all=camelCase）。 */
@@ -256,6 +293,14 @@ export interface McpExecutionLogEntry {
   decision: string;
   outcome: string;
   outputSummary: string;
+  /** v0.20（A4）：registry 风险等级（readonly/write/destructive）；旧日志为空串 */
+  risk?: string;
+  /** v0.20（A4）：命中的审批策略分支（shell_exec/remote_write/…）；旧日志为空串 */
+  policy?: string;
+  /** v0.20（A4）：执行段耗时毫秒（不含审批等待；未执行=0） */
+  durationMs?: number;
+  /** v0.20（A4）：会话来源 new（B3 会话池后含 gui/pool）；旧日志为空串 */
+  sessionSource?: string;
 }
 
 // ============================================================
@@ -408,6 +453,12 @@ export interface AssetEditorForm {
   credential_id: string | null;
   passphrase_credential_id: string | null;
   private_key_credential_id: string | null;
+  /** v0.20（SSH P0-2）：ProxyJump 跳板主机标识（host / host:port，空=null） */
+  jump_host: string | null;
+  /** v0.20（SSH P1）：TCP 建连超时秒（空 = 不设） */
+  connect_timeout_secs: number | string;
+  /** v0.20（SSH P1）：keepalive 间隔秒（空 = 默认 30） */
+  keepalive_interval_secs: number | string;
 }
 
 /** 资产编辑器的凭据表单（clear* 为「清除已存凭据」标记，与重新输入互斥）。 */

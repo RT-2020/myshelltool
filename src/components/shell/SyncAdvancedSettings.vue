@@ -55,10 +55,10 @@ async function onReveal() {
 }
 
 async function copyRevealed() {
-  if (revealed.value) {
-    await copy(revealed.value);
-    store.announce('主密码已复制到剪贴板');
-  }
+  if (!revealed.value) return;
+  // level 进 toast：不带 level 的 announce 只写底部状态栏，设置页场景看不到
+  const ok = await copy(revealed.value);
+  store.announce(ok ? '主密码已复制到剪贴板' : '复制失败', { level: ok ? 'success' : 'error' });
 }
 
 /** 复制 Gist ID 后的短暂「已复制」反馈（2s 后还原）。 */

@@ -49,8 +49,12 @@ export interface EditorFlowContext {
 
 let bound: EditorFlowContext | null = null;
 
+import { bindEditorTargets, openSaveAsDialog, uploadToRemote } from '@/lib/editor/editorRemoteTargets';
+
 export function bindEditorFlows(ctx: EditorFlowContext): void {
   bound = ctx;
+  // v0.20（S2 刀）：另存为/上传流程级联注入依赖（同一 ctx 域的 helper）
+  bindEditorTargets({ fc, findTab, probeRemoteExists, performWrite });
 }
 
 function fc(): EditorFlowContext {
@@ -84,7 +88,7 @@ export function dropEolOverride(tabId: string): void {
 
 /** 远端存在性探测：'yes' | 'no' | 'error'（fail-closed；读得出 too-large/binary/
  *  not-utf8 类错误也证明目标存在）。 */
-async function probeRemoteExists(path: string, assetId: string | null): Promise<'yes' | 'no' | 'error'> {
+export async function probeRemoteExists(path: string, assetId: string | null): Promise<'yes' | 'no' | 'error'> {
   try {
     await readText({ kind: 'remote', assetId, path }, { sessionId: requireRemoteSession(assetId) });
     return 'yes';
@@ -264,146 +268,6 @@ export function discardAllDirty(): void {
   for (const t of fc().tabs()) t.dirty = false;
 }
 
-export function openSaveAsDialog(tab: EditorTab): void {
-  if (tab.target.kind === 'local') {
-    void saveLocalAsViaDialog(tab);
-    return;
-  }
-  const suggested = `${fc().remotePathPrefix()}/${tab.name}`.replace(/\/+/g, '/');
-  fc().openDialog({
-    title: '另存为（远端）',
-    message: '输入远端绝对路径（保存到新路径；已存在时将请求确认）。',
-    input: { label: '远端路径', placeholder: '/etc/myshelltool/example.conf', value: suggested },
-    buttons: [
-      { label: '取消' },
-      {
-        label: '保存',
-        primary: true,
-        action: async (inputValue) => {
-          const path = (inputValue || '').trim();
-          if (!path.startsWith('/')) return '请输入以 / 开头的远端绝对路径';
-          const exists = await probeRemoteExists(path, tab.target.assetId);
-          if (exists === 'error') return '无法确认目标状态（会话或网络异常），请重试';
-          if (exists === 'yes') {
-            // 单弹窗槽位：直接替换为覆盖确认（返回 null 视作无内联错误）
-            fc().openDialog({
-              title: '目标已存在',
-              message: `远端已存在 ${path}，覆盖将替换其全部内容。`,
-              buttons: [
-                { label: '取消' },
-                {
-                  label: '覆盖保存',
-                  danger: true,
-                  primary: true,
-                  action: () => {
-                    void performWrite(tab, { newPath: path, targetKind: 'remote' });
-                  }
-                }
-              ]
-            });
-            return null;
-          }
-          await performWrite(tab, { newPath: path, targetKind: 'remote' });
-        }
-      }
-    ]
-  });
-}
-
-async function saveLocalAsViaDialog(tab: EditorTab): Promise<void> {
-  try {
-    const { openLocalSaveDialog } = await import('@/lib/editor/editorDialogs');
-    const target = await openLocalSaveDialog(tab.name);
-    if (!target) return;
-    const { probeLocalExists } = await import('@/lib/editor/editorIo');
-    const exists = await probeLocalExists(target);
-    if (exists === 'yes') {
-      fc().openDialog({
-        title: '目标已存在',
-        message: `本地已存在 ${target}，覆盖将替换其全部内容。`,
-        buttons: [
-          { label: '取消' },
-          {
-            label: '覆盖保存',
-            danger: true,
-            primary: true,
-            action: () => {
-              void performWrite(tab, { newPath: target, targetKind: 'local' });
-            }
-          }
-        ]
-      });
-      return;
-    }
-    if (exists === 'error') {
-      fc().announce('无法确认本地目标状态，已取消另存为', { level: 'warn' });
-      return;
-    }
-    await performWrite(tab, { newPath: target, targetKind: 'local' });
-  } catch (error) {
-    fc().announce(`另存为失败：${(error as Error).message}`, { level: 'error' });
-  }
-}
-
-/** 编辑本地文件 → 上传到远端（写到指定路径；目标资产=当前选中）。 */
-export function uploadToRemote(tabId: string): void {
-  const tab = findTab(tabId);
-  if (!tab || tab.target.kind !== 'local') return;
-  if (!fc().selectedAssetId()) {
-    fc().announce('上传到远端需要先在侧栏选中并连接一个资产', { level: 'warn' });
-    return;
-  }
-  const suggested = `${fc().remotePathPrefix()}/${tab.name}`.replace(/\/+/g, '/');
-  fc().openDialog({
-    title: '上传到远端',
-    message: '把当前内容写入远端路径（会话为当前选中资产；已存在时将请求确认）。',
-    input: { label: '远端路径', placeholder: '/tmp/example.conf', value: suggested },
-    buttons: [
-      { label: '取消' },
-      {
-        label: '上传',
-        primary: true,
-        action: async (inputValue) => {
-          const path = (inputValue || '').trim();
-          if (!path.startsWith('/')) return '请输入以 / 开头的远端绝对路径';
-          const assetId = fc().selectedAssetId();
-          const exists = await probeRemoteExists(path, assetId);
-          if (exists === 'error') return '无法确认目标状态（会话或网络异常），请重试';
-          if (exists === 'yes') {
-            fc().openDialog({
-              title: '目标已存在',
-              message: `远端已存在 ${path}，覆盖将替换其全部内容。`,
-              buttons: [
-                { label: '取消' },
-                {
-                  label: '覆盖上传',
-                  danger: true,
-                  primary: true,
-                  action: () => {
-                    void performWrite(tab, {
-                      newPath: path,
-                      targetKind: 'remote',
-                      assetId,
-                      announceSuccess: `已上传到远端：${path}`
-                    });
-                  }
-                }
-              ]
-            });
-            return null;
-          }
-          await performWrite(tab, {
-            newPath: path,
-            targetKind: 'remote',
-            assetId,
-            announceSuccess: `已上传到远端：${path}`
-          });
-        }
-      }
-    ]
-  });
-}
-
 /** 保存草稿（显式动作；内容按 UTF-8 暂存，不落目标文件）。 */
 export async function saveDraftAction(tabId: string): Promise<void> {
   const tab = findTab(tabId);
@@ -553,3 +417,6 @@ async function loadBackupView(tab: EditorTab, backupId: string): Promise<void> {
     fc().announce(`读取备份失败：${toClassifiedError(error).message}`, { level: 'error' });
   }
 }
+
+// v0.20（S2 刀）：另存为/上传流程拆至 editorRemoteTargets.ts（调用方路径不变）
+export { openSaveAsDialog, uploadToRemote };

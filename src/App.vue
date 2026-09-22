@@ -14,6 +14,7 @@ import WorkbenchShell from './components/workbench/WorkbenchShell.vue';
 import AssetWindowShell from './components/workbench/AssetWindowShell.vue';
 import GlobalModals from './components/shell/GlobalModals.vue';
 import TransferDrawer from './components/files/TransferDrawer.vue';
+import SshImportDialog from './components/shell/SshImportDialog.vue';
 import AppToastHost from './components/ui/AppToastHost.vue';
 import type { ModalState } from './types/domain';
 
@@ -158,6 +159,8 @@ function toggleRight() {
 
     <TransferDrawer :open="store.transferDrawerOpen" @toggle="store.toggleTransferDrawer" />
     <GlobalModals />
+    <!-- v0.20（SSH P0-1）：OpenSSH config 导入向导（AppModal 根级挂载，assets store 驱动） -->
+    <SshImportDialog />
     <AppToastHost />
   </div>
 </template>

@@ -77,8 +77,11 @@ const failureText = computed(() => {
 });
 
 async function copyUserCode() {
-  // useClipboard 已三层 fallback（navigator → Tauri 插件 → execCommand），失败无需打断
-  await copy(userCode.value);
+  // 设备码是要手动抄到 GitHub 授权页的关键凭据，复制成败必须可见：
+  // announce 不带 level 只写底部状态栏（uiStore.notify 旧行为），弹窗/设置
+  // 页场景下等于没有提示（与 McpPanelContent 复制按钮同因，2026-09-22 修）。
+  const ok = await copy(userCode.value);
+  store.announce(ok ? '设备码已复制' : '复制失败，请手动抄写设备码', { level: ok ? 'success' : 'error' });
 }
 </script>
 

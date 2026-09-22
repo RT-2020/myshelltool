@@ -31,6 +31,7 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
 
   let unlisten: TauriUnlistenFn | null = null;
   let errorUnlisten: TauriUnlistenFn | null = null;
+  let statusUnlisten: TauriUnlistenFn | null = null;
   // 最近一次尝试采样的 sessionId：stop() 清空 activeSessionId 后 retry() 仍可重连
   let lastSessionId: string | null = null;
 
@@ -194,6 +195,32 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
         error.value = errorMessage(e);
       }
     }
+    if (!statusUnlisten) {
+      try {
+        // 会话断开联动（长挂失效根因，2026-09-22）：连接被远端/网络断开后，
+        // 后端清理会话表并停掉监控轮询任务（emit resource-monitor-stopped），
+        // 之后快照流静默——store 若只等快照，面板会永远渲染最后一份冻结数据
+        // （无错误、无重试入口，挂机过夜即「面板失效」）。此处监听权威的会话
+        // 状态事件：disconnected 且是本会话 → 置错误态（复用面板 monitor-error
+        // 横幅 + 重试按钮），保留最后一份真实快照供参照（面板 showGrid 的
+        // monitor-error && hasData 分支）。会话重连成功后 activeSessionId 换新
+        // id，ResourceMonitorPanel 的 watch 会自动 stop→start 恢复监控。
+        // 字段 snake_case：Rust SessionStatusEvent 无 rename_all，与
+        // sessionEvents.ts 的 ssh-session-status 监听解构一致。
+        statusUnlisten = await listenBackendEvent('ssh-session-status', payload => {
+          const next = (payload?.payload || payload) as
+            | { session_id?: string; status?: string }
+            | null
+            | undefined;
+          if (!next?.session_id || next.session_id !== activeSessionId.value) return;
+          if (next.status !== 'disconnected') return;
+          monitorError.value = '远程连接已断开，监控停止——请先重连终端会话';
+          enabled.value = false;
+        });
+      } catch (e) {
+        error.value = errorMessage(e);
+      }
+    }
   }
 
   async function stop() {
@@ -208,6 +235,10 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
     if (errorUnlisten) {
       try { errorUnlisten(); } catch { /* noop */ }
       errorUnlisten = null;
+    }
+    if (statusUnlisten) {
+      try { statusUnlisten(); } catch { /* noop */ }
+      statusUnlisten = null;
     }
     activeSessionId.value = null;
     snapshot.value = null;

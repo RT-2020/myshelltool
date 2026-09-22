@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, unref, watch } from 'vue';
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, unref, watch } from 'vue';
 import {
   ArrowUpDown,
   Minus,
@@ -64,8 +64,6 @@ const emit = defineEmits<{
 const sidebarSearch = ref('');
 const quickConnect = ref('');
 const isMaximized = ref(false);
-const searchInputRef = ref<HTMLInputElement | null>(null);
-const activeSearchIndex = ref(0);
 
 const activeTransferCount = computed(() => props.store.activeTransfers?.length || 0);
 const syncText = computed(() => props.store.syncText || '未配置同步');
@@ -81,62 +79,6 @@ const appClasses = computed(() => ({
   'is-resizing': Boolean(props.panelResize?.resizing?.value)
 }));
 const desktopWindowControlsVisible = computed(() => isTauriRuntime());
-const searchState = computed(() => props.store.searchState || { open: false, query: '', suggestions: [] });
-const searchSuggestions = computed(() => searchState.value.suggestions || []);
-const searchOpen = computed(() => Boolean(searchState.value.open && searchSuggestions.value.length));
-
-watch(
-  () => searchState.value.open,
-  open => {
-    if (open) nextTick(() => searchInputRef.value?.focus());
-  }
-);
-
-watch(searchSuggestions, () => {
-  activeSearchIndex.value = 0;
-});
-
-function openSearch() {
-  props.store.openGlobalSearch();
-  nextTick(() => searchInputRef.value?.focus());
-}
-
-function updateSearchQuery(event: Event) {
-  props.store.setGlobalSearchQuery((event.target as HTMLInputElement).value);
-}
-
-function clearSearch() {
-  props.store.setGlobalSearchQuery('');
-  searchInputRef.value?.focus();
-}
-
-function activateSearchSuggestion(item: SearchSuggestion) {
-  props.store.activateSuggestion(item);
-}
-
-function onSearchKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape') {
-    event.preventDefault();
-    props.store.closeGlobalSearch();
-    searchInputRef.value?.blur();
-    return;
-  }
-  if (!searchSuggestions.value.length) return;
-  if (event.key === 'ArrowDown') {
-    event.preventDefault();
-    activeSearchIndex.value = Math.min(activeSearchIndex.value + 1, searchSuggestions.value.length - 1);
-    return;
-  }
-  if (event.key === 'ArrowUp') {
-    event.preventDefault();
-    activeSearchIndex.value = Math.max(activeSearchIndex.value - 1, 0);
-    return;
-  }
-  if (event.key === 'Enter') {
-    event.preventDefault();
-    activateSearchSuggestion(searchSuggestions.value[activeSearchIndex.value]);
-  }
-}
 
 function selectAsset(id: string) {
   props.store.selectAsset(id);
@@ -316,58 +258,8 @@ onUnmounted(() => {
       </div>
 
       <div class="tb-center" data-tauri-drag-region>
-        <div
-          class="tb-search"
-          :class="{ 'has-value': Boolean(searchState.query) }"
-          data-no-drag="true"
-          role="combobox"
-          :aria-expanded="searchOpen ? 'true' : 'false'"
-          aria-label="全局搜索"
-          @click="openSearch"
-        >
-          <Search :size="14" class="tb-search-icon" />
-          <input
-            ref="searchInputRef"
-            class="tb-search-input tb-search-text"
-            type="search"
-            :value="searchState.query"
-            placeholder="搜索连接 / 命令 / 文件"
-            spellcheck="false"
-            autocomplete="off"
-            @input="updateSearchQuery"
-            @keydown="onSearchKeydown"
-          />
-          <!-- antd allowClear 语义：有值才出现；点击清空并保持聚焦（不吞焦点） -->
-          <button
-            v-if="searchState.query"
-            class="tb-search-clear"
-            type="button"
-            aria-label="清空搜索"
-            title="清空"
-            @click.stop="clearSearch"
-          >
-            <X :size="12" />
-          </button>
-          <kbd>Ctrl K</kbd>
-          <Transition name="tb-suggest">
-            <ul v-if="searchOpen" class="tb-suggestions" role="listbox">
-              <li
-                v-for="(item, idx) in searchSuggestions"
-                :key="item.kind === 'asset' ? item.asset.id : `${item.kind}-${item.host}-${idx}`"
-                :class="{ active: idx === activeSearchIndex }"
-                role="option"
-                :aria-selected="idx === activeSearchIndex ? 'true' : 'false'"
-                @mouseenter="activeSearchIndex = idx"
-                @mousedown.prevent="activateSearchSuggestion(item)"
-              >
-                <strong>{{ item.kind === 'asset' ? item.asset.name : item.label }}</strong>
-                <span>
-                  {{ item.kind === 'asset' ? `${item.asset.username}@${item.asset.host}` : `${item.username}@${item.host}:${item.port}` }}
-                </span>
-              </li>
-            </ul>
-          </Transition>
-        </div>
+        <!-- 全局搜索（v0.20 拆至 TitleBarSearch.vue，S2 刀；样式类名不变走全局 scss） -->
+        <TitleBarSearch />
       </div>
 
       <div class="tb-right">

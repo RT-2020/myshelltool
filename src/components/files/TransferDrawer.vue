@@ -164,13 +164,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
                   />
                   <span>{{ pillLabel(item) }}</span>
                 </span>
-                <!-- 取消：仅上传可取消（sftp_upload_cancel 旗标通道）；下载为整块 invoke，后端无中断通道，不渲染按钮 -->
+                <!-- 取消（v0.20/S9 起上传下载都可取消——transfer_cancels 共用旗标通道，
+                     块边界检查 ≤64KiB；下载取消后端删半截文件） -->
                 <button
-                  v-if="item.direction === 'upload' && (item.status === 'running' || item.status === 'pending')"
+                  v-if="item.status === 'running' || item.status === 'pending'"
                   class="transfer-row-action"
                   type="button"
-                  title="取消上传"
-                  aria-label="取消上传"
+                  :title="item.direction === 'upload' ? '取消上传' : '取消下载'"
+                  :aria-label="item.direction === 'upload' ? '取消上传' : '取消下载'"
                   @click="filesStore.cancelTransfer(item.id)"
                 >
                   <X :size="12" />

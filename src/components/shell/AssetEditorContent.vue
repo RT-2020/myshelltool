@@ -30,7 +30,8 @@ const props = defineProps<{
 // / ssh_connect 的 token 语义后再补选项）。
 const authMethodOptions = [
   { label: 'Password', value: 'Password' },
-  { label: 'PrivateKey', value: 'PrivateKey' }
+  { label: 'PrivateKey', value: 'PrivateKey' },
+  { label: 'Agent', value: 'Agent' }
 ];
 
 const credentialHint = computed(() => {
@@ -83,6 +84,18 @@ function toggleClearPassphrase() {
       <label class="stack"><span class="muted">认证方式</span>
         <AppSelect :model-value="asset.auth_method" :options="authMethodOptions"
           @update:model-value="v => asset.auth_method = v" />
+      </label>
+      <label class="stack"><span class="muted">跳板机（可选）</span>
+        <AppInput :model-value="asset.jump_host || ''" placeholder="host 或 host:port，留空直连"
+          @update:model-value="v => asset.jump_host = v" data-asset-field="jump_host" />
+      </label>
+      <label class="stack"><span class="muted">建连超时秒（可选）</span>
+        <AppInput :model-value="String(asset.connect_timeout_secs ?? '')" type="number" placeholder="空=不设；弱网建议 10-20"
+          @update:model-value="v => asset.connect_timeout_secs = v === '' ? '' : Number(v)" data-asset-field="connect_timeout_secs" />
+      </label>
+      <label class="stack"><span class="muted">Keepalive 间隔秒（可选）</span>
+        <AppInput :model-value="String(asset.keepalive_interval_secs ?? '')" type="number" placeholder="空=默认 30"
+          @update:model-value="v => asset.keepalive_interval_secs = v === '' ? '' : Number(v)" data-asset-field="keepalive_interval_secs" />
       </label>
     </div>
     <div class="callout">

@@ -71,15 +71,22 @@ async function onGenerate() {
     generated.value = pw;
     password.value = pw;
     passwordConfirm.value = pw; // 自动生成必然一致，不让用户再抄一遍
-    await copy(pw); // 顺手进剪贴板：用户想存到别处可以直接粘贴
-    store.announce('已生成强密码并保存在这台电脑（已复制到剪贴板）');
+    const ok = await copy(pw); // 顺手进剪贴板：用户想存到别处可以直接粘贴
+    // 文案如实反映复制结果：复制失败时不能声称「已复制」（密码只显示一次，误导代价高）
+    store.announce(ok
+      ? '已生成强密码并保存在这台电脑（已复制到剪贴板）'
+      : '已生成强密码并保存在这台电脑，但复制失败，请从表单手动复制', { level: ok ? 'success' : 'error' });
   } finally {
     generating.value = false;
   }
 }
 
+// 复制反馈带 level 进 toast（不带 level 的 announce 只写底部状态栏，
+// 设置页场景看不到——与 McpPanelContent 复制按钮同因，2026-09-22 修）
 async function copyGenerated() {
-  if (generated.value) await copy(generated.value);
+  if (!generated.value) return;
+  const ok = await copy(generated.value);
+  store.announce(ok ? '主密码已复制到剪贴板' : '复制失败', { level: ok ? 'success' : 'error' });
 }
 
 async function onSubmit() {

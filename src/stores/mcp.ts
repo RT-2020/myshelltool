@@ -76,6 +76,9 @@ export const useMcpStore = defineStore('mcp', () => {
 
   // v2：拦截等级（'minimal' | 'strict'，后端 mcp-config.json 持久化）。
   const interceptLevel = ref('minimal');
+  // v0.20（B1 GUI）：完整配置（level + scope）。scope 编辑面板的权威数据源；
+  // 旧后端返回无 scope 字段时为空对象（= 不限制）。
+  const config = ref<McpConfigResult | null>(null);
   // v2：执行日志列表（timestampMs 倒序）+ 加载态。
   const execLogs = ref<McpExecutionLogEntry[]>([]);
   const execLogsLoading = ref(false);
@@ -136,11 +139,31 @@ export const useMcpStore = defineStore('mcp', () => {
   /**
    * 生成指定宿主的配置 JSON 字符串（复制即用）。
    * v1.4：基于 HTTP endpoint URL（不再需要 exe 路径）。
+   * v0.20（A1）：endpoint 已内嵌入口鉴权 token，本函数无需感知。
    * @param opts.url 覆盖 endpoint URL（默认用后端返回的 status.endpoint）
    */
   function buildConfig(opts: { url?: string } = {}) {
     const url = opts.url || endpoint.value;
     return buildConfigSnippet(url);
+  }
+
+  /**
+   * 重置 MCP 入口鉴权 token（v0.20，A1）。
+   * 后端换新 token 并重写 mcp-endpoint.json；本 action 随后 refresh() 拿回
+   * 新 endpoint（含新 token）并重探测。旧 token 立即失效——已配置的 MCP host
+   * 必须重新复制配置，调用方负责把这个后果说清。
+   */
+  async function resetToken(): Promise<boolean> {
+    if (!isTauriRuntime()) return false;
+    try {
+      await invokeBackend('mcp_reset_token');
+      await refresh();
+      wb().announce?.('MCP 接入 token 已重置——旧配置已失效，请重新复制配置到 MCP host', { level: 'success' });
+      return true;
+    } catch (error) {
+      wb().announce?.('重置 MCP token 失败：' + errorMessage(error));
+      return false;
+    }
   }
 
   // ============================================================
@@ -216,8 +239,9 @@ export const useMcpStore = defineStore('mcp', () => {
   async function loadMcpConfig() {
     if (!isTauriRuntime()) return;
     try {
-      const config = await invokeBackend<McpConfigResult>('mcp_get_config');
-      interceptLevel.value = config?.level ?? 'minimal';
+      const cfg = await invokeBackend<McpConfigResult>('mcp_get_config');
+      config.value = cfg;
+      interceptLevel.value = cfg?.level ?? 'minimal';
     } catch (error) {
       // eslint-disable-next-line no-console
       console.warn('[mcp] loadMcpConfig failed:', errorMessage(error));
@@ -237,6 +261,22 @@ export const useMcpStore = defineStore('mcp', () => {
       wb().announce?.(`MCP 拦截等级已切换为「${label}」`);
     } catch (error) {
       wb().announce?.('切换 MCP 拦截等级失败：' + errorMessage(error));
+    }
+  }
+
+  /**
+   * 更新授权范围（v0.20，B1 GUI；mcp_set_scope）。后端清洗（trim/去空/去重，
+   * deny_all 不收 UI 值）后落盘；已建 MCP 会话**下次工具调用即生效**。
+   * 成功更新本地 config 并返回；失败 announce 并返回 null。
+   */
+  async function setScope(scope: NonNullable<McpConfigResult['scope']>): Promise<McpConfigResult | null> {
+    try {
+      const updated = await invokeBackend<McpConfigResult>('mcp_set_scope', { scope });
+      config.value = updated;
+      return updated;
+    } catch (error) {
+      wb().announce?.('保存 MCP 授权范围失败：' + errorMessage(error));
+      return null;
     }
   }
 
@@ -305,6 +345,7 @@ export const useMcpStore = defineStore('mcp', () => {
     loading,
     approvalPrompt,
     interceptLevel,
+    config,
     execLogs,
     execLogsLoading,
     // computed
@@ -319,11 +360,15 @@ export const useMcpStore = defineStore('mcp', () => {
     // actions：探测 + 配置
     refresh,
     buildConfig,
+    // actions：v0.20 入口 token（A1）
+    resetToken,
     // actions：v1.5 GUI 弹窗审批
     resolveMcpApproval,
     // actions：v2 拦截等级 + 执行日志
     loadMcpConfig,
     setMcpInterceptLevel,
+    // actions：v0.20 授权范围（B1 GUI）
+    setScope,
     loadExecLogs,
     clearExecLogs,
     // 生命周期

@@ -18,6 +18,9 @@ export function emptyAsset(): AssetEditorForm {
     username: '',
     auth_method: 'Password',
     private_key_path: '',
+    jump_host: '',
+    connect_timeout_secs: '',
+    keepalive_interval_secs: '',
     group: '未分组',
     tags: '',
     status: 'Idle',
@@ -56,6 +59,9 @@ export function cloneAsset(asset: NonNullable<ModalState['asset']>): AssetEditor
   return {
     ...asset,
     tags: asset.tags.join(', '),
-    private_key_path: asset.private_key_path || ''
+    private_key_path: asset.private_key_path || '',
+    jump_host: asset.jump_host || '',
+    connect_timeout_secs: asset.connect_timeout_secs ?? '',
+    keepalive_interval_secs: asset.keepalive_interval_secs ?? '',
   };
 }
