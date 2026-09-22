@@ -16,6 +16,7 @@
 - `save_connection_asset({ asset })` → upsert，返回更新后的列表
 - `delete_connection_asset({ id })` → 删除 + 容错清理关联凭据
 - `rename_asset_group({ oldPath, newPath })` / `dissolve_asset_group({ path })` / `create_asset_group({ path })` → 分组批量操作
+- **`import_ssh_config_preview({ path? })`**【v0.20/P0-1】→ 解析 OpenSSH config（默认 `~/.ssh/config`；core::ssh_config，first-match-wins + 通配参数组 + 逐块容错）返回 `{ sourcePath, candidates[] }`；每项含 alias/host/port/username/identityFile/proxyJump 与**冲突标记**（同 host:port:username 的现有资产 id——导入执行复用 `save_connection_asset`，前端逐条提交走与手工建资产完全相同的链路）。ProxyJump 映射为资产的 `jumpHost` 字段。
 
 **凭据**（`lib.rs`，存 `<app_data_dir>/credentials/<id>.cred`）
 - `save_credential({ id, secret })` / `get_credential_status({ id })` / `delete_credential({ id })`
@@ -37,15 +38,19 @@
 - `sync_oauth_cancel()` → 清内存槽（单槽：新 start 覆盖旧 start）
 
 **SSH 会话/终端**（`ssh.rs`）
-- `ssh_connect({...})` → 返回 `session_id`；参数含 host/port/username/authMethod/credentialId/privateKeyPath 等
+- `ssh_connect({...})` → 返回 `session_id`；参数含 host/port/username/authMethod（**v0.20 新增 Agent**：SSH agent 认证——named pipe 优先→Pageant 兜底、逐 key 尝试、私钥留在 agent 进程密钥零复制；headless/MCP 同路径支持）/credentialId/privateKeyPath 等；【v0.20/SSH P1】新增可选 `connectTimeoutSecs`（TCP+握手超时，空=不设）与 `keepaliveIntervalSecs`（keepalive 间隔，空=默认 30；inactivity 固定 = keepalive×10，保持「探测重试窗口充足」的分工约束）。资产 ConnectionAsset 增同名字段（serde default 兼容旧 JSON），编辑器表单可配；GUI/headless/MCP/SFTP/隧道/跳板全路径生效（跳板连接用跳板资产自己的参数）。ssh_list_directory 同形态参数
+- **【v0.20/SSH P2】partial-success 认证链**：服务器 `AuthenticationMethods publickey,password` 双因子场景——russh 0.49 把 USERAUTH_FAILURE 的 partial 标志折叠成 false（无法精确区分「被拒」与「需第二因子」），故采用**顺序因子策略**（语义超集）：主方式失败后先尝试另一因子（PrivateKey 失败+有存密码→password；Password 失败+有私钥素材→publickey，素材惰性预读），成功即过；第二因子也失败落回原 keyboard-interactive 兜底。单因子服务器零影响。GUI 与 headless 双路径
 - `ssh_list_directory` → 一次性 SFTP 列目录（走独立连接开 sftp 子系统，空 path 时 canonicalize 家目录；不依赖远端用户态工具，曾用 GNU-only `find -printf` 在 BusyBox/BSD 上必挂，已弃用）
 - `ssh_write` / `ssh_resize` / `ssh_disconnect` / `ssh_confirm_host_key` / `ssh_keyboard_response`
 
 **SFTP**（`ssh.rs`）
 - `sftp_list_dir` / `sftp_read_file` / `sftp_write_file`
+- **`sftp_chmod({ sessionId, path, mode })`【v0.20/SSH P2】**：修改远端权限（mode 八进制字符串，前置校验 3-4 位、仅 0-7、4 位首位须 0——setuid/setgid/sticky 暂不支持；russh-sftp setstat 只改 permissions 位；vendored fork 新增 `set_metadata` 透传）。GUI 入口：远程面板右键「修改权限…」（编辑器通用输入弹窗，预填当前权限，前后端双校验）
+- **`sftp_readlink({ sessionId, path })`【v0.20/SSH P2】**：读符号链接目标。GUI 入口：symlink 条目右键「查看链接目标」
 - `sftp_list_dir` 的 **path 为空串 = 服务器默认目录**：后端 `canonicalize(".")` 解析登录用户真实家目录（root → /root）并在返回的 `path` 字段回传绝对路径；前端不再猜测 home（旧版 `/home/<username>` 对 root 必错、tag 硬编码目录不存在即 No such file，已废弃）
 - 流式上传：`sftp_upload_from_file({ sessionId, localPath, remotePath, transferId })`（【v2.9】替代旧 `sftp_upload_start/chunk/finalize` 三件套）——前端只传本机路径，后端读盘直写 SFTP（1 MiB 读块 + russh-sftp 写流水线），**字节不再经 IPC**（旧 8 MiB 分块经 JSON 数字数组序列化约 4 倍膨胀）。进度经 `sftp-transfer-progress` 事件节流上报（与下载同口径：1 MiB / 200ms + 收尾必发）；`total` 取打开时刻的本地文件长度（传输期间增长不截断，读到 EOF）。本机路径经 `fs_local::resolve_input_path` 解析（系统目录黑名单与面板读取同源）。取消/中途失败会**尽力删除远端半截文件**（对称下载侧的半截清理）。
 - `sftp_upload_cancel({ transferId })` → 置共享取消旗标，上传循环在下一个读块边界中止（幂等，找不到条目不报错）；前端 `cancelTransfer` 先置本地标记再调本命令，后端 reject 后按取消态收敛（不挂重试）。
+- **`sftp_download_cancel({ transferId })`【v0.20/S9】** → 下载取消：与上传共用 `transfer_cancels` 旗标表（`UploadCancelEntry` 已更名 `TransferCancelEntry`），下载循环在 64KiB 读块边界检查；取消后端返回 `[download:cancelled]` 错误前缀，前端收敛为 cancelled 态（非 error、不弹重试），半截本地文件走既有清理分支删除。TransferDrawer 上传/下载行均有取消按钮（「下载不可取消」边界解除）。
 - `sftp_download_to_file` / `sftp_mkdir` / `sftp_rename` / `sftp_remove` / `sftp_stat`
   - 下载已改为**流式落盘**（后端分块读 → `tokio::fs` 直接写本地文件，进度事件节流 1 MiB / 200ms）；字节不再经过 IPC，也不返回 `Vec<u8>`。前端用 `plugin:dialog|open`（`directory: true`）让用户选**保存目录**、文件名沿用远端名，再调用它；批量下载整批只弹一次目录框（不是每文件一次）。
 
@@ -72,12 +77,23 @@
   - 【v2.9 已删】`fs_local_read_chunk` / `fs_local_write_chunk`：分块上传链路消亡后双双无调用方（后者本就无），按死代码红线移除。
 
 **MCP 服务**（`lib.rs` 调 `mcp/http_server.rs` + `mcp/probe.rs`）
-- `mcp_status` → 【v1.4】HTTP 健康检查 + 聚合能力清单。返回 `McpStatus { serverName, serverVersion, endpoint, dataDir, probe: McpProbeResult, tools[], resources[], prompts[] }`。`probe.ok` 是状态灯唯一信号源（向自己的 HTTP endpoint 发 initialize 握手，不再 spawn 子进程）。`endpoint` 是 MCP HTTP URL（如 `http://127.0.0.1:41235/mcp`），供用户配置 MCP host。
+- `mcp_status` → 【v1.4】HTTP 健康检查 + 聚合能力清单。返回 `McpStatus { serverName, serverVersion, endpoint, dataDir, probe: McpProbeResult, tools[], resources[], prompts[] }`。`probe.ok` 是状态灯唯一信号源（向自己的 HTTP endpoint 发 initialize 握手，不再 spawn 子进程）。`endpoint` 是 MCP HTTP URL，**【v0.20/A1】含入口鉴权 token**（如 `http://127.0.0.1:41235/mcp/<token>`），面板「复制配置」直接可用；探测请求同样带 token（否则 401，状态灯全灭）。
+- `mcp_reset_token` → 【v0.20/A1】重置入口鉴权 token：换新（CSPRNG 256-bit → base64url）→ 更新共享 Arc（运行中 server 立即按新值校验，**旧 token 即刻失效**）→ 重写 mcp-endpoint.json → 返回含新 token 的完整 URL。endpoint 文件缺失（server 未起来）或落盘失败返回 Err（不假装成功）。
 - `mcp_get_config` → 【v2】读 MCP 危险命令拦截等级（内存共享配置，不动盘）。
 - `mcp_set_config({ level })` → 【v2】切换拦截等级（`minimal` 仅硬拦毁灭性命令、其余直接执行 / `strict` 非白名单一律确认；毁灭性命令两档恒拦）→ 更新共享 Arc（已建 MCP 会话下次调用即生效）→ 落盘 mcp-config.json；无效 level 返 Err。
 - `mcp_list_execution_logs({ limit? })` → 【v2】读 MCP 工具执行日志最近条目（timestampMs 倒序，limit 缺省 200）。
 - `mcp_clear_execution_logs` → 【v2】清空 MCP 执行日志。
 - 【v1.4 已删】`mcp_approval_resolve`（原 v1.1 pipe 审批回传，内嵌后无 pipe）
+- **MCP 工具面【v0.20/3-6 月段】**：`exec_many`（多机 fan-out：`asset_ids` 数组 + `command` + `intent`；单次上限 64 台、并发 8 台排队（= 会话池容量）；逐目标 scope 判定 / 三层会话复用（GUI→池→新建）/ 每目标 16KiB 输出限幅标 truncated；审批按 command 文本一次判定（ShellExec 策略）放行整批。MCP 工具总数 15）
+- **C1 长任务【v0.20/3-6 月段】**：`ssh_exec_async`（后台执行返回 job_id；断连真取消——远端收 SIGHUP）+ `job_status`（状态/退出码/输出字节/错误）+ `job_output`（offset/limit 分页，单页上限 1MiB）+ `job_cancel`（disconnect 收敛 cancelled）。job 内存态不落盘、TTL 30 分钟、条数上限 32、单 job 输出 8MiB ring buffer（截头保尾如实报 dropped）。ssh_exec_async 标注 rmcp TaskSupport::Optional（host 支持原生 tasks 时自动走任务流）。工具总数 19
+- **C3 只读工具【v0.20/3-6 月段】**：`journal_query`（journalctl 结构化查询：unit/since/until/grep/limit——服务端固定模板 `env LC_ALL=C journalctl --no-pager -o short-iso -n <limit>`；跨发行版口径：不用 -g（systemd>=237 限制）改管道 grep -F、非 systemd 返回 127 与降级指引；注入防护：unit 白名单 + since/until/grep 禁单引号反斜杠）
+- `port_listen`（监听端口结构化：**ss → netstat → lsof 三级降级链固化在服务端**（`if command -v ss … elif netstat … elif lsof … else exit 127`），输出首行标注实际命中工具；三段均 `env LC_ALL=C`；lsof 兜底段后置 grep LISTEN（rc 反映 grep）；tcpOnly 参数收窄协议面；无自由文本参数——模板完全固定不可注入）
+- `process_list`（进程列表结构化：ps POSIX 列集 `pid,ppid,user,%cpu,%mem,rss,stat,etime,comm`；`--no-headers` 是 procps 扩展——**子 shell 包裹** `(cmd1 || cmd2)` 保证 BSD 降级路径也进同一 `sort -k<N> -nr | head -N` 管道（shell `|` 优先于 `||`，不包裹首选路径会绕过排序）；sortBy=cpu/mem 枚举白名单、limit 数字——无自由文本）
+- `file_search`（按条件查找文件：find POSIX 形态，name 通配/minSizeMb/mtimeDays；**不用 GNU 专有格式化输出选项**；**结果落临时文件再 head 截断**——`rc_find` 如实反映 find（管道后 rc 恒为 head 的，no-pipeline-rc-echo 事故口径），mktemp 失败退化为 /tmp 专名文件；结果上限默认 100 最大 1000 防炸上下文；path 禁空格/分号/单引号）
+- `service_control`（systemctl start/stop/restart/reload：action **枚举白名单**（语义化风险——比 ssh_exec 更明确地被拦）；执行后自动补 is-active 确认最终态；**Policy=RemoteWrite**——Minimal 直接执行记日志 / Strict 弹窗确认（审批文案动态生成：服务名+动作+后果））
+- `tunnel_list`（列出隧道与状态：kind/active/error 字段；只读）
+- `tunnel_create`（**remote 转发**：走资产专用连接，**复用 GUI tunnel_create/tunnel_start 同一路径**（G3：不另写）；MVP 仅 remote（local/dynamic 需活跃会话，提示经 GUI 建——诚实边界）；scope 判定同 exec；**Policy=RemoteWrite**（网络暴露面变更，审批文案注明非回环绑定的外网可达风险））
+- **C5 prompts 多资产【v0.20/3-6 月段，MCP 阶段 C 收官】**：三个诊断 prompt 的 `asset_id` → **`asset_ids`**（JSON 数组 / 逗号分隔 / 单值三形态兼容，旧 `asset_id` 参数名后向兼容）；diagnose_server 多机时输出**对比表**口径（行=检查项、列=资产、突出偏离基线者）；audit_security/cleanup_disk 的手编命令段改为引导用 C3 固化工具（port_listen/process_list/file_search）；**「查不到 ≠ 无异常」纪律保留并扩展多机语义**（一台失败 ≠ 该台无异常 ≠ 其他台可跳过——4 个单测锁住，CI Linux 真跑）。**MCP 阶段 C 全部完成（26 工具 + 3 prompts 多资产）**
 
 ### 事件（Rust → 前端，`listenBackendEvent`）
 - `sftp-transfer-progress`、`ssh-host-key-verify`、`ssh-keyboard-interactive`、`ssh-session-status`
@@ -93,7 +109,8 @@
 id, name, host, port(u16), username, auth_method(Password|PrivateKey|Token),
 private_key_path(Option), group(String, '/' 分隔多级路径如 "生产/数据库"),
 tags(Vec<String>), status(Connected|Warning|Idle), last_connected,
-credential_id(Option), passphrase_credential_id(Option)
+credential_id(Option), passphrase_credential_id(Option),
+private_key_credential_id(Option), jump_host(Option, "host"/"host:port"【v0.20/P0-2】)
 ```
 - 前端经 `normalizeAsset()`（`backend.ts`）规整：默认 port=22、group=「未分组」、status=Idle。
 - **分组不是独立实体**，是 `asset.group` 字符串字段（`/` 分隔层级）。空分组用 `ConnectionAssetStore.groups: Vec<String>` 单独持久化。
@@ -107,11 +124,13 @@ credential_id(Option), passphrase_credential_id(Option)
 - **Gist 同步载荷** → `SyncPayload { version, blob{salt,nonce,ciphertext}, remote_rev }`。**【v2.7】`blob.salt` 必须非空**：会话密钥 = `Argon2id(主密码, salt)`，salt 不随载荷上传时换机后主密码无法重建同一把 key（备份永久解不开）。会话密钥路径与主密码路径共用同一 salt，故**同一份密文两条路都能解**；`crypto::encrypt_with_key` 对空 salt 直接返回 Err（fail-closed，杜绝再产出「只有本机能解」的载荷）。**【v2.7】只支持这一种格式**：`parse_vault_plaintext` 只认 `SyncVaultData`（不再兼容旧版「纯 assets JSON」），`crypto::decrypt` / `decrypt_with_key` 对空 salt 统一返回 `LEGACY_PAYLOAD_REJECTED`（明确说「旧格式不再支持，请重推一次」）——不允许出现「密码路径报错、会话密钥路径却能悄悄解开」的半支持状态
 - **known_hosts** → `known_hosts.json`
 - **MCP 拦截等级** → `mcp-config.json`（【v2】minimal/strict，缺省 Minimal；与 endpoint 同目录，经 mcp_data_dir() 解析）
+- **MCP 入口鉴权 token** → `mcp-endpoint.json` 的 `authToken` 字段（【v0.20/A1】256-bit CSPRNG → base64url 43 字符；server 每次启动重写本文件；`#[serde(default)]` 兼容旧文件——读出空串时 fail-closed 全拒。token 同时存于 AppState 内存 Arc 供中间件校验，**不进日志**）
 - **MCP 执行日志** → `mcp-execution-log.json`（【v2】30 天惰性清理 + 上限 1000 条，append 时触发；tokio Mutex 串行化 + `.tmp`/rename 原子写；不含任何凭据字段）
 - **活跃会话/隧道/SFTP 缓存** → 纯内存（重启丢失）
 
 ### McpStatus / McpProbeResult（MCP 健康检查，`lib.rs` + `mcp/probe.rs` + `mcp/http_server.rs`）
 - **设计取舍（v1.4）**：MCP server 内嵌 GUI 进程，用 Streamable HTTP transport 对外暴露（`http://127.0.0.1:41235/mcp`）。状态灯 = HTTP 健康检查：GUI 每次 `mcp_status` 向自己的 endpoint 发 MCP `initialize` 握手，成功即「可用」。**不再 spawn 子进程**（v1.2 的一次性 spawn 已废弃，根治僵尸进程 + os error 32）。
+- **【v0.20/A1】入口鉴权**：`127.0.0.1` 不是安全边界（本机任意进程可连回环端口），故入口加 token——路由形态 `/mcp/<token>`（主）+ `Authorization: Bearer` header（辅），统一 401 不区分「路径错」与「token 错」。判定在 `core::mcp_auth`（段边界/fail-closed 有穷举单测）；中间件 AllowRewrite 剥掉 token 段再进路由。重置走 `mcp_reset_token`（内存 Arc 即时生效 + 落盘）。
 - **v1.4 架构变化**：取消双二进制（删 `bin/mcp.rs` + `pipe.rs`），MCP server 直接跑在 GUI 进程内，SSH 会话/资产/审批同进程访问。任何合规 MCP host（Claude Code / Cursor）经 HTTP URL 连入。
 - `McpProbeResult { ok: bool, reason?, detail?, exePath, serverInfo?, probedAt }`
   - `reason` 失败分类码：`endpoint_not_found`（server 未启动/未写 endpoint 配置）/ `http_error`（连不上）/ `timeout`（2s）/ `bad_protocol`（握手响应异常）

@@ -45,7 +45,7 @@
 | Pinia store `.ts` | 300 行 | **500 行** |
 | Rust 模块 `.rs` | 400 行 | **800 行** |
 
-> ⚠️ 当前已超标的文件（重构候选）+ Soft-warn 监视清单，见 [`docs/architecture-log.md`](./docs/architecture-log.md) 的 Baseline snapshot（用 `wc -l` 实测维护）。新增功能时优先考虑拆分这些文件，而非继续往里堆。手动清单易漂移，以 architecture-log 为唯一信息源。
+> ⚠️ 当前已超标的文件（重构候选）由 **`npm run lint:size`（`scripts/size-guard.mjs`）机械守门**：RATCHET 表登记存量超标文件的基线行数，只许缩不许涨；缩回限内必须除名（锁定成果）。软警告区清单随门禁输出实时打印；历史基线演进见 [`docs/architecture-log.md`](./docs/architecture-log.md)。新增功能时优先考虑拆分这些文件，而非继续往里堆。
 
 **禁止事项**：
 - ❌ 重复造轮子：写新逻辑/样式/正则前必须先搜（grep/Grep/Explore），已有则复用。
@@ -54,7 +54,7 @@
 - ❌ 硬编码颜色/z-index/间距：用 `var(--token)`（见 `src/styles/_tokens.scss`）。
 - ❌ 同一概念多份实现：连接状态等用权威定义点（见指南 §5）。
 - ❌ 死代码：未被 import 的模块确认后删除。
-- ❌ 靠猜测代替事实：对外部环境（家目录/工具链/locale/时钟域/就绪信号/身份键）不做臆断——协议求证（SFTP canonicalize/stat、pty 终端模式）、解析命令输出加 `LC_ALL=C` + POSIX 选项（写法必须 `env LC_ALL=C <cmd>`，`VAR=值 cmd` 在 csh/tcsh 下整条命令失败）、比较同钟域、身份用完整键、探测三态（真/假/未知按保守处理）。详见指南 §7；**机械门禁**：`npm run lint:facts`（`scripts/fact-guards.mjs`，16 条规则，随 build/CI/发版强制执行；含 animation 简写双缓动拦截）。新增远程能力**默认走 SFTP/协议**，确需 exec 解析输出时注释平台假设与降级策略。
+- ❌ 靠猜测代替事实：对外部环境（家目录/工具链/locale/时钟域/就绪信号/身份键）不做臆断——协议求证（SFTP canonicalize/stat、pty 终端模式）、解析命令输出加 `LC_ALL=C` + POSIX 选项（写法必须 `env LC_ALL=C <cmd>`，`VAR=值 cmd` 在 csh/tcsh 下整条命令失败）、比较同钟域、身份用完整键、探测三态（真/假/未知按保守处理）。详见指南 §7；**机械门禁**：`npm run lint:facts`（`scripts/fact-guards.mjs`，17 条规则，随 build/CI/发版强制执行；含 animation 简写双缓动拦截）。新增远程能力**默认走 SFTP/协议**，确需 exec 解析输出时注释平台假设与降级策略。
 - ❌ 靠形状猜测（形态 E）：用正则/前缀/子串去认结构化对象（命令串/路径/设备树/身份）必被等价写法绕过——命令按 shell 词法分段后**逐段**判定（`df -h; cat /etc/shadow` 不得因前缀 `df` 免审批）、路径先归一再按**组件**判定（`./.ssh/id_rsa`、`\\?\UNC\...`、`/home/x/.ssh/id_rsa` 同罪）、设备按**拓扑**判重（LVM/RAID 的 `dm-*`/`md*` 与物理盘记同一份 IO）。
 - ❌ 失败朝宽松方向折叠：涉及审批/凭据/拦截等级/数据覆盖的读盘或解析失败，**只允许回落到更严的一档**（fail-closed）+ 日志 + 损坏文件隔离改名；只有「文件不存在 = 用户无偏好」才可用产品默认档。「读不出来」永远不等于「空数据/不存在」——已两次导致静默丢数据（拦截等级降级为零审批放行、整份审计日志被 1 条覆盖）。
 
@@ -100,11 +100,11 @@ myshelltool/
 │   ├── composables/  lib/   # 组合式函数 / 纯函数模块
 │   ├── services/backend.ts  # Tauri IPC 桥（invokeBackend / listenBackendEvent / normalizeAsset）
 │   └── types/  styles/      # 共享类型 / SCSS token 体系
-├── src-tauri/src/           # Rust 后端：lib.rs（AppState + generate_handler 注册）、ssh/（六模块）、
+├── src-tauri/src/           # Rust 后端：lib.rs（AppState + generate_handler 注册）、ssh/（facade + 七个子模块）、
 │                            #   mcp/（内嵌 MCP server）、sync*.rs、resource_monitor.rs、fs_local.rs、http.rs
 ├── crates/myshelltool-core/ # 共享核心库（无 Tauri 依赖，可独立 cargo test）：资产/凭据持久化、加密、
 │                            #   危险命令分类、脱敏、proc 解析、shell 分段
-├── tests/                   # Playwright UI 测试四套
+├── tests/                   # Playwright UI 测试五套
 ├── scripts/                 # fact-guards 事实门禁 / bump-version / gen-changelog
 └── docs/                    # 按需参考层（见顶部指针表；子目录 访谈/ 规格/ 计划/ 为访谈规划类技能的产物落点，
 │                            #   文档类目录与新增文档一律中文命名——工具链固定目录 src/ tests/ 等除外）
@@ -168,6 +168,8 @@ npm run test:ui      # UI 五套：smoke / host-key / file-loading / **ipc-flows
 
 # —— 静态检查（各自单跑）——
 npm run lint:facts   # 「靠猜测代替事实」门禁：scripts/fact-guards.mjs（指南 §7）；build 首步即跑，CI/发版同步生效
+npm run lint:size    # 文件大小红线门禁：scripts/size-guard.mjs（RATCHET 制，见「质量红线」节）；随 build 生效
+npm run check:ipc    # IPC 契约清单级一致性：scripts/ipc-contract-check.mjs（命令注册表 × 调用面、事件 emit × 监听面）；随 build 生效
 npm run type-check   # vue-tsc --build，strict 全量；build 亦含此步
 
 # —— 后端单独验证 ——
@@ -217,18 +219,20 @@ cd src-tauri && cargo check       # 更快的类型检查
 
 > 本节只保留**现在仍影响决策**的一行式边界。各版本修复史的完整来龙去脉与回归防线（改对应模块前先 grep 相关小节）见 [`docs/已知边界与修复史.md`](./docs/已知边界与修复史.md)。
 
-- **下载不可取消**：`sftp_download_to_file` 单次 invoke 无中断通道，`TransferDrawer` 对下载行不渲染取消按钮（勿造假按钮）。上传可取消（`sftp_upload_cancel` 旗标通道）。
+- **【v0.20/S9】上传与下载都可取消**（`transfer_cancels` 共用旗标通道，块边界 ≤1MiB/64KiB）：`sftp_upload_cancel` / `sftp_download_cancel` 置旗标，循环在块边界中止并清理半截文件；下载取消后端返回 `[download:cancelled]` 前缀，前端收敛为 cancelled 态（非 error）。TransferDrawer 传输行（上传+下载）均有取消按钮。
 - **【2026-09-21】源头自适应布局（低分辨率适配）**：窗口 ≥800×600 全宽自适应，**无整体缩放**（字号不变，信息密度按断点降级）。断点（视口 CSS px）：≥1280 现状；<1280 纯 CSS 降档（`workbench-shell.narrow.scss`：标题栏搜索框/状态栏收紧）；<1024 自动折右栏、<860 侧栏收 44px rail（`useAdaptiveLayout.ts` 经 store `setRightCollapsed/setAssetsCollapsed`，persist=false 不污染用户偏好、只恢复自动折的、用户手势优先）；折叠 rail **悬停弹出资产 flyout**（`ConnectionSidebar` 的 `.sb-flyout`，fixed 定位逃 overflow:hidden 祖先、z-index `calc(var(--z-popover) - 1)` 保右键菜单盖住面板）。`--terminal-h` 写入前按当前视口夹紧（`applyCssVars`，文件区保底 120px）。窗口最小 800×600（tauri.conf），首开超屏自动最大化。**改断点值/折叠机制/面板尺寸契约前必读 useAdaptiveLayout.ts 与 usePanelResize.applyCssVars 注释**（纯 CSS 断点会与 store/dataset/内联变量脱节破版，折叠必须走 store action；断点值在 narrow.scss 与 composable 两处保持一致）。回归红线：ui-smoke 窄视口断言（溢出量 `.workbench-shell` 盒宽——body overflow:hidden 使 documentElement.scrollWidth 恒等于 clientWidth，是假阴性；终端夹紧断言量内联 `--terminal-h`）。
 - **【v2.9】上传已服务端流式化**：`sftp_upload_from_file`（本机路径直读，字节不经 IPC）；上传入口因此全部是路径型——本地面板条目、原生文件对话框（`plugin:dialog|open`）、OS 拖入（Tauri 窗口级 `onDragDropEvent`，**拖入窗口任意区域都会触发上传**，含终端区；HTML5 drop 在 Windows 上本就不触发）。旧分块三件套（`sftp_upload_start/chunk/finalize`）与 `fs_local_read_chunk/write_chunk` 已删。
 - **资产 id 消歧只改 `id`**、不动 `credential_id` 引用，凭据共用面未完全消除（暂不做）。
 - **【v2.9】远程转发已实现但走专用连接**（russh 0.49 `tcpip_forward` 要 `&mut Handle`，共享 `Arc<Handle>` 给不出）：每条 remote 隧道一条独立 SSH 连接（OpenSSH 的 MaxStartups/连接数配额视角下与 local/dynamic 不同）；host key 必须已被 GUI 信任过（known_hosts 精确匹配，后台连接不弹窗）；凭据必须已存库（`asset_id` 解析，私钥内容托管 `private_key_credential_id` 形态暂不支持——与 MCP headless 同边界）；`tunnel-traffic-*`/`tunnel-error-*` 事件前端无监听（与 local/dynamic 一致的存量缺口，异步失败靠 `tunnel_list` 的 active/error 字段呈现）。
+- **【v0.20/P0-2】ProxyJump 单跳已实现**：资产 `jump_host`（"host"/"host:port"）→ 跳板必须是资产库成员（host+port 匹配，复用其凭据与 known_hosts 信任，未匹配明确报错）；目标握手跑在跳板 direct-tcpip 通道流上（`connect_stream`），GUI/headless/MCP/SFTP/隧道全路径生效；**链式跳板不支持**（跳板资产的 jump_host 被忽略并告警）；跳板 Handle 开完通道即 drop（保活假设：russh 连接由独立任务驱动，通道活着连接就活——**此假设需 tauri:dev 真机验收**）；`user@host`/IPv6 字面量形态不支持。
 - `sanitize_credential_id` 是删除式清洗、不同 id 可碰撞（暂不改；改规则需迁移既有凭据文件）。
 - **Windows 工具链坑**：`cargo build` 偶被 windres build script 阻断 → `cargo check` 兜底；src-tauri 测试二进制缺 Tauri runtime DLL 跑不起来 → `cargo check --tests` 验编译，**安全判据测试必须放 core 真跑**。
 - **改前端后必须先 `npm run build` 再编译 Rust**：`frontendDist` 在 Rust build script 阶段打进二进制；调试期用 `npm run tauri:dev`（前端走 devUrl，刷新即生效）。
 - **多窗口已知限制**：窗口不持久化恢复、资产删除不跨窗口同步、主题不跨窗口实时同步、Esc 取消的窗外拖拽可能误开窗；MERGE_ACK 宽限期后到达不自动移交（文案已诚实，维持现状）。
-- **MCP 端口**：release 恒 41235 / debug 默认 41500（`MYSHELLTOOL_MCP_PORT` 可覆盖）；dev 与正式版仍共享 `app_data_dir`。
+- **MCP 端口**：release 恒 41235 / debug 默认 41500（`MYSHELLTOOL_MCP_PORT` 可覆盖）；dev 与正式版仍共享 `app_data_dir`。**【v0.20/A1】入口已加 token 鉴权**（URL 内嵌 `/mcp/<token>` + Bearer 兼容；判定在 `core::mcp_auth`；重置走 `mcp_reset_token` 或面板按钮）——升级后旧 host 配置里的无 token URL 会 401，需在 MCP 面板重新「复制配置」。
 - **【v0.18】内置编辑器**（CodeMirror 6 覆盖面板，双击文本类文件进入）：单文件上限 2 MiB；编码白名单严格转码（GBK 等，绝不 lossy）；写回带 expected 守护（冲突三选）+ temp/rename 原子写（与 MCP 共享 rename 兜底）+ 可选写前备份（app-data 滚动 3 份）；草稿存 app-data（重开较新时引导恢复）。下载完成 toast 的「打开」= ShellExecute 系统默认程序（下载的 .exe 会执行，与浏览器下载条一致）。
-- **russh-sftp 是 vendored fork**（`third-party/russh-sftp`，把非 UTF-8 文件名可逆编码为 PUA-A）：升级 russh-sftp 需重放补丁（buf.rs/ser.rs 两处 + 往返单测）。
+- **【v0.20/S8】CSP 已启用**（tauri.conf.json `app.security.csp`）：default-src 'self'；script-src 'self'（**禁 eval**——新增依赖若用 new Function/eval 会被 CSP 静默拦截）；style-src 含 'unsafe-inline'（Vue SFC 运行时注入样式所需）+ Google Fonts；connect-src 含 `ipc:` 与 `http://ipc.localhost`（**Tauri 2 WebView2 IPC 通道形态，缺这条 invoke 全挂——改动 CSP 前必读**）。新增外联资源（字体/图床/API）须同步登记进 CSP 对应指令；无消费面的授权不写（blob: 曾被写后删）。真实 CSP 只在 Tauri shell 生效（tauri:dev/build），浏览器 dev 页面不受影响。
+- **russh-sftp 是 vendored fork**（`third-party/russh-sftp`，把非 UTF-8 文件名可逆编码为 PUA-A）：升级 russh-sftp 需重放补丁（buf.rs/ser.rs 两处 + v0.20 set_metadata 透传 + 往返单测）。
 - **MCP 会话复用未做**：`tools.rs::exec_on_asset` 直走 headless 建连；可注入 GUI 会话池复用（follow-up）。
 
 ---
