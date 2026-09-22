@@ -29,9 +29,25 @@ pub struct SftpListEntry {
 
 /// Headless SFTP 会话上下文容器。
 pub struct HeadlessSftpSession {
-    // 保持 handle 活跃，避免 session channel 提前关闭
-    _handle: client::Handle<HeadlessSshClient>,
+    // 保持 handle 活跃，避免 session channel 提前关闭。
+    // v0.20（B3）起是 Arc：池化连接与 session 共享同一份（drop session 不关连接）。
+    _handle: std::sync::Arc<client::Handle<HeadlessSshClient>>,
     pub sftp: SftpSession,
+}
+
+/// 在已打开的 session channel 上协商 SFTP 子系统（池命中与新建两条路径共用）。
+/// channel 按值传入（into_stream 消耗它）。
+async fn open_sftp_on(
+    channel: russh::Channel<russh::client::Msg>,
+    asset_id: &str,
+) -> Result<SftpSession, String> {
+    channel
+        .request_subsystem(true, "sftp")
+        .await
+        .map_err(|e| format!("SFTP subsystem 请求失败 ({asset_id}): {e}"))?;
+    SftpSession::new(channel.into_stream())
+        .await
+        .map_err(|e| format!("SFTP session 初始化失败 ({asset_id}): {e}"))
 }
 
 impl HeadlessSftpSession {
@@ -44,6 +60,40 @@ impl HeadlessSftpSession {
             .iter()
             .find(|a| a.id == asset_id)
             .ok_or_else(|| format!("资产 {} 不存在", asset_id))?;
+
+        // v0.20（B1）scope 收口点②：全部文件类工具的必经之路（与 exec_on_asset
+        // 的判定语义一致，双层防旁路；server.rs 预判记 scopeResult 日志）。
+        let scope_snapshot = ctx.config.read().await.scope.clone();
+        let verdict = myshelltool_core::mcp_scope::evaluate(&scope_snapshot, asset);
+        if !verdict.is_allowed() {
+            log::warn!(
+                "HeadlessSftpSession::connect: asset {} denied by scope ({})",
+                asset_id,
+                verdict.as_str()
+            );
+            return Err(myshelltool_core::mcp_scope::denied_message(verdict));
+        }
+
+        // v0.20（B3）：headless 连接池复用。命中（凭据快照一致 + 未死）直接开
+        // SFTP 子系统；未命中新建后回池。Handle 经 Arc 共享——session drop 不关
+        // 连接（池里还持有一份），淘汰时才真正断开。
+        let auth = super::session_pool::AuthSnapshot::from_asset(asset);
+        if let Some(handle) = super::session_pool::get(asset_id, &auth).await {
+            match handle.channel_open_session().await {
+                Ok(channel) => {
+                    log::info!("HeadlessSftpSession::connect: pooled connection for {asset_id}");
+                    let sftp = open_sftp_on(channel, asset_id).await?;
+                    return Ok(Self {
+                        _handle: handle,
+                        sftp,
+                    });
+                }
+                Err(e) => {
+                    log::warn!("HeadlessSftpSession::connect: pooled connection for {asset_id} unusable ({e}), reconnecting");
+                    super::session_pool::invalidate_asset(asset_id).await;
+                }
+            }
+        }
 
         log::info!(
             "HeadlessSftpSession::connect to {}@{}:{} (asset={})",
@@ -61,29 +111,33 @@ impl HeadlessSftpSession {
             credential_id: asset.credential_id.clone(),
             auth_method: Some(format!("{:?}", asset.auth_method)),
             private_key_path: asset.private_key_path.clone(),
+            // v0.20（B0）：凭据库托管私钥内容（与 GUI 同优先级：SecretStore 优先、文件兜底）
+            private_key_credential_id: asset.private_key_credential_id.clone(),
             passphrase: None,
             passphrase_credential_id: asset.passphrase_credential_id.clone(),
             secret_store_dir: ctx.secret_store_dir.clone(),
-            known_hosts_path: ctx.known_hosts_path.clone(),
+            known_hosts_path: ctx.known_hosts_path.clone(),            // v0.20（SSH P0-2）：跳板透传
+            jump_host: crate::ssh::jump_host_of(asset).map(str::to_string),
+            connect_timeout_secs: asset.connect_timeout_secs,
+            keepalive_interval_secs: asset.keepalive_interval_secs,
+            asset_store_path: Some(ctx.asset_store_path.clone()),
         };
 
-        let handle = ssh::connect_headless(&params)
-            .await
-            .map_err(|e| format!("SFTP SSH 建连失败 ({asset_id}): {e}"))?;
+        let handle = std::sync::Arc::new(
+            ssh::connect_headless(&params)
+                .await
+                .map_err(|e| format!("SFTP SSH 建连失败 ({asset_id}): {e}"))?,
+        );
 
         let channel = handle
             .channel_open_session()
             .await
             .map_err(|e| format!("SFTP channel open 失败: {e}"))?;
 
-        channel
-            .request_subsystem(true, "sftp")
-            .await
-            .map_err(|e| format!("SFTP subsystem 请求失败: {e}"))?;
+        let sftp = open_sftp_on(channel, asset_id).await?;
 
-        let sftp = SftpSession::new(channel.into_stream())
-            .await
-            .map_err(|e| format!("SFTP session 初始化失败: {e}"))?;
+        // v0.20（B3）：健康连接回池（后续同资产文件工具免握手）
+        super::session_pool::put(asset_id, auth, handle.clone()).await;
 
         Ok(Self {
             _handle: handle,
@@ -261,6 +315,63 @@ impl HeadlessSftpSession {
                  请改用 sftp_download 下载后按源编码处理，或先转码（如 iconv -f GBK -t UTF-8）再读取。"
             )),
         }
+    }
+
+    /// 范围读取（v0.20/B2）：从 `offset` 起读至多 `max_bytes` 字节。
+    ///
+    /// 与 `read_file_limited` 的差异：
+    /// - 不做严格编码三态判定——**续读段可能从多字节字符中间开始**，严格判定
+    ///   会把边界切分误报成「非 UTF-8」。调用方已用首次读取（offset=0 走
+    ///   read_file_limited 的严格路径）确认过文件是文本；续读段用 lossy 解码，
+    ///   边界处最多首尾各一个替换符，响应文本里如实说明。
+    /// - 返回 (文本段, 文件总大小)，调用方组装分页提示（nextOffset）。
+    pub async fn read_file_range(
+        &self,
+        path: &str,
+        offset: u64,
+        max_bytes: usize,
+    ) -> Result<(String, u64), String> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
+
+        let norm_path = normalize_remote_path(path);
+        let meta = self
+            .sftp
+            .metadata(&norm_path)
+            .await
+            .map_err(|e| format!("无法读取文件元数据 ({norm_path}): {e}"))?;
+        if meta.is_dir() {
+            return Err(format!("目标路径是目录而不是文件: {norm_path}"));
+        }
+        let total = meta.len();
+
+        let mut file = self
+            .sftp
+            .open(&norm_path)
+            .await
+            .map_err(|e| format!("打开文件失败 ({norm_path}): {e}"))?;
+        if offset > 0 {
+            file.seek(SeekFrom::Start(offset))
+                .await
+                .map_err(|e| format!("定位读取偏移失败 (offset={offset}): {e}"))?;
+        }
+
+        // read 不保证填满缓冲：循环到 EOF 或达上限（64 KiB 一块，与下载链路口径一致）
+        let mut buf = Vec::with_capacity(max_bytes.min(4 * 1024 * 1024));
+        let mut taken = 0usize;
+        while taken < max_bytes {
+            let want = 64 * 1024.min(max_bytes - taken);
+            let mut chunk = vec![0u8; want];
+            let n = file
+                .read(&mut chunk)
+                .await
+                .map_err(|e| format!("读取文件内容失败: {e}"))?;
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            taken += n;
+        }
+        Ok((String::from_utf8_lossy(&buf).to_string(), total))
     }
 
     /// rename 覆盖兜底（write_file_atomic / upload_stream 共用）。

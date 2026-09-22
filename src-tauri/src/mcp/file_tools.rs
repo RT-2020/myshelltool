@@ -1,4 +1,7 @@
-//! MCP 文件传输相关工具定义与分发（file_tools.rs）。
+//! MCP 文件传输相关工具实现（file_tools.rs）。
+//!
+//! v0.20（A2）：schema 声明与分发已收敛到 registry.rs（单一事实源），
+//! 本文件只保留六个 handler 的实现。
 //!
 //! 包含 6 个工具：
 //! - sftp_list：浏览远程目录（结构化返回）
@@ -10,8 +13,8 @@
 
 use std::path::PathBuf;
 
-use rmcp::model::{CallToolResult, Content, Tool};
-use serde_json::{json, Map, Value};
+use rmcp::model::{CallToolResult, Content};
+use serde_json::{Map, Value};
 
 use super::file_policy::{is_protected_local_write_path, normalize_remote_path};
 use super::sftp_ops::HeadlessSftpSession;
@@ -27,174 +30,7 @@ fn error_result(message: &str) -> CallToolResult {
     result
 }
 
-fn schema_obj(v: serde_json::Value) -> Map<String, Value> {
-    v.as_object().cloned().unwrap_or_default()
-}
-
-/// 返回所有文件传输类 MCP 工具定义。
-pub fn list_file_tools() -> Vec<Tool> {
-    vec![
-        Tool::new(
-            "sftp_list",
-            "列出指定资产远程目录中的文件与子目录。返回 JSON 结构列表，包含名称、路径、类型（file/directory/symlink）、字节大小、修改时间与权限。",
-            schema_obj(json!({
-                "type": "object",
-                "properties": {
-                    "asset_id": {
-                        "type": "string",
-                        "description": "目标资产 ID（由 list_assets 获取）"
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "远程目录路径，例如 /var/log 或 /home/deploy。留空或传入 . 表示默认用户根目录。"
-                    }
-                },
-                "required": ["asset_id"]
-            })),
-        ),
-        Tool::new(
-            "sftp_read_file",
-            "读取指定资产上的远程文本文件。单次读取上限 1MB，适合配置排查与代码审计（敏感路径如 /etc/shadow、SSH 私钥需在客户端确认；二进制文件请改用 sftp_download）。",
-            schema_obj(json!({
-                "type": "object",
-                "properties": {
-                    "asset_id": {
-                        "type": "string",
-                        "description": "目标资产 ID"
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "待读取的远程文件绝对路径或相对路径，如 /etc/hosts 或 /var/log/syslog"
-                    }
-                },
-                "required": ["asset_id", "path"]
-            })),
-        ),
-        Tool::new(
-            "sftp_write_file",
-            "向指定资产写入远程文本文件。采用原子临时文件替换机制，单次上限 1MB。此操作涉及远程文件创建或覆盖，按拦截等级判定：Minimal 档直接执行并记执行日志，Strict 档需在客户端确认。调用时必须如实声明 intent 意图。",
-            schema_obj(json!({
-                "type": "object",
-                "properties": {
-                    "asset_id": {
-                        "type": "string",
-                        "description": "目标资产 ID"
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "待写入的远程目标文件路径，如 /tmp/config.json"
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "文件文本正文"
-                    },
-                    "intent": {
-                        "type": "string",
-                        "description": "写入或修改文件的操作意图"
-                    }
-                },
-                "required": ["asset_id", "path", "content", "intent"]
-            })),
-        ),
-        Tool::new(
-            "sftp_upload",
-            "将本机文件流式上传至远程服务器。采用分块传输、临时文件落地原子替换与 SHA256 完整性校验。适用于大文件与二进制包传输。此操作涉及远程文件覆盖，按拦截等级判定：Minimal 档直接执行并记执行日志，Strict 档需在客户端确认。调用时必须声明 intent 意图。",
-            schema_obj(json!({
-                "type": "object",
-                "properties": {
-                    "asset_id": {
-                        "type": "string",
-                        "description": "目标资产 ID"
-                    },
-                    "local_path": {
-                        "type": "string",
-                        "description": "本机源文件绝对路径"
-                    },
-                    "remote_path": {
-                        "type": "string",
-                        "description": "远程目标文件绝对路径"
-                    },
-                    "intent": {
-                        "type": "string",
-                        "description": "上传文件的操作意图"
-                    }
-                },
-                "required": ["asset_id", "local_path", "remote_path", "intent"]
-            })),
-        ),
-        Tool::new(
-            "sftp_download",
-            "将远程服务器上的文件流式下载至本机。采用分块传输与 SHA256 完整性校验。本机系统受保护核心目录恒拒；其余路径按拦截等级判定：Minimal 档直接执行并记执行日志，Strict 档需在客户端确认。调用时必须声明 intent 意图。",
-            schema_obj(json!({
-                "type": "object",
-                "properties": {
-                    "asset_id": {
-                        "type": "string",
-                        "description": "目标资产 ID"
-                    },
-                    "remote_path": {
-                        "type": "string",
-                        "description": "远程源文件绝对路径"
-                    },
-                    "local_path": {
-                        "type": "string",
-                        "description": "本机保存的目标文件绝对路径"
-                    },
-                    "intent": {
-                        "type": "string",
-                        "description": "下载文件的操作意图"
-                    }
-                },
-                "required": ["asset_id", "remote_path", "local_path", "intent"]
-            })),
-        ),
-        Tool::new(
-            "sftp_remove",
-            "删除指定资产上的远程文件或目录。高危破坏性操作：系统根目录与顶级核心目录删除恒拒；其余路径按拦截等级判定——Minimal 档直接执行并记执行日志，Strict 档需在客户端确认。若删除非空目录，必须显式声明 recursive=true。调用时必须如实声明 intent 意图。",
-            schema_obj(json!({
-                "type": "object",
-                "properties": {
-                    "asset_id": {
-                        "type": "string",
-                        "description": "目标资产 ID"
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "待删除的远程文件或目录路径"
-                    },
-                    "recursive": {
-                        "type": "boolean",
-                        "description": "是否递归删除非空目录（默认 false）"
-                    },
-                    "intent": {
-                        "type": "string",
-                        "description": "删除操作的意图"
-                    }
-                },
-                "required": ["asset_id", "path", "intent"]
-            })),
-        ),
-    ]
-}
-
-/// 执行文件类工具。若工具名称不匹配则返回 Ok(None)。
-pub async fn dispatch_file_tool(
-    ctx: &McpToolContext,
-    name: &str,
-    args: &Map<String, Value>,
-) -> Result<Option<CallToolResult>, String> {
-    match name {
-        "sftp_list" => tool_sftp_list(ctx, args).await.map(Some),
-        "sftp_read_file" => tool_sftp_read_file(ctx, args).await.map(Some),
-        "sftp_write_file" => tool_sftp_write_file(ctx, args).await.map(Some),
-        "sftp_upload" => tool_sftp_upload(ctx, args).await.map(Some),
-        "sftp_download" => tool_sftp_download(ctx, args).await.map(Some),
-        "sftp_remove" => tool_sftp_remove(ctx, args).await.map(Some),
-        _ => Ok(None),
-    }
-}
-
-async fn tool_sftp_list(
+pub(crate) async fn tool_sftp_list(
     ctx: &McpToolContext,
     args: &Map<String, Value>,
 ) -> Result<CallToolResult, String> {
@@ -212,7 +48,7 @@ async fn tool_sftp_list(
     Ok(text_result(&json_text))
 }
 
-async fn tool_sftp_read_file(
+pub(crate) async fn tool_sftp_read_file(
     ctx: &McpToolContext,
     args: &Map<String, Value>,
 ) -> Result<CallToolResult, String> {
@@ -224,6 +60,13 @@ async fn tool_sftp_read_file(
         .get("path")
         .and_then(|v| v.as_str())
         .ok_or("缺少 path 参数")?;
+    // v0.20（B2）分页参数：offset 续读 / maxBytes 上限（默认 256 KiB，封顶 4 MiB）
+    let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
+    let max_bytes = args
+        .get("maxBytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(256 * 1024)
+        .min(4 * 1024 * 1024) as usize;
 
     // lossy 文件名守卫（v2.6 backlog #2）：失真名要么 No such file，要么命中
     // 字面含 U+FFFD 的另一个真实文件——fail-closed，与 GUI 侧同一拒绝文案
@@ -231,12 +74,41 @@ async fn tool_sftp_read_file(
         return Err(myshelltool_core::lossy_remote_path_error(path));
     }
     let session = HeadlessSftpSession::connect(ctx, asset_id).await?;
-    // 单次读取上限 1MB (1,048,576 字节)
-    let content = session.read_file_limited(path, 1024 * 1024).await?;
-    Ok(text_result(&content))
+
+    // v0.20（B2）语义变更：文件超过 maxBytes **不再失败**——首读返回前缀 +
+    // 分页提示（nextOffset），续读走 read_file_range。
+    // 首读（offset=0）先走旧的严格编码路径（二进制/非 UTF-8 照旧明确报错）；
+    // 只有「文件过大」转分页。续读（offset>0）直走范围读取（文件已被首读
+    // 验证过是文本，边界切分用 lossy 并在响应里说明）。
+    if offset == 0 {
+        match session.read_file_limited(path, max_bytes).await {
+            // 文件整体在限内：直接返回完整内容（旧行为，无分页头）
+            Ok(content) => return Ok(text_result(&content)),
+            Err(e) if e.contains("文件过大") => { /* 落到下方分页读取 */ }
+            Err(e) => return Err(e),
+        }
+    }
+
+    let (chunk, total) = session.read_file_range(path, offset, max_bytes).await?;
+    let start = offset;
+    let end = offset + chunk.len() as u64;
+    let boundary_note = if offset > 0 {
+        "\n[注：续读段按字节边界切分，段首/段尾至多各有一个 � 替换符属正常]"
+    } else {
+        ""
+    };
+    if end >= total {
+        Ok(text_result(&format!(
+            "[read_file：文件共 {total} 字节，本段 {start}..{end}（EOF）]{boundary_note}\n{chunk}"
+        )))
+    } else {
+        Ok(text_result(&format!(
+            "[read_file：文件共 {total} 字节，本段 {start}..{end}，未完——续读传 offset={end}]{boundary_note}\n{chunk}"
+        )))
+    }
 }
 
-async fn tool_sftp_write_file(
+pub(crate) async fn tool_sftp_write_file(
     ctx: &McpToolContext,
     args: &Map<String, Value>,
 ) -> Result<CallToolResult, String> {
@@ -277,7 +149,7 @@ async fn tool_sftp_write_file(
     )))
 }
 
-async fn tool_sftp_upload(
+pub(crate) async fn tool_sftp_upload(
     ctx: &McpToolContext,
     args: &Map<String, Value>,
 ) -> Result<CallToolResult, String> {
@@ -293,6 +165,13 @@ async fn tool_sftp_upload(
         .get("remote_path")
         .and_then(|v| v.as_str())
         .ok_or("缺少 remote_path 参数")?;
+
+    // v0.20（B1）本机 FS 闸门：上传要读本机文件。scope 未配置时不收紧；
+    // 一旦配置了资产限制，本机 FS 默认关（需面板显式 allow_local_fs 打开）。
+    let fs_verdict = myshelltool_core::mcp_scope::evaluate_local_fs(&ctx.config.read().await.scope);
+    if !fs_verdict.is_allowed() {
+        return Err(myshelltool_core::mcp_scope::denied_message(fs_verdict));
+    }
 
     let local_path = PathBuf::from(local_path_str);
     if !local_path.exists() {
@@ -319,7 +198,7 @@ async fn tool_sftp_upload(
     )))
 }
 
-async fn tool_sftp_download(
+pub(crate) async fn tool_sftp_download(
     ctx: &McpToolContext,
     args: &Map<String, Value>,
 ) -> Result<CallToolResult, String> {
@@ -335,6 +214,12 @@ async fn tool_sftp_download(
         .get("local_path")
         .and_then(|v| v.as_str())
         .ok_or("缺少 local_path 参数")?;
+
+    // v0.20（B1）本机 FS 闸门：下载要写本机文件（语义同上传）
+    let fs_verdict = myshelltool_core::mcp_scope::evaluate_local_fs(&ctx.config.read().await.scope);
+    if !fs_verdict.is_allowed() {
+        return Err(myshelltool_core::mcp_scope::denied_message(fs_verdict));
+    }
 
     let local_path = PathBuf::from(local_path_str);
     // 保护本机关键系统目录
@@ -361,7 +246,7 @@ async fn tool_sftp_download(
     )))
 }
 
-async fn tool_sftp_remove(
+pub(crate) async fn tool_sftp_remove(
     ctx: &McpToolContext,
     args: &Map<String, Value>,
 ) -> Result<CallToolResult, String> {

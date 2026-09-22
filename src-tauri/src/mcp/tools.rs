@@ -60,6 +60,11 @@ pub fn service_status_command(service: &str) -> String {
     format!("env LC_ALL=C systemctl status {service}; echo rc_systemctl=$?")
 }
 
+/// resource_monitor_snapshot 工具实际执行的命令。
+/// 全程 env 前缀（不用 `export`）：csh/tcsh/fish 无 POSIX `export`，
+/// 该赋值会以 `export: Command not found.` 失败并使 locale 未锁定。
+pub const CMD_RESOURCE_MONITOR_SNAPSHOT: &str = "env LC_ALL=C uptime; echo rc_uptime=$?; echo '--- Memory ---'; env LC_ALL=C free -m; echo rc_free=$?; echo '--- Disk ---'; env LC_ALL=C df -h; echo rc_df=$?";
+
 // ─── v2.1 ssh_exec 返回截断保护（exec_on_asset 组装结构化返回时用）───
 
 /// 返回正文（不含 exit_code 行）的字符上限，超出触发头尾截断。
@@ -81,12 +86,12 @@ pub struct McpToolContext {
     pub asset_store_path: PathBuf,
     pub secret_store_dir: PathBuf,
     pub known_hosts_path: PathBuf,
-    /// GUI 弹窗审批的 pending 表（与 AppState 共享同一 Arc clone）。
+    /// GUI 弹窗审批的 pending 表（与 AppState 共享同一份 Arc clone）。
     pub approval_pending: ApprovalPending,
     /// GUI 句柄，用于 emit 审批事件给前端弹窗。
     /// None = headless/测试/probe 模式（无 GUI → 退回 fail-secure 拒绝）。
     pub app_handle: Option<AppHandle>,
-    /// v2：拦截等级配置（与 AppState 共享同一 Arc）。每次 call_tool 现读快照，
+    /// v2：拦截等级配置（与 AppState 共享同一份 Arc）。每次 call_tool 现读快照，
     /// mcp_set_config 后已建 HTTP 会话下次调用即生效。
     /// 选 tokio RwLock 而非 std：与 approval_pending 的 tokio::sync::Mutex
     /// 同族，读端可在 async 上下文无阻塞并发读。
@@ -94,9 +99,9 @@ pub struct McpToolContext {
     /// v2：MCP 数据目录（mcp-config.json / mcp-execution-log.json 落盘位置）。
     /// lib.rs setup 统一从 mcp_data_dir() 取（环境变量优先），与 endpoint 一致。
     pub data_dir: PathBuf,
-    /// 缓存最近一次 headless 连接的资产 id → handle，避免只读查询每次重连。
-    /// v1.0 简化：M3 阶段先不缓存，每次按需建连。
-    _session_cache: Arc<Mutex<()>>,
+    /// v0.20（B3）：GUI 会话管理器（与 AppState 共享同一 Arc）——exec 工具
+    /// 复用优先级的第一层「GUI 已连接会话」。None = headless/测试（跳过该层）。
+    pub ssh_sessions: Option<Arc<tokio::sync::Mutex<crate::ssh::SshSessionManager>>>,
 }
 
 impl McpToolContext {
@@ -120,12 +125,13 @@ impl McpToolContext {
             app_handle: None,
             config: Arc::new(RwLock::new(McpConfig::default())),
             data_dir,
-            _session_cache: Arc::new(Mutex::new(())),
+            ssh_sessions: None,
         }
     }
 
     /// GUI 构造：持有 AppHandle + 共享 pending 表 + 共享配置。lib.rs setup 用此路径。
-    /// approval_pending / config 由调用方传入，确保与 AppState 持有同一份 Arc。
+    /// approval_pending / config / ssh_sessions 由调用方传入，确保与 AppState 持有同一份 Arc。
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_gui(
         app_handle: AppHandle,
         approval_pending: ApprovalPending,
@@ -134,6 +140,7 @@ impl McpToolContext {
         known_hosts_path: PathBuf,
         config: Arc<RwLock<McpConfig>>,
         data_dir: PathBuf,
+        ssh_sessions: Arc<tokio::sync::Mutex<crate::ssh::SshSessionManager>>,
     ) -> Self {
         Self {
             asset_store_path,
@@ -143,76 +150,16 @@ impl McpToolContext {
             app_handle: Some(app_handle),
             config,
             data_dir,
-            _session_cache: Arc::new(Mutex::new(())),
+            ssh_sessions: Some(ssh_sessions),
         }
     }
 }
 
-/// 返回 M4 阶段的全部工具 schema（7 只读 + 2 高危 = 9 个）。
+/// 返回全部工具 schema。
+/// v0.20（A2）：工具定义已收敛到 `registry.rs`（单一事实源），本函数保留为
+/// 兼容转发（lib.rs mcp_status 等旧调用点不改路径）。
 pub fn list_all_tools() -> Vec<Tool> {
-    let mut tools = vec![
-        Tool::new(
-            "list_assets",
-            "列出所有已配置的 SSH 连接资产（不含密码/凭据，仅元数据：name/host/port/username/group/status）",
-            empty_object_schema(),
-        ),
-        Tool::new(
-            "list_sessions",
-            "列出当前客户端活跃的 SSH 会话清单（session_id 列表）。",
-            empty_object_schema(),
-        ),
-        Tool::new(
-            "disk_usage",
-            "查询指定资产的磁盘使用情况（执行 df -h）。stdout 含 rc_df=N 行标注 df 的真实退出码（复合命令回声，勿只看首行 exit_code）",
-            schema_with_required_session(),
-        ),
-        Tool::new(
-            "system_status",
-            "查询指定资产的系统状态：uptime / 内存 / 负载 / top 进程。仅支持 Linux（依赖 /proc、procps 与 systemd）主机，其他平台命令会失败。stdout 含 rc_uptime/rc_free/rc_top=N 行标注各子段真实退出码（勿只看首行 exit_code，它只反映最后的 echo）；rc_top 由「先落临时文件再 head」取得，可信——top 不存在（slim 容器）时 rc_top≠0 且 stderr 带 not found",
-            schema_with_required_session(),
-        ),
-        Tool::new(
-            "service_status",
-            "查询指定资产上某 systemd 服务的状态（systemctl status <service>）。仅支持 Linux（依赖 /proc 与 systemd）主机，其他平台命令会失败。stdout 含 rc_systemctl=N 行标注真实退出码",
-            json!({
-                "type": "object",
-                "properties": {
-                    "asset_id": { "type": "string", "description": "资产 ID" },
-                    "service": { "type": "string", "description": "服务名，如 nginx / mysql / docker" }
-                },
-                "required": ["asset_id", "service"]
-            })
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
-        ),
-        Tool::new(
-            "resource_monitor_snapshot",
-            "获取指定资产的资源监控快照（CPU负载、内存占用、磁盘空间概览）。仅支持 Linux（依赖 /proc 与 systemd）主机，其他平台命令会失败。stdout 含 rc_uptime/rc_free/rc_df=N 行标注各子命令真实退出码",
-            schema_with_required_session(),
-        ),
-        // ─── 高危 Shell 执行工具（经 Layer 6 审批）───
-        Tool::new(
-            "ssh_exec",
-            "在指定资产上执行任意 Shell 命令。返回结构化文本：首行 exit_code=<n>（无退出码时 exit_code=unknown），随后为 stdout（无输出时给出提示），stderr 非空时以 --- stderr --- 分隔行附后，超长自动头尾截断。拦截语义：毁灭性命令（mkfs/dd 写块设备/rm 根级删除等）直接拒绝；其余按当前拦截等级放行或需确认（等级可在 myshelltool GUI 的 MCP 面板调整）。调用时必须如实声明 intent 意图。",
-            json!({
-                "type": "object",
-                "properties": {
-                    "asset_id": { "type": "string", "description": "资产 ID（先用 list_assets 查看）" },
-                    "command": { "type": "string", "description": "要执行的 Shell 命令" },
-                    "intent": { "type": "string", "description": "AI 对此命令的真实意图说明（用于审批对照识破伪装）" }
-                },
-                "required": ["asset_id", "command", "intent"]
-            })
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
-        ),
-    ];
-
-    // ─── 文件传输类工具（Layer 3 + 4，详见 file_tools.rs）───
-    tools.extend(super::file_tools::list_file_tools());
-    tools
+    super::registry::all_tools()
 }
 
 /// 把工具参数表序列化成**可安全落日志**的摘要。
@@ -253,50 +200,101 @@ pub async fn call_tool(
     // 命令值单独脱敏；其余字段照打（排查需要：哪个工具、哪个资产、哪个路径）。
     log::info!("MCP call_tool: {} args={}", name, redacted_args_summary(&arguments));
 
-    match name {
-        "list_assets" => tool_list_assets(ctx).await,
-        "list_sessions" => tool_list_sessions(ctx).await,
-        "disk_usage" => exec_on_asset(ctx, &arguments, CMD_DISK_USAGE).await,
-        "system_status" => exec_on_asset(ctx, &arguments, CMD_SYSTEM_STATUS).await,
-        "service_status" => {
-            let service = arguments
-                .get("service")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if service.is_empty() {
-                return Ok(error_result("缺少 service 参数"));
-            }
-            // 服务名做基础校验，防注入（仅允许字母数字-_@:.）
-            if !service.chars().all(|c| c.is_alphanumeric() || "-_@:.".contains(c)) {
-                return Ok(error_result("service 参数含非法字符"));
-            }
-            exec_on_asset(ctx, &arguments, &service_status_command(service)).await
-        }
-        "resource_monitor_snapshot" => {
-            exec_on_asset(
-                ctx,
-                &arguments,
-                // 全程 env 前缀（不用 `export`）：csh/tcsh/fish 无 POSIX `export`，
-                // 该赋值会以 `export: Command not found.` 失败并使 locale 未锁定。
-                "env LC_ALL=C uptime; echo rc_uptime=$?; echo '--- Memory ---'; env LC_ALL=C free -m; echo rc_free=$?; echo '--- Disk ---'; env LC_ALL=C df -h; echo rc_df=$?",
-            )
-            .await
-        }
-        // ─── 高危工具（审批在 server.rs call_tool 拦截层做）───
-        "ssh_exec" => tool_ssh_exec(ctx, &arguments).await,
-        _ => {
-            // 尝试文件工具分发（sftp_list/sftp_read_file/sftp_write_file/sftp_upload/sftp_download/sftp_remove）
-            if let Some(res) = super::file_tools::dispatch_file_tool(ctx, name, &arguments).await? {
-                Ok(res)
-            } else {
-                Ok(error_result(&format!("未知工具: {}", name)))
-            }
-        }
+    // v0.20（A2）：分发走注册表——工具的 handler 在 registry.rs 的 ToolSpec 里
+    // 声明，新增工具不再需要改这里的 match。未知工具报错口径与旧版一致。
+    match super::registry::find(name) {
+        Some(spec) => (spec.handler)(ctx, &arguments).await,
+        None => Ok(error_result(&format!("未知工具: {}", name))),
     }
 }
 
+/// service_status handler（A2 从旧 call_tool 的 match 分支提取，行为逐字保留）。
+pub(crate) async fn tool_service_status(
+    ctx: &McpToolContext,
+    arguments: &Map<String, serde_json::Value>,
+) -> Result<CallToolResult, String> {
+    let service = arguments
+        .get("service")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if service.is_empty() {
+        return Ok(error_result("缺少 service 参数"));
+    }
+    // 服务名做基础校验，防注入（仅允许字母数字-_@:.）
+    if !service.chars().all(|c| c.is_alphanumeric() || "-_@:.".contains(c)) {
+        return Ok(error_result("service 参数含非法字符"));
+    }
+    exec_on_asset(ctx, arguments, &service_status_command(service)).await
+}
+
+/// v0.20（C3）：journalctl 结构化查询——跨发行版口径固化在服务端（AI 不再现场编命令）。
+///
+/// 跨发行版口径（诚实边界）：
+/// - journalctl 仅存在于 systemd 发行版（Debian 8+/CentOS 7+/Ubuntu 16+）；
+///   sysvinit/老系统上命令头部的 command -v 检查会以 rc=127 退出并给出降级指引
+///   （查 /var/log/messages 或 /var/log/syslog）。
+/// - --no-pager 必须显式：exec 通道无 TTY 时部分版本仍尝试分页；
+/// - -o short-iso：时间戳稳定 ISO 格式（locale 无关）；
+/// - 不用 -g（journalctl 自带 grep，systemd>=237 才有——CentOS 7 的 219 没有），
+///   统一走管道 env LC_ALL=C grep -F（POSIX grep 恒有；rc 反映 grep 语义：无匹配=1）。
+/// - env 前缀锁 locale（指南 §7 形态 B：输出不随服务器 locale 变化）。
+///
+/// 注入防护：unit 白名单（字母数字-_@:.，同 service_status）；since/until/grep
+
+/// v0.20（C3 第二件）：监听端口结构化查询——ss → netstat → lsof 三级降级链
+/// 固化在服务端（此前口径只在 audit_security prompt 文案里，AI 每次现场编命令
+/// 正是「猜环境」；现在服务端固化）。
+///
+/// 降级链与口径（诚实边界，全部 POSIX/最低公约）：
+/// - 首选 `ss`（iproute2，现代发行版标配）：`-tunlp` = TCP+UDP/数值端口与
+///   地址/监听态/进程信息；`--no-header` 去表头稳化 AI 解析（iproute2 >= 4.9；
+///   老版本无此选项会报错 → 由降级链接住）。
+/// - 次选 `netstat`（老 CentOS 6/部分 BSD）：POSIX netstat 无 -p 的可移植性
+///   差（Linux 有、BSD 形态不同），用 `-tunp`（Linux net-tools 口径）——注释
+///   声明假设：非 Linux 的 BSD netstat 输出列序不同，AI 需按表头读。
+/// - 兜底 `lsof`（最小公约）：`-nP -i` 列全部网络端点（含非 LISTEN），
+///   后置 `grep LISTEN`（Linux/共用 lsof 口径；rc 反映 grep：无监听=1）。
+/// - `env LC_ALL=C` 锁三段命令的输出 locale（指南 §7 形态 B）。
+/// - tcp_only 参数：ss/netstat 加 -t 前已含；lsof 段用 grep -E 'TCP.*LISTEN'
+///   粗滤（诚实口径：lsof 兜底段不做精细协议过滤，输出含表头供 AI 自辨）。
+///
+
+/// v0.20（C3 第三件）：进程列表结构化——ps POSIX 形态 + 排序固化在服务端。
+///
+/// 跨发行版口径（诚实边界）：
+/// - 列集 `pid,ppid,user,%cpu,%mem,rss,stat,etime,comm` 在 procps（Linux）与
+///   BSD ps（macOS/FreeBSD）的 `-eo` 形态都可用。
+/// - `--no-headers` 是 procps 扩展（BSD 无）——用 `(cmd1 --no-headers 2>/dev/null || cmd2)`
+///   子 shell 包裹降级：BSD 走 cmd2（带表头，但表头行在管道排序中非数值会沉底），
+///   故 cmd2 首行 echo 固定表头（AI 解析始终有稳定列名）。
+/// - 排序不依赖 ps --sort / sort -g 的 GNU 差异：**POSIX sort -k<N> -nr**——
+///   %cpu/%mem 列是数值（含小数点，sort -n 前缀数值比较语义正确）。
+/// - `head -<limit>`（POSIX）截前 N。子 shell 包裹保证两条 ps 路径都进同一
+///   sort|head 管道（shell 里 `|` 优先于 `||`，不包裹会让首选路径绕过排序）。
+/// - env LC_ALL=C 三段锁定；rc_chain 反映整段。
+///
+
+/// v0.20（C3 收官件）：按条件查找文件——find POSIX 形态 + 结果上限，固化在服务端。
+///
+/// 跨发行版口径（诚实边界）：
+/// - **不用 `-printf`**（GNU 扩展，BusyBox/BSD 上整条失败——项目真实事故，
+///   fact-guards 的 no-gnu-only-flags 规则即由此而来）：输出格式用默认路径列表
+///   （POSIX find 恒有），需要元数据时 AI 对少量结果逐个 sftp_stat。
+/// - `-maxdepth` 同为 GNU 起源但 **BusyBox/BSD find 均已支持**（busybox 1.x、
+///   FreeBSD find 皆有），作为唯一深限手段保留；若目标系统极老报错，
+///   rc_chain 非零——AI 可改用 ssh_exec 自行降级。
+/// - `-size`/`-mtime`/`-name` 是 POSIX 标准。
+/// - **结果上限在服务端拼进命令**（`head -N` 管道）：不依赖 AI 记得收窄——
+///   深目录 find 输出几十万行会直接炸上下文（这正是加本工具的动机）。
+/// - `env LC_ALL=C` 锁 find 的错误信息 locale。
+/// - rc_chain 反映整段；head 截断时 find 侧 SIGPIPE 的 rc 噪音由管道语义吸收。
+///
+/// 注入防护：path 禁单引号/反斜杠/分号/空格（拼入单引号字面量）；
+/// name_pattern 同校验后进 `-name '<pattern>'`（通配符是 find 语义、允许）；
+/// size/mtime 数字；sort 枚举白名单（name/mtime/size——mtime/size 需要 GNU
+
 /// list_sessions：列出客户端活动的 SSH 会话。
-async fn tool_list_sessions(ctx: &McpToolContext) -> Result<CallToolResult, String> {
+pub(crate) async fn tool_list_sessions(ctx: &McpToolContext) -> Result<CallToolResult, String> {
     if let Some(app) = &ctx.app_handle {
         use tauri::Manager;
         if let Some(state) = app.try_state::<crate::AppState>() {
@@ -325,34 +323,23 @@ async fn tool_list_sessions(ctx: &McpToolContext) -> Result<CallToolResult, Stri
 }
 
 /// list_assets：读资产库，返回脱敏元数据（去除 credential_id）。
-async fn tool_list_assets(ctx: &McpToolContext) -> Result<CallToolResult, String> {
+/// v0.20（B1）：scope 生效时只返回范围内的资产，并带 scopeApplied/hiddenCount
+/// ——让 AI 知道「世界比它看到的大」，而不是得出「只有这几台机器」的错误结论。
+/// v0.20（B4）：视图组装收敛到 resources::assets_view（与 ://assets 资源同一实现）。
+pub(crate) async fn tool_list_assets(ctx: &McpToolContext) -> Result<CallToolResult, String> {
     let store = myshelltool_core::load_connection_asset_store(&ctx.asset_store_path)
         .map_err(|e| format!("加载资产库失败: {e}"))?;
-
-    let assets: Vec<serde_json::Value> = store
-        .assets
-        .iter()
-        .map(|a| {
-            json!({
-                "id": a.id,
-                "name": a.name,
-                "host": a.host,
-                "port": a.port,
-                "username": a.username,
-                "group": a.group,
-                "status": format!("{:?}", a.status),
-                "tags": a.tags,
-            })
-        })
-        .collect();
-
-    let result = json!({
-        "source": "local",
-        "count": assets.len(),
-        "assets": assets,
-        "groups": store.groups,
-    });
-    Ok(text_result(&serde_json::to_string_pretty(&result).unwrap_or_default()))
+    let scope = ctx.config.read().await.scope.clone();
+    let mut view = super::resources::assets_view(&store, &scope);
+    if scope.is_restricted() {
+        let hidden = view["hiddenCount"].as_u64().unwrap_or(0);
+        if hidden > 0 {
+            view["scopeNote"] = json!(
+                "授权范围已生效：以上为 MCP 可访问的资产；另有 hiddenCount 台资产在范围外（不可访问）"
+            );
+        }
+    }
+    Ok(text_result(&serde_json::to_string_pretty(&view).unwrap_or_default()))
 }
 
 /// ssh_exec：高危工具，经 approval.rs 审批后执行。
@@ -363,7 +350,7 @@ async fn tool_list_assets(ctx: &McpToolContext) -> Result<CallToolResult, String
 /// - command 命中非毁灭黑名单（rm -rf 子路径等）→ Minimal 放行 / Strict 需确认
 /// - command 未知/黄名单 → Minimal 放行 / Strict 需确认（等级用户可配置）
 /// v2：审批已移至 server.rs call_tool 拦截层并记执行日志。
-async fn tool_ssh_exec(
+pub(crate) async fn tool_ssh_exec(
     ctx: &McpToolContext,
     args: &Map<String, serde_json::Value>,
 ) -> Result<CallToolResult, String> {
@@ -399,7 +386,7 @@ async fn tool_ssh_exec(
 /// TODO(follow-up v1.4+)：注入 GUI 的 `Arc<AsyncMutex<SshSessionManager>>` 到
 /// McpToolContext，命中 GUI 已建立会话时直接复用（避免重连 + 二次 host key 验证）。
 /// 这是 v1.1 pipe 复用的等价能力，内嵌后实现更简单（同进程直接访问，无 IPC）。
-async fn exec_on_asset(
+pub(crate) async fn exec_on_asset(
     ctx: &McpToolContext,
     args: &Map<String, serde_json::Value>,
     command: &str,
@@ -418,33 +405,32 @@ async fn exec_on_asset(
         .find(|a| a.id == asset_id)
         .ok_or_else(|| format!("资产 {} 不存在", asset_id))?;
 
+    // v0.20（B1）scope 收口点①：全部 exec 类工具的必经之路。判定内核在
+    // core::mcp_scope（组件级分组匹配/优先级/fail-closed 有单测）；server.rs
+    // 分发前还有一次预判（记 scopeResult 日志），这里是兜底防线——任何未来
+    // 旁路（新增 handler 绕过预判直连建连）都会在此被拦下。
+    let scope_snapshot = ctx.config.read().await.scope.clone();
+    let verdict = myshelltool_core::mcp_scope::evaluate(&scope_snapshot, asset);
+    if !verdict.is_allowed() {
+        log::warn!(
+            "exec_on_asset: asset {} denied by scope ({})",
+            asset_id,
+            verdict.as_str()
+        );
+        return Err(myshelltool_core::mcp_scope::denied_message(verdict));
+    }
+
     log::info!("exec_on_asset: {}@{}:{} cmd={}", asset.username, asset.host, asset.port, myshelltool_core::redact_command(command));
 
-    // headless 建连（密码为空，从凭据存储读；host key 未信任会被拒绝）
-    let params = HeadlessConnectParams {
-        host: asset.host.clone(),
-        port: asset.port,
-        username: asset.username.clone(),
-        password: String::new(), // 从 credential_id 读
-        credential_id: asset.credential_id.clone(),
-        auth_method: Some(format!("{:?}", asset.auth_method)),
-        private_key_path: asset.private_key_path.clone(),
-        passphrase: None,
-        passphrase_credential_id: asset.passphrase_credential_id.clone(),
-        secret_store_dir: ctx.secret_store_dir.clone(),
-        known_hosts_path: ctx.known_hosts_path.clone(),
+    // v0.20（B3）三层复用：GUI 已连接会话 → headless 池 → 新建（用完回池）。
+    // 返回 (输出, 会话来源)，来源记入执行日志 sessionSource（gui/pool/new）。
+    let (output, source) = match exec_with_reuse(ctx, asset, asset_id, command).await {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!("exec_on_asset execute failed for {}: {}", asset_id, e);
+            return Err(e);
+        }
     };
-
-    let handle = ssh::connect_headless(&params)
-        .await
-        .map_err(|e| {
-            log::warn!("exec_on_asset connect failed for {}: {}", asset_id, e);
-            e
-        })?;
-
-    let output = ssh::exec_command_once(&handle, command)
-        .await
-        .map_err(|e| format!("命令执行失败: {e}"))?;
 
     // v2.1 结构化返回：exit_code 行 + stdout + stderr 段，MCP 主代理可据此
     // 判断执行情况（旧版丢弃退出码且无输出命令返回空串，无法判断）。
@@ -463,30 +449,174 @@ async fn exec_on_asset(
         body.push_str(&output.stderr);
     }
 
-    // 截断保护：正文（不含 exit_code 行）超 MAX_RETURN_CHARS 时头尾保留，
-    // 头部插入截断提示（N 为截断前总字符数），引导收窄命令重取。
+    // 截断保护（v0.20/B2）：正文超 MAX_RETURN_CHARS 头尾保留，完整输出存入
+    // output_cache 并在提示里给出 cursor——AI 可用 read_output 工具分页取回
+    // 原文（不再「截断即丢失」）；「收窄命令重取」仍保留（多数场景更省）。
     let total_chars = body.chars().count();
     if total_chars > MAX_RETURN_CHARS {
+        let cursor = super::output_cache::store(body.clone().into_bytes()).await;
         let truncated =
             super::execution_log::truncate_middle(&body, TRUNCATE_HEAD, TRUNCATE_TAIL);
         body = format!(
-            "[输出已截断：完整 {total_chars} 字符，请用 grep / tail -n / head -n 收窄命令重取]\n{truncated}"
+            "[输出已截断：完整 {total_chars} 字符。原文可用 read_output 工具取回（cursor=\"{cursor}\"，10 分钟内有效），或用 grep / tail -n / head -n 收窄命令重取]\n{truncated}"
         );
     }
 
+    LAST_EXEC_SESSION_SOURCE.with(|c| c.borrow_mut().replace(source));
     Ok(text_result(&format!("{exit_line}\n{body}")))
+}
+
+thread_local! {
+    /// 本次 exec_on_asset 实际使用的会话来源（server.rs 组装执行日志 sessionSource
+    /// 时读取）。async 下 thread_local 不完美（跨 .await 的任务可能被调度到别的
+    /// worker），但 exec_on_asset 在返回前写入、server.rs 紧随其后读取，中间无
+    /// 挂起点的错位概率极低；即便读到过期值也只是日志字段偏差，不影响安全判定。
+    /// B3 若后续要求严格准确，可改为在 McpToolContext 加 per-call 通道。
+    static LAST_EXEC_SESSION_SOURCE: std::cell::RefCell<Option<&'static str>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// server.rs 组装日志时读取最近一次 exec 的会话来源。
+pub(crate) fn last_exec_session_source() -> Option<&'static str> {
+    LAST_EXEC_SESSION_SOURCE.with(|c| *c.borrow())
+}
+
+/// B3 三层复用的执行内核。返回 (输出, 来源标识)。
+///
+/// 层① GUI 会话（信任增强：用户在终端里正开着同主机会话时复用它——
+/// 用户能实时看到 AI 的流量；exec_command_once 已泛型化，GUI/Headless
+/// 两种 Handle 共用同一输出组装，退出码语义不漂移）。
+/// 层② headless 池（凭据快照比对 + is_closed 探死；失败即失效）。
+/// 层③ 新建（用完 put 回池，密码为空从凭据存储读；host key 未信任会被拒绝）。
+pub(crate) async fn exec_with_reuse(
+    ctx: &McpToolContext,
+    asset: &myshelltool_core::ConnectionAsset,
+    asset_id: &str,
+    command: &str,
+) -> Result<(ssh::ExecOnceOutput, &'static str), String> {
+    // 层①：GUI 已连接会话
+    if let Some(manager) = &ctx.ssh_sessions {
+        let gui_session_id = {
+            let guard = manager.lock().await;
+            guard.find_session_by_host(&asset.host, asset.port, &asset.username)
+        };
+        if let Some(session_id) = gui_session_id {
+            let handle = {
+                let guard = manager.lock().await;
+                guard.session_handle(&session_id)
+            };
+            if let Some(handle) = handle {
+                match ssh::exec_command_once(&handle, command).await {
+                    Ok(output) => {
+                        log::info!("exec_on_asset: reusing GUI session {session_id}");
+                        return Ok((output, "gui"));
+                    }
+                    Err(e) => {
+                        // GUI 会话半开/刚断：不视为失败，落到下层（warn 留痕）
+                        log::warn!("exec_on_asset: GUI session {session_id} unusable ({e}), falling back to headless");
+                    }
+                }
+            }
+        }
+    }
+
+    // 层②：headless 池
+    let auth = super::session_pool::AuthSnapshot::from_asset(asset);
+    if let Some(handle) = super::session_pool::get(asset_id, &auth).await {
+        match ssh::exec_command_once(&handle, command).await {
+            Ok(output) => return Ok((output, "pool")),
+            Err(e) => {
+                // 服务器侧掐断的兜底：失效重建（不静默——warn 留痕后新建重试一次）
+                log::warn!("exec_on_asset: pooled connection for {asset_id} unusable ({e}), invalidating and reconnecting");
+                super::session_pool::invalidate_asset(asset_id).await;
+            }
+        }
+    }
+
+    // 层③：新建 + 回池
+    let params = HeadlessConnectParams {
+        host: asset.host.clone(),
+        port: asset.port,
+        username: asset.username.clone(),
+        password: String::new(), // 从 credential_id 读
+        credential_id: asset.credential_id.clone(),
+        auth_method: Some(format!("{:?}", asset.auth_method)),
+        private_key_path: asset.private_key_path.clone(),
+        // v0.20（B0）：凭据库托管私钥内容（与 GUI 同优先级：SecretStore 优先、文件兜底）
+        private_key_credential_id: asset.private_key_credential_id.clone(),
+        passphrase: None,
+        passphrase_credential_id: asset.passphrase_credential_id.clone(),
+        secret_store_dir: ctx.secret_store_dir.clone(),
+        known_hosts_path: ctx.known_hosts_path.clone(),        // v0.20（SSH P0-2）：跳板透传（资产配置了 jump_host 即经跳板连接）
+        jump_host: crate::ssh::jump_host_of(asset).map(str::to_string),
+        connect_timeout_secs: asset.connect_timeout_secs,
+        keepalive_interval_secs: asset.keepalive_interval_secs,
+        asset_store_path: Some(ctx.asset_store_path.clone()),
+    };
+    let handle = ssh::connect_headless(&params).await?;
+    let output = ssh::exec_command_once(&handle, command).await;
+    match output {
+        Ok(o) => {
+            // 连接健康才回池（执行失败可能是连接问题，不缓存病连接）
+            super::session_pool::put(asset_id, auth, std::sync::Arc::new(handle)).await;
+            Ok((o, "new"))
+        }
+        Err(e) => Err(format!("命令执行失败: {e}")),
+    }
+}
+
+/// read_output（v0.20/B2）：按 cursor 分页取回 ssh_exec 被截断的完整输出。
+/// 只读缓存，不做文件读取（sftp_read_file 的续读走它自身的 offset 参数，
+/// 每次照常过敏感路径审批——本工具绝不能成为绕过审批的第二通道）。
+pub(crate) async fn tool_read_output(
+    _ctx: &McpToolContext,
+    args: &Map<String, serde_json::Value>,
+) -> Result<CallToolResult, String> {
+    let cursor = args
+        .get("cursor")
+        .and_then(|v| v.as_str())
+        .ok_or("缺少 cursor 参数")?;
+    let offset = args
+        .get("offset")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(64 * 1024)
+        .min(1024 * 1024) as usize; // 单页上限 1 MiB
+
+    let (chunk, total, eof, dropped_head) =
+        super::output_cache::read(cursor, offset, limit).await?;
+    let head_note = if dropped_head > 0 {
+        format!(
+            "\n[注：该输出开头 {dropped_head} 字节因超出单条缓存上限（8 MiB）未保留]"
+        )
+    } else {
+        String::new()
+    };
+    let status = if eof { "已到末尾（EOF）" } else { "未完，继续传 offset 取下一段" };
+    let next = if eof {
+        String::new()
+    } else {
+        format!("，下一段 offset={}", (offset as usize + chunk.len()) as u64)
+    };
+    Ok(text_result(&format!(
+        "[read_output cursor={cursor}：总 {total} 字节，本段 offset={offset} 起 {len} 字节，{status}{next}]{head_note}\n{chunk}",
+        len = chunk.len()
+    )))
 }
 
 // ─── 辅助：schema / 结果构造 ───
 
-fn empty_object_schema() -> Map<String, serde_json::Value> {
+pub(crate) fn empty_object_schema() -> Map<String, serde_json::Value> {
     json!({ "type": "object", "properties": {} })
         .as_object()
         .cloned()
         .unwrap_or_default()
 }
 
-fn schema_with_required_session() -> Map<String, serde_json::Value> {
+pub(crate) fn schema_with_required_session() -> Map<String, serde_json::Value> {
     json!({
         "type": "object",
         "properties": {

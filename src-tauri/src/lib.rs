@@ -6,6 +6,8 @@
 pub(crate) use myshelltool_core::dangerous_commands;
 
 mod dpapi_codec;
+// v0.20（S7）：FileLogger（5 MiB × 3 滚动）——自 lib.rs 拆出守 800 行 Rust 硬上限
+mod file_logger;
 /// 出站 HTTP 单例客户端（GitHub Gist / OAuth 共用）+ reqwest 错误链工具。
 mod http;
 pub(crate) mod fs_local; // format_modified 被 ssh.rs 复用（SFTP mtime → Unix 秒）
@@ -17,12 +19,13 @@ mod ssh;
 mod sync;
 mod sync_credentials;
 mod sync_oauth;
+// v0.20（SSH P0-1）：OpenSSH config 导入命令层（解析内核在 core::ssh_config）
+mod ssh_config_import;
 
 use serde::Serialize;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
 use tauri::{Manager, State};
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -51,6 +54,10 @@ pub struct AppState {
     /// GitHub Device Flow 登录的进行中会话（单槽：新 start 覆盖旧 start）。
     /// 纯内存，重启即失；见 sync_oauth.rs。
     pub sync_oauth_pending: Mutex<Option<sync_oauth::OAuthSession>>,
+    /// v0.20（A1）：MCP HTTP 入口鉴权 token。启动时生成（CSPRNG），与
+    /// http_server 的鉴权中间件共享同一 Arc——mcp_reset_token 重置后
+    /// 运行中的 server 立即按新 token 校验，无需重启。token 不进日志。
+    pub mcp_auth_token: Arc<std::sync::RwLock<String>>,
 }
 
 /// 会话迁移条目：at 用于 TTL 判定（60s），payload 为前端协议数据原样透传。
@@ -85,201 +92,6 @@ fn backend_status() -> BackendStatus {
 #[tauri::command]
 fn app_relaunch(app: tauri::AppHandle) {
     app.restart();
-}
-
-// ─── v1.2：MCP 服务可观测性（前端状态栏/管理面板的聚合查询）───
-//
-// 把 pipe server 维护的连接状态 + MCP server 的静态能力声明（tools/resources/prompts）
-// + 数据目录路径聚合成一个 DTO，供前端 mcp store 一次性拉取。
-//
-// 工具的「只读/高危」标记：rmcp 协议层 annotations 当前全为 None（见 tools.rs），
-// 这里在 Rust 端按 approval.rs 的判定语义补上 tag 字段，让前端无需硬编码映射表。
-// approval.rs 的真实运行时判定逻辑不变，这里只是给 UI 展示用的静态标签。
-
-/// MCP 工具/UI 条目（精简 DTO，避免直接序列化 rmcp 复杂类型）。
-#[derive(Debug, Clone, Serialize)]
-struct McpToolInfo {
-    name: String,
-    description: String,
-    /// "readonly" | "dangerous"
-    tag: &'static str,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct McpResourceInfo {
-    uri: String,
-    name: String,
-    is_template: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct McpPromptInfo {
-    name: String,
-    description: String,
-    arguments: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct McpStatus {
-    /// MCP server 协议层名字（静态声明，与 rmcp get_info 一致）。
-    server_name: &'static str,
-    /// GUI 自身版本（Cargo 包版本，与 tauri.conf.json 对齐）。
-    server_version: &'static str,
-    /// v1.4：MCP HTTP endpoint URL（供用户配置 MCP host）。
-    /// v1.3 是 pipe_name（named pipe 路径），内嵌后改为 HTTP URL。
-    endpoint: String,
-    /// MCP 进程读写的数据目录（GUI 与 MCP 共享同一份资产/凭据）。
-    data_dir: String,
-    /// v1.4：MCP 就绪探测结果（HTTP 健康检查）。这是状态灯的唯一信号源——
-    /// 向自己的 HTTP endpoint 发 initialize 握手，回答「能否正常工作」。
-    /// 不再 spawn 子进程（v1.2 的一次性 spawn 已废弃）。
-    probe: mcp::probe::McpProbeResult,
-    /// MCP 暴露的 9 个工具（7 只读 + 2 高危）。
-    tools: Vec<McpToolInfo>,
-    /// 3 静态资源 + 1 template。
-    resources: Vec<McpResourceInfo>,
-    /// 3 个诊断 prompt。
-    prompts: Vec<McpPromptInfo>,
-}
-
-/// 工具名 → 静态标签。语义镜像 approval.rs 的判定：
-/// - ssh_exec：白名单只读放行，其余高危
-/// - sftp_remove：恒高危
-/// - 其余 7 个：纯只读
-fn tool_tag(name: &str) -> &'static str {
-    match name {
-        "ssh_exec" | "sftp_remove" => "dangerous",
-        _ => "readonly",
-    }
-}
-
-#[tauri::command]
-async fn mcp_status(state: State<'_, AppState>) -> Result<McpStatus, String> {
-    // v2.5：data_dir 用 setup 解析并托管在 AppState 的单一来源，不再独立
-    // 重建（避免与 Tauri app_data_dir 分叉 / APPDATA 缺失时落到相对 CWD）。
-    let data_dir = state.mcp_data_dir.clone();
-
-    // v1.4：HTTP 健康检查。读 mcp-endpoint.json 拿实际监听地址，向它发 initialize。
-    // 不再 spawn 子进程（v1.2 的 probe_mcp 已废弃）。
-    let endpoint = mcp::http_server::read_endpoint(&data_dir)
-        .map(|e| e.url)
-        .unwrap_or_default();
-    let probe = if endpoint.is_empty() {
-        mcp::probe::fail_no_endpoint(&chrono::Utc::now().to_rfc3339())
-    } else {
-        mcp::probe::probe_endpoint(&endpoint).await
-    };
-
-    // 静态能力声明：直接复用 mcp 模块的 schema 构造函数，保证与协议实际暴露一致。
-    let tools: Vec<McpToolInfo> = mcp::tools::list_all_tools()
-        .into_iter()
-        .map(|t| {
-            // rmcp Tool 的 name/description 是 Cow<'_, str>（非 String），
-            // annotations 当前无（None）。用静态 tag 表补充只读/高危标记。
-            let tag = tool_tag(&t.name);
-            McpToolInfo {
-                name: t.name.to_string(),
-                description: t.description.map(|d| d.to_string()).unwrap_or_default(),
-                tag,
-            }
-        })
-        .collect();
-    let resources: Vec<McpResourceInfo> = mcp::resources::list_resources()
-        .into_iter()
-        .map(|r| McpResourceInfo {
-            uri: r.uri.to_string(),
-            name: r.name.clone(),
-            is_template: false,
-        })
-        .chain(
-            mcp::resources::list_resource_templates()
-                .into_iter()
-                .map(|t| McpResourceInfo {
-                    uri: t.uri_template.to_string(),
-                    name: t.name.clone(),
-                    is_template: true,
-                }),
-        )
-        .collect();
-    let prompts: Vec<McpPromptInfo> = mcp::prompts::list_prompts()
-        .into_iter()
-        .map(|p| McpPromptInfo {
-            name: p.name.clone(),
-            description: p.description.clone().unwrap_or_default(),
-            arguments: p
-                .arguments
-                .as_ref()
-                .map(|args| args.iter().map(|a| a.name.clone()).collect())
-                .unwrap_or_default(),
-        })
-        .collect();
-
-    Ok(McpStatus {
-        server_name: "myshelltool",
-        server_version: env!("CARGO_PKG_VERSION"),
-        endpoint,
-        data_dir: data_dir.to_string_lossy().to_string(),
-        probe,
-        tools,
-        resources,
-        prompts,
-    })
-}
-
-/// v1.5：前端 GUI 弹窗审批的用户回传命令。
-///
-/// server.rs 在客户端不支持 elicitation 时，经 AppHandle emit `mcp-tool-approval`
-/// 事件给前端 GlobalModals 弹窗；用户点确认/拒绝后，前端调本命令回传决定。
-/// 复用 AppState 持有的 mcp_approval_pending Arc（与 McpToolContext 共享），
-/// 取出 server.rs 注册的 oneshot::Sender 并 send。
-///
-/// 模式照 ssh.rs:998 ssh_confirm_host_key。
-#[tauri::command]
-async fn mcp_confirm_tool(
-    state: State<'_, AppState>,
-    request_id: String,
-    accepted: bool,
-) -> Result<(), String> {
-    mcp::approval::resolve_approval(&state.mcp_approval_pending, &request_id, accepted).await
-}
-
-// ─── v2：MCP 拦截等级配置 + 执行日志（前端 MCP 面板）───
-
-/// 读当前拦截等级（内存 Arc，不动盘）。
-#[tauri::command]
-async fn mcp_get_config(state: State<'_, AppState>) -> Result<mcp::config::McpConfig, String> {
-    Ok(state.mcp_config.read().await.clone())
-}
-
-/// 切换拦截等级：解析枚举 → 更新共享 Arc（已建 MCP 会话下次调用即生效）→ 落盘。
-/// 无效 level（非 minimal/strict）返回 Err。
-#[tauri::command]
-async fn mcp_set_config(state: State<'_, AppState>, level: String) -> Result<mcp::config::McpConfig, String> {
-    let level_enum = mcp::config::McpInterceptLevel::parse(&level).ok_or_else(|| {
-        format!("无效的拦截等级: {level}（可选 minimal / strict）")
-    })?;
-    let new_config = mcp::config::McpConfig { level: level_enum };
-    *state.mcp_config.write().await = new_config.clone();
-    mcp::config::save_mcp_config(&mcp::config::mcp_config_path(&state.mcp_data_dir), &new_config)?;
-    Ok(new_config)
-}
-
-/// 读执行日志最近条目（timestampMs 倒序）。limit 缺省 200。
-#[tauri::command]
-fn mcp_list_execution_logs(
-    state: State<'_, AppState>,
-    limit: Option<u16>,
-) -> Result<Vec<mcp::execution_log::ExecutionLogEntry>, String> {
-    Ok(mcp::execution_log::list_entries(
-        &state.mcp_data_dir,
-        limit.unwrap_or(200) as usize,
-    ))
-}
-
-/// 清空执行日志。
-#[tauri::command]
-async fn mcp_clear_execution_logs(state: State<'_, AppState>) -> Result<(), String> {
-    mcp::execution_log::clear_entries(&state.mcp_data_dir).await
 }
 
 // ─── 跨窗口会话迁移内存中转（TTL 60s）───
@@ -344,13 +156,17 @@ fn list_connection_assets(state: State<'_, AppState>) -> Result<ConnectionAssetL
 }
 
 #[tauri::command]
-fn save_connection_asset(
+async fn save_connection_asset(
     state: State<'_, AppState>,
     asset: myshelltool_core::ConnectionAsset,
 ) -> Result<ConnectionAssetList, String> {
     let mut store = myshelltool_core::load_connection_asset_store(&state.asset_store_path)?;
+    let asset_id = asset.id.clone();
     myshelltool_core::upsert_connection_asset(&mut store, asset)?;
     myshelltool_core::save_connection_asset_store(&state.asset_store_path, &store)?;
+    // v0.20（B3）：主机/凭据字段可能已变——主动失效 MCP 会话池条目
+    // （AuthSnapshot 比对是第二道防线，这里让失效即时发生）
+    mcp::session_pool::invalidate_asset(&asset_id).await;
     Ok(ConnectionAssetList {
         source: "local asset store",
         count: store.assets.len(),
@@ -360,10 +176,12 @@ fn save_connection_asset(
 }
 
 #[tauri::command]
-fn delete_connection_asset(state: State<'_, AppState>, id: String) -> Result<ConnectionAssetList, String> {
+async fn delete_connection_asset(state: State<'_, AppState>, id: String) -> Result<ConnectionAssetList, String> {
     let mut store = myshelltool_core::load_connection_asset_store(&state.asset_store_path)?;
     myshelltool_core::remove_connection_asset(&mut store, &id)?;
     myshelltool_core::save_connection_asset_store(&state.asset_store_path, &store)?;
+    // v0.20（B3）：资产删除即失效其 MCP 会话池条目（连接主动断开）
+    mcp::session_pool::invalidate_asset(&id).await;
     Ok(ConnectionAssetList {
         source: "local asset store",
         count: store.assets.len(),
@@ -457,51 +275,54 @@ fn delete_credential(state: State<'_, AppState>, id: String) -> Result<bool, Str
     store.delete(&id)
 }
 
-struct FileLogger {
-    file: Mutex<std::fs::File>,
+// ─── v0.20（N3）：自助诊断信息（崩溃走用户 issue，配 bug_report 模板）───
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiagnosticInfo {
+    app_version: String,
+    /// "windows" + 架构（std::env::consts；OS 内部版本拿不到就不猜）。
+    os: String,
+    /// debug/release 构建形态（debug 的 MCP 端口/行为与正式版不同，排查必看）。
+    build_profile: String,
+    data_dir: String,
+    /// MCP endpoint 基础 URL（不含 token——诊断信息要进 issue 公开区）。
+    mcp_endpoint_base: String,
+    /// 应用日志尾部（约 4 KiB）。日志内容本身经 redact 门禁（命令已脱敏）；
+    /// 路径/事件名低敏。返回体注明「粘贴前可自查」。
+    log_tail: String,
+    generated_at: String,
 }
 
-impl FileLogger {
-    fn new(path: &std::path::Path) -> Result<Self, std::io::Error> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let file = OpenOptions::new().create(true).append(true).open(path)?;
-        Ok(Self {
-            file: Mutex::new(file),
+#[tauri::command]
+fn get_diagnostic_info(state: State<'_, AppState>) -> DiagnosticInfo {
+    let log_path = state.mcp_data_dir.join("logs").join("myshelltool.log");
+    let log_tail = std::fs::read_to_string(&log_path)
+        .map(|content| {
+            // 取尾 ~4 KiB，按行边界对齐（不从半截行开始）
+            let bytes = content.as_bytes();
+            let start = bytes.len().saturating_sub(4 * 1024);
+            let start = content[start..]
+                .find('\n')
+                .map(|i| start + i + 1)
+                .unwrap_or(start);
+            content[start..].to_string()
         })
+        .unwrap_or_else(|e| format!("（读取日志失败: {e}）"));
+    let mcp_endpoint_base = mcp::http_server::read_endpoint(&state.mcp_data_dir)
+        .map(|e| e.url)
+        .unwrap_or_else(|| "(server 未启动)".to_string());
+    DiagnosticInfo {
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        os: format!("{} ({})", std::env::consts::OS, std::env::consts::ARCH),
+        build_profile: if cfg!(debug_assertions) { "debug" } else { "release" }.to_string(),
+        data_dir: state.mcp_data_dir.to_string_lossy().to_string(),
+        mcp_endpoint_base,
+        log_tail,
+        generated_at: chrono::Local::now().to_rfc3339(),
     }
 }
 
-impl log::Log for FileLogger {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() <= log::Level::Info
-    }
-
-    fn log(&self, record: &log::Record) {
-        if self.enabled(record.metadata()) {
-            // 本地时间前缀（便于按时间排查问题；chrono 处理时区/闰秒等）。
-            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-            let msg = format!(
-                "[{} {} {}] {}\n",
-                now,
-                record.level(),
-                record.target(),
-                record.args()
-            );
-            eprint!("{}", msg);
-            if let Ok(mut file) = self.file.lock() {
-                let _ = file.write_all(msg.as_bytes());
-            }
-        }
-    }
-
-    fn flush(&self) {
-        if let Ok(mut file) = self.file.lock() {
-            let _ = file.flush();
-        }
-    }
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -509,7 +330,7 @@ pub fn run() {
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             let log_path = app_data_dir.join("logs").join("myshelltool.log");
-            let logger = FileLogger::new(&log_path).expect("failed to create log file");
+            let logger = file_logger::FileLogger::new(&log_path).expect("failed to create log file");
             log::set_boxed_logger(Box::new(logger))
                 .map(|()| log::set_max_level(log::LevelFilter::Info))
                 .expect("failed to set logger");
@@ -535,10 +356,14 @@ pub fn run() {
                     &mcp::config::mcp_config_path(&mcp_dir),
                 )),
             );
+            // v0.20（A1）：MCP 入口鉴权 token——启动时生成，AppState 与 HTTP
+            // 中间件共享同一 Arc（重置即生效，无需重启 server）。
+            let mcp_auth_token: Arc<std::sync::RwLock<String>> =
+                Arc::new(std::sync::RwLock::new(mcp::http_server::generate_token()));
             app.manage(AppState {
                 asset_store_path: app_data_dir.join("connection-assets.json"),
                 secret_store_dir: app_data_dir.join("credentials"),
-                ssh_sessions: ssh_mgr,
+                ssh_sessions: ssh_mgr.clone(),
                 resource_monitors: Arc::new(Mutex::new(resource_monitor::ResourceMonitorState::default())),
                 mcp_shutdown: mcp_shutdown.clone(),
                 mcp_approval_pending: mcp_approval_pending.clone(),
@@ -546,6 +371,7 @@ pub fn run() {
                 mcp_data_dir: mcp_dir.clone(),
                 session_handoff: Mutex::new(std::collections::HashMap::new()),
                 sync_oauth_pending: Mutex::new(None),
+                mcp_auth_token: mcp_auth_token.clone(),
             });
 
             // v1.4：启动 MCP Streamable HTTP server（内嵌 GUI 进程）。
@@ -568,11 +394,14 @@ pub fn run() {
                 app_data_dir.join("known_hosts.json"),
                 mcp_config,
                 mcp_dir.clone(),
+                // v0.20（B3）：注入 GUI 会话管理器——exec 工具复用优先级的第一层
+                ssh_mgr,
             );
             tauri::async_runtime::spawn(mcp::http_server::run_http_server(
                 mcp_ctx,
                 mcp_dir,
                 mcp_shutdown,
+                mcp_auth_token,
             ));
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -588,18 +417,26 @@ pub fn run() {
             backend_status,
             app_relaunch,
             // v1.2：MCP 服务可观测性聚合查询（前端状态栏/管理面板）
-            mcp_status,
+            mcp::commands::mcp_status,
             // v1.5：MCP 高危工具 GUI 弹窗审批的用户回传命令
-            mcp_confirm_tool,
+            mcp::commands::mcp_confirm_tool,
+            // v0.20：MCP 入口 token 重置（A1 鉴权）
+            mcp::commands::mcp_reset_token,
             // v2：MCP 拦截等级配置 + 执行日志（前端 MCP 面板）
-            mcp_get_config,
-            mcp_set_config,
-            mcp_list_execution_logs,
-            mcp_clear_execution_logs,
+            mcp::commands::mcp_get_config,
+            mcp::commands::mcp_set_config,
+            // v0.20（B1 GUI）：授权范围编辑保存
+            mcp::commands::mcp_set_scope,
+            mcp::commands::mcp_list_execution_logs,
+            mcp::commands::mcp_clear_execution_logs,
             // 跨窗口会话迁移内存中转（TTL 60s）
             session_handoff_put,
             session_handoff_take,
             list_connection_assets,
+            // v0.20（N3）：自助诊断（issue 模板引导粘贴）
+            get_diagnostic_info,
+            // v0.20（SSH P0-1）：OpenSSH config 导入预览（导入执行复用 save_connection_asset）
+            ssh_config_import::import_ssh_config_preview,
             save_connection_asset,
             delete_connection_asset,
             rename_asset_group,
@@ -633,8 +470,8 @@ pub fn run() {
             delete_credential,
             ssh::ssh_connect,
             ssh::ssh_list_directory,
-            ssh::ssh_write,
-            ssh::ssh_resize,
+            ssh::session_cmds::ssh_write,
+            ssh::session_cmds::ssh_resize,
             ssh::ssh_disconnect,
             ssh::ssh_confirm_host_key,
             ssh::ssh_keyboard_response,
@@ -643,8 +480,11 @@ pub fn run() {
             ssh::sftp_write_file,
             ssh::sftp_upload_from_file,
             ssh::sftp_upload_cancel,
+            ssh::sftp_download_cancel,
             ssh::sftp_download_to_file,
             ssh::sftp_mkdir,
+            ssh::sftp_chmod,
+            ssh::sftp_readlink,
             ssh::sftp_rename,
             ssh::sftp_remove,
             ssh::sftp_stat,

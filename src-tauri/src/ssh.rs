@@ -59,7 +59,7 @@ pub struct SshSessionManager {
     /// 任务可 abort：取消靠这面共享旗标（循环逐块检查）。条目带 session_id，
     /// cleanup_session_tables 据此把会话的在途上传全部置旗——否则断连后
     /// 上传循环要等产品级写超时（120s）才停。
-    upload_cancels: Arc<Mutex<HashMap<String, UploadCancelEntry>>>,
+    transfer_cancels: Arc<Mutex<HashMap<String, TransferCancelEntry>>>,
     app: AppHandle,
     secret_store_dir: PathBuf,
     known_hosts_path: PathBuf,
@@ -77,7 +77,7 @@ impl SshSessionManager {
             sftp_cache: HashMap::new(),
             tunnels: HashMap::new(),
             tunnel_handles: HashMap::new(),
-            upload_cancels: Arc::new(Mutex::new(HashMap::new())),
+            transfer_cancels: Arc::new(Mutex::new(HashMap::new())),
             app,
             secret_store_dir,
             known_hosts_path,
@@ -102,6 +102,16 @@ impl SshSessionManager {
     /// 会话是否存在（MCP 工具参数校验用）。
     pub fn has_session(&self, session_id: &str) -> bool {
         self.sessions.contains_key(session_id)
+    }
+
+    /// v0.20（B3）：按 session_id 取 GUI 会话的连接句柄（Arc clone）。
+    /// MCP exec 复用层用它跑一次性 exec channel（输出组装与 headless 路径
+    /// 共用泛型化的 exec_command_once，退出码语义不漂移）。会话不存在 → None。
+    pub fn session_handle(
+        &self,
+        session_id: &str,
+    ) -> Option<Arc<client::Handle<SshClient>>> {
+        self.ssh_handles.get(session_id).cloned()
     }
 
     /// v1.1：在已建立的会话上执行一次性命令（开新 channel，不干扰交互 PTY）。
@@ -223,6 +233,8 @@ mod headless;
 mod known_hosts;
 mod monitor;
 mod session;
+pub mod agent; // v0.20（SSH P1）：SSH agent 认证桥（named pipe → Pageant，逐 key 尝试）
+pub mod session_cmds; // v0.20：轻量通道命令（write/resize），注册表经完整路径引用
 mod sftp;
 mod text_file;
 mod tunnel;
@@ -230,7 +242,11 @@ mod tunnel;
 // 子模块公开符号经本模块路径再导出（lib.rs generate_handler / mcp 调用点不变）。
 // 必须用 glob 而非逐项列表：#[tauri::command] 生成的隐藏宏（__cmd__X 等）
 // 随 glob 一并可见，generate_handler 按 `ssh::命令名` 解析时才找得到。
+pub mod jump; // v0.20（SSH P0-2）：ProxyJump 单跳
+pub mod keyboard; // v0.20：GUI 弹窗式 kbd-interactive 认证循环
 pub use known_hosts::*;
+pub use jump::*;
+// keyboard 的 keyboard_interactive_loop 是 pub(crate)——不对外 re-export（facade 内部路径引用）
 pub use monitor::*;
 pub use headless::*;
 pub use session::*;
@@ -288,7 +304,7 @@ pub(crate) async fn cleanup_session_tables(
     // 循环在下一个块边界看到旗标即停（随后的 SFTP 写多半也会因会话已死而失败，
     // 两条路径殊途同归）。找不到该会话的传输时是纯 no-op（本函数可重入）。
     {
-        let mut cancels = mgr.upload_cancels.lock().await;
+        let mut cancels = mgr.transfer_cancels.lock().await;
         let transfer_ids: Vec<String> = cancels
             .iter()
             .filter(|(_, entry)| entry.session_id == session_id)

@@ -125,11 +125,11 @@ struct HostKeyVerifyEvent {
 }
 
 #[derive(Clone, Serialize)]
-struct KeyboardInteractiveEvent {
-    request_id: String,
-    name: String,
-    instructions: String,
-    prompts: Vec<String>,
+pub(crate) struct KeyboardInteractiveEvent {
+    pub(crate) request_id: String,
+    pub(crate) name: String,
+    pub(crate) instructions: String,
+    pub(crate) prompts: Vec<String>,
 }
 
 // Unified session lifecycle status event. Emitted at connect-success,
@@ -164,205 +164,11 @@ struct SessionStatusEvent {
 /// 且 `keepalive_max` 默认为 3（`mod.rs:1516`）；`alive_timeouts` 在**判据之后**才自增，
 /// 因此 0→1→2→3→4 要走到第 5 个 30s tick（约 150s）判据才成立。再叠加 300s 的
 /// inactivity 上限，半开会话最迟约 5 分钟被回收。
-pub fn build_client_config() -> Arc<client::Config> {
-    Arc::new(client::Config {
-        keepalive_interval: Some(std::time::Duration::from_secs(30)),
-        inactivity_timeout: Some(std::time::Duration::from_secs(300)),
-        ..client::Config::default()
-    })
-}
+/// v0.20（SSH P1）参数化版本：按资产配置覆盖 keepalive 间隔。
+/// `keepalive_secs = None` → 默认 30s（与旧 build_client_config 完全一致）；
+/// inactivity 固定 = keepalive × 10（保持「inactivity 必须大于 keepalive」的
+/// 分工约束——间隔调小检测更快，但 inactivity 也随之等比收紧，不会出现
 
-async fn connect_authenticated(
-    state: &State<'_, AppState>,
-    host: &str,
-    port: u16,
-    username: &str,
-    password: String,
-    credential_id: Option<String>,
-    auth_method: Option<String>,
-    private_key_path: Option<String>,
-    passphrase: Option<String>,
-    passphrase_credential_id: Option<String>,
-    private_key_credential_id: Option<String>,
-) -> Result<client::Handle<SshClient>, String> {
-    let config = build_client_config();
-
-    let (app, secret_store_dir, known_hosts_path, pending, pending_keyboard) = {
-        let mgr = state.ssh_sessions.lock().await;
-        (
-            mgr.app.clone(),
-            mgr.secret_store_dir.clone(),
-            mgr.known_hosts_path.clone(),
-            mgr.pending_host_decisions.clone(),
-            mgr.pending_keyboard.clone(),
-        )
-    };
-
-    let handler = SshClient {
-        app: app.clone(),
-        host_port: format!("{host}:{port}"),
-        known_hosts_path,
-        pending,
-    };
-    let mut handle = client::connect(config, (host, port), handler)
-        .await
-        .map_err(|e| format!("SSH connect failed: {e}"))?;
-
-    info!("SSH TCP connected to {host}:{port}");
-
-    let resolved_password: Option<String> = if auth_method.as_deref() == Some("PrivateKey") {
-        None
-    } else if password.is_empty() {
-        if let Some(ref cred_id) = credential_id {
-            Some(
-                myshelltool_core::SecretStore::new(&secret_store_dir, Box::new(crate::dpapi_codec::DpapiCodec))
-                    .read(cred_id)
-                    .map_err(|e| format!("Failed to read credential: {e}"))?
-                    .ok_or_else(|| "Stored credential not found".to_string())?,
-            )
-        } else {
-            return Err("No password provided and no stored credential".to_string());
-        }
-    } else {
-        Some(password)
-    };
-
-    let auth_ok = if auth_method.as_deref() == Some("PrivateKey") {
-        let resolved_passphrase = if let Some(ref cred_id) = passphrase_credential_id {
-            myshelltool_core::SecretStore::new(&secret_store_dir, Box::new(crate::dpapi_codec::DpapiCodec))
-                .read(cred_id)
-                .map_err(|e| format!("Failed to read passphrase: {e}"))?
-        } else {
-            passphrase.as_deref().and_then(|p| {
-                if p.is_empty() {
-                    None
-                } else {
-                    Some(p.to_string())
-                }
-            })
-        };
-
-        // 优先从 SecretStore 读取托管在本地安全保管箱中的私钥内容
-        let key_str = if let Some(ref cred_id) = private_key_credential_id {
-            let store = myshelltool_core::SecretStore::new(&secret_store_dir, Box::new(crate::dpapi_codec::DpapiCodec));
-            match store.read(cred_id) {
-                Ok(Some(content)) if !content.trim().is_empty() => content,
-                _ => {
-                    let key_path = private_key_path.as_deref().unwrap_or("~/.ssh/id_ed25519");
-                    let expanded = expand_home_path(key_path)?;
-                    let key_data = std::fs::read(&expanded)
-                        .map_err(|e| format!("Failed to read key file '{}': {e}", expanded))?;
-                    String::from_utf8_lossy(&key_data).to_string()
-                }
-            }
-        } else {
-            let key_path = private_key_path.as_deref().unwrap_or("~/.ssh/id_ed25519");
-            let expanded = expand_home_path(key_path)?;
-            let key_data = std::fs::read(&expanded)
-                .map_err(|e| format!("Failed to read key file '{}': {e}", expanded))?;
-            String::from_utf8_lossy(&key_data).to_string()
-        };
-
-        let key_pair = russh::keys::decode_secret_key(&key_str, resolved_passphrase.as_deref())
-            .map_err(|e| format!("Failed to load private key: {e}"))?;
-        let key_with_hash = wrap_key_with_preferred_hash(key_pair)?;
-        handle
-            .authenticate_publickey(username, key_with_hash)
-            .await
-            .map_err(|e| format!("Public key auth failed: {e}"))?
-    } else {
-        handle
-            .authenticate_password(username, resolved_password.as_deref().unwrap_or(""))
-            .await
-            .map_err(|e| format!("Auth failed: {e}"))?
-    };
-
-    if !auth_ok {
-        info!(
-            "auth: password/key rejected for {username}@{host}:{port}, trying keyboard-interactive"
-        );
-        let resp = handle
-            .authenticate_keyboard_interactive_start(username, None::<String>)
-            .await
-            .map_err(|e| format!("Keyboard-interactive start failed: {e}"))?;
-        // 自动用已保存的密码响应 keyboard-interactive 的密码 prompt（debian 等服务器
-        // 默认禁用 PasswordAuthentication 但启用 KbdInteractiveAuthentication，导致
-        // password auth 失败但 keyboard-interactive 实际就是同一密码）
-        let auto_password = resolved_password.as_deref();
-        let (h, authenticated) =
-            keyboard_interactive_loop(handle, resp, &pending_keyboard, &app, auto_password).await?;
-        if !authenticated {
-            warn!("auth failed (all methods) for {username}@{host}:{port}");
-            return Err("Authentication failed (password + keyboard-interactive)".to_string());
-        }
-        return Ok(h);
-    }
-
-    info!("auth succeeded for {username}@{host}:{port}");
-    Ok(handle)
-}
-
-async fn keyboard_interactive_loop(
-    mut handle: client::Handle<SshClient>,
-    mut resp: client::KeyboardInteractiveAuthResponse,
-    pending_keyboard: &PendingKeyboardResponses,
-    app: &AppHandle,
-    auto_password: Option<&str>,
-) -> Result<(client::Handle<SshClient>, bool), String> {
-    loop {
-        match resp {
-            client::KeyboardInteractiveAuthResponse::Success => return Ok((handle, true)),
-            client::KeyboardInteractiveAuthResponse::Failure => return Ok((handle, false)),
-            client::KeyboardInteractiveAuthResponse::InfoRequest {
-                name,
-                instructions,
-                prompts,
-            } => {
-                // 判断是否所有 prompts 都是密码类（单 prompt + 文本含 password/passphrase/密码）
-                // 且 auto_password 可用 → 自动响应，不弹 modal
-                let all_password_like = !prompts.is_empty()
-                    && prompts.iter().all(|p| {
-                        let lower = p.prompt.to_lowercase();
-                        lower.contains("password") || lower.contains("passphrase") || lower.contains("密码")
-                    });
-                let responses = if all_password_like && auto_password.is_some() {
-                    let pwd = auto_password.unwrap().to_string();
-                    info!(
-                        "keyboard-interactive: auto-responding {} password-like prompt(s) with saved credential",
-                        prompts.len()
-                    );
-                    prompts.iter().map(|_| pwd.clone()).collect::<Vec<String>>()
-                } else {
-                    // 弹 modal 让用户手动输入（MFA、非密码 prompt 等）
-                    let request_id = uuid::Uuid::new_v4().to_string();
-                    let (tx, rx) = oneshot::channel();
-                    {
-                        let mut map = pending_keyboard.lock().await;
-                        map.insert(request_id.clone(), tx);
-                    }
-                    let prompt_texts: Vec<String> = prompts.iter().map(|p| p.prompt.clone()).collect();
-                    let event = KeyboardInteractiveEvent {
-                        request_id,
-                        name,
-                        instructions,
-                        prompts: prompt_texts,
-                    };
-                    if app.emit("ssh-keyboard-interactive", event).is_err() {
-                        return Ok((handle, false));
-                    }
-                    match rx.await {
-                        Ok(r) => r,
-                        Err(_) => return Ok((handle, false)),
-                    }
-                };
-                resp = handle
-                    .authenticate_keyboard_interactive_respond(responses)
-                    .await
-                    .map_err(|e| format!("Keyboard-interactive respond failed: {e}"))?;
-            }
-        }
-    }
-}
 
 /// 包裹私钥用于 publickey 认证。RSA 密钥必须指定 rsa-sha2-256：传 None 会
 /// 退回 SHA-1 的 ssh-rsa 算法，OpenSSH 8.8+ 服务器默认禁用该算法，导致
@@ -411,6 +217,9 @@ pub async fn ssh_connect(
     passphrase: Option<String>,
     passphrase_credential_id: Option<String>,
     private_key_credential_id: Option<String>,
+    jump_host: Option<String>,
+    connect_timeout_secs: Option<u32>,
+    keepalive_interval_secs: Option<u32>,
     cols: u32,
     rows: u32,
 ) -> Result<SshConnectResult, String> {
@@ -426,6 +235,9 @@ pub async fn ssh_connect(
         passphrase,
         passphrase_credential_id,
         private_key_credential_id,
+        jump_host,
+        connect_timeout_secs,
+        keepalive_interval_secs,
     )
     .await
     {
@@ -656,6 +468,9 @@ pub async fn ssh_list_directory(
     passphrase: Option<String>,
     passphrase_credential_id: Option<String>,
     private_key_credential_id: Option<String>,
+    jump_host: Option<String>,
+    connect_timeout_secs: Option<u32>,
+    keepalive_interval_secs: Option<u32>,
     path: String,
 ) -> Result<RemoteDirectoryList, String> {
     let handle = connect_authenticated(
@@ -670,6 +485,9 @@ pub async fn ssh_list_directory(
         passphrase,
         passphrase_credential_id,
         private_key_credential_id,
+        jump_host,
+        connect_timeout_secs,
+        keepalive_interval_secs,
     )
     .await?;
 
@@ -724,39 +542,258 @@ pub async fn ssh_list_directory(
     })
 }
 
-#[tauri::command]
-pub async fn ssh_write(
-    state: State<'_, AppState>,
-    session_id: String,
-    data: Vec<u8>,
-) -> Result<(), String> {
-    let mgr = state.ssh_sessions.lock().await;
-    let session = mgr
-        .sessions
-        .get(&session_id)
-        .ok_or_else(|| format!("Session {session_id} not found"))?;
-    session
-        .cmd_tx
-        .send(SshCommand::Write(data))
-        .map_err(|e| format!("Send failed: {e}"))?;
-    Ok(())
+/// 「keepalive 5s + inactivity 300s」这类探测重试窗口不足的失衡组合）。
+pub fn build_client_config_with(keepalive_secs: Option<u32>) -> Arc<client::Config> {
+    let keepalive = keepalive_secs.unwrap_or(30).max(1);
+    Arc::new(client::Config {
+        keepalive_interval: Some(std::time::Duration::from_secs(keepalive as u64)),
+        inactivity_timeout: Some(std::time::Duration::from_secs(keepalive as u64 * 10)),
+        ..client::Config::default()
+    })
 }
 
-#[tauri::command]
-pub async fn ssh_resize(
-    state: State<'_, AppState>,
-    session_id: String,
-    cols: u32,
-    rows: u32,
-) -> Result<(), String> {
-    let mgr = state.ssh_sessions.lock().await;
-    let session = mgr
-        .sessions
-        .get(&session_id)
-        .ok_or_else(|| format!("Session {session_id} not found"))?;
-    session
-        .cmd_tx
-        .send(SshCommand::Resize { cols, rows })
-        .map_err(|e| format!("Send failed: {e}"))?;
-    Ok(())
+async fn connect_authenticated(
+    state: &State<'_, AppState>,
+    host: &str,
+    port: u16,
+    username: &str,
+    password: String,
+    credential_id: Option<String>,
+    auth_method: Option<String>,
+    private_key_path: Option<String>,
+    passphrase: Option<String>,
+    passphrase_credential_id: Option<String>,
+    private_key_credential_id: Option<String>,
+    jump_host: Option<String>,
+    // v0.20（SSH P1）：TCP 建连超时秒（None = 不设，现状）。
+    connect_timeout_secs: Option<u32>,
+    // v0.20（SSH P1）：keepalive 间隔秒（None = 默认 30）。
+    keepalive_interval_secs: Option<u32>,
+) -> Result<client::Handle<SshClient>, String> {
+    let config = build_client_config_with(keepalive_interval_secs);
+
+    let (app, secret_store_dir, known_hosts_path, pending, pending_keyboard) = {
+        let mgr = state.ssh_sessions.lock().await;
+        (
+            mgr.app.clone(),
+            mgr.secret_store_dir.clone(),
+            mgr.known_hosts_path.clone(),
+            mgr.pending_host_decisions.clone(),
+            mgr.pending_keyboard.clone(),
+        )
+    };
+
+    let known_hosts_for_jump = known_hosts_path.clone();
+    let handler = SshClient {
+        app: app.clone(),
+        host_port: format!("{host}:{port}"),
+        known_hosts_path,
+        pending,
+    };
+    // v0.20（SSH P0-2）：带跳板时目标握手跑在跳板的 direct-tcpip 流上（同 headless 路径）
+    let mut handle = match jump_host.as_deref().map(str::trim).filter(|j| !j.is_empty()) {
+        Some(jump) => {
+            let stream = super::jump::open_direct_stream(
+                jump, host, port, &state.asset_store_path, &secret_store_dir, &known_hosts_for_jump,
+            )
+            .await?;
+            client::connect_stream(config, stream, handler)
+                .await
+                .map_err(|e| format!("SSH connect via jump failed: {e}"))?
+        }
+        None => {
+            // v0.20（SSH P1）：可选 TCP+握手超时（russh connect 无内建超时，外部包裹）
+            let connect_fut = client::connect(config, (host, port), handler);
+            match connect_timeout_secs {
+                Some(secs) => tokio::time::timeout(
+                    std::time::Duration::from_secs(secs as u64),
+                    connect_fut,
+                )
+                .await
+                .map_err(|_| format!("SSH connect 超时（{secs}s）：{host}:{port}"))?
+                .map_err(|e| format!("SSH connect failed: {e}"))?,
+                None => connect_fut
+                    .await
+                    .map_err(|e| format!("SSH connect failed: {e}"))?,
+            }
+        }
+    };
+
+    info!("SSH TCP connected to {host}:{port}");
+
+    let resolved_password: Option<String> = if auth_method.as_deref() == Some("PrivateKey") {
+        None
+    } else if password.is_empty() {
+        if let Some(ref cred_id) = credential_id {
+            Some(
+                myshelltool_core::SecretStore::new(&secret_store_dir, Box::new(crate::dpapi_codec::DpapiCodec))
+                    .read(cred_id)
+                    .map_err(|e| format!("Failed to read credential: {e}"))?
+                    .ok_or_else(|| "Stored credential not found".to_string())?,
+            )
+        } else {
+            return Err("No password provided and no stored credential".to_string());
+        }
+    } else {
+        Some(password)
+    };
+
+    // v0.20（SSH P2）：第二因子素材预读——Password 主方式失败时尝试 publickey
+    // 需要（key 内容 + passphrase）。仅 Password 模式且有私钥配置时读取（惰性：
+    // 不配置就 None，不产生额外 IO）。
+    let (second_factor_key, second_factor_passphrase): (Option<String>, Option<String>) =
+        if auth_method.as_deref() == Some("Password") {
+            let key_str = if let Some(ref cred_id) = private_key_credential_id {
+                let store = myshelltool_core::SecretStore::new(&secret_store_dir, Box::new(crate::dpapi_codec::DpapiCodec));
+                store.read(cred_id).ok().flatten().filter(|c| !c.trim().is_empty())
+            } else {
+                private_key_path.as_deref().map(|kp| {
+                    expand_home_path(kp)
+                        .and_then(|p| std::fs::read(&p).map_err(|e| format!("{e}").to_string()))
+                        .map(|d| String::from_utf8_lossy(&d).to_string())
+                        .ok()
+                })
+                .flatten()
+            };
+            let passphrase = if let Some(ref cred_id) = passphrase_credential_id {
+                myshelltool_core::SecretStore::new(&secret_store_dir, Box::new(crate::dpapi_codec::DpapiCodec))
+                    .read(cred_id)
+                    .ok()
+                    .flatten()
+            } else {
+                passphrase.as_deref().filter(|p| !p.is_empty()).map(str::to_string)
+            };
+            (key_str, passphrase)
+        } else {
+            (None, None)
+        };
+
+    let auth_ok = if auth_method.as_deref() == Some("Agent") {
+        // v0.20（SSH P1）：agent 认证——named pipe → Pageant，逐 key 尝试；
+        // 私钥留在 agent 进程（密钥零复制）。成功直接返回（不进 keyboard-interactive
+        // 兜底——agent 模式下没有密码可用）。
+        return match super::agent::authenticate_with_agent(&mut handle, username).await {
+            super::agent::AgentAuthOutcome::Authenticated => {
+                info!("agent auth succeeded for {username}@{host}:{port}");
+                Ok(handle)
+            }
+            super::agent::AgentAuthOutcome::Failed(msg) => Err(msg),
+        };
+    } else if auth_method.as_deref() == Some("PrivateKey") {
+        let resolved_passphrase = if let Some(ref cred_id) = passphrase_credential_id {
+            myshelltool_core::SecretStore::new(&secret_store_dir, Box::new(crate::dpapi_codec::DpapiCodec))
+                .read(cred_id)
+                .map_err(|e| format!("Failed to read passphrase: {e}"))?
+        } else {
+            passphrase.as_deref().and_then(|p| {
+                if p.is_empty() {
+                    None
+                } else {
+                    Some(p.to_string())
+                }
+            })
+        };
+
+        // 优先从 SecretStore 读取托管在本地安全保管箱中的私钥内容
+        let key_str = if let Some(ref cred_id) = private_key_credential_id {
+            let store = myshelltool_core::SecretStore::new(&secret_store_dir, Box::new(crate::dpapi_codec::DpapiCodec));
+            match store.read(cred_id) {
+                Ok(Some(content)) if !content.trim().is_empty() => content,
+                _ => {
+                    let key_path = private_key_path.as_deref().unwrap_or("~/.ssh/id_ed25519");
+                    let expanded = expand_home_path(key_path)?;
+                    let key_data = std::fs::read(&expanded)
+                        .map_err(|e| format!("Failed to read key file '{}': {e}", expanded))?;
+                    String::from_utf8_lossy(&key_data).to_string()
+                }
+            }
+        } else {
+            let key_path = private_key_path.as_deref().unwrap_or("~/.ssh/id_ed25519");
+            let expanded = expand_home_path(key_path)?;
+            let key_data = std::fs::read(&expanded)
+                .map_err(|e| format!("Failed to read key file '{}': {e}", expanded))?;
+            String::from_utf8_lossy(&key_data).to_string()
+        };
+
+        let key_pair = russh::keys::decode_secret_key(&key_str, resolved_passphrase.as_deref())
+            .map_err(|e| format!("Failed to load private key: {e}"))?;
+        let key_with_hash = wrap_key_with_preferred_hash(key_pair)?;
+        handle
+            .authenticate_publickey(username, key_with_hash)
+            .await
+            .map_err(|e| format!("Public key auth failed: {e}"))?
+    } else {
+        handle
+            .authenticate_password(username, resolved_password.as_deref().unwrap_or(""))
+            .await
+            .map_err(|e| format!("Auth failed: {e}"))?
+    };
+
+    if !auth_ok {
+        // v0.20（SSH P2）：partial-success 认证链——主方式失败后先尝试**另一因子**
+        // 再进 keyboard-interactive。背景：服务器 `AuthenticationMethods publickey,password`
+        // 时，publickey 返回 partial success（还需第二因子），但 russh 0.49 把
+        // USERAUTH_FAILURE 的 partial 标志折叠成 false（encrypted.rs:246 只读
+        // remaining_methods 不外露），调用方无法区分「方法被拒」与「还需第二因子」。
+        // 故采用顺序因子策略：PrivateKey 失败且有存密码 → 先试 password；
+        // Password 失败且有私钥 → 先试 publickey。对单因子服务器语义不变
+        // （第二因子同样被拒，最终落到原有 kbd-interactive 兜底）。
+        let second_factor_ok = if auth_method.as_deref() == Some("PrivateKey") {
+            if let Some(pwd) = resolved_password.as_deref() {
+                if !pwd.is_empty() {
+                    info!(
+                        "auth: primary method rejected for {username}@{host}:{port}, trying second factor (password)"
+                    );
+                    handle.authenticate_password(username, pwd).await
+                        .map_err(|e| format!("Second-factor password auth failed: {e}"))?
+                } else { false }
+            } else { false }
+        } else if auth_method.as_deref() == Some("Password") {
+            // Password 主方式失败 + 配有私钥：尝试 publickey 第二因子
+            if let (Some(key_str), Some(passphrase)) = (second_factor_key.as_deref(), second_factor_passphrase.as_deref()) {
+                match russh::keys::decode_secret_key(key_str, Some(passphrase)) {
+                    Ok(key_pair) => {
+                        info!(
+                            "auth: primary method rejected for {username}@{host}:{port}, trying second factor (publickey)"
+                        );
+                        let key_with_hash = wrap_key_with_preferred_hash(key_pair)?;
+                        handle.authenticate_publickey(username, key_with_hash).await
+                            .map_err(|e| format!("Second-factor publickey auth failed: {e}"))?
+                    }
+                    Err(e) => {
+                        // 第二因子私钥解析失败：如实记录后继续兜底链（不静默吞）
+                        warn!("second-factor private key parse failed: {e}");
+                        false
+                    }
+                }
+            } else { false }
+        } else { false };
+
+        if second_factor_ok {
+            info!("auth succeeded via second factor for {username}@{host}:{port}");
+            return Ok(handle);
+        }
+
+        info!(
+            "auth: password/key rejected for {username}@{host}:{port}, trying keyboard-interactive"
+        );
+        let resp = handle
+            .authenticate_keyboard_interactive_start(username, None::<String>)
+            .await
+            .map_err(|e| format!("Keyboard-interactive start failed: {e}"))?;
+        // 自动用已保存的密码响应 keyboard-interactive 的密码 prompt（debian 等服务器
+        // 默认禁用 PasswordAuthentication 但启用 KbdInteractiveAuthentication，导致
+        // password auth 失败但 keyboard-interactive 实际就是同一密码）
+        let auto_password = resolved_password.as_deref();
+        let (h, authenticated) =
+            super::keyboard::keyboard_interactive_loop(handle, resp, &pending_keyboard, &app, auto_password).await?;
+        if !authenticated {
+            warn!("auth failed (all methods) for {username}@{host}:{port}");
+            return Err("Authentication failed (password + keyboard-interactive)".to_string());
+        }
+        return Ok(h);
+    }
+
+    info!("auth succeeded for {username}@{host}:{port}");
+    Ok(handle)
 }
