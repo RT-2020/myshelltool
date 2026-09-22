@@ -1,0 +1,533 @@
+[
+  {
+    "name": "list_assets",
+    "description": "列出所有已配置的 SSH 连接资产（不含密码/凭据，仅元数据：name/host/port/username/group/status）",
+    "schema": {
+      "kind": "json",
+      "value": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  },
+  {
+    "name": "list_sessions",
+    "description": "列出当前客户端活跃的 SSH 会话清单（session_id 列表）。",
+    "schema": {
+      "kind": "json",
+      "value": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  },
+  {
+    "name": "disk_usage",
+    "description": "查询指定资产的磁盘使用情况（执行 df -h）。stdout 含 rc_df=N 行标注 df 的真实退出码（复合命令回声，勿只看首行 exit_code）",
+    "schema": {
+      "kind": "json",
+      "value": {
+        "type": "object",
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "description": "资产 ID（先用 list_assets 查看）"
+          }
+        },
+        "required": [
+          "asset_id"
+        ]
+      }
+    }
+  },
+  {
+    "name": "system_status",
+    "description": "查询指定资产的系统状态：uptime / 内存 / 负载 / top 进程。仅支持 Linux（依赖 /proc、procps 与 systemd）主机，其他平台命令会失败。stdout 含 rc_uptime/rc_free/rc_top=N 行标注各子段真实退出码（勿只看首行 exit_code，它只反映最后的 echo）；rc_top 由「先落临时文件再 head」取得，可信——top 不存在（slim 容器）时 rc_top≠0 且 stderr 带 not found",
+    "schema": {
+      "kind": "json",
+      "value": {
+        "type": "object",
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "description": "资产 ID（先用 list_assets 查看）"
+          }
+        },
+        "required": [
+          "asset_id"
+        ]
+      }
+    }
+  },
+  {
+    "name": "service_status",
+    "description": "查询指定资产上某 systemd 服务的状态（systemctl status <service>）。仅支持 Linux（依赖 /proc 与 systemd）主机，其他平台命令会失败。stdout 含 rc_systemctl=N 行标注真实退出码",
+    "schema": {
+      "kind": "json",
+      "value": {
+        "type": "object",
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "description": "资产 ID"
+          },
+          "service": {
+            "type": "string",
+            "description": "服务名，如 nginx / mysql / docker"
+          }
+        },
+        "required": [
+          "asset_id",
+          "service"
+        ]
+      }
+    }
+  },
+  {
+    "name": "resource_monitor_snapshot",
+    "description": "获取指定资产的资源监控快照（CPU负载、内存占用、磁盘空间概览）。仅支持 Linux（依赖 /proc 与 systemd）主机，其他平台命令会失败。stdout 含 rc_uptime/rc_free/rc_df=N 行标注各子命令真实退出码",
+    "schema": {
+      "kind": "json",
+      "value": {
+        "type": "object",
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "description": "资产 ID（先用 list_assets 查看）"
+          }
+        },
+        "required": [
+          "asset_id"
+        ]
+      }
+    }
+  },
+  {
+    "name": "ssh_exec",
+    "description": "在指定资产上执行任意 Shell 命令。返回结构化文本：首行 exit_code=<n>（无退出码时 exit_code=unknown），随后为 stdout（无输出时给出提示），stderr 非空时以 --- stderr --- 分隔行附后，超长自动头尾截断。拦截语义：毁灭性命令（mkfs/dd 写块设备/rm 根级删除等）直接拒绝；其余按当前拦截等级放行或需确认（等级可在 myshelltool GUI 的 MCP 面板调整）。调用时必须如实声明 intent 意图。",
+    "schema": {
+      "kind": "json",
+      "value": {
+        "type": "object",
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "description": "资产 ID（先用 list_assets 查看）"
+          },
+          "command": {
+            "type": "string",
+            "description": "要执行的 Shell 命令"
+          },
+          "intent": {
+            "type": "string",
+            "description": "AI 对此命令的真实意图说明（用于审批对照识破伪装）"
+          }
+        },
+        "required": [
+          "asset_id",
+          "command",
+          "intent"
+        ]
+      }
+    }
+  },
+  {
+    "name": "exec_many",
+    "description": "在多台资产上执行同一 Shell 命令（批量 fan-out，单次上限 64 台，并发 8 台排队）。逐目标返回结构化结果（exitCode/output/truncated/sessionSource）；单目标失败不影响其余；范围外目标记 denied。审批按命令文本一次判定放行整批。调用时必须如实声明 intent 意图。",
+    "schema": {
+      "kind": "json",
+      "value": {
+        "type": "object",
+        "properties": {
+          "asset_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "目标资产 ID 列表（先用 list_assets 查看；单次上限 64 台）"
+          },
+          "command": {
+            "type": "string",
+            "description": "在全部目标上执行的同一 Shell 命令"
+          },
+          "intent": {
+            "type": "string",
+            "description": "AI 对此命令的真实意图说明（用于审批对照识破伪装；一次审批放行整批——命令文本相同）"
+          }
+        },
+        "required": [
+          "asset_ids",
+          "command",
+          "intent"
+        ]
+      }
+    }
+  },
+  {
+    "name": "ssh_exec_async",
+    "description": "在指定资产上后台执行长时 Shell 命令（apt upgrade / mysqldump / rsync 等超过工具超时的命令），立即返回 job_id。用 job_status 轮询状态、job_output 分页读输出、job_cancel 取消（断开连接，远端命令收 SIGHUP）。job TTL 30 分钟，内存态不落盘。调用时必须如实声明 intent 意图。",
+    "schema": {
+      "kind": "json",
+      "value": {
+        "type": "object",
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "description": "目标资产 ID（先用 list_assets 查看）"
+          },
+          "command": {
+            "type": "string",
+            "description": "要执行的长时 Shell 命令"
+          },
+          "intent": {
+            "type": "string",
+            "description": "AI 对此命令的真实意图说明（用于审批对照识破伪装）"
+          }
+        },
+        "required": [
+          "asset_id",
+          "command",
+          "intent"
+        ]
+      }
+    }
+  },
+  {
+    "name": "job_status",
+    "description": "查询长任务状态（running/done/failed/cancelled + 退出码 + 输出字节数）。",
+    "schema": {
+      "kind": "json",
+      "value": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "description": "ssh_exec_async 返回的 job_id"
+          }
+        },
+        "required": [
+          "job_id"
+        ]
+      }
+    }
+  },
+  {
+    "name": "job_output",
+    "description": "分页读取长任务输出（offset/limit，单页上限 1MiB；响应带总字节数与 EOF 标记）。",
+    "schema": {
+      "kind": "json",
+      "value": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "description": "ssh_exec_async 返回的 job_id"
+          },
+          "offset": {
+            "type": "integer",
+            "description": "起始字节偏移（默认 0，响应里带 EOF 与总字节数）"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "本段字节上限（默认 65536，最大 1048576）"
+          }
+        },
+        "required": [
+          "job_id"
+        ]
+      }
+    }
+  },
+  {
+    "name": "job_cancel",
+    "description": "取消长任务（断开其连接，远端命令将收 SIGHUP）。状态由执行侧收敛为 cancelled，用 job_status 确认。",
+    "schema": {
+      "kind": "json",
+      "value": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "description": "ssh_exec_async 返回的 job_id"
+          }
+        },
+        "required": [
+          "job_id"
+        ]
+      }
+    }
+  },
+  {
+    "name": "journal_query",
+    "description": "查询指定资产的 systemd 日志（journalctl 结构化：unit/since/until/grep/limit 参数固化在服务端，跨发行版口径统一——--no-pager、-o short-iso、env LC_ALL=C；非 systemd 系统返回 127 与降级指引）。仅支持 systemd 发行版。",
+    "schema": {
+      "kind": "missing-fn",
+      "text": "super::registry_schemas::schema_journal_query"
+    }
+  },
+  {
+    "name": "port_listen",
+    "description": "查询指定资产的监听端口（ss → netstat → lsof 三级降级链固化在服务端；输出首行标注实际使用的工具；env LC_ALL=C 锁 locale；无任何可用工具时返回 127）。",
+    "schema": {
+      "kind": "missing-fn",
+      "text": "super::registry_schemas::schema_port_listen"
+    }
+  },
+  {
+    "name": "process_list",
+    "description": "查询指定资产的进程列表（ps POSIX 形态：pid/ppid/user/%cpu/%mem/rss/stat/etime/comm；--no-headers 是 procps 扩展，BSD 自动降级带表头形态——子 shell 包裹保证两条路径都进排序管道；POSIX sort -k -nr 数值排序 + head 截前 N；sortBy=cpu|mem 枚举白名单）。",
+    "schema": {
+      "kind": "missing-fn",
+      "text": "super::registry_schemas::schema_process_list"
+    }
+  },
+  {
+    "name": "file_search",
+    "description": "按条件查找远端文件（find POSIX 形态：name 通配/minSizeMb/mtimeDays 过滤；**不用 GNU 专有格式化输出选项**（BusyBox/BSD 事故源，fact-guards 同类规则）；结果上限服务端拼进命令（默认 100 最大 1000，防深目录炸上下文）；需要元数据时对少量结果逐个 sftp_stat）。",
+    "schema": {
+      "kind": "missing-fn",
+      "text": "super::registry_schemas::schema_file_search"
+    }
+  },
+  {
+    "name": "service_control",
+    "description": "控制指定资产上的 systemd 服务生命周期（start/stop/restart/reload；action 枚举白名单；执行后自动补 is-active 确认最终态）。此操作改变服务运行状态，按拦截等级判定：Minimal 直接执行记日志 / Strict 弹窗确认。",
+    "schema": {
+      "kind": "missing-fn",
+      "text": "super::registry_schemas::schema_service_control"
+    }
+  },
+  {
+    "name": "tunnel_list",
+    "description": "列出当前隧道的清单与状态（kind: local/remote/dynamic；active/error 字段呈现异步失败）。",
+    "schema": {
+      "kind": "missing-fn",
+      "text": "super::registry_schemas::schema_tunnel_list"
+    }
+  },
+  {
+    "name": "tunnel_create",
+    "description": "建立 remote 端口转发隧道（走资产专用连接，复用 GUI 同一路径；MVP 仅 remote——local/dynamic 需活跃会话请在 GUI 建）。建立端口转发 = 网络暴露面变更，Strict 档需确认。",
+    "schema": {
+      "kind": "missing-fn",
+      "text": "super::registry_schemas::schema_tunnel_create"
+    }
+  },
+  {
+    "name": "sftp_list",
+    "description": "列出指定资产远程目录中的文件与子目录。返回 JSON 结构列表，包含名称、路径、类型（file/directory/symlink）、字节大小、修改时间与权限。",
+    "schema": {
+      "kind": "json",
+      "value": {
+        "type": "object",
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "description": "目标资产 ID（由 list_assets 获取）"
+          },
+          "path": {
+            "type": "string",
+            "description": "远程目录路径，例如 /var/log 或 /home/deploy。留空或传入 . 表示默认用户根目录。"
+          }
+        },
+        "required": [
+          "asset_id"
+        ]
+      }
+    }
+  },
+  {
+    "name": "sftp_read_file",
+    "description": "读取指定资产上的远程文本文件（v0.20 起支持分页：默认单次 256KB，超限不再报错，响应带 nextOffset 续读；单次上限可传 maxBytes 最高 4MB）。适合配置排查与代码审计（敏感路径如 /etc/shadow、SSH 私钥需在客户端确认；二进制文件请改用 sftp_download）。",
+    "schema": {
+      "kind": "json",
+      "value": {
+        "type": "object",
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "description": "目标资产 ID"
+          },
+          "path": {
+            "type": "string",
+            "description": "待读取的远程文件绝对路径或相对路径，如 /etc/hosts 或 /var/log/syslog"
+          },
+          "offset": {
+            "type": "integer",
+            "description": "起始字节偏移（默认 0）。大文件首读被截断时，响应里会给出 totalSize 与 nextOffset，续读传它即可（每次调用照常过敏感路径审批）"
+          },
+          "maxBytes": {
+            "type": "integer",
+            "description": "单次读取字节上限（默认 262144，最大 4194304）。超限不再报错——返回前 maxBytes 字节 + 续读提示"
+          }
+        },
+        "required": [
+          "asset_id",
+          "path"
+        ]
+      }
+    }
+  },
+  {
+    "name": "read_output",
+    "description": "分页取回 ssh_exec 被截断的完整输出（v0.20/B2）：截断提示里给出的 cursor 在 10 分钟内可按 offset/limit 分段取回原文。只读缓存，不读文件。",
+    "schema": {
+      "kind": "json",
+      "value": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "description": "ssh_exec 截断提示里给出的取回凭据（10 分钟内有效）"
+          },
+          "offset": {
+            "type": "integer",
+            "description": "起始字节偏移（默认 0，响应里带下一段 offset）"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "本段字节上限（默认 65536，最大 1048576）"
+          }
+        },
+        "required": [
+          "cursor"
+        ]
+      }
+    }
+  },
+  {
+    "name": "sftp_write_file",
+    "description": "向指定资产写入远程文本文件。采用原子临时文件替换机制，单次上限 1MB。此操作涉及远程文件创建或覆盖，按拦截等级判定：Minimal 档直接执行并记执行日志，Strict 档需在客户端确认。调用时必须如实声明 intent 意图。",
+    "schema": {
+      "kind": "json",
+      "value": {
+        "type": "object",
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "description": "目标资产 ID"
+          },
+          "path": {
+            "type": "string",
+            "description": "待写入的远程目标文件路径，如 /tmp/config.json"
+          },
+          "content": {
+            "type": "string",
+            "description": "文件文本正文"
+          },
+          "intent": {
+            "type": "string",
+            "description": "写入或修改文件的操作意图"
+          }
+        },
+        "required": [
+          "asset_id",
+          "path",
+          "content",
+          "intent"
+        ]
+      }
+    }
+  },
+  {
+    "name": "sftp_upload",
+    "description": "将本机文件流式上传至远程服务器。采用分块传输、临时文件落地原子替换与 SHA256 完整性校验。适用于大文件与二进制包传输。此操作涉及远程文件覆盖，按拦截等级判定：Minimal 档直接执行并记执行日志，Strict 档需在客户端确认。调用时必须声明 intent 意图。",
+    "schema": {
+      "kind": "json",
+      "value": {
+        "type": "object",
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "description": "目标资产 ID"
+          },
+          "local_path": {
+            "type": "string",
+            "description": "本机源文件绝对路径"
+          },
+          "remote_path": {
+            "type": "string",
+            "description": "远程目标文件绝对路径"
+          },
+          "intent": {
+            "type": "string",
+            "description": "上传文件的操作意图"
+          }
+        },
+        "required": [
+          "asset_id",
+          "local_path",
+          "remote_path",
+          "intent"
+        ]
+      }
+    }
+  },
+  {
+    "name": "sftp_download",
+    "description": "将远程服务器上的文件流式下载至本机。采用分块传输与 SHA256 完整性校验。本机系统受保护核心目录恒拒；其余路径按拦截等级判定：Minimal 档直接执行并记执行日志，Strict 档需在客户端确认。调用时必须声明 intent 意图。",
+    "schema": {
+      "kind": "json",
+      "value": {
+        "type": "object",
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "description": "目标资产 ID"
+          },
+          "remote_path": {
+            "type": "string",
+            "description": "远程源文件绝对路径"
+          },
+          "local_path": {
+            "type": "string",
+            "description": "本机保存的目标文件绝对路径"
+          },
+          "intent": {
+            "type": "string",
+            "description": "下载文件的操作意图"
+          }
+        },
+        "required": [
+          "asset_id",
+          "remote_path",
+          "local_path",
+          "intent"
+        ]
+      }
+    }
+  },
+  {
+    "name": "sftp_remove",
+    "description": "删除指定资产上的远程文件或目录。高危破坏性操作：系统根目录与顶级核心目录删除恒拒；其余路径按拦截等级判定——Minimal 档直接执行并记执行日志，Strict 档需在客户端确认。若删除非空目录，必须显式声明 recursive=true。调用时必须如实声明 intent 意图。",
+    "schema": {
+      "kind": "json",
+      "value": {
+        "type": "object",
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "description": "目标资产 ID"
+          },
+          "path": {
+            "type": "string",
+            "description": "待删除的远程文件或目录路径"
+          },
+          "recursive": {
+            "type": "boolean",
+            "description": "是否递归删除非空目录（默认 false）"
+          },
+          "intent": {
+            "type": "string",
+            "description": "删除操作的意图"
+          }
+        },
+        "required": [
+          "asset_id",
+          "path",
+          "intent"
+        ]
+      }
+    }
+  }
+]

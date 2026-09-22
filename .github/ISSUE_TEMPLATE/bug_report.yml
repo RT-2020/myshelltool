@@ -1,0 +1,50 @@
+name: 问题反馈
+description: 报告缺陷或异常行为（新功能建议请用 Discussions）
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！为让问题可复现，请尽量填写以下字段。
+        **诊断信息**：打开应用 → 设置（左上齿轮）→ 关于与更新 → 「复制诊断信息」，粘贴到下方诊断区块。
+        （该信息不含任何凭据与 MCP token，可放心公开。）
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 发生了什么？
+      description: 预期行为 vs 实际行为；复现步骤（1. 2. 3.）
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 诊断信息
+      description: 设置 → 关于与更新 → 「复制诊断信息」的输出（含版本/系统/日志尾部）
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 功能区域
+      options:
+        - SSH 连接 / 终端
+        - 文件管理 / 传输（SFTP）
+        - 隧道
+        - 资产同步（Gist）
+        - MCP（AI 工具）
+        - OpenSSH config 导入 / 跳板机
+        - 内置编辑器
+        - 资源监控
+        - 界面 / 其他
+    validations:
+      required: true
+  - type: input
+    id: target-os
+    attributes:
+      label: 目标服务器系统（如涉及 SSH 连接问题）
+      placeholder: 如 Ubuntu 22.04 / CentOS 7 / Alpine（BusyBox）/ FreeBSD
+  - type: textarea
+    id: logs
+    attributes:
+      label: 其他日志 / 截图
+      description: 可选。MCP 相关问题可附「MCP 面板 → 执行日志」相关条目（命令已自动脱敏）。

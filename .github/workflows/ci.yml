@@ -44,9 +44,111 @@ jobs:
       - name: Frontend build (Vite)
         run: npm run build
 
+      - name: Core unit tests
+        run: npm run test:core
+
       - name: Rust type check (cargo check)
         working-directory: src-tauri
         run: cargo check
 
+      # 依赖漏洞可见性（v0.20/S6）：非阻断报告（生成 cargo-audit 报告 + npm 高危清单）。
+      # 不阻断 = 只暴露不挡门；发现高危时按 Dependabot PR / 升级 runbook 处理。
+      - name: cargo audit (non-blocking report)
+        continue-on-error: true
+        run: |
+          cargo install cargo-audit --locked 2>/dev/null || true
+          cargo audit --file src-tauri/Cargo.lock 2>&1 | tee cargo-audit.log || true
+          cargo audit --file crates/myshelltool-core/Cargo.lock 2>&1 | tee core-audit.log || true
+
+      - name: npm audit high (non-blocking report)
+        continue-on-error: true
+        run: npm audit --audit-level=high || true
+
+  # UI 回归测试（v0.19 起进 CI）：5 套 Playwright 脚本全量串行。
+  # public 仓库标准 runner 免费不限分钟（GitHub 官方计费政策），Windows runner
+  # 与本地开发环境一致，避免跨平台浏览器差异引入的 flaky。
+  ui-tests:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install JS deps
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium
+
+      - name: Start Vite dev server
+        shell: bash
+        # 后台驻留供后续步骤使用；日志落盘供失败时上传
+        run: npm run dev > vite-dev.log 2>&1 &
+
+      - name: Run UI tests
+        run: node scripts/wait-for-dev.mjs && npm run test:ui
+
+      - name: Capture failure screenshot
+        if: failure()
+        continue-on-error: true
+        run: node scripts/ci-failure-screenshot.mjs
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-test-failure
+          path: |
+            vite-dev.log
+            tests/screenshots/
+          if-no-files-found: ignore
+
+  # 跨平台可移植性护栏（v0.20/N1）：只守门，不发布非 Windows 产物。
+  # public 仓库标准 runner 免费（GitHub 官方计费政策）。两件事：
+  # ① core 测试 + src-tauri cargo check 在 Linux/macOS 编译通过（多端意向的
+  #    持续验证——DPAPI 已 cfg(windows) 隔离、native-tls 走平台 TLS）；
+  # ② src-tauri 的 #[cfg(test)]（mcp_auth 之外的安全判据：execution_log serde
+  #    兼容、output_cache、session_pool 等）在 Linux 上**真跑**——本机
+  #    Windows 工具链 gcc 损坏跑不了测试二进制（AGENTS.md §9），这里补上。
+  portability:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri -> target
+            crates/myshelltool-core -> crates/myshelltool-core/target
+
+      # Tauri 2 Linux 系统依赖（webkit2gtk-4.1 栈）；macOS 无需额外包
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libglib2.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+
       - name: Core unit tests
-        run: npm run test:core
+        run: cargo test --manifest-path crates/myshelltool-core/Cargo.toml
+
+      - name: src-tauri compile check
+        working-directory: src-tauri
+        run: cargo check
+
+      - name: src-tauri tests (real run)
+        working-directory: src-tauri
+        run: cargo test
