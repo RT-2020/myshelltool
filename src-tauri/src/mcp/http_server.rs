@@ -23,13 +23,30 @@
 //! （AGENTS.md §8 安全红线）。实际监听地址写入 `<data_dir>/mcp-endpoint.json`，
 //! 供前端展示 + 用户配置 host。
 //!
+//! ## 鉴权（v0.20，A1：URL 内嵌 token）
+//!
+//! 「只监听 127.0.0.1」在多进程桌面上不是安全边界：本机任意进程（含同机其他
+//! Windows 用户）都能连回环端口，而工具面含 ssh_exec。因此入口加 token：
+//! 启动时生成 256-bit CSPRNG token，路由形态 `/mcp/<token>`（同时兼容
+//! `Authorization: Bearer` header），无 token 一律 401——不区分「路径错」与
+//! 「token 错」，不做探测预言机。判定逻辑在 `myshelltool_core::mcp_auth`
+//! （安全判据 core 真跑）。token 只写进 mcp-endpoint.json（authToken 字段）
+//! 与内存（AppState 共享 Arc<RwLock>），**绝不进日志**（凭据红线延伸）；
+//! 拒绝日志只记脱敏后的路径摘要（redacted_path_summary）。
+//!
 //! ## 生命周期
 //!
 //! 由 lib.rs setup 经 `tauri::async_runtime::spawn` 拉起，持有 CancellationToken；
 //! GUI 退出时取消 token 触发 axum graceful shutdown。无独立子进程，无孤儿风险。
 
+use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::{Arc, RwLock};
 
+use axum::extract::{ConnectInfo, Request};
+use axum::http::StatusCode;
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService,
     session::local::LocalSessionManager,
@@ -56,9 +73,31 @@ const MAX_PORT_RETRIES: u16 = 10;
 /// 实际监听地址（写入 mcp-endpoint.json + 返回前端）。
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct McpEndpoint {
+    /// 基础 URL（**不含 token**，形如 http://127.0.0.1:41235/mcp）——
+    /// 日志/状态展示用它；含 token 的完整 URL 由调用方现场拼接，避免 token 扩散。
     pub url: String,
     pub host: String,
     pub port: u16,
+    /// v0.20（A1）：入口鉴权 token。`#[serde(default)]` 兼容旧版文件（缺字段读出
+    /// 空串 → core::mcp_auth fail-closed 全拒；server 启动后重写本文件补齐）。
+    #[serde(default, rename = "authToken")]
+    pub auth_token: String,
+}
+
+/// 生成 256-bit 入口鉴权 token（CSPRNG → base64url 无 padding，43 字符）。
+pub fn generate_token() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    myshelltool_core::mcp_auth::base64url_nopad(&bytes)
+}
+
+/// 把基础 URL 与 token 拼成含 token 的完整接入 URL（面板复制 / 探测用）。
+pub fn with_token(base_url: &str, token: &str) -> String {
+    if token.is_empty() {
+        return base_url.to_string();
+    }
+    format!("{}/{}", base_url.trim_end_matches('/'), token)
 }
 
 /// 解析起始监听端口：`MYSHELLTOOL_MCP_PORT` 优先，其次按构建形态取默认。
@@ -107,16 +146,68 @@ async fn bind_with_port_fallback() -> Result<(tokio::net::TcpListener, u16), std
 }
 
 /// 把实际监听地址写入 `<data_dir>/mcp-endpoint.json`（前端读它展示 + 用户配置 host）。
-fn persist_endpoint(data_dir: &Path, endpoint: &McpEndpoint) {
+/// v0.20：返回 Result——mcp_reset_token 命令必须感知落盘失败（写不出去却宣称
+/// 重置成功 = 用户拿旧 token 的 host 全部失灵且无从归因）；启动路径仍是 warn 不致命。
+pub fn persist_endpoint(data_dir: &Path, endpoint: &McpEndpoint) -> Result<(), String> {
     let path = data_dir.join("mcp-endpoint.json");
-    match serde_json::to_string_pretty(endpoint) {
-        Ok(json) => {
-            if let Err(e) = std::fs::write(&path, json) {
-                log::warn!("MCP HTTP: failed to write {}: {e}", path.display());
+    let json = serde_json::to_string_pretty(endpoint)
+        .map_err(|e| format!("序列化 endpoint 失败: {e}"))?;
+    std::fs::write(&path, json).map_err(|e| format!("写入 {} 失败: {e}", path.display()))
+}
+
+/// 鉴权中间件（A1）：URL 路径内嵌 token 或 Bearer header 二选一，统一 401。
+/// 判定委托 core::mcp_auth（安全判据单测在 core）；这里只做 HTTP 形态适配：
+/// AllowRewrite 时把 URI 的 token 段剥掉再进路由（query 保留）。
+async fn mcp_auth_gate(
+    axum::extract::State(auth): axum::extract::State<Arc<RwLock<String>>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    // 读锁只取快照立即释放（短临界区，std RwLock 不跨 await）；锁中毒 → 空串
+    // → core decide fail-closed 全拒（宁可不可用，不裸奔）。
+    let token = auth.read().map(|g| g.clone()).unwrap_or_default();
+    let bearer = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    let path = req.uri().path().to_string();
+
+    match myshelltool_core::mcp_auth::decide(&path, bearer, &token) {
+        myshelltool_core::mcp_auth::McpAuthDecision::Allow => next.run(req).await,
+        myshelltool_core::mcp_auth::McpAuthDecision::AllowRewrite(new_path) => {
+            // 剥掉 token 段再进 nest_service（query 原样保留）。重写失败（非法
+            // URI 字符）按保守处理 = 拒绝，不放行形态不明的请求。
+            let pq = match req.uri().query() {
+                Some(q) => format!("{new_path}?{q}"),
+                None => new_path,
+            };
+            match pq.parse::<axum::http::Uri>() {
+                Ok(uri) => {
+                    let mut req = req;
+                    *req.uri_mut() = uri;
+                    next.run(req).await
+                }
+                Err(_) => deny(&path, req.extensions().get::<ConnectInfo<SocketAddr>>()),
             }
         }
-        Err(e) => log::warn!("MCP HTTP: failed to serialize endpoint: {e}"),
+        myshelltool_core::mcp_auth::McpAuthDecision::Deny => {
+            deny(&path, req.extensions().get::<ConnectInfo<SocketAddr>>())
+        }
     }
+}
+
+/// 统一 401：不区分「路径错」与「token 错」（防探测预言机）。日志只记脱敏路径
+/// 摘要 + 来源地址——请求路径可能含猜错的 token，整段不落盘。
+fn deny(path: &str, peer: Option<&ConnectInfo<SocketAddr>>) -> Response {
+    let summary = myshelltool_core::mcp_auth::redacted_path_summary(path);
+    match peer {
+        Some(ConnectInfo(addr)) => {
+            log::warn!("MCP HTTP 拒绝未授权请求：{summary}，来源 {addr}")
+        }
+        None => log::warn!("MCP HTTP 拒绝未授权请求：{summary}"),
+    }
+    StatusCode::UNAUTHORIZED.into_response()
 }
 
 /// 启动 MCP Streamable HTTP server（GUI 进程内，阻塞运行直到 CancellationToken 取消）。
@@ -128,6 +219,7 @@ pub async fn run_http_server(
     ctx: McpToolContext,
     data_dir: std::path::PathBuf,
     shutdown_token: CancellationToken,
+    auth_token: Arc<RwLock<String>>,
 ) {
     let (listener, port) = match bind_with_port_fallback().await {
         Ok(v) => v,
@@ -141,9 +233,13 @@ pub async fn run_http_server(
         url: format!("http://{DEFAULT_BIND_HOST}:{port}/mcp"),
         host: DEFAULT_BIND_HOST.to_string(),
         port,
+        auth_token: auth_token.read().map(|g| g.clone()).unwrap_or_default(),
     };
-    persist_endpoint(&data_dir, &endpoint);
-    log::info!("MCP HTTP server serving at {}", endpoint.url);
+    // 启动期落盘失败 warn 不致命（面板会显示「server 未启动」态），但绝不日志 token。
+    if let Err(e) = persist_endpoint(&data_dir, &endpoint) {
+        log::warn!("MCP HTTP: {e}");
+    }
+    log::info!("MCP HTTP server serving at {}（已启用 token 鉴权）", endpoint.url);
 
     // handler factory：每个 MCP 会话独立构造一个 MyshellToolMcpServer（ctx 是 Clone 的 Arc）。
     // LocalSessionManager = 单进程内存会话管理（不做跨进程/分布式会话）。
@@ -152,10 +248,15 @@ pub async fn run_http_server(
         LocalSessionManager::default().into(),
         StreamableHttpServerConfig::default().with_cancellation_token(shutdown_token.child_token()),
     );
-    let router = axum::Router::new().nest_service("/mcp", service);
+    let router = axum::Router::new()
+        .nest_service("/mcp", service)
+        // 兜底同样 401：与鉴权拒绝同码同体，不区分「路径不存在」与「token 错」
+        .fallback(|| async { StatusCode::UNAUTHORIZED })
+        .layer(middleware::from_fn_with_state(auth_token, mcp_auth_gate));
 
     // axum::serve 在 listener 上跑直到 graceful shutdown（shutdown_token 取消时）。
-    if let Err(e) = axum::serve(listener, router)
+    // ConnectInfo 注入让 401 日志能记来源地址。
+    if let Err(e) = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(async move { shutdown_token.cancelled().await })
         .await
     {

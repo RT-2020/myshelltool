@@ -50,7 +50,8 @@ pub struct ServerInfoDto {
 
 /// 向 MCP HTTP endpoint 发 initialize 请求做健康检查。
 ///
-/// endpoint 形如 `http://127.0.0.1:41235/mcp`。成功返回 ok=true + server_info，
+/// endpoint 形如 `http://127.0.0.1:41235/mcp/<token>`（v0.20/A1 起调用方负责
+/// 带鉴权 token，否则中间件 401，探测恒失败）。成功返回 ok=true + server_info，
 /// 失败按分类码返回（endpoint_not_found=没读到 endpoint 配置 / http_error=连不上 /
 /// timeout / bad_protocol=响应非合法 MCP 帧）。
 pub async fn probe_endpoint(endpoint: &str) -> McpProbeResult {

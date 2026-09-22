@@ -53,6 +53,25 @@ pub struct ExecutionLogEntry {
     pub outcome: String,
     /// 输出摘要（头 250 + 尾 250 字符，中间截断标记）。
     pub output_summary: String,
+    /// 【v0.20/A4】工具声明的风险等级（registry RiskClass：readonly/write/destructive）。
+    #[serde(default)]
+    pub risk: String,
+    /// 【v0.20/A4】命中的审批策略分支（registry Policy：shell_exec/remote_write/…）。
+    #[serde(default)]
+    pub policy: String,
+    /// 【v0.20/A4】执行段耗时毫秒（审批等待不计入；未执行=0）。
+    #[serde(default)]
+    pub duration_ms: u64,
+    /// 【v0.20/A4】会话来源：new=新建 headless 连接（当前恒为此值；
+    /// B3 会话池落地后还有 gui/pool）。
+    #[serde(default)]
+    pub session_source: String,
+    /// 【v0.20/B1】授权范围判定结果（allowed / deny_all / denied_id /
+    /// denied_no_match / denied_local_fs）；未启用 scope 的工具与旧日志为空串。
+    #[serde(default)]
+    pub scope_result: String,
+    // truncated（B2 输出契约）随该阶段加入——当前截断是文本内嵌前缀，
+    // 提前加字段只能靠形状探测填空（形态 E）。
 }
 
 /// decision 字段取值（审批决策路径）。
@@ -78,6 +97,10 @@ pub mod decision {
     pub const REJECTED: &str = "rejected";
     /// GUI 弹窗 60s 超时。
     pub const TIMEOUT: &str = "timeout";
+    /// 【v0.20/B1】授权范围拒绝（资产在 scope 外 / deny_all / 本机 FS 未开放）。
+    /// 与审批链的 REJECTED 分开——运维看日志时要能区分「用户拒绝了确认」
+    /// 与「配置的边界拒绝了访问」。
+    pub const SCOPE_DENIED: &str = "scope_denied";
 }
 
 /// outcome 字段取值（执行结果）。
@@ -329,6 +352,11 @@ mod tests {
             decision: decision::AUTO_APPROVED.to_string(),
             outcome: outcome::OK.to_string(),
             output_summary: "hi".to_string(),
+            risk: "destructive".to_string(),
+            policy: "shell_exec".to_string(),
+            duration_ms: 12,
+            session_source: "new".to_string(),
+            scope_result: "allowed".to_string(),
         }
     }
 
@@ -372,6 +400,60 @@ mod tests {
         assert_eq!(store.entries.len(), 1);
         assert_eq!(store.last_cleanup_ms, 10_000);
     }
+
+    // ─── A4（v0.20）：新字段的 serde 兼容与凭据红线回归 ───
+
+    /// 旧日志文件（无 risk/policy/durationMs/sessionSource 字段）必须能读：
+    /// #[serde(default)] 兜底为空串/0，历史审计数据不因升级而丢失。
+    #[test]
+    fn legacy_entry_without_a4_fields_deserializes() {
+        let legacy = serde_json::json!({
+            "id": "old-1",
+            "timestampMs": 1700000000000u64,
+            "level": "strict",
+            "tool": "ssh_exec",
+            "assetId": "a1",
+            "assetName": "旧机器",
+            "host": "10.0.0.1",
+            "port": 22,
+            "username": "root",
+            "command": "df -h", // fact-guard:allow locale-pinned-df serde 兼容测试的样例数据，非真实执行命令
+            "intent": "巡检",
+            "decision": "auto_approved",
+            "outcome": "ok",
+            "outputSummary": "..."
+        });
+        let entry: ExecutionLogEntry =
+            serde_json::from_value(legacy).expect("旧格式条目必须可反序列化");
+        assert_eq!(entry.risk, "");
+        assert_eq!(entry.policy, "");
+        assert_eq!(entry.duration_ms, 0);
+        assert_eq!(entry.session_source, "");
+    }
+
+    /// 新字段序列化为 camelCase（前端 McpExecutionLogEntry 消费口径）。
+    #[test]
+    fn a4_fields_serialize_camel_case() {
+        let json = serde_json::to_value(sample_entry(1, "x")).unwrap();
+        assert!(json.get("durationMs").is_some(), "durationMs 字段缺失");
+        assert!(json.get("sessionSource").is_some(), "sessionSource 字段缺失");
+        assert_eq!(json.get("risk").and_then(|v| v.as_str()), Some("destructive"));
+        assert_eq!(json.get("policy").and_then(|v| v.as_str()), Some("shell_exec"));
+    }
+
+    /// 凭据红线回归：A4 新字段不含任何凭据位（risk/policy/duration/source
+    /// 均为枚举/数值，设计上无秘密；此测试锁住「未来给这些字段加自由文本」的意外）。
+    #[test]
+    fn a4_fields_contain_no_secret_by_design() {
+        let entry = sample_entry(1, "x");
+        for field in [&entry.risk, &entry.policy, &entry.session_source] {
+            let lower = field.to_lowercase();
+            assert!(
+                !lower.contains("password") && !lower.contains("secret") && !lower.contains("token"),
+                "A4 字段出现凭据类词形：{field}"
+            );
+        }
+    }
 }
 
 // ─── v2.8 第五轮自 server.rs 迁入：执行日志组装三件（load_asset_meta/append/extract）───
@@ -403,6 +485,16 @@ pub(crate) fn load_asset_meta(ctx: &McpToolContext, asset_id: &str) -> (String, 
     }
 }
 
+/// A4/B1 附加字段（risk/policy/duration/session_source/scope_result），
+/// 由 server.rs 从 registry spec + 执行段计时 + scope 预判构造。
+pub(crate) struct LogExtras {
+    pub(crate) risk: &'static str,
+    pub(crate) policy: &'static str,
+    pub(crate) duration_ms: u64,
+    pub(crate) session_source: &'static str,
+    pub(crate) scope_result: &'static str,
+}
+
 /// 落一条执行日志（append_entry 内部 best-effort，失败不阻断工具调用）。
 pub(crate) async fn append_execution_log(
     ctx: &McpToolContext,
@@ -411,6 +503,7 @@ pub(crate) async fn append_execution_log(
     decision_str: &str,
     outcome_str: &str,
     output_text: &str,
+    extras: &LogExtras,
 ) {
     let (asset_name, host, port, username) = load_asset_meta(ctx, &scope.asset_id);
     let entry = ExecutionLogEntry {
@@ -431,6 +524,11 @@ pub(crate) async fn append_execution_log(
         intent: scope.intent.clone(),
         decision: decision_str.to_string(),
         outcome: outcome_str.to_string(),
+        risk: extras.risk.to_string(),
+        policy: extras.policy.to_string(),
+        duration_ms: extras.duration_ms,
+        session_source: extras.session_source.to_string(),
+        scope_result: extras.scope_result.to_string(),
         // 输出同样脱敏（v2.6 backlog #5）：远端 stdout 可能含口令——`env` 输出的
         // `GITHUB_TOKEN=…`、`show create user` 的 `IDENTIFIED BY '<明文>'` 曾原样
         // 进摘要。先脱敏再截断：先截断会把 KEY=value 形态切坏、遮不全。

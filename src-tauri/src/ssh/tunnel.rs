@@ -368,10 +368,16 @@ async fn start_remote_forward(
         credential_id: asset.credential_id.clone(),
         auth_method: Some(format!("{:?}", asset.auth_method)),
         private_key_path: asset.private_key_path.clone(),
+        // v0.20（B0）：凭据库托管私钥内容（与 GUI 同优先级：SecretStore 优先、文件兜底）
+        private_key_credential_id: asset.private_key_credential_id.clone(),
         passphrase: None,
         passphrase_credential_id: asset.passphrase_credential_id.clone(),
         secret_store_dir,
-        known_hosts_path,
+        known_hosts_path,        // v0.20（SSH P0-2）：跳板透传
+        jump_host: crate::ssh::jump_host_of(asset).map(str::to_string),
+        connect_timeout_secs: asset.connect_timeout_secs,
+        keepalive_interval_secs: asset.keepalive_interval_secs,
+        asset_store_path: Some(state.asset_store_path.clone()),
     };
     let mut handle = connect_headless_with(&params, handler)
         .await

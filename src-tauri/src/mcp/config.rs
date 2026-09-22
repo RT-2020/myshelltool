@@ -49,32 +49,41 @@ impl McpInterceptLevel {
     }
 }
 
-/// MCP 配置（目前只有拦截等级一个字段，后续扩展在此追加）。
+/// MCP 配置（v0.20/B1 起：拦截等级 + 授权范围两个维度）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct McpConfig {
     pub level: McpInterceptLevel,
+    /// v0.20（B1）：授权范围（哪些资产可被 MCP 触及 / 是否允许本机 FS）。
+    /// `#[serde(default)]` 兼容旧文件（无 scope 字段 = 不限制，零行为变更）。
+    #[serde(default)]
+    pub scope: myshelltool_core::mcp_scope::McpScope,
 }
 
 impl Default for McpConfig {
     fn default() -> Self {
         Self {
             level: McpInterceptLevel::Minimal,
+            scope: myshelltool_core::mcp_scope::McpScope::unrestricted(),
         }
     }
 }
 
 impl McpConfig {
-    /// 保守档（Strict）：配置**不可信**时的取值。
+    /// 保守档（Strict + deny_all）：配置**不可信**时的取值。
     ///
-    /// 与 `Default::default()`（Minimal）语义刻意分离：Minimal 是「文件不存在 =
-    /// 用户从未表达过偏好」的产品默认值，属应用自身契约；而 mcp-config.json
-    /// 存在却读不出来/解析不了，说明用户**表达过**偏好但我们读不到它——
-    /// 此时回落到零审批的 Minimal 等于替用户把「非白名单一律确认」静默降级为
-    /// 「直接执行」，是 fail-open（形态 C 静默兜底）。不可信时取更严的一档，
-    /// 用户若要宽松档可在面板里重新选择（那时配置已被重写为可读）。
+    /// 与 `Default::default()`（Minimal + 不限制）语义刻意分离：Minimal 是
+    /// 「文件不存在 = 用户从未表达过偏好」的产品默认值，属应用自身契约；而
+    /// mcp-config.json 存在却读不出来/解析不了，说明用户**表达过**偏好但我们
+    /// 读不到它——此时回落到零审批的 Minimal 等于替用户把「非白名单一律确认」
+    /// 静默降级为「直接执行」，是 fail-open（形态 C 静默兜底）。不可信时：
+    /// - level 取更严的 Strict（非白名单一律确认）；
+    /// - scope 取 deny_all（B1：等级收紧但资产面全开仍是一半的敞口——
+    ///   拒绝一切资产访问，用户在面板重新配置后恢复）。
+    /// 代价是 MCP 暂时完全不可用，故 unusable_config 的日志与面板提示必须明确。
     pub fn strict() -> Self {
         Self {
             level: McpInterceptLevel::Strict,
+            scope: myshelltool_core::mcp_scope::McpScope::deny_all(),
         }
     }
 }
@@ -137,11 +146,11 @@ fn unusable_config(path: &Path, reason: &str) -> McpConfig {
     ));
     match std::fs::rename(path, &quarantine) {
         Ok(()) => log::error!(
-            "mcp-config.json 不可用（{reason}），已隔离到 {}；本次运行取保守档 Strict（非白名单命令一律人工确认），请在 MCP 面板重新选择拦截等级",
+            "mcp-config.json 不可用（{reason}），已隔离到 {}；本次运行取保守档（Strict + 拒绝一切资产访问），请在 MCP 面板重新配置拦截等级与授权范围",
             quarantine.display()
         ),
         Err(rename_err) => log::error!(
-            "mcp-config.json 不可用（{reason}），隔离改名失败: {rename_err}；本次运行取保守档 Strict，请在 MCP 面板重新选择拦截等级"
+            "mcp-config.json 不可用（{reason}），隔离改名失败: {rename_err}；本次运行取保守档（Strict + 拒绝一切资产访问），请在 MCP 面板重新配置"
         ),
     }
     McpConfig::strict()

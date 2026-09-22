@@ -9,7 +9,7 @@ use super::*;
 /// 任务可 abort；取消靠这面共享旗标——循环在块边界（≤1 MiB）看到即停。
 /// 条目必须带 session_id：cleanup_session_tables 据此把「本会话的在途上传」
 /// 全部置旗并摘除，避免会话销毁后旗标条目泄漏（transfer_id 不复用时无人再删）。
-pub struct UploadCancelEntry {
+pub struct TransferCancelEntry {
     /// 该传输所属的 SSH 会话，`cleanup_session_tables` 据此筛出本会话的在途上传。
     pub session_id: String,
     /// 取消旗标：sftp_upload_cancel / 会话清理置位，上传循环逐块检查。
@@ -298,7 +298,7 @@ pub async fn sftp_upload_from_file(
     let flag = Arc::new(AtomicBool::new(false));
     {
         let ssh_mgr = state.ssh_sessions.lock().await;
-        let mut cancels = ssh_mgr.upload_cancels.lock().await;
+        let mut cancels = ssh_mgr.transfer_cancels.lock().await;
         if cancels.contains_key(&transfer_id) {
             return Err(format!("transfer_id {transfer_id} already in progress"));
         }
@@ -307,7 +307,7 @@ pub async fn sftp_upload_from_file(
         }
         cancels.insert(
             transfer_id.clone(),
-            UploadCancelEntry {
+            TransferCancelEntry {
                 session_id: session_id.clone(),
                 flag: flag.clone(),
             },
@@ -395,7 +395,7 @@ pub async fn sftp_upload_from_file(
     // cleanup_session_tables 摘除（会话断开）时不误删后续同 id 的新传输。
     {
         let ssh_mgr = state.ssh_sessions.lock().await;
-        let mut cancels = ssh_mgr.upload_cancels.lock().await;
+        let mut cancels = ssh_mgr.transfer_cancels.lock().await;
         if cancels
             .get(&transfer_id)
             .is_some_and(|entry| Arc::ptr_eq(&entry.flag, &flag))
@@ -430,11 +430,21 @@ pub async fn sftp_upload_cancel(
     transfer_id: String,
 ) -> Result<(), String> {
     let ssh_mgr = state.ssh_sessions.lock().await;
-    let cancels = ssh_mgr.upload_cancels.lock().await;
+    let cancels = ssh_mgr.transfer_cancels.lock().await;
     if let Some(entry) = cancels.get(&transfer_id) {
         entry.flag.store(true, Ordering::SeqCst);
     }
     Ok(())
+}
+
+/// v0.20（S9）：下载取消——与上传共用 transfer_cancels 表（同一旗标通道，
+/// 前端只需记一个命令名）。幂等：条目不存在不报错（传输已结束/已被清理）。
+#[tauri::command]
+pub async fn sftp_download_cancel(
+    state: State<'_, AppState>,
+    transfer_id: String,
+) -> Result<(), String> {
+    sftp_upload_cancel(state, transfer_id).await
 }
 
 /// 分块读取远端文件并直接流式落盘到本地，**不再把文件内容经 IPC 返回前端**。
@@ -502,6 +512,27 @@ pub async fn sftp_download_to_file(
     let app = { state.ssh_sessions.lock().await.app.clone() };
     let local = std::path::PathBuf::from(&local_path);
 
+    // v0.20（S9）：下载取消旗标——与上传共用 transfer_cancels 表（块级检查点
+    // 在循环内 read 之后，≤ DOWNLOAD_CHUNK_SIZE=64KiB 粒度）。登记/退出/清理
+    // 语义与上传完全同构：重复 transfer_id 拒绝（防串号）、finally 移除条目、
+    // 会话清理置旗（cleanup_session_tables 按 session_id 筛）。
+    let cancel = {
+        let ssh_mgr = state.ssh_sessions.lock().await;
+        let mut cancels = ssh_mgr.transfer_cancels.lock().await;
+        if cancels.contains_key(&transfer_id) {
+            return Err(format!("transfer {transfer_id} already in flight"));
+        }
+        let flag = Arc::new(AtomicBool::new(false));
+        cancels.insert(
+            transfer_id.clone(),
+            TransferCancelEntry {
+                session_id: session_id.clone(),
+                flag: flag.clone(),
+            },
+        );
+        flag
+    };
+
     // 主体放进 async 块：失败时统一走下面的清理分支，避免每一处 `?` 都复制一遍删除逻辑。
     let transfer = async {
         // 本地文件在循环外打开一次（create + truncate），全程持一个写句柄顺序追加。
@@ -527,6 +558,12 @@ pub async fn sftp_download_to_file(
                 .read(&mut buf)
                 .await
                 .map_err(|e| format!("SFTP read chunk failed: {e}"))?;
+            // v0.20（S9）：取消检查点（块边界 ≤ 64 KiB，与上传同粒度）
+            if cancel
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                return Err("download cancelled".to_string()); // 走统一清理分支删半截文件
+            }
             if n == 0 {
                 break; // 真 EOF
             }
@@ -588,7 +625,24 @@ pub async fn sftp_download_to_file(
                 local.display()
             );
         }
+        // v0.20（S9）：取消路径的条目移除 + 错误语义——「取消」对前端不是 error
+        // （上传侧由 runPathUpload 按 cancelled 标记收敛，此处对齐）
+        {
+            let ssh_mgr = state.ssh_sessions.lock().await;
+            let mut cancels = ssh_mgr.transfer_cancels.lock().await;
+            cancels.remove(&transfer_id);
+        }
+        if e == "download cancelled" {
+            return Err("[download:cancelled]".to_string()); // 前端按前缀识别取消态
+        }
         return Err(e);
+    }
+
+    // 成功路径同样移除条目（finally 语义）
+    {
+        let ssh_mgr = state.ssh_sessions.lock().await;
+        let mut cancels = ssh_mgr.transfer_cancels.lock().await;
+        cancels.remove(&transfer_id);
     }
 
     Ok(())
@@ -646,6 +700,54 @@ pub async fn sftp_remove(
     .map_err(|e| format!("SFTP remove failed: {e}"))
 }
 
+/// v0.20（SSH P2）：chmod——russh-sftp setstat 只改 permissions 位。
+/// mode 输入是八进制字符串（如 "644"/"0755"）——前置解析校验（仅 0-7 数字，
+/// 3-4 位；4 位时首位须 0——不静默截断错误输入）。高危：Strict 审批之外还应有
+/// GUI 确认（远程列表面板右键入口带确认弹窗）。
+#[tauri::command]
+pub async fn sftp_chmod(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+    mode: String,
+) -> Result<(), String> {
+    if myshelltool_core::is_lossy_remote_path(&path) {
+        return Err(myshelltool_core::lossy_remote_path_error(&path));
+    }
+    let trimmed = mode.trim();
+    if trimmed.len() < 3 || trimmed.len() > 4 || !trimmed.chars().all(|c| ('0'..='7').contains(&c)) {
+        return Err(format!("权限格式无效：{mode:?}（期望 3-4 位八进制，如 644 或 0755）"));
+    }
+    if trimmed.len() == 4 && !trimmed.starts_with('0') {
+        return Err(format!("权限格式无效：{mode:?}（4 位时首位须 0，setuid/setgid/sticky 位暂不支持）"));
+    }
+    let perms = u32::from_str_radix(trimmed, 8)
+        .map_err(|e| format!("权限解析失败: {e}"))?;
+    let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
+    let sftp = sftp_arc.lock().await;
+    let attrs = russh_sftp::protocol::FileAttributes {
+        permissions: Some(perms),
+        ..Default::default()
+    };
+    sftp.set_metadata(&path, attrs)
+        .await
+        .map_err(|e| format!("SFTP chmod 失败: {e}"))
+}
+
+/// v0.20（SSH P2）：readlink——返回符号链接的目标路径（协议 raw Name）。
+#[tauri::command]
+pub async fn sftp_readlink(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+) -> Result<String, String> {
+    if myshelltool_core::is_lossy_remote_path(&path) {
+        return Err(myshelltool_core::lossy_remote_path_error(&path));
+    }
+    let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
+    let sftp = sftp_arc.lock().await;
+    sftp.read_link(&path).await.map_err(|e| format!("SFTP readlink 失败: {e}"))
+}
 #[tauri::command]
 pub async fn sftp_stat(
     state: State<'_, AppState>,

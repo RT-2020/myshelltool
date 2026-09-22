@@ -84,112 +84,24 @@ fn log_scope_for(
     arguments: &Option<serde_json::Map<String, serde_json::Value>>,
 ) -> Option<LogScope> {
     let args = arguments.as_ref()?;
-    let asset_id = args
-        .get("asset_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let intent = args
-        .get("intent")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    match tool_name {
-        "ssh_exec" => Some(LogScope {
-            tool: "ssh_exec",
-            command: args
-                .get("command")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            asset_id,
-            intent,
-        }),
-        "disk_usage" => Some(LogScope {
-            tool: "disk_usage",
-            command: tools::CMD_DISK_USAGE.to_string(),
-            asset_id,
-            intent,
-        }),
-        "system_status" => Some(LogScope {
-            tool: "system_status",
-            command: tools::CMD_SYSTEM_STATUS.to_string(),
-            asset_id,
-            intent,
-        }),
-        "service_status" => {
-            let service = args.get("service").and_then(|v| v.as_str()).unwrap_or("");
-            Some(LogScope {
-                tool: "service_status",
-                command: tools::service_status_command(service),
-                asset_id,
-                intent,
-            })
-        }
-        "sftp_remove" => Some(LogScope {
-            tool: "sftp_remove",
-            command: format!(
-                "remove {}",
-                args.get("path").and_then(|v| v.as_str()).unwrap_or("")
-            ),
-            asset_id,
-            intent,
-        }),
-        "sftp_list" => Some(LogScope {
-            tool: "sftp_list",
-            command: format!(
-                "list {}",
-                args.get("path").and_then(|v| v.as_str()).unwrap_or(".")
-            ),
-            asset_id,
-            intent,
-        }),
-        "sftp_read_file" => Some(LogScope {
-            tool: "sftp_read_file",
-            command: format!(
-                "read {}",
-                args.get("path").and_then(|v| v.as_str()).unwrap_or("")
-            ),
-            asset_id,
-            intent,
-        }),
-        "sftp_write_file" => Some(LogScope {
-            tool: "sftp_write_file",
-            command: format!(
-                "write {}",
-                args.get("path").and_then(|v| v.as_str()).unwrap_or("")
-            ),
-            asset_id,
-            intent,
-        }),
-        "sftp_upload" => Some(LogScope {
-            tool: "sftp_upload",
-            command: format!(
-                "upload {} -> {}",
-                args.get("local_path").and_then(|v| v.as_str()).unwrap_or(""),
-                args.get("remote_path").and_then(|v| v.as_str()).unwrap_or("")
-            ),
-            asset_id,
-            intent,
-        }),
-        "sftp_download" => Some(LogScope {
-            tool: "sftp_download",
-            command: format!(
-                "download {} -> {}",
-                args.get("remote_path").and_then(|v| v.as_str()).unwrap_or(""),
-                args.get("local_path").and_then(|v| v.as_str()).unwrap_or("")
-            ),
-            asset_id,
-            intent,
-        }),
-        "resource_monitor_snapshot" => Some(LogScope {
-            tool: "resource_monitor_snapshot",
-            command: "snapshot".to_string(),
-            asset_id,
-            intent,
-        }),
-        _ => None,
-    }
+    // v0.20（A2）：记录范围与 command 行构造收敛到 registry.rs 的 spec.audit_command。
+    // None = 该工具不触发远程执行（list_assets/list_sessions/未知工具），不记日志。
+    let spec = super::registry::find(tool_name)?;
+    let build = spec.audit_command?;
+    Some(LogScope {
+        tool: spec.name,
+        command: build(args),
+        asset_id: args
+            .get("asset_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        intent: args
+            .get("intent")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+    })
 }
 
 /// 对高危工具（ssh_exec / 文件写入删除类）做审批判定。
@@ -206,14 +118,22 @@ fn log_scope_for(
 ///   HardBlock，两档恒拒；
 /// - sftp_read_file 敏感凭据路径读取（is_sensitive_remote_path）→ 恒审批
 ///   （凭据红线，不纳入等级体系）。
+///
+/// v0.20（A2）：分支键从「工具名」改为「registry 声明的 Policy」——新增工具
+/// 只要在注册表里声明 Policy 即自动获得对应审批语义，不再需要改本函数；
+/// 各分支的恒定例外（HardBlock 先于等级）逐字保留。审批文案（intent 默认值/
+/// 命令行/后果）由 spec.approval_info(args) 从注册表声明生成。
 async fn check_approval_needed(
     ctx: &McpToolContext,
     tool_name: &str,
     arguments: &Option<serde_json::Map<String, serde_json::Value>>,
 ) -> Option<ApprovalDecision> {
     let args = arguments.as_ref()?;
-    match tool_name {
-        "ssh_exec" => {
+    let spec = super::registry::find(tool_name)?;
+    match spec.policy {
+        super::registry::Policy::NoApproval => None,
+        // ssh_exec：catastrophic 硬拦 + 白名单 + 按等级（approval::evaluate 内部判定）
+        super::registry::Policy::ShellExec => {
             let command = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
             let intent = args.get("intent").and_then(|v| v.as_str()).unwrap_or("");
             if command.is_empty() {
@@ -230,8 +150,7 @@ async fn check_approval_needed(
         }
         // sftp_remove：根级/核心目录删除两档恒 HardBlock（先于等级判定）；
         // 其余删除 v2.3 纳入等级体系——Minimal 放行记日志 / Strict 人工确认
-        "sftp_remove" => {
-            let intent = args.get("intent").and_then(|v| v.as_str()).unwrap_or("");
+        super::registry::Policy::RemoteDelete => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
             if super::file_policy::is_catastrophic_remote_removal(path) {
                 return Some(ApprovalDecision::HardBlock {
@@ -239,79 +158,39 @@ async fn check_approval_needed(
                 });
             }
             let level = ctx.config.read().await.level;
-            let recursive = args.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
-            let mode_warning = if recursive {
-                "【危险】将递归删除整个目录及其内部所有子文件与子目录！"
-            } else {
-                "将删除远程单文件或空目录。"
-            };
             match level {
                 McpInterceptLevel::Minimal => {
                     Some(ApprovalDecision::AutoExecute(AutoApproveReason::MinimalFallback))
                 }
                 McpInterceptLevel::Strict => {
-                    Some(ApprovalDecision::RequestElicitation(ElicitationInfo {
-                        intent: intent.to_string(),
-                        command: format!("sftp_remove path={} recursive={}", path, recursive),
-                        consequence: format!("{mode_warning}此操作不可撤销。"),
-                    }))
+                    Some(ApprovalDecision::RequestElicitation(spec.approval_info(args)))
                 }
             }
         }
-        "sftp_read_file" => {
+        // sftp_read_file：敏感凭据路径恒审批（不入等级体系），其余白名单放行
+        super::registry::Policy::RemoteReadSensitive => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
             if super::file_policy::is_sensitive_remote_path(path) {
-                Some(ApprovalDecision::RequestElicitation(ElicitationInfo {
-                    intent: args.get("intent").and_then(|v| v.as_str()).unwrap_or("读取敏感系统凭据/配置").to_string(),
-                    command: format!("sftp_read_file path={}", path),
-                    consequence: "检测到目标路径属于系统敏感文件、SSH 私钥或应用环境凭据，请核对是否授权读取。".to_string(),
-                }))
+                Some(ApprovalDecision::RequestElicitation(spec.approval_info(args)))
             } else {
                 Some(ApprovalDecision::AutoExecute(AutoApproveReason::Whitelist))
             }
         }
-        // v2.3 纳入等级体系：Minimal 放行记日志 / Strict 人工确认
-        "sftp_write_file" => {
-            let intent = args.get("intent").and_then(|v| v.as_str()).unwrap_or("");
-            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        // sftp_write_file / sftp_upload：v2.3 纳入等级体系
+        super::registry::Policy::RemoteWrite => {
             let level = ctx.config.read().await.level;
             match level {
                 McpInterceptLevel::Minimal => {
                     Some(ApprovalDecision::AutoExecute(AutoApproveReason::MinimalFallback))
                 }
                 McpInterceptLevel::Strict => {
-                    Some(ApprovalDecision::RequestElicitation(ElicitationInfo {
-                        intent: intent.to_string(),
-                        command: format!("sftp_write_file path={}", path),
-                        consequence: "将向远程目标路径原子写入文件。若文件已存在将被完全覆盖，请核验路径与内容。".to_string(),
-                    }))
+                    Some(ApprovalDecision::RequestElicitation(spec.approval_info(args)))
                 }
             }
         }
-        // v2.3 纳入等级体系：Minimal 放行记日志 / Strict 人工确认
-        "sftp_upload" => {
-            let intent = args.get("intent").and_then(|v| v.as_str()).unwrap_or("");
-            let local = args.get("local_path").and_then(|v| v.as_str()).unwrap_or("");
-            let remote = args.get("remote_path").and_then(|v| v.as_str()).unwrap_or("");
-            let level = ctx.config.read().await.level;
-            match level {
-                McpInterceptLevel::Minimal => {
-                    Some(ApprovalDecision::AutoExecute(AutoApproveReason::MinimalFallback))
-                }
-                McpInterceptLevel::Strict => {
-                    Some(ApprovalDecision::RequestElicitation(ElicitationInfo {
-                        intent: intent.to_string(),
-                        command: format!("sftp_upload {} -> {}", local, remote),
-                        consequence: "将上传本机文件并覆盖远程已有文件，请核对源路径与目标路径。".to_string(),
-                    }))
-                }
-            }
-        }
-        // 本机系统受保护目录两档恒 HardBlock（先于等级判定）；
-        // 其余 v2.3 纳入等级体系：Minimal 放行记日志 / Strict 人工确认
-        "sftp_download" => {
-            let intent = args.get("intent").and_then(|v| v.as_str()).unwrap_or("");
-            let remote = args.get("remote_path").and_then(|v| v.as_str()).unwrap_or("");
+        // sftp_download：本机系统受保护目录两档恒 HardBlock（先于等级判定）；
+        // 覆盖警告文案在 spec.approval_info 的 consequence fn 里现算（三态探测）
+        super::registry::Policy::LocalPathWrite => {
             let local_str = args.get("local_path").and_then(|v| v.as_str()).unwrap_or("");
             let local_path = std::path::Path::new(local_str);
             if super::file_policy::is_protected_local_write_path(local_path) {
@@ -320,36 +199,17 @@ async fn check_approval_needed(
                 });
             }
             let level = ctx.config.read().await.level;
-            // 三态探测（exists() 在权限/IO 错误时也返回 false，会把「实际会覆盖」
-            // 误报成「不存在」）：Ok=已存在 / NotFound=不存在 / 其他 Err=无法确认，
-            // 按「可能存在」给覆盖警告（保守，与前端 probeRemoteTarget 同哲学）。
-            let is_overwrite = match std::fs::metadata(local_path) {
-                Ok(_) => true,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-                Err(_) => true,
-            };
-            let warn = if is_overwrite {
-                "【注意】本机目标文件已存在，下载将覆盖本机旧文件！"
-            } else {
-                "将在本机保存远程下载的文件。"
-            };
             match level {
                 McpInterceptLevel::Minimal => {
                     Some(ApprovalDecision::AutoExecute(AutoApproveReason::MinimalFallback))
                 }
                 McpInterceptLevel::Strict => {
-                    Some(ApprovalDecision::RequestElicitation(ElicitationInfo {
-                        intent: intent.to_string(),
-                        command: format!("sftp_download {} -> {}", remote, local_str),
-                        consequence: warn.to_string(),
-                    }))
+                    Some(ApprovalDecision::RequestElicitation(spec.approval_info(args)))
                 }
             }
         }
-        _ => None,
     }
 }
-
 /// 资产元数据兜底：读库失败或 assetId 不存在时其余字段空串（port=0），
 /// 不丢日志条目（assetId 保留原值）。
 
@@ -552,7 +412,7 @@ impl ServerHandler for MyshellToolMcpServer {
         ))
     }
 
-    /// 返回 9 个工具（7 只读 + 2 高危）。
+    /// 返回注册表全部工具（v0.20/A2：清单事实源在 registry.rs；A3 起带 annotations）。
     fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
@@ -589,8 +449,79 @@ impl ServerHandler for MyshellToolMcpServer {
             let log_scope = log_scope_for(&tool_name, &arguments);
             let level_snapshot = ctx.config.read().await.level;
             let level_str = level_snapshot.as_str();
+            // v0.20（A4）：risk/policy 从注册表 spec 派生；duration 只计执行段
+            // （审批等待不计）。sessionSource：exec 类工具由 exec_on_asset 三层
+            // 复用（B3）写入 thread-local（gui/pool/new）；SFTP 类统一 "pool"
+            // （连接全部经池管理，与 gui 相对）；其余空串。
+            let spec = super::registry::find(&tool_name);
+            let mut extras_base = execution_log::LogExtras {
+                risk: spec.map(|s| s.risk.as_str()).unwrap_or("unknown"),
+                policy: spec.map(|s| s.policy.as_str()).unwrap_or("unknown"),
+                duration_ms: 0,
+                session_source: "",
+                scope_result: "",
+            };
             // 决策初值：范围内但无需审批的工具（disk_usage 等只读）→ not_required
             let mut log_decision: &'static str = decision::NOT_REQUIRED;
+
+            // ── v0.20（B1）scope 预判：范围外资产在审批与执行之前直接拒绝 ──
+            // 判定内核在 core::mcp_scope；此处做「最早失败 + scopeResult 落日志」，
+            // 收口点（exec_on_asset / sftp_ops::connect）再做兜底判定防旁路。
+            if let Some(spec) = spec.filter(|s| s.scope_req != super::registry::ScopeReq::None) {
+                let asset_id = arguments
+                    .as_ref()
+                    .and_then(|a| a.get("asset_id"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                if let Some(asset_id) = asset_id {
+                    let scope_snapshot = ctx.config.read().await.scope.clone();
+                    // 资产不存在时交给后续「资产不存在」错误路径（此处不拦）
+                    let asset_verdict =
+                        myshelltool_core::load_connection_asset_store(&ctx.asset_store_path)
+                            .ok()
+                            .and_then(|st| st.assets.into_iter().find(|a| a.id == asset_id))
+                            .map(|asset| {
+                                myshelltool_core::mcp_scope::evaluate(&scope_snapshot, &asset)
+                            });
+                    let asset_denied = asset_verdict
+                        .map(|v| !v.is_allowed())
+                        .unwrap_or(false);
+                    let fs_denied = matches!(
+                        spec.scope_req,
+                        super::registry::ScopeReq::AssetAndLocalFs
+                    ) && !myshelltool_core::mcp_scope::evaluate_local_fs(&scope_snapshot)
+                        .is_allowed();
+                    if asset_denied || fs_denied {
+                        let (verdict_str, msg) = if asset_denied {
+                            let v = asset_verdict.unwrap();
+                            (v.as_str(), myshelltool_core::mcp_scope::denied_message(v))
+                        } else {
+                            (
+                                myshelltool_core::mcp_scope::ScopeVerdict::DeniedLocalFs.as_str(),
+                                myshelltool_core::mcp_scope::denied_message(
+                                    myshelltool_core::mcp_scope::ScopeVerdict::DeniedLocalFs,
+                                ),
+                            )
+                        };
+                        log::warn!("scope denied: tool={tool_name} asset={asset_id} ({verdict_str})");
+                        extras_base.scope_result = verdict_str;
+                        if let Some(scope) = &log_scope {
+                            execution_log::append_execution_log(
+                                &ctx,
+                                scope,
+                                level_str,
+                                decision::SCOPE_DENIED,
+                                outcome::SKIPPED,
+                                "",
+                                &extras_base,
+                            )
+                            .await;
+                        }
+                        return Ok(error_result(&msg));
+                    }
+                    extras_base.scope_result = "allowed";
+                }
+            }
 
             // ── v1.1 审批拦截：高危工具先做危险判定（v2 按当前等级）──
             if let Some(approval_needed) = check_approval_needed(&ctx, &tool_name, &arguments).await
@@ -623,6 +554,7 @@ impl ServerHandler for MyshellToolMcpServer {
                                 decision::HARD_BLOCKED,
                                 outcome::SKIPPED,
                                 "",
+                                &extras_base,
                             )
                             .await;
                         }
@@ -646,6 +578,7 @@ impl ServerHandler for MyshellToolMcpServer {
                                         via.declined_decision(),
                                         outcome::SKIPPED,
                                         "",
+                                        &extras_base,
                                     )
                                     .await;
                                 }
@@ -660,6 +593,7 @@ impl ServerHandler for MyshellToolMcpServer {
                                         decision::TIMEOUT,
                                         outcome::SKIPPED,
                                         "",
+                                        &extras_base,
                                     )
                                     .await;
                                 }
@@ -676,6 +610,7 @@ impl ServerHandler for MyshellToolMcpServer {
                                         decision::REJECTED,
                                         outcome::SKIPPED,
                                         "",
+                                        &extras_base,
                                     )
                                     .await;
                                 }
@@ -686,7 +621,8 @@ impl ServerHandler for MyshellToolMcpServer {
                 }
             }
 
-            // ── 正常分发 ──
+            // ── 正常分发（A4：执行段计时起点）──
+            let exec_started = std::time::Instant::now();
             let result = match tools::call_tool(tool_name.as_ref(), request, &ctx).await {
                 Ok(result) => result,
                 Err(e) => {
@@ -709,7 +645,20 @@ impl ServerHandler for MyshellToolMcpServer {
                 } else {
                     raw_output
                 };
-                execution_log::append_execution_log(&ctx, scope, level_str, log_decision, outcome_str, &output_text)
+                let extras = execution_log::LogExtras {
+                    duration_ms: exec_started.elapsed().as_millis() as u64,
+                    // B3：exec 工具读 thread-local 的真实来源；SFTP 工具统一 pool
+                    session_source: tools::last_exec_session_source().unwrap_or(if spec
+                        .map(|s| s.scope_req == super::registry::ScopeReq::Asset)
+                        .unwrap_or(false)
+                    {
+                        "pool"
+                    } else {
+                        ""
+                    }),
+                    ..extras_base
+                };
+                execution_log::append_execution_log(&ctx, scope, level_str, log_decision, outcome_str, &output_text, &extras)
                     .await;
             }
 
@@ -731,25 +680,34 @@ impl ServerHandler for MyshellToolMcpServer {
         }))
     }
 
-    /// 读取资源内容（Layer 4）。
+    /// 读取资源内容（Layer 4）。v0.20（B4）：透传会话清单与 scope——
+    /// ://sessions 返回真实会话、://assets 与 ://mcp/scope 按 B1 语义渲染。
     fn read_resource(
         &self,
         request: ReadResourceRequestParams,
         _context: RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ReadResourceResult, McpError>> + Send + '_ {
-        let asset_path = self.ctx.asset_store_path.clone();
-        let known_hosts_path = self.ctx.known_hosts_path.clone();
-        std::future::ready(match super::resources::read_resource(
-            &request,
-            &asset_path,
-            &known_hosts_path,
-        ) {
-            Ok(result) => Ok(result),
-            Err(e) => {
+        let ctx = self.ctx.clone();
+        async move {
+            let asset_path = ctx.asset_store_path.clone();
+            let known_hosts_path = ctx.known_hosts_path.clone();
+            let scope = ctx.config.read().await.scope.clone();
+            let sessions = match &ctx.ssh_sessions {
+                Some(manager) => manager.lock().await.list_sessions_with_meta(),
+                None => Vec::new(),
+            };
+            super::resources::read_resource(
+                &request,
+                &asset_path,
+                &known_hosts_path,
+                &sessions,
+                &scope,
+            )
+            .map_err(|e| {
                 log::warn!("MCP read_resource error: {}", e);
-                Err(McpError::invalid_request(e, None))
-            }
-        })
+                McpError::invalid_request(e, None)
+            })
+        }
     }
 
     /// 列出 resource template（Layer 4）。
