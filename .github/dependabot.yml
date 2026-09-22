@@ -1,0 +1,53 @@
+# Dependabot（v0.20/S6）：依赖供应链可见性。
+# 分组策略：安全更新单组自动 PR（低噪音）；次要/大版本按生态分组便于人工批量审。
+# vendored russh-sftp 的补丁升级不在 Dependabot 能力内——见 docs/已知边界与修复史.md
+# 的升级 runbook 义务（buf.rs/ser.rs 补丁重放 + buf.rs:69 往返单测作验收）。
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+    groups:
+      cargo-security:
+        applies-to: security-updates
+        update-types:
+          - patch
+          - minor
+          - major
+      cargo-minor:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+  - package-ecosystem: cargo
+    directory: /crates/myshelltool-core
+    schedule:
+      interval: weekly
+    groups:
+      core-security:
+        applies-to: security-updates
+        update-types:
+          - patch
+          - minor
+          - major
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm-security:
+        applies-to: security-updates
+        update-types:
+          - patch
+          - minor
+          - major
+      npm-minor:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
