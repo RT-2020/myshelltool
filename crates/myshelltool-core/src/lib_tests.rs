@@ -20,6 +20,9 @@ use crate::secret_store::{is_new_format, xor_transform};
             credential_id: None,
             passphrase_credential_id: None,
             private_key_credential_id: None,
+            jump_host: None,
+        connect_timeout_secs: None,
+        keepalive_interval_secs: None,
         };
 
         let json = serde_json::to_string(&asset).expect("asset serializes");
@@ -133,6 +136,9 @@ use crate::secret_store::{is_new_format, xor_transform};
             credential_id: None,
             passphrase_credential_id: None,
             private_key_credential_id: None,
+            jump_host: None,
+        connect_timeout_secs: None,
+        keepalive_interval_secs: None,
         }
     }
 

@@ -25,6 +25,15 @@ pub mod proc_parse;
 // v0.18 内置编辑器编码内核：本地编码白名单解码/编码（绝不 lossy）+ EOL 三态
 // 检测/应用 + UTF-8 BOM 剥离/还原（见模块注释的「宁严不猜」纪律）
 pub mod text_codec;
+// v0.20 MCP HTTP 入口 token 鉴权判定（A1）：URL 内嵌/Bearer 两形态 + 段边界 +
+// fail-closed 全拒 + base64url 编码。安全判据放 core 真跑（见模块注释）
+pub mod mcp_auth;
+// v0.20（B1）MCP 授权范围判定内核：McpScope + 组件级分组匹配 + 优先级 +
+// fail-closed deny_all。安全判据放 core 真跑；config.rs 只做 IO 与收口
+pub mod mcp_scope;
+// v0.20（SSH P0-1）OpenSSH client config 解析：~/.ssh/config → 导入候选
+// （first-match-wins / 通配参数组 / 逐块容错，见模块注释的诚实边界）
+pub mod ssh_config;
 
 // 便捷再导出：调用方写 `myshelltool_core::redact_command(...)`（日志落盘点最常用）
 pub use redact::redact_command;
