@@ -9,12 +9,21 @@ import { invokeBackend, isTauriRuntime, listenBackendEvent } from '@/services/ba
 import { joinLocalPath, joinPath, parentLocalPath } from '@/stores/workbench';
 import { buildTransferItem, formatBytes } from '@/lib/transferUtils';
 import { errorMessage } from '@/lib/errorMessage';
+import { bindFileOverwrite, requireRemotePath, probeRemoteTarget, askFileOverwrite } from '@/lib/fileOverwrite';
+// v0.20（S2 刀）：队列管理域拆至 lib/transferQueueOps.ts（进度/状态机/取消/重试）
+import {
+  bindTransferQueueOps, setupEventListeners, disposeEventListeners, updateTransferProgress,
+  pruneFinishedTransfers, markTransferError, withTransfer, cancelTransfer, retryTransfer
+} from '@/lib/transferQueueOps';
+
+// v0.20（S2 刀）：覆盖确认链已拆至 lib/fileOverwrite.ts，调用方路径不变（re-export）。
+export { handleFileOverwrite, confirmFileOverwrite, cancelFileOverwrite } from './fileOverwrite';
+export { setupEventListeners, disposeEventListeners, cancelTransfer, retryTransfer, pruneFinishedTransfers } from './transferQueueOps';
+// files store 直接 import 的队列域符号（值 import 供 runPathUpload/runDownload 消费，转发保导出）
+export { updateTransferProgress, markTransferError, withTransfer };
+export { probeRemoteTarget, askFileOverwrite };
 import { openLocalPath, revealLocalItem } from '@/lib/openLocalFile';
 import type { FilesSessionLike, FilesWorkbenchBridge, QueueItem } from '@/lib/fileTypes';
-
-const TRANSFER_PROGRESS_EVENT = 'sftp-transfer-progress';
-
-let progressUnlisten: TauriUnlistenFn | null = null;
 
 export interface FileTransfersContext {
   wb(): FilesWorkbenchBridge;
@@ -47,274 +56,15 @@ let bound: FileTransfersContext | null = null;
 
 export function bindFileTransfersContext(ctx: FileTransfersContext): void {
   bound = ctx;
+  // v0.20（S2 刀）：级联注入覆盖确认链与队列管理域（同一 ctx；重试执行器
+  // 传函数引用——runPathUpload/runDownload 为函数声明，提升可用，惰性调用）
+  bindFileOverwrite(ctx);
+  bindTransferQueueOps(ctx, { runPathUpload, runDownload });
 }
 
 function tc(): FileTransfersContext {
   if (!bound) throw new Error('fileTransfers 未绑定 context（files store 未初始化）');
   return bound;
-}
-
-// ============================================================
-// 传输进度事件监听（原 workbench.js:177-187）
-// files store 自管 progressUnlisten，workbench.setupEventListeners 不再处理。
-// ============================================================
-export async function setupEventListeners() {
-  if (!isTauriRuntime()) return;
-  if (!progressUnlisten) {
-    progressUnlisten = await listenBackendEvent(TRANSFER_PROGRESS_EVENT, event => {
-      const { transfer_id, bytes_transferred, total_bytes } = (event.payload || {}) as TransferProgressPayload;
-      updateTransferProgress(transfer_id, bytes_transferred, total_bytes);
-    });
-  }
-}
-
-export async function disposeEventListeners() {
-  if (typeof progressUnlisten === 'function') {
-    await progressUnlisten();
-    progressUnlisten = null;
-  }
-}
-
-export function updateTransferProgress(transferId: string, transferred: number, total: number) {
-  const item = tc().transferQueue.value.find(entry => entry.id === transferId);
-  if (!item) return;
-  // 终态（done/error/cancelled）忽略迟到进度事件，避免状态回跳
-  if (item.status !== 'running' && item.status !== 'pending') return;
-  const now = Date.now();
-  const deltaBytes = transferred - (item.transferred || 0);
-  const deltaMs = now - (item._lastProgressAt || now);
-  // 瞬时速度：本次增量/耗时（简单滑动）；无增量时保留上次速度，避免事件间隔抖动归零
-  if (deltaMs > 0 && deltaBytes > 0) {
-    item.speed = (deltaBytes / deltaMs) * 1000;
-  }
-  item._lastProgressAt = now;
-  item.transferred = transferred;
-  item.total = total;
-  item.percent = total > 0 ? Math.min(100, Math.round((transferred / total) * 100)) : 0;
-  item.eta = item.speed > 0 && total > transferred ? Math.round((total - transferred) / item.speed) : null;
-  if (transferred >= total && total > 0) {
-    item.status = 'done';
-    item.finishedAt = Date.now();
-    item.speed = 0;
-    item.eta = null;
-    pruneFinishedTransfers();
-  }
-}
-
-export function pruneFinishedTransfers() {
-  const cutoff = Date.now() - 60_000;
-  tc().transferQueue.value = tc().transferQueue.value.filter(item => {
-    if (item.status === 'running' || item.status === 'pending') return true;
-    return (item.finishedAt || 0) > cutoff;
-  });
-}
-
-export function markTransferError(transferId: string, message: string) {
-  const item = tc().transferQueue.value.find(entry => entry.id === transferId);
-  if (!item) return;
-  item.status = 'error';
-  item.error = message;
-  item.finishedAt = Date.now();
-  item.speed = 0;
-  item.eta = null;
-  // 与完成路径一致：错误项同样在 60s 后从队列清理（避免残留堆积）
-  pruneFinishedTransfers();
-}
-
-export async function withTransfer<T>(itemId: string, task: () => Promise<T>) {
-  const item = tc().transferQueue.value.find(entry => entry.id === itemId);
-  if (item) item.status = 'running';
-  return task();
-}
-
-/**
- * 取消上传：置 cancelled 标记（UI 即时反馈）+ 调 `sftp_upload_cancel` 置后端
- * 共享旗标——流式上传循环在下一个块边界（≤1 MiB）看到旗标即中止，并尽力
- * 删除远端半截文件。后端 reject 后由 runPathUpload 按 cancelled 标记收敛状态。
- * 下载仍不可取消——`sftp_download_to_file` 是单次 invoke、后端没有中断通道，
- * TransferDrawer 对下载行不渲染取消按钮（勿造假按钮）。
- */
-export function cancelTransfer(id: string) {
-  const item = tc().transferQueue.value.find(entry => entry.id === id);
-  if (!item) return;
-  if (item.direction !== 'upload') return;
-  if (item.status !== 'running' && item.status !== 'pending') return;
-  item.cancelled = true;
-  tc().announce('正在取消上传：' + item.name, { level: 'warn' });
-  // 取消命令失败（会话已断等）可忽略：上传随即会因写失败以错误态收尾，
-  // 状态同样由 runPathUpload 收敛，不会因为取消命令丢失而卡 running。
-  invokeBackend('sftp_upload_cancel', { transferId: id }).catch(() => null);
-}
-
-/**
- * 重试失败/取消的传输：复用队列项保存的原始参数（op），重新走上传/下载流程。
- * 上传重试直接续传语义（覆盖检查在上传入口已做过，此处不再弹窗）。
- */
-export async function retryTransfer(id: string) {
-  const item = tc().transferQueue.value.find(entry => entry.id === id);
-  if (!item) return;
-  if (item.status !== 'error' && item.status !== 'cancelled') return;
-  // 会话必须按【发起时所属资产】解析，绝不用当前面板/活跃会话去猜。
-  // 用 tc().getActiveSession() 的旧行为：在 A 上传输失败、切到 B 再点重试，重试就会
-  // 带着 A 的路径在 B 上继续跑（路径与文件名都来自原队列项），可能静默成功——
-  // 数据落到错误的服务器上，比报错危险得多。
-  if (!item.assetId) {
-    // 旧队列项（assetId 字段引入前构造的）：无法确定原资产，宁可不重试
-    tc().announce('该传输项缺少所属资产信息，无法重试；请重新发起传输', { level: 'warn' });
-    return;
-  }
-  const asset = (tc().wb().assets?.() || []).find(entry => entry?.id === item.assetId) || null;
-  const session = tc().resolveSessionForAsset(asset);
-  if (!session) {
-    const name = asset?.name || item.assetId;
-    tc().announce(`原资产「${name}」当前没有可用会话，已取消重试（不会改用其它服务器）`, { level: 'warn' });
-    return;
-  }
-  // 重置为运行态（复用原 id，进度事件按 id 续接）
-  item.status = 'running';
-  item.error = null;
-  item.cancelled = false;
-  item.transferred = 0;
-  item.percent = 0;
-  item.speed = 0;
-  item.eta = null;
-  item.startedAt = Date.now();
-  item.finishedAt = null;
-  try {
-    if (item.direction === 'upload') {
-      if (item.op?.kind === 'localPath') {
-        await runPathUpload(item, session);
-      } else {
-        // op 缺失（异常数据/旧队列项）：无法重试
-        markTransferError(id, '传输参数缺失');
-        tc().announce('传输参数缺失，无法重试：' + item.name, { level: 'warn' });
-      }
-    } else {
-      await runDownload(item, session);
-    }
-  } catch (error) {
-    markTransferError(id, errorMessage(error));
-    tc().announce('传输失败：' + item.name + '：' + errorMessage(error), {
-      level: 'error',
-      action: { label: '重试', run: () => retryTransfer(id) }
-    });
-  }
-}
-
-/**
- * 三态探测目标路径是否已存在：true = 明确存在；false = 明确不存在（stat
- * 返回 NoSuchFile）；null = 无法确认（无会话 / stat 其他错误）。调用方对
- * null 一律按「可能存在」处理（走覆盖确认）——stat 报错 ≠ 不存在，一律当
- * false 放行会绕过覆盖确认、无提示覆盖远端已有文件。
- */
-export async function probeRemoteTarget(remoteTarget: string): Promise<boolean | null> {
-  const session = tc().getActiveSession();
-  if (!session) return null;
-  try {
-    const result = await tc().statRemotePath(remoteTarget);
-    return !!result;
-  } catch (error) {
-    // russh-sftp 的 StatusCode::NoSuchFile Display 为 "No such file"（后端
-    // 包装成 "SFTP stat failed: No such file: ..."），据此区分「明确不存在」
-    // 与「无法确认」；其余错误（权限/超时/连接断）保守返回 null。
-    const message = error instanceof Error ? error.message : String(error || '');
-    return /no such file/i.test(message) ? false : null;
-  }
-}
-
-/**
- * 上传前同名确认：入队并返回一个 Promise，由 confirmFileOverwrite /
- * cancelFileOverwrite 逐个（串行）resolve。
- * resolve(true) 继续上传；resolve(false) 跳过该文件（不中断整批）。
- * 队列保证每个 Promise 都会 settle（用户选择、或批次中止时的收尾清理），
- * 不存在永久挂起的上传循环。
- */
-export function askFileOverwrite(entry: RemoteFileEntry, remoteTarget: string) {
-  let settleOwn: (() => void) | null = null;
-  const promise = new Promise<boolean>(resolve => {
-    tc().overwriteQueue.value.push({ entry, remoteTarget, resolve, settled: false });
-    settleOwn = () => settleOwnFileOverwrite(resolve);
-    // 队列为空时本次即队首，立即展示；否则当前弹窗仍归上一项，等它 settle 后推进。
-    const head = tc().overwriteQueue.value[0];
-    if (head && head.resolve === resolve) {
-      tc().wb().modal = { type: 'confirmFileOverwrite', payload: { path: remoteTarget } };
-    }
-  });
-  return {
-    promise,
-    /**
-     * 只结算「本次这一条」确认（批次中止时用）。返回的句柄绑定的是本次的
-     * resolve，因此不会碰到并发批次或其他文件留下的 pending。
-     */
-    settle: () => settleOwn?.()
-  };
-}
-
-/**
- * 只 settle「自己发起的那条」覆盖确认（批次中止时用）。
- *
- * 为什么不能直接 `handleFileOverwrite(false)`：那只 pop 队首，若此刻队首属于
- * 另一个并发批次，就会把**别人的**确认当成「取消」静默掉。这里按 resolve 引用
- * 定位自己的条目，已 settle 则跳过；命中的若不是队首也不影响弹窗（队列推进由
- * confirm/cancel 负责），只保证自己那个 Promise 不会永久悬空。
- */
-function settleOwnFileOverwrite(pendingResolve: (choice: boolean) => void) {
-  const mine = tc().overwriteQueue.value.find(item => item.resolve === pendingResolve);
-  if (!mine || mine.settled) return;
-  mine.settled = true;
-  mine.resolve(false);
-  // 若自己这条正是队首（弹窗显示的也是它），必须把弹窗推进到下一项或关掉，
-  // 否则会出现「队列已 settle 但弹窗还停在一条已失效的确认上」。
-  if (tc().overwriteQueue.value[0] === mine) {
-    tc().overwriteQueue.value.shift();
-    const next = tc().overwriteQueue.value[0];
-    tc().wb().modal =
-      tc().overwriteQueue.value.length && next
-        ? { type: 'confirmFileOverwrite', payload: { path: next.remoteTarget } }
-        : { type: null };
-  } else {
-    tc().overwriteQueue.value = tc().overwriteQueue.value.filter(item => item !== mine);
-  }
-}
-
-/**
- * settle 队首并出队（confirm/cancel 的公共收尾）：队列还有下一项就继续显示
- * 下一个确认弹窗，空了才关闭弹窗。
- */
-export function handleFileOverwrite(choice: boolean) {
-  const pending = tc().overwriteQueue.value.shift();
-  if (pending) {
-    pending.settled = true;
-    pending.resolve(choice);
-  }
-  const next = tc().overwriteQueue.value[0];
-  // 用 length 判定而不是 `next ? ... : ...`：三元在 false 分支返回 undefined，
-  // 会被 vue-tsc（exactOptionalPropertyTypes）判为不符合 ModalState。
-  tc().wb().modal =
-    tc().overwriteQueue.value.length && next
-      ? { type: 'confirmFileOverwrite', payload: { path: next.remoteTarget } }
-      : { type: null };
-}
-
-export function confirmFileOverwrite() {
-  handleFileOverwrite(true);
-}
-
-export function cancelFileOverwrite() {
-  // 提示必须取「被取消的那一项」的名字，不是随手一项
-  const pending = tc().overwriteQueue.value[0];
-  if (pending) {
-    tc().announce('已跳过同名文件' + (pending.entry?.name ? '：' + pending.entry.name : ''), { level: 'warn' });
-  }
-  handleFileOverwrite(false);
-}
-
-/** 远程写操作前置守卫：remotePath 未加载（空串）时 joinPath('', name) 会折叠到
- * 文件系统根（`/name`），把文件传到 /. 未加载一律中止并提示，不猜测目标目录。 */
-function requireRemotePath(): boolean {
-  if (tc().remotePath.value) return true;
-  tc().announce('远程目录尚未加载，请先刷新后再操作', { level: 'warn' });
-  return false;
 }
 
 /** 上传入口①：本机路径批量上传（原生文件对话框 / OS 拖入，FileSurface 接线）。
@@ -664,8 +414,20 @@ async function runDownload(item: QueueItem, session: FilesSessionLike) {
       size: item.total || 0
     });
   } catch (error) {
-    markTransferError(transferId, errorMessage(error));
-    tc().announce('下载失败：' + item.name + '：' + errorMessage(error), {
+    // v0.20（S9）：下载取消——后端返回 [download:cancelled] 前缀，收敛为
+    // cancelled 态（用户主动行为，不是 error；不弹重试 toast）
+    const msg = errorMessage(error);
+    if (msg.includes(String.fromCharCode(91) + 'download:cancelled' + String.fromCharCode(93))) {
+      item.status = 'cancelled';
+      item.speed = 0;
+      item.eta = null;
+      item.finishedAt = Date.now();
+      pruneFinishedTransfers();
+      tc().announce('已取消下载：' + item.name, { level: 'warn' });
+      return;
+    }
+    markTransferError(transferId, msg);
+    tc().announce('下载失败：' + item.name + '：' + msg, {
       level: 'error',
       action: { label: '重试', run: () => retryTransfer(transferId) }
     });

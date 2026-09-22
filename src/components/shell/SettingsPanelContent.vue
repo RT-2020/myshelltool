@@ -21,22 +21,21 @@
  * 避免 GlobalModals.vue 超 500 行 SFC 硬上限（AGENTS.md 质量红线）。
  */
 import { ref, computed, onMounted, watch } from 'vue';
-import type { Component } from 'vue';
 import { storeToRefs } from 'pinia';
-import { Info, LayoutGrid, Palette, RefreshCw, Plug, Sun, Moon, Monitor, ExternalLink, TerminalSquare, Mouse } from 'lucide-vue-next';
+import { Info, LayoutGrid, Palette, RefreshCw, Plug, ExternalLink, Server } from 'lucide-vue-next';
 import { useWorkbenchStore } from '@/stores/workbench';
-import { THEME_ORDER, THEME_LABELS } from '@/composables/useTheme';
 import type { useAutoUpdate } from '@/composables/useAutoUpdate';
 import { errorMessage } from '@/lib/errorMessage';
 import AppButton from '@/components/ui/AppButton.vue';
-import AppSelect from '@/components/ui/AppSelect.vue';
 import AppBrandLogo from '@/components/ui/AppBrandLogo.vue';
 import McpPanelContent from '@/components/shell/McpPanelContent.vue';
 import SyncPanelContent from '@/components/shell/SyncPanelContent.vue';
 import UpdateSection from '@/components/shell/UpdateSection.vue';
 import ChangelogSection from '@/components/shell/ChangelogSection.vue';
+import AppearanceTab from '@/components/shell/AppearanceTab.vue';
+import AssetsTabContent from '@/components/shell/AssetsTabContent.vue';
 import { openExternal } from '@/lib/openExternal';
-import { isTauriRuntime } from '@/services/backend';
+import { invokeBackend, isTauriRuntime } from '@/services/backend';
 
 /**
  * settings modal 的运行时附加字段（App.vue 注入，ModalState 之外的动态扩展，
@@ -49,7 +48,7 @@ interface SettingsModalExtras {
 }
 
 const store = useWorkbenchStore();
-const { theme, modal, middleClickAutoscroll } = storeToRefs(store);
+const { modal } = storeToRefs(store);
 
 const modalExtras = computed<SettingsModalExtras>(() => (modal.value ?? {}) as unknown as SettingsModalExtras);
 
@@ -61,24 +60,14 @@ const autoUpdate = computed(() => modalExtras.value.autoUpdate || null);
 // 补偿入口）。无回调时不渲染「恢复默认布局」按钮。
 const resetLayout = computed(() => modalExtras.value.resetLayout || null);
 
-// —— 终端排版（外观 tab）——
-const fontSizeOptions = [10, 11, 12, 13, 14, 15, 16, 18, 20]
-  .map(px => ({ label: `${px}px`, value: px }));
-const lineHeightOptions = [1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.8, 2.0]
-  .map(lh => ({ label: lh.toFixed(1), value: lh }));
-// store 的 setTerminalFontSize 是增量式（delta）；面板选绝对值 → 换算差值复用同一管线。
-function setTerminalFontSizeTo(value: string | number) {
-  const delta = Number(value) - store.terminalFontSize;
-  if (delta) store.setTerminalFontSize(delta);
-}
-
 // —— Tab 导航 ——
 // tab 列表固定 4 项；icon 用 lucide 组件，AppTabGroup 透传给 AppTab。
 const TABS = [
   { id: 'about', label: '关于与更新', icon: Info },
   { id: 'appearance', label: '外观', icon: Palette },
   { id: 'sync', label: '同步', icon: RefreshCw },
-  { id: 'mcp', label: 'MCP', icon: Plug }
+  { id: 'mcp', label: 'MCP', icon: Plug },
+  { id: 'assets', label: '资产', icon: Server }
 ];
 // 默认 about；外部入口通过 modal.tab 指定（合法 tab id 才采纳，否则回退 about）。
 const validTabs = TABS.map(t => t.id);
@@ -116,24 +105,37 @@ onMounted(async () => {
   }
 });
 
-// —— 主题选择（外观 tab）——
-// 读 uiStore.theme（原始三态 system/light/dark）+ 调 setTheme（点哪个选哪个）。
-// 主题图标：system→Monitor / light→Sun / dark→Moon。
-const themeIcons: Record<string, Component> = { system: Monitor, light: Sun, dark: Moon };
-const themeDescription = computed(() => {
-  if (theme.value === 'light') return '「浅色」始终保持明亮清爽的界面风格，切换即时生效并持久化。';
-  if (theme.value === 'dark') return '「深色」适合弱光环境与沉浸式终端运维操作，切换即时生效并持久化。';
-  return '「跟随系统」随系统外观明暗自动无缝切换，切换即时生效并持久化。';
-});
-function selectTheme(value: string) {
-  store.setTheme(value);
+// —— 诊断信息（v0.20/N3）——
+const diagLoading = ref(false);
+async function copyDiagnostics() {
+  if (!isTauriRuntime()) return;
+  diagLoading.value = true;
+  try {
+    const info = await invokeBackend<Record<string, string>>('get_diagnostic_info');
+    const text = [
+      '```',
+      `myshelltool v${info.appVersion} (${info.buildProfile}) / ${info.os}`,
+      `data dir: ${info.dataDir}`,
+      `MCP endpoint: ${info.mcpEndpointBase}`,
+      `generated: ${info.generatedAt}`,
+      '--- log tail ---',
+      info.logTail,
+      '```',
+    ].join('\n');
+    const ok = await navigator.clipboard.writeText(text).then(() => true).catch(() => false);
+    store.announce(ok ? '诊断信息已复制，可直接粘贴到 issue' : '复制失败，请手动选择文本', { level: ok ? 'success' : 'error' });
+  } catch (err) {
+    store.announce('获取诊断信息失败：' + errorMessage(err), { level: 'error' });
+  } finally {
+    diagLoading.value = false;
+  }
 }
 </script>
 
 <template>
   <div ref="panelRef" class="settings-panel">
     <div class="settings-body">
-      <!-- 左侧竖导航：设置的顶级分类（关于/外观/同步/MCP 是不同主题，竖列表语义 = 分类树） -->
+      <!-- 左侧竖导航：设置的顶级分类（关于/外观/同步/MCP/资产是不同主题，竖列表语义 = 分类树） -->
       <nav class="settings-nav" aria-label="设置分类">
         <button
           v-for="t in TABS"
@@ -191,66 +193,21 @@ function selectTheme(value: string) {
             <dd>MIT</dd>
           </dl>
         </section>
-      </section>
 
-      <!-- ② 外观（主题三选） -->
-      <section v-if="visitedTabs.includes('appearance')" v-show="activeTab === 'appearance'" class="stack tab-pane">
-        <header class="page-title"><Palette :size="15" />外观</header>
-        <header class="block-head"><Palette :size="12" />主题</header>
-        <div class="theme-grid">
-          <button
-            v-for="t in THEME_ORDER"
-            :key="t"
-            type="button"
-            class="theme-card"
-            :class="{ active: theme === t }"
-            @click="selectTheme(t)"
-          >
-            <component :is="themeIcons[t]" :size="22" />
-            <span>{{ THEME_LABELS[t] }}</span>
-          </button>
-        </div>
-        <p class="muted theme-hint">{{ themeDescription }}</p>
-
-        <!-- 终端排版：字号 / 行间距（sessions store 权威值，改变即热更新所有终端） -->
+        <!-- v0.20（N3）：自助诊断——复制版本/OS/构建形态/数据目录/MCP 端点（不含
+             token）/日志尾部，提 issue 时随 bug_report 模板粘贴 -->
         <section class="block">
-          <header class="block-head"><TerminalSquare :size="12" />终端排版</header>
-          <div class="terminal-typography-row">
-            <label class="setting-field">
-              <span class="setting-label">字号</span>
-              <AppSelect
-                :model-value="store.terminalFontSize"
-                :options="fontSizeOptions"
-                @update:model-value="v => setTerminalFontSizeTo(v)"
-              />
-            </label>
-            <label class="setting-field">
-              <span class="setting-label">行间距</span>
-              <AppSelect
-                :model-value="store.terminalLineHeight"
-                :options="lineHeightOptions"
-                @update:model-value="v => store.setTerminalLineHeight(Number(v))"
-              />
-            </label>
+          <header class="block-head"><Info :size="12" />诊断信息</header>
+          <div class="update-row">
+            <AppButton variant="subtle" size="sm" :loading="diagLoading" @click="copyDiagnostics">
+              复制诊断信息
+            </AppButton>
+            <span class="muted update-hint">版本 / 系统 / 数据目录 / MCP 端点（不含 token）/ 日志尾部——提 issue 时直接粘贴</span>
           </div>
-          <p class="muted">即时生效并持久化；字号也可在终端内 Ctrl+滚轮 / Ctrl+= / Ctrl+- 调整。</p>
         </section>
 
-        <!-- 中键自动滚动：webview 级输入行为（ui store 权威值，main.ts 抑制器事件时读取） -->
-        <section class="block">
-          <header class="block-head"><Mouse :size="12" />鼠标</header>
-          <label class="autoscroll-toggle">
-            <input
-              type="checkbox"
-              :checked="middleClickAutoscroll"
-              @change="store.setMiddleClickAutoscroll(($event.target as HTMLInputElement).checked)"
-            />
-            中键自动滚动
-          </label>
-          <p class="muted">按住鼠标中键拖动即可滚动页面（浏览器式自动滚动，作用于所有可滚动区域）。默认关闭；更改即时生效并持久化。</p>
-        </section>
-
-        <!-- 恢复默认布局：次要操作（低频不常驻），无 resetLayout 回调时不渲染 -->
+        <!-- 恢复默认布局：次要操作（低频不常驻），无 resetLayout 回调时不渲染
+             （v0.20 随外观 tab 拆分迁入本 tab——它是全局布局操作，不专属任何分类） -->
         <section v-if="resetLayout" class="block">
           <header class="block-head"><LayoutGrid :size="12" />布局</header>
           <div class="update-row">
@@ -259,6 +216,9 @@ function selectTheme(value: string) {
           </div>
         </section>
       </section>
+
+      <!-- ② 外观（v0.20 拆至 AppearanceTab.vue，S2 第一刀：主题/排版/鼠标整体迁移） -->
+      <AppearanceTab v-if="visitedTabs.includes('appearance')" v-show="activeTab === 'appearance'" />
 
       <!-- ③ 同步（复用 SyncPanelContent + PatConfigCard，零 props 自包含） -->
       <section v-if="visitedTabs.includes('sync')" v-show="activeTab === 'sync'" class="stack tab-pane">
@@ -270,6 +230,12 @@ function selectTheme(value: string) {
       <section v-if="visitedTabs.includes('mcp')" v-show="activeTab === 'mcp'" class="stack tab-pane">
         <header class="page-title"><Plug :size="15" />MCP</header>
         <McpPanelContent />
+      </section>
+
+      <!-- ⑤ 资产（v0.20，SSH P0-1：config 导入等资产域入口） -->
+      <section v-if="visitedTabs.includes('assets')" v-show="activeTab === 'assets'" class="stack tab-pane">
+        <header class="page-title"><Server :size="15" />资产</header>
+        <AssetsTabContent />
       </section>
       </div>
       </main>
@@ -429,29 +395,6 @@ function selectTheme(value: string) {
   color: var(--text-secondary, var(--app-muted));
 }
 
-// —— 终端排版区 ——
-.terminal-typography-row {
-  display: flex;
-  align-items: flex-end;
-  gap: var(--space-4);
-  flex-wrap: wrap;
-}
-.setting-field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  min-width: 120px;
-}
-
-.autoscroll-toggle {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-sm);
-  color: var(--app-text);
-  cursor: pointer;
-  user-select: none;
-}
 .setting-label {
   font-size: var(--text-xs);
   color: var(--app-muted);
@@ -467,43 +410,6 @@ function selectTheme(value: string) {
 .update-hint {
   font-size: 12px;
   line-height: 1.5;
-}
-
-// —— 主题选择卡片 ——
-.theme-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
-}
-.theme-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  padding: 16px 8px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-sm);
-  background: var(--app-panel-2);
-  color: var(--app-muted);
-  cursor: pointer;
-  font: inherit;
-  font-size: 13px;
-  transition: border-color var(--dur-fast) var(--ease-standard),
-    color var(--dur-fast) var(--ease-standard),
-    background var(--dur-fast) var(--ease-standard),
-    box-shadow var(--dur-fast) var(--ease-standard);
-
-  &:hover {
-    border-color: var(--accent);
-    color: var(--app-strong);
-    background: var(--app-hover);
-  }
-  &.active {
-    border-color: var(--accent);
-    color: var(--accent);
-    background: var(--accent-soft);
-    box-shadow: 0 0 0 1px var(--accent) inset;
-  }
 }
 
 .link-action {

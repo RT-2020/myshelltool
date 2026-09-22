@@ -49,7 +49,8 @@ async function onExport() {
   };
 
   const ok = await clipboard.copy(JSON.stringify(payload, null, 2));
-  workbench.announce(ok ? '资源快照已复制到剪贴板' : '资源快照复制失败，请重试');
+  // level 进 toast：不带 level 的 announce 只写底部状态栏，右栏场景看不到
+  workbench.announce(ok ? '资源快照已复制到剪贴板' : '资源快照复制失败，请重试', { level: ok ? 'success' : 'error' });
 }
 </script>
 

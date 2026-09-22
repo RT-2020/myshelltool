@@ -42,10 +42,10 @@ import TunnelCreateContent from '@/components/shell/TunnelCreateContent.vue';
 import GroupFormsContent from '@/components/shell/GroupFormsContent.vue';
 import FileOpFormsContent from '@/components/shell/FileOpFormsContent.vue';
 import { dispatchModalSubmit, type ModalSubmitContext } from '@/lib/modalSubmit';
-import { cloneAsset, emptyAsset, emptyCredential, emptyTunnelForm } from '@/lib/modalForms';
 import { modalTitleFor } from '@/lib/modalTitles';
 import { useModalDismiss } from '@/composables/useModalDismiss';
 import { useModalView } from '@/composables/useModalView';
+import { useModalFormSync, type EditorDialogViewPayload } from '@/composables/useModalFormSync';
 import type {
   AssetEditorForm,
   ConnectionAssetInput,
@@ -68,23 +68,11 @@ interface ModalExtras extends ModalState {
 }
 
 const store = useWorkbenchStore();
-// ---- editorDialog（编辑器通用弹窗，v0.18）：标题/正文/可选路径输入 + 动态按钮 ----
-// 单一 type 承载编辑器全部弹窗（未保存三选/保存冲突/另存为/上传/草稿恢复/备份列表），
-// 按钮回调在 stores/editor.ts 组装（openDialog），此处只做渲染与回调分发。
-interface EditorDialogViewPayload {
-  title?: string;
-  message?: string;
-  detail?: string;
-  input?: { label: string; placeholder?: string; value?: string };
-  buttons?: { label: string; danger?: boolean; primary?: boolean }[];
-}
 const editorDialog = computed<EditorDialogViewPayload | null>(() =>
   view.value.type === 'editorDialog'
     ? ((view.value.payload as unknown as EditorDialogViewPayload | undefined) ?? {})
     : null
 );
-const editorDialogInput = ref('');
-const editorDialogError = ref('');
 async function runEditorDialog(index: number) {
   if (submitting.value) return;
   if (!editorDialog.value?.buttons?.[index]) return;
@@ -120,40 +108,21 @@ const modal = computed(() => modalRef.value as ModalExtras);
 const { view, closing, onExitAnimationEnd } = useModalView(modal);
 
 // ============================================================
-// Local form state — mirrors the App.vue reactive forms we deleted.
-// All of these are only ever visible while view.type matches their
-// respective branch, so they don't bleed across types.
+// 表单状态 + modal 切换同步：v0.20 拆至 composables/useModalFormSync（S2 刀，
+// 行为零变化；submitting 是提交生命周期态，留在本组件）
 // ============================================================
-const editingAsset = reactive(emptyAsset());
-const editingCredential = reactive(emptyCredential());
-const tunnelForm = reactive(emptyTunnelForm());
-const fileForm = reactive({ mkdirName: '' });
-const renameTarget = reactive({ path: '', current: '', next: '' });
-const keyboardResponses = reactive<Record<string, string>>({});
+const {
+  editingAsset, editingCredential, tunnelForm, fileForm, renameTarget,
+  keyboardResponses, groupInputs, assetFormError, groupFormError, reauthForm,
+  editorDialogInput, editorDialogError, keyboardInstructions
+} = useModalFormSync({ modal, keyboardPrompt, closeTerminalSearchInline: () => store.closeTerminalSearchInline() });
 
-// ---- 分组管理 / 删除确认 表单状态 ----
-// 分组三表单共享输入对象（rename=改名/create=新建/move=移动，submitModal 分发读值）
-const groupInputs = reactive({ rename: '', create: '', move: '' });
-// assetEditor 内联校验错误（替代 window.alert）
-const assetFormError = ref('');
-// 分组表单内联校验错误（renameGroup / createGroup / moveAsset 共用，替代静默 return）
-const groupFormError = ref('');
-// 异步提交进行中：主/副按钮禁用 + spinner，防止重复提交
+// 异步提交进行中：主/副按钮禁用 + spinner，防止重复提交（提交生命周期态，
+// 与表单内容状态不同源——留在本组件而非 composable）
 const submitting = ref(false);
-// reauthPassword：连接失败快捷重认证表单（TerminalSurface 错误卡片入口）
-const reauthForm = reactive({ password: '', error: '' });
-
-// 事实备注：KeyboardInteractivePayload 权威类型（domain.ts）字段为 instruction（单数），
-// 此处历史代码访问 instructions（复数）——与后端契约不一致、运行时恒 undefined 不显示。
-// 按「行为零变化」保留原属性访问路径，仅类型层断言放宽。
-const keyboardInstructions = computed(() =>
-  (keyboardPrompt.value as { instructions?: string | null } | null)?.instructions
-);
 
 // 可选分组列表（资产编辑器与移动分组共用）：显式声明 ∪ 资产现有 group，去重，含「未分组」。
 // AppSelect 选项形态：value 即分组路径（含多级「生产/数据库」），label 同值。
-// 曾用原生 input+datalist：预填当前值时建议被前缀过滤只剩一项，且 WebView2 里
-// 选择后弹层不自动收起——统一换 AppSelect（选择即收起、全量列出已有分组）。
 const groupOptions = computed(() => {
   const set = new Set(['未分组']);
   for (const g of (store.declaredGroups || [])) set.add(g);
@@ -169,68 +138,6 @@ const pendingFileNames = computed(() => {
 const pendingFileNamesMore = computed(() => {
   const names = pendingFileDelete.value?.names || [];
   return names.length > 5 ? names.length - 5 : 0;
-});
-
-// ============================================================
-// Sync form state when modal type changes (mirrors App.vue watch).
-// ============================================================
-watch(() => modal.value.type, type => {
-  // 每次切换弹窗清空分组表单校验错误（避免残留到下一弹窗）
-  groupFormError.value = '';
-  if (type === 'editorDialog') {
-    // 路径输入预填 payload 初始值；错误态每次重开清零
-    const payload = modal.value.payload as unknown as EditorDialogViewPayload | undefined;
-    editorDialogInput.value = payload?.input?.value ?? '';
-    editorDialogError.value = '';
-  }
-  if (type === 'assetEditor') {
-    Object.assign(editingAsset, modal.value.asset ? cloneAsset(modal.value.asset) : emptyAsset());
-    Object.assign(editingCredential, emptyCredential());
-    assetFormError.value = '';
-    // 分组头「+」快捷新增：预填目标分组（仅新建态生效，编辑态以资产自身分组为准）
-    if (!modal.value.asset) {
-      const presetGroup = modal.value.payload?.presetGroup;
-      if (typeof presetGroup === 'string' && presetGroup) editingAsset.group = presetGroup;
-    }
-  }
-  if (type === 'reauthPassword') {
-    reauthForm.password = '';
-    reauthForm.error = '';
-  }
-  if (type === 'renameGroup') {
-    // 默认填入当前分组名的最后一段（方便就地改名）
-    const path = modal.value.path || '';
-    groupInputs.rename = path.split('/').pop() || '';
-  }
-  if (type === 'createGroup') {
-    groupInputs.create = '';
-  }
-  if (type === 'moveAsset') {
-    // 默认填入资产当前分组
-    groupInputs.move = modal.value.asset?.group || '未分组';
-  }
-  if (type === 'tunnelCreate') {
-    Object.assign(tunnelForm, emptyTunnelForm());
-  }
-  if (type === 'mkdir' || type === 'localMkdir') {
-    fileForm.mkdirName = '';
-  }
-  if (type === 'rename' || type === 'localRename') {
-    Object.assign(renameTarget, {
-      path: modal.value.entry?.path || '',
-      current: modal.value.entry?.name || '',
-      next: modal.value.entry?.name || ''
-    });
-  }
-  if (type === 'terminalSearch') {
-    store.closeTerminalSearchInline();
-  }
-  if (type === 'keyboardInteractive') {
-    Object.keys(keyboardResponses).forEach(key => delete keyboardResponses[key]);
-  }
-  if (type === 'confirmCloseAssetWindow') {
-    // 纯确认弹窗（无表单状态）：count/onConfirm 直接读 modal payload
-  }
 });
 
 // ============================================================

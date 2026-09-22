@@ -138,6 +138,10 @@ export async function dispatchModalSubmit(ctx: ModalSubmitContext, type: ModalSt
             // 未选分组统一归「未分组」（normalizeAsset 亦兜底，此处显式表达产品语义）
             group: String(ctx.editingAsset.group || '').trim() || '未分组',
             private_key_path: String(ctx.editingAsset.private_key_path || '').trim() || null,
+            jump_host: String(ctx.editingAsset.jump_host || '').trim() || null,
+            // SSH P1：空 = null（默认）；数字字符串转 u32，非法/<=0 视为 null（不猜）
+            connect_timeout_secs: (() => { const n = Number(String(ctx.editingAsset.connect_timeout_secs ?? '').trim()); return Number.isFinite(n) && n > 0 ? Math.floor(n) : null; })(),
+            keepalive_interval_secs: (() => { const n = Number(String(ctx.editingAsset.keepalive_interval_secs ?? '').trim()); return Number.isFinite(n) && n > 0 ? Math.floor(n) : null; })(),
             tags: splitTags(ctx.editingAsset.tags)
           } as ConnectionAssetInput,
           {

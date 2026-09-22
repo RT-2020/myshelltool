@@ -1,6 +1,12 @@
 {
-  "generatedAt": "2026-09-21T09:45:50.610Z",
+  "generatedAt": "2026-09-22T14:10:59.378Z",
   "entries": [
+    {
+      "version": "0.19.0",
+      "tag": "v0.19.0",
+      "date": "2026-09-21",
+      "notes": "## v0.19.0\n\n_区间: v0.18.0 → v0.19.0_\n\n### ✨ 新功能\n- **files**: 上传区域正下方的上传进度提示条——批次聚合/展开收起/关闭不取消/独立取消与重试\n\n### 🐛 修复\n- **files**: 深层目录上传/刷新后面板跳回登录家目录——refreshRemoteFiles(null) 语义改为「当前面板目录」\n\n### 📚 文档\n- **readme**: 版本演进同步 v0.19.0\n- **log**: 登记 v0.19 进度条与路径跳回修复（目录详解/architecture-log/构建产物 changelog）\n- **release**: 发版技能 latest.json 校验命令补 -L（该 URL 302 重定向，不带 L 拿到空响应易误判 notes 未注入）\n\n### 📦 其他\n- v0.19.0\n"
+    },
     {
       "version": "0.18.0",
       "tag": "v0.18.0",

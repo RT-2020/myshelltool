@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
+import { createToastQueue } from '@/lib/toastQueue';
 import type {
   AssetSaveCredentials,
   BackendStatusState,
@@ -196,63 +197,10 @@ export const useUiStore = defineStore('ui', () => {
   }
 
   // ============================================================
-  // Actions — toast 通知（分级反馈 + 自动消失，上限 5 条）
+  // Actions — toast 通知（v0.20 拆至 lib/toastQueue.ts，语义原样迁移；
+  // statusMessage 注入——状态栏一行字仍归本 store）
   // ============================================================
-  const TOAST_LEVELS: readonly string[] = ['info', 'success', 'warn', 'error'];
-  const toasts = ref<ToastItem[]>([]);
-  let toastSeq = 0;
-  const toastTimers = new Map<number, ReturnType<typeof setTimeout>>();
-
-  function clearToastTimer(id: number) {
-    const timer = toastTimers.get(id);
-    if (timer !== undefined) {
-      clearTimeout(timer);
-      toastTimers.delete(id);
-    }
-  }
-
-  function notify(message: string, opts: NotifyOptions = {}): number | null {
-    // 状态栏保持原有行为：任何 notify 都写入底部一行文字
-    statusMessage.value = message;
-    // 仅带 level 的通知进 toast 队列（announce 不带 level，保持旧行为）
-    if (!opts.level || !TOAST_LEVELS.includes(opts.level)) return null;
-    const id = ++toastSeq;
-    const toast: ToastItem = {
-      id,
-      level: opts.level,
-      message,
-      action: opts.action ?? null,
-      actions: opts.actions
-    };
-    toasts.value.push(toast);
-    // 上限 5 条，超出移除最早一条并清理其 timer
-    if (toasts.value.length > 5) {
-      clearToastTimer(toasts.value[0].id);
-      toasts.value.shift();
-    }
-    scheduleToastDismiss(id, opts);
-    return id;
-  }
-
-  function scheduleToastDismiss(id: number, opts: NotifyOptions) {
-    // 默认时长：info/success 3500ms、warn/error 6000ms、带 action（含 actions 多按钮）8000ms；
-    // opts.duration 可覆盖（下载完成 toast 用 10s 给足点击窗口）。带 action 也可超时消失（保持简单）。
-    let duration: number | undefined = opts.duration;
-    if (typeof duration !== 'number') {
-      const hasAction = Boolean(opts.action) || Boolean(opts.actions && opts.actions.length);
-      duration = hasAction
-        ? 8000
-        : (opts.level === 'warn' || opts.level === 'error' ? 6000 : 3500);
-    }
-    clearToastTimer(id);
-    toastTimers.set(id, setTimeout(() => dismissToast(id), duration));
-  }
-
-  function dismissToast(id: number) {
-    clearToastTimer(id);
-    const idx = toasts.value.findIndex(t => t.id === id);
-    if (idx !== -1) toasts.value.splice(idx, 1);
-  }
+  const { toasts, notify, dismissToast } = createToastQueue(statusMessage);
 
   // ============================================================
   // Actions — 主题

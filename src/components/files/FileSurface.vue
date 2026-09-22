@@ -15,10 +15,13 @@ import { storeToRefs } from 'pinia';
 import { PanelLeft, FolderOpen } from 'lucide-vue-next';
 import { useFilesStore } from '@/stores/files';
 import { useUiStore } from '@/stores/ui';
+import { useEditorStore } from '@/stores/editor';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { getTauriWindow, invokeBackend, isTauriRuntime } from '@/services/backend';
 import { isKnownBinaryExtension } from '@/lib/editor/editorLanguages';
 import { FILE_DRAG_MIME } from '@/lib/fileTypes';
+import { errorMessage } from '@/lib/errorMessage';
+import { resolveSessionForAsset } from '@/lib/filePanel';
 import FileColumn from './FileColumn.vue';
 import UploadProgressStrip from './UploadProgressStrip.vue';
 import AppContextMenu from '@/components/ui/AppContextMenu.vue';
@@ -197,6 +200,62 @@ function toggleLocalPane() {
 // Context menu items — 吸收原 toolbar 下沉功能（刷新 / 新建目录 / 上传 /
 // 列表模式切换 / 显示本地列）。items: [{ label, action, danger, separator, disabled }]
 // ============================================================
+// v0.20（SSH P2）：chmod / readlink——经编辑器通用弹窗（editor store 的 openDialog
+// input 形态现成，v0.18 建立的多用途通道）。
+const editorStore = useEditorStore();
+
+async function chmodViaDialog(entry: RemoteFileEntry) {
+  editorStore.openDialog({
+    title: '修改权限',
+    message: `为 ${entry.name} 设置八进制权限（3-4 位，如 644 / 0755）。当前：${entry.permissions || '未知'}`,
+    input: { label: '八进制权限', placeholder: '644', value: entry.permissions || '' },
+    buttons: [
+      { label: '取消' },
+      {
+        label: '应用',
+        primary: true,
+        action: async (inputValue?: string) => {
+          const mode = (inputValue || '').trim();
+          if (!/^[0-7]{3,4}$/.test(mode) || (mode.length === 4 && mode[0] !== '0')) {
+            return '权限格式无效：期望 3-4 位八进制（如 644 或 0755）';
+          }
+          const session = resolveSessionForAsset(null);
+          // resolveSessionForAsset(null) 取 selectedAsset 的会话——与 sftp 链路一致
+          const err = await invokeBackend<string | null>('sftp_chmod', {
+            sessionId: session?.sessionId ?? '',
+            path: entry.path,
+            mode
+          }).then(() => null).catch(e => String(e));
+          if (err) return `chmod 失败：${err}`;
+          filesStore.refreshRemoteFiles();
+          return null; // null = 关闭弹窗
+        }
+      }
+    ]
+  });
+}
+
+async function showSymlinkTarget(entry: RemoteFileEntry) {
+  const session = resolveSessionForAsset(null);
+  if (!session) {
+    workbench.announce?.('readlink 需要活跃会话', { level: 'warn' });
+    return;
+  }
+  try {
+    const target = await invokeBackend<string>('sftp_readlink', {
+      sessionId: session.sessionId,
+      path: entry.path
+    });
+    editorStore.openDialog({
+      title: '链接目标',
+      message: `${entry.name} → ${target}`,
+      buttons: [{ label: '关闭', primary: true }]
+    });
+  } catch (error) {
+    workbench.announce?.('readlink 失败：' + errorMessage(error), { level: 'error' });
+  }
+}
+
 const contextMenuItems = computed<FileMenuItem[]>(() => {
   if (!contextMenu.value.visible) return [];
   const side = contextMenu.value.side;
@@ -223,7 +282,11 @@ const contextMenuItems = computed<FileMenuItem[]>(() => {
       }
       items.push({ separator: true });
       items.push(make('重命名', () => { uiStore.modal = { type: 'rename', entry } as ModalState; }));
+      items.push(make('修改权限…', () => { void chmodViaDialog(entry); }));
       items.push(make('删除', () => filesStore.removeRemote(entry), { danger: true }));
+      if (entry.kind === 'symlink') {
+        items.push(make('查看链接目标', () => { void showSymlinkTarget(entry); }));
+      }
       items.push({ separator: true });
       items.push(make('复制路径', () => filesStore.copyRemotePath(entry)));
       items.push({ separator: true });

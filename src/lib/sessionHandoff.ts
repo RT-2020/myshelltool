@@ -17,8 +17,6 @@
  * - TEAROFF：主窗口 tab 拖出 → 同资产 asset 窗口 / 新开窗口 adopt；
  * - MERGE_PUSH：asset 窗口「移回主窗口」按钮 → 主窗口 adopt。
  */
-import type { Terminal } from '@xterm/xterm';
-import type { SerializeAddon } from '@xterm/addon-serialize';
 import type { NormalizedConnectionAsset } from '@/types/domain';
 import {
   emitBackendEvent,
@@ -28,6 +26,21 @@ import {
   listenBackendEvent
 } from '../services/backend';
 import { assetWindowLabel, openAssetWindow } from './assetWindows';
+// v0.20（S2 刀）：数据层已拆至 lib/handoffData.ts（类型/scrollback 导出/Rust 中转读写）
+import {
+  SCROLLBACK_MAX_LINES, exportTerminalScrollback, writeHandoffData, readHandoffData,
+  type HandoffSessionEntry, type HandoffSessionsStore, type HandoffWorkbenchStore
+} from './handoffData';
+import { waitMergeAck, waitMergeAckWithGrace, settleMergeAck, isMergeAckPending } from './handoffMergeAck';
+export {
+  exportTerminalText, exportTerminalScrollback, writeHandoffData, readHandoffData,
+  SCROLLBACK_MAX_LINES, MAX_JSON_CHARS
+} from './handoffData';
+export type {
+  HandoffSessionEntry, SessionHandoffData, HandoffSessionsStore, HandoffWorkbenchStore, WriteHandoffDataArgs
+} from './handoffData';
+// v0.20（S2 刀）：MERGE_ACK 等待机制拆至 lib/handoffMergeAck.ts
+export { isMergeAckPending } from './handoffMergeAck';
 
 export const HANDOFF_EVENTS = {
   TEAROFF: 'session-handoff-tearoff',
@@ -39,8 +52,6 @@ export const HANDOFF_EVENTS = {
   MERGE_ACK: 'session-handoff-merge-ack'
 };
 
-const SCROLLBACK_MAX_LINES = 2000;
-const MAX_JSON_CHARS = 1000000; // 单条 handoff 的字符预算（防超大 scrollback 撑爆 IPC）
 
 // ============================================================
 // 窗口身份（模块加载即定，不随运行变化）
@@ -64,138 +75,6 @@ export function getMyWindowId(): string {
       : 'win-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
   }
   return myWindowId;
-}
-
-// ============================================================
-// 数据层：scrollback 导出 + Rust 内存中转读写（TTL 60s 由 Rust 侧管理）
-// ============================================================
-
-/** 迁移协议涉及的 session 最小形状（真实 session 的结构子集，调用方传入协变兼容）。 */
-export interface HandoffSessionEntry {
-  sessionId: string;
-  asset?: NormalizedConnectionAsset | null;
-  oscTitle?: string | null;
-  term?: Terminal | null;
-  serialize?: SerializeAddon | null;
-  unlisten?: (() => void | Promise<void>) | null;
-}
-
-/** 会话迁移数据（Rust 中转 take 的返回 / adoptSession 的入参形状）。 */
-export interface SessionHandoffData {
-  sessionId: string;
-  assetId: string;
-  oscTitle: string;
-  scrollback: string;
-  style?: { fontSize: number; lineHeight: number };
-}
-
-/** 迁移原语所需的最小 sessions store 形状（方法签名双变，真实 store 协变兼容）。 */
-export interface HandoffSessionsStore {
-  sessions: HandoffSessionEntry[];
-  terminalFontSize: number;
-  terminalLineHeight: number;
-  removeSessionEntry(session: HandoffSessionEntry): void;
-  adoptSession(data: SessionHandoffData): Promise<boolean>;
-}
-
-/** 迁移原语所需的最小 workbench store 形状（成员全部可选，防御式调用）。 */
-export interface HandoffWorkbenchStore {
-  announce?(message: string, options?: { level?: string }): unknown;
-  onSessionClosed?(assetId?: string | null): unknown;
-  // 本窗口的在途/排队传输（workbench.activeTransfers）。移交守据（见
-  // pushSessionToMainWindow）：会话移走后本窗口即销毁，在途传输依赖的写入句柄
-  // 还没跑完清理代码就连同 JS 上下文一起消失，句柄变成无人认领的孤儿。
-  // 可选成员：asset 窗口外的调用方（如主窗口 tearoff 路径）传的 store 无需提供。
-  activeTransfers?: unknown[];
-}
-
-// 遍历 normal buffer 导出纯文本（serialize addon 不可用时的回退）。已知限制：
-// 不处理 isWrapped 软换行（超宽行会被拆成多行还原）；alternate buffer 场景
-// （vim/less 中拖出）只能还原进 alt 前的 normal 内容。
-export function exportTerminalText(term?: Terminal | null, maxLines: number = SCROLLBACK_MAX_LINES): string {
-  const buffer = term?.buffer?.normal;
-  if (!buffer) return '';
-  const lines: string[] = [];
-  for (let i = 0; i < buffer.length; i++) {
-    lines.push(buffer.getLine(i)?.translateToString(true) ?? '');
-  }
-  // 去尾部空行（translateToString(true) 已 trimRight，空行即 ''）
-  while (lines.length && lines[lines.length - 1] === '') lines.pop();
-  const start = Math.max(0, lines.length - maxLines);
-  return lines.slice(start).join('\r\n');
-}
-
-// 跨窗口迁移导出（优先路径）：SerializeAddon 序列化 scrollback 为带 SGR
-// 颜色/样式的文本，回放后 prompt 等 ANSI 色得以保留（曾用纯文本导出，迁移后
-// 终端历史整体褪成默认前景色——用户实测「debian@debian:~ 蓝色 prompt 变白」）。
-// excludeModes：不带源终端 mode 状态（光标形状等，回放端不该继承）；
-// excludeAltBuffer：拖出时正在 vim/less 只还原 normal buffer（与旧语义一致）。
-export function exportTerminalScrollback(session?: HandoffSessionEntry | null, maxLines: number = SCROLLBACK_MAX_LINES): string {
-  if (session?.serialize) {
-    try {
-      const text = session.serialize.serialize({
-        scrollback: maxLines,
-        excludeModes: true,
-        excludeAltBuffer: true
-      });
-      if (text) return text;
-    } catch { /* serialize 失败回退纯文本（老会话对象无 addon 等） */ }
-  }
-  return exportTerminalText(session?.term, maxLines);
-}
-
-// 写入 Rust 中转。字符预算：scrollback 超预算时从头部按 500 行步进截断
-// （Rust 内存无配额，无需 localStorage 时代的 quota 重试）。
-// style（可选）：终端渲染样式快照（fontSize/lineHeight/themeMode）——每个窗口
-// 独立 webview + 独立 localStorage 缓存（WebView2 跨窗口非实时），目标窗口
-// 读到的可能是陈旧设置；迁移携带源窗口实际值，adopt 时所见即所得还原。
-export interface WriteHandoffDataArgs {
-  sessionId: string;
-  assetId?: string | null;
-  scrollback?: string | null;
-  oscTitle?: string | null;
-  style?: { fontSize?: number; lineHeight?: number } | null;
-}
-
-export async function writeHandoffData({ sessionId, assetId, scrollback, oscTitle, style }: WriteHandoffDataArgs): Promise<void> {
-  const meta: {
-    sessionId: string;
-    assetId: string;
-    oscTitle: string;
-    style?: { fontSize: number; lineHeight: number };
-  } = {
-    sessionId: String(sessionId),
-    assetId: String(assetId || ''),
-    oscTitle: String(oscTitle || '')
-  };
-  if (style) {
-    meta.style = {
-      fontSize: Number(style.fontSize) || 12,
-      lineHeight: Number(style.lineHeight) || 1
-      // themeMode 不再携带：终端始终深色，与 app 主题解耦（见 terminalThemes.js）
-    };
-  }
-  let lines = String(scrollback || '').split('\r\n');
-  let json = JSON.stringify({ ...meta, scrollback: lines.join('\r\n') });
-  while (json.length > MAX_JSON_CHARS && lines.length > 0) {
-    lines = lines.length <= 500 ? [] : lines.slice(500);
-    // 带 SGR 的序列化是 delta 式（颜色变化才发序列），从头部截断会令后续行
-    // 丢失颜色前序——prepend reset 使其回落默认色，避免继承错色
-    json = JSON.stringify({
-      ...meta,
-      scrollback: lines.length ? '\x1b[0m\r\n' + lines.join('\r\n') : ''
-    });
-  }
-  await invokeBackend('session_handoff_put', { payload: JSON.parse(json) });
-}
-
-// 读取即原子取出（take 即删，防多窗口重复 adopt）；失败/缺失/过期一律 null。
-export async function readHandoffData(sessionId: string): Promise<SessionHandoffData | null> {
-  try {
-    return await invokeBackend<SessionHandoffData>('session_handoff_take', { sessionId }) || null;
-  } catch {
-    return null;
-  }
 }
 
 // ============================================================
@@ -380,83 +259,6 @@ export async function announceHandoffReady(assetId?: string): Promise<void> {
 /** 测试/诊断用：当前已知就绪的窗口 label。 */
 export function listReadyWindows(): string[] {
   return [...readyWindows];
-}
-
-// ============================================================
-// MERGE_ACK 等待（asset 窗口侧）：push 后挂起等主窗口回执，超时兜底
-// ============================================================
-interface MergeAckResult {
-  ok: boolean;
-  reason?: string;
-}
-
-interface PendingAckEntry {
-  resolve: (result: MergeAckResult) => void;
-  timer: ReturnType<typeof setTimeout> | null;
-}
-
-const pendingAcks = new Map<string, PendingAckEntry>(); // sessionId -> { resolve, timer }
-
-/**
- * 主窗口接管回执的等待上限（v2.6：6s → 20s，另加 10s 宽限轮询）。
- *
- * 旧值 6000ms 把「ACK 还没来」当成「主窗口没接管」：主窗口最小化时
- * `adoptSession` 里的 requestAnimationFrame 被节流、首次 adopt 还要冷加载 xterm 与
- * 分帧回放，很容易超过 6s → 弹「移回失败」但主窗口稍后**仍然接管成功**，变成两个窗口
- * 同时监听同一会话（用户之后关 asset 窗口还会把主窗口正在用的连接断掉）。
- * 20s + 宽限轮询覆盖冷启动与节流场景；已知残留：ACK 在宽限期之后才到时本窗口不会
- * 自动移交（超时文案已改为「尚未确认」并说明可从主窗口继续使用，不再谎报失败）。
- */
-const MERGE_ACK_TIMEOUT_MS = 20000;
-
-async function waitMergeAck(sessionId: string, timeoutMs = MERGE_ACK_TIMEOUT_MS): Promise<MergeAckResult> {
-  return new Promise(resolve => {
-    const entry: PendingAckEntry = { resolve, timer: null };
-    entry.timer = setTimeout(() => {
-      pendingAcks.delete(sessionId);
-      resolve({ ok: false, reason: 'timeout' });
-    }, timeoutMs);
-    pendingAcks.set(sessionId, entry);
-  });
-}
-
-function settleMergeAck(sessionId: string, result: MergeAckResult): boolean {
-  const entry = pendingAcks.get(sessionId);
-  if (!entry) return false;
-  pendingAcks.delete(sessionId);
-  clearTimeout(entry.timer!);
-  entry.resolve(result);
-  return true;
-}
-
-/** 是否仍在等这条会话的 MERGE_ACK（未超时/未被 settle）。 */
-export function isMergeAckPending(sessionId: string): boolean {
-  return pendingAcks.has(sessionId);
-}
-
-/**
- * 等待 ACK 的 Promise **或** 一个宽限轮询（谁先有结果用谁）。
- *
- * 为什么需要轮询：ACK 到达时 `settleMergeAck` 会 resolve 原 Promise；但如果上游因
- * 别的原因提前放弃了那个 Promise（旧实现的 6s 超时即如此），late ACK 就没人接。
- * 宽限期版本让「主窗口慢但在推进」的场景能自我纠正。
- */
-function waitMergeAckWithGrace(sessionId: string, primary: Promise<MergeAckResult>, graceMs = 10000): Promise<MergeAckResult> {
-  return new Promise(resolve => {
-    let done = false;
-    const finish = (result: MergeAckResult) => {
-      if (done) return;
-      done = true;
-      clearInterval(poll);
-      resolve(result);
-    };
-    const poll = setInterval(() => {
-      // ACK 在宽限期内到达 → 主窗口确实接管了；原 Promise 可能已被超时弃用
-      if (!pendingAcks.has(sessionId)) finish({ ok: true, reason: 'late-ack' });
-    }, 250);
-    void primary.then(finish);
-    setTimeout(() => finish({ ok: false, reason: 'timeout' }), graceMs);
-  });
 }
 
 // asset 窗口标题栏「移回主窗口」（v2.4 ACK 协议）：

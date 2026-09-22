@@ -408,6 +408,18 @@ export const useAssetsStore = defineStore('assets', () => {
     githubPatConfigured.value = Boolean(status.exists);
   }
 
+  // ============================================================
+  // v0.20（SSH P0-1）：OpenSSH config 导入对话框开关。
+  // 预览/导入流程在 lib/sshImport.ts（store 只持状态——450+ 行贴线纪律）。
+  // ============================================================
+  const importDialogOpen = ref(false);
+  function openImportDialog() {
+    importDialogOpen.value = true;
+  }
+  function closeImportDialog() {
+    importDialogOpen.value = false;
+  }
+
   return {
     // state
     assetSource,
@@ -415,6 +427,7 @@ export const useAssetsStore = defineStore('assets', () => {
     selectedAssetId,
     githubPatConfigured,
     declaredGroups,
+    importDialogOpen,
     // computed
     selectedAsset,
     groupedAssets,
@@ -445,6 +458,9 @@ export const useAssetsStore = defineStore('assets', () => {
     reorderGroups,
     saveToken,
     deleteToken,
-    refreshGithubPatStatus
+    refreshGithubPatStatus,
+    // v0.20（SSH P0-1）导入
+    openImportDialog,
+    closeImportDialog
   };
 });

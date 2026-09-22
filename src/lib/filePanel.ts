@@ -15,6 +15,25 @@ import type {
 import { invokeBackend, isTauriRuntime } from '@/services/backend';
 import { joinLocalPath, joinPath, parentLocalPath, parentPath, remotePathForAsset } from '@/stores/workbench';
 import { errorMessage } from '@/lib/errorMessage';
+import { bindFilePanelLocal, refreshLocalFiles, navigateLocalPath } from '@/lib/filePanelLocal';
+import { bindFileListView, ls, bindRemoteListState } from '@/lib/fileListView';
+import { bindFileDeleteDeps } from '@/lib/fileDelete';
+
+// v0.20（S2 刀）：本地域与删除链已按域拆出，调用方路径不变（经下方 re-export）。
+export {
+  navigateLocalUp, localMkdir, localRename, setLocalViewMode
+} from './filePanelLocal';
+// refreshLocalFiles / navigateLocalPath 已值 import（bind 与 goToManualLocalPath 消费），re-export 由下方统一转发
+export { refreshLocalFiles, navigateLocalPath };
+export { removeRemote, localDelete, batchRemoteDelete, confirmFileDelete, cancelFileDelete } from './fileDelete';
+export {
+  computeFiltered, sortEntries,
+  toggleRemoteSelection, selectAllRemote, clearRemoteSelection,
+  toggleLocalSelection, selectAllLocal, clearLocalSelection,
+  setRemoteSort, setRemoteFilter, setRemoteListMode, setLocalListMode
+} from './fileListView';
+export { bindRemoteListState };
+export type { RemoteListViews, RemoteListState } from './fileListView';
 import type {
   FileOperationEntry,
   FilesSessionLike,
@@ -49,6 +68,18 @@ let bound: FilePanelContext | null = null;
 
 export function bindFilePanelContext(ctx: FilePanelContext): void {
   bound = ctx;
+  // v0.20（S2 刀）：本地域与删除链已拆出（filePanelLocal / fileDelete），级联注入
+  // 同一 ctx 与跨域依赖（函数引用惰性调用，bind 时序无关）。
+  bindFilePanelLocal(ctx);
+  bindFileListView(pc);
+  bindFileDeleteDeps({
+    pc,
+    getActiveSession,
+    noSessionMessage,
+    refreshRemoteFiles,
+    refreshLocalFiles,
+    ls
+  });
 }
 
 function pc(): FilePanelContext {
@@ -158,7 +189,7 @@ async function doRefreshRemoteFiles(path: string | null = null, { silent = false
           privateKeyPath: asset.private_key_path,
           passphrase: null,
           passphraseCredentialId: asset.passphrase_credential_id || null,
-          privateKeyCredentialId: asset.private_key_credential_id || null,
+          privateKeyCredentialId: asset.private_key_credential_id || null, jumpHost: asset.jump_host || null, connectTimeoutSecs: asset.connect_timeout_secs ?? null, keepaliveIntervalSecs: asset.keepalive_interval_secs ?? null,
           path: targetPath
         });
       } finally {
@@ -384,359 +415,10 @@ export async function renameRemote(entry: RemoteFileEntry, newName: string) {
   }
 }
 
-// ------------------------------------------------------------
-// 删除确认链（统一走 GlobalModals，禁止 window.confirm）
-// removeRemote / localDelete / batchRemoteDelete 只组装 pendingFileDelete
-// 并弹 confirmFileDelete modal；confirmFileDelete 执行真正删除。
-// ------------------------------------------------------------
-function openFileDeleteConfirm(kind: 'remote' | 'local', paths: string[], names: string[]) {
-  pc().pendingFileDelete.value = {
-    kind,
-    paths,
-    names,
-    // 仅远程删除需要归属：本地删除与资产无关
-    assetId: kind === 'remote' ? (pc().wb().selectedAsset?.id ?? null) : null
-  };
-  pc().wb().modal = { type: 'confirmFileDelete' };
-}
-
-export function removeRemote(entry: RemoteFileEntry) {
-  const session = getActiveSession();
-  if (!session) {
-    pc().announce(noSessionMessage('删除'), { level: 'warn' });
-    return;
-  }
-  openFileDeleteConfirm('remote', [entry.path], [entry.name]);
-}
-
-export function localDelete(paths?: string[] | null) {
-  if (!paths?.length) return;
-  const names = paths.map(p => pc().localEntries.value.find(e => e.path === p)?.name || p);
-  openFileDeleteConfirm('local', [...paths], names);
-}
-
-export function batchRemoteDelete() {
-  const paths = Array.from(ls().selectedRemote.value);
-  if (!paths.length) return;
-  const session = getActiveSession();
-  if (!session) {
-    pc().announce(noSessionMessage('删除'), { level: 'warn' });
-    return;
-  }
-  const names = paths.map(p => pc().remoteEntries.value.find(e => e.path === p)?.name || p);
-  openFileDeleteConfirm('remote', paths, names);
-}
-
-/**
- * 删除结果播报：数字一律用【实际成功删除数】。弹窗期间面板刷新/切换资产后
- * remoteEntries/localEntries 里可能已找不到这些 path（实际删 0 个），照用户
- * 选中数播报会让用户误以为已删掉——有跳过项必须降级 warn 并说明原因。
- */
-function announceDeleteResult(label: string, removed: number, skipped: number) {
-  if (skipped > 0) {
-    pc().announce(
-      removed > 0
-        ? '已删除' + label + ' ' + removed + ' 项，跳过 ' + skipped + ' 项（已不在当前列表中）'
-        : '未删除任何项：' + skipped + ' 项均已不在当前列表中，请刷新后重试',
-      { level: 'warn' }
-    );
-    return;
-  }
-  pc().announce('已删除' + label + ' ' + removed + ' 项', { level: 'success' });
-}
-
-export async function confirmFileDelete() {
-  const pending = pc().pendingFileDelete.value;
-  if (!pending) return;
-  const { kind, paths, assetId } = pending;
-  // 实际成功删除数由循环内累加（跳过项不算），用于播报真实结果
-  let removed = 0;
-  try {
-    if (kind === 'remote') {
-      // 归属校验：弹窗打开期间若切换了资产，这些 path 已属于另一台机器。
-      // 两台存在同名绝对路径时会删错服务器，因此这里直接拒绝而不是"尽力而为"。
-      if ((pc().wb().selectedAsset?.id ?? null) !== assetId) {
-        pc().announce('已切换资产，取消删除以免误删其它服务器上的同名文件（请重新选择后删除）', { level: 'warn' });
-        pc().pendingFileDelete.value = null;
-        pc().wb().modal = { type: null };
-        return;
-      }
-      const session = getActiveSession();
-      if (!session) {
-        pc().announce(noSessionMessage('删除'), { level: 'warn' });
-        return;
-      }
-      await pc().withFileOperation('remote', '正在删除远程文件...', async () => {
-        for (const path of paths) {
-          const entry = pc().remoteEntries.value.find(e => e.path === path);
-          if (!entry) continue;
-          await invokeBackend('sftp_remove', { sessionId: session.sessionId, path, kind: entry.kind });
-          removed += 1;
-        }
-        if (paths.length > 1) ls().selectedRemote.value = new Set();
-        await refreshRemoteFiles(pc().remotePath.value);
-      });
-      announceDeleteResult('远程', removed, paths.length - removed);
-    } else {
-      await pc().withFileOperation('local', '正在删除本地文件...', async () => {
-        for (const path of paths) {
-          const entry = pc().localEntries.value.find(e => e.path === path);
-          if (!entry) continue;
-          await invokeBackend('fs_local_delete', { path, kind: entry.kind });
-          removed += 1;
-        }
-        await refreshLocalFiles(pc().localPath.value);
-      });
-      announceDeleteResult('本地', removed, paths.length - removed);
-    }
-    pc().pendingFileDelete.value = null;
-    pc().wb().modal = { type: null };
-  } catch (error) {
-    // 删除失败：保留 pending 与弹窗，用户可直接重试（不做静默失败）
-    pc().announce('删除失败：' + errorMessage(error), { level: 'error' });
-  }
-}
-
-export function cancelFileDelete() {
-  pc().pendingFileDelete.value = null;
-  pc().wb().modal = { type: null };
-}
-
 // ============================================================
-// Local fs_local_* 操作
+// 列表视图域（v0.20 拆至 lib/fileListView.ts，S2 刀：排序/过滤视图 + 多选 + 视图模式；
+// ls 经值 import 共享，pc 经 bind 注入避免 import 环）
 // ============================================================
-export async function refreshLocalFiles(path: string | null = null) {
-  if (!isTauriRuntime()) {
-    pc().announce('本地浏览需要桌面客户端（npm run tauri:dev）', { level: 'warn' });
-    return;
-  }
-  try {
-    await pc().withFileOperation('local', '正在读取本地目录...', async () => {
-      const target = path !== null ? path : (pc().localPath.value || await invokeBackend<string>('fs_local_home_dir'));
-      const result = await invokeBackend<LocalDirectoryListResult>('fs_local_list_dir', { path: target });
-      pc().localPath.value = result.path;
-      pc().localEntries.value = result.entries || [];
-    });
-  } catch (error) {
-    pc().announce('本地目录读取失败：' + errorMessage(error), { level: 'error' });
-  }
-}
-
-export async function navigateLocalPath(target: string) {
-  if (!target) return;
-  await refreshLocalFiles(target);
-}
-
-export async function navigateLocalUp() {
-  if (!pc().localPath.value) return;
-  try {
-    const result = await pc().withFileOperation('local', '正在读取本地目录...', () =>
-      invokeBackend<LocalDirectoryListResult>('fs_local_list_dir', { path: pc().localPath.value })
-    );
-    if (!result.parent || result.parent === pc().localPath.value) {
-      pc().announce('已是根目录');
-      return;
-    }
-    await refreshLocalFiles(result.parent);
-  } catch (error) {
-    pc().announce('返回上级失败：' + errorMessage(error));
-  }
-}
-
-export async function localMkdir(name: string) {
-  if (!name?.trim()) {
-    pc().announce('目录名不能为空', { level: 'warn' });
-    return;
-  }
-  try {
-    await pc().withFileOperation('local', '正在创建本地目录...', async () => {
-      const target = joinLocalPath(pc().localPath.value, name.trim());
-      await invokeBackend('fs_local_mkdir', { path: target });
-      await refreshLocalFiles(pc().localPath.value);
-    });
-    pc().announce('已创建本地目录：' + name.trim(), { level: 'success' });
-  } catch (error) {
-    pc().announce('创建本地目录失败：' + errorMessage(error), { level: 'error' });
-    throw error;
-  }
-}
-
-export async function localRename(oldPath: string, newName: string) {
-  if (!newName?.trim()) {
-    pc().announce('新名称不能为空', { level: 'warn' });
-    return;
-  }
-  try {
-    await pc().withFileOperation('local', '正在重命名本地文件...', async () => {
-      const newPath = joinLocalPath(parentLocalPath(oldPath), newName.trim());
-      await invokeBackend('fs_local_rename', { oldPath, newPath });
-      await refreshLocalFiles(pc().localPath.value);
-    });
-    pc().announce('已重命名：' + newName.trim(), { level: 'success' });
-  } catch (error) {
-    pc().announce('重命名失败：' + errorMessage(error), { level: 'error' });
-    throw error;
-  }
-}
-
-export function setLocalViewMode(mode: string) {
-  if (mode !== 'queue' && mode !== 'browser') return;
-  pc().localViewMode.value = mode;
-  if (mode === 'browser' && !pc().localEntries.value.length) refreshLocalFiles().catch(() => null);
-}
-
-// ============================================================
-// 列表视图域（排序/过滤视图 + 多选/视图模式，v2.8 第五轮自 shell 迁入）
-// ============================================================
-
-/** 视图状态由 shell 持有并经 bindRemoteListState 注入（箭头/refs 取值恒新）。 */
-export interface RemoteListViews {
-  filtered: RemoteFileEntry[];
-  sorted: RemoteFileEntry[];
-}
-interface RemoteListState {
-  filter: { value: string };
-  sortKey: { value: string };
-  sortDir: { value: string };
-  lastRemote: { value: number };
-  lastLocal: { value: number };
-  selectedRemote: { value: Set<string> };
-  selectedLocal: { value: Set<string> };
-  remoteEntries: { value: RemoteFileEntry[] };
-  listMode: { value: string };
-  localListMode: { value: string };
-}
-
-let st: RemoteListState | null = null;
-
-export function bindRemoteListState(state: RemoteListState): void {
-  st = state;
-}
-
-function ls(): RemoteListState {
-  if (!st) throw new Error('filePanel 列表视图状态未绑定（files store 未初始化）');
-  return st;
-}
-
-/** 排序/过滤视图（原 shell 的 filteredRemoteEntries/sortedRemoteEntries computed，逐句迁移）。 */
-export function computeFiltered(): RemoteFileEntry[] {
-  const q = ls().filter.value.trim().toLowerCase();
-  if (!q) return ls().remoteEntries.value;
-  return ls().remoteEntries.value.filter(e => e.name.toLowerCase().includes(q));
-}
-
-export function sortEntries(filtered: RemoteFileEntry[]): RemoteFileEntry[] {
-  const key = ls().sortKey.value;
-  const dir = ls().sortDir.value === 'asc' ? 1 : -1;
-  // 类型推断：目录→DIR / 符号链接→LNK / 普通文件→扩展名大写（无扩展名→FILE）。
-  const typeOf = (e: RemoteFileEntry) => {
-    if (e.kind === 'directory') return 'DIR';
-    if (e.kind === 'symlink') return 'LNK';
-    const dot = e.name.lastIndexOf('.');
-    if (dot <= 0 || dot === e.name.length - 1) return 'FILE';
-    return e.name.slice(dot + 1).toUpperCase();
-  };
-  // 用户:组 组合串用于排序。
-  const ownerOf = (e: RemoteFileEntry) => [e.user || '', e.group || ''].join(':');
-  const cmp = (a: RemoteFileEntry, b: RemoteFileEntry) => {
-    const aDir = a.kind === 'directory' ? 0 : 1;
-    const bDir = b.kind === 'directory' ? 0 : 1;
-    if (aDir !== bDir) return aDir - bDir;
-    let av: number | string;
-    let bv: number | string;
-    if (key === 'size') { av = a.size || 0; bv = b.size || 0; }
-    else if (key === 'modified') { av = Number(a.modified) || 0; bv = Number(b.modified) || 0; }
-    else if (key === 'type') { av = typeOf(a); bv = typeOf(b); }
-    else if (key === 'permissions') {
-      // 权限按八进制数值排（缺权限当作 0）。
-      av = a.permissions ? parseInt(a.permissions, 8) || 0 : 0;
-      bv = b.permissions ? parseInt(b.permissions, 8) || 0 : 0;
-    }
-    else if (key === 'owner') { av = ownerOf(a); bv = ownerOf(b); }
-    else { av = a.name.toLowerCase(); bv = b.name.toLowerCase(); }
-    if (av < bv) return -1 * dir;
-    if (av > bv) return 1 * dir;
-    return 0;
-  };
-  return [...filtered].sort(cmp);
-}
-
-  // ============================================================
-  // Remote 多选 / 排序 / 过滤
-  // ============================================================
-  export function toggleRemoteSelection(path: string, { additive = false, range = false } = {}) {
-    const list = sortEntries(computeFiltered());
-    const idx = list.findIndex(e => e.path === path);
-    if (range && ls().lastRemote.value >= 0 && idx >= 0) {
-      const [start, end] = [ls().lastRemote.value, idx].sort((a, b) => a - b);
-      const next = new Set(ls().selectedRemote.value);
-      for (let i = start; i <= end; i++) next.add(list[i].path);
-      ls().selectedRemote.value = next;
-      return;
-    }
-    const next = new Set(additive ? ls().selectedRemote.value : []);
-    if (next.has(path)) next.delete(path);
-    else next.add(path);
-    ls().selectedRemote.value = next;
-    ls().lastRemote.value = idx;
-  }
-
-  export function selectAllRemote() {
-    ls().selectedRemote.value = new Set(sortEntries(computeFiltered()).map(e => e.path));
-  }
-
-  export function clearRemoteSelection() {
-    if (ls().selectedRemote.value.size) ls().selectedRemote.value = new Set();
-    ls().lastRemote.value = -1;
-  }
-
-  export function toggleLocalSelection(path: string, { additive = false, range = false } = {}) {
-    const list = pc().localEntries.value;
-    const idx = list.findIndex(e => e.path === path);
-    if (range && ls().lastLocal.value >= 0 && idx >= 0) {
-      // shift 范围多选：与远程 range 逻辑同构（参照 toggleRemoteSelection）
-      const [start, end] = [ls().lastLocal.value, idx].sort((a, b) => a - b);
-      const next = new Set(ls().selectedLocal.value);
-      for (let i = start; i <= end; i++) next.add(list[i].path);
-      ls().selectedLocal.value = next;
-      return;
-    }
-    const next = new Set(additive ? ls().selectedLocal.value : []);
-    if (next.has(path)) next.delete(path);
-    else next.add(path);
-    ls().selectedLocal.value = next;
-    ls().lastLocal.value = idx;
-  }
-
-  export function selectAllLocal() {
-    ls().selectedLocal.value = new Set(pc().localEntries.value.map(e => e.path));
-  }
-
-  export function clearLocalSelection() {
-    if (ls().selectedLocal.value.size) ls().selectedLocal.value = new Set();
-  }
-
-  export function setRemoteSort(key: string) {
-    if (ls().sortKey.value === key) {
-      ls().sortDir.value = ls().sortDir.value === 'asc' ? 'desc' : 'asc';
-    } else {
-      ls().sortKey.value = key;
-      ls().sortDir.value = 'asc';
-    }
-  }
-
-  export function setRemoteFilter(query: string) {
-    ls().filter.value = query;
-  }
-
-  export function setRemoteListMode(mode: string) {
-    if (mode === 'compact' || mode === 'detailed') ls().listMode.value = mode;
-  }
-
-  export function setLocalListMode(mode: string) {
-    if (mode === 'compact' || mode === 'detailed') ls().localListMode.value = mode;
-  }
-
   export function setManualRemotePath(value: string) {
     pc().manualRemotePathInput.value = value;
   }

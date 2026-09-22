@@ -56,7 +56,9 @@ export async function openPrivateKeyFileDialog(): Promise<string | null> {
       multiple: false,
       directory: false,
       filters: [
-        { name: 'SSH 私钥', extensions: ['pem', 'key', 'openssh', 'id_rsa', 'id_ed25519', 'ppk'] },
+        // 注意：不含 ppk——后端 decode_secret_key（ssh-key crate）不解析 PuTTY PPK 格式，
+        // 列出来会让用户选中后必然报错（UI 承诺了做不到的能力）。PPK 支持待后端解析能力落地后再加回。
+        { name: 'SSH 私钥', extensions: ['pem', 'key', 'openssh', 'id_rsa', 'id_ed25519'] },
         { name: '所有文件', extensions: ['*'] }
       ]
     }
@@ -177,7 +179,10 @@ export function normalizeAsset(item?: Record<string, any>): NormalizedConnection
     last_connected: String(item?.last_connected || item?.lastConnected || '从未'),
     credential_id: item?.credential_id || item?.credentialId || null,
     passphrase_credential_id: item?.passphrase_credential_id || item?.passphraseCredentialId || null,
-    private_key_credential_id: item?.private_key_credential_id || item?.privateKeyCredentialId || null
+    private_key_credential_id: item?.private_key_credential_id || item?.privateKeyCredentialId || null,
+    jump_host: item?.jump_host || item?.jumpHost || null,
+    connect_timeout_secs: item?.connect_timeout_secs ?? item?.connectTimeoutSecs ?? null,
+    keepalive_interval_secs: item?.keepalive_interval_secs ?? item?.keepaliveIntervalSecs ?? null
   };
 }
 
