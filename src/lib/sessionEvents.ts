@@ -5,7 +5,7 @@
  * 路由契约（跨窗口）：Rust app.emit 是全局广播，各窗口独立 Pinia 实例都收到
  * 同一份事件；认领条件 = 本窗口有 connecting 会话或在途一次性连接，不认领即
  * 静默跳过（属正确的窗口路由，不是吞错误）。绑定式 context；绑定即注册
- * hostKey/keyboard 监听与 65s 超时 watcher（detached effectScope，防嵌套
+ * hostKey/keyboard 监听与 58s 超时 watcher（detached effectScope，防嵌套
  * 实例化时 activeEffect 为 null 崩溃——原注释语义保留）。
  */
 import { effectScope, watch, type Ref } from 'vue';
@@ -48,8 +48,8 @@ function ec(): SessionEventsContext {
 }
 
 /**
- * 绑定 store 上下文并立即注册 hostKey/keyboard 监听与 65s 超时 watcher。
- * 65s watcher 用 detached effectScope：sessions store 被嵌套实例化时外层
+ * 绑定 store 上下文并立即注册 hostKey/keyboard 监听与 58s 超时 watcher。
+ * 58s watcher 用 detached effectScope：sessions store 被嵌套实例化时外层
  * scope 未激活，watch() 会因 activeEffect === null 崩溃（原注释语义保留）。
  */
 export function bindSessionEventsContext(ctx: SessionEventsContext): void {
@@ -77,7 +77,10 @@ export function bindSessionEventsContext(ctx: SessionEventsContext): void {
       _ensureHostKeyListeners();
     }
 
-    // hostKeyPrompt 65s 自动清理（与后端 60s 超时对齐 + 5s 缓冲）
+    // hostKeyPrompt 58s 自动清理（v0.20 修复：必须**早于**后端 60s 超时——
+    // 原为 65s（60s+5s 缓冲），但缓冲加在了后端之后，制造出 60~65s 的
+    // 「弹窗仍可点、确认必失败」窗口（真机验收 2026-09-23 实测踩中）。
+    // 改为 58s：超时即关窗并提示重连，用户在弹窗可点期间确认必然有效。
     // CRITICAL Critic 改进 2：watcher + hostKeyTimeout 闭包必须随 sshConfirmHostKey 一起迁移
     watch(ctx.hostKeyPrompt, prompt => {
       if (hostKeyTimeout) {
@@ -89,9 +92,9 @@ export function bindSessionEventsContext(ctx: SessionEventsContext): void {
           if (ctx.hostKeyPrompt.value) {
             ctx.hostKeyPrompt.value = null;
             ctx.setModal({ type: null, asset: null });
-            ctx.announce('主机密钥验证超时（65秒未响应），请重新连接', { level: 'warn' });
+            ctx.announce('主机密钥验证超时（58秒未响应，连接已被中止），请重新连接', { level: 'warn' });
           }
-        }, 65000);
+        }, 58000);
       }
     });
   });
