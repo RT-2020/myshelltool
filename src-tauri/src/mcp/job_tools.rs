@@ -115,13 +115,25 @@ async fn run_job(ctx: &McpToolContext, asset: &myshelltool_core::ConnectionAsset
     let output = crate::ssh::exec_command_once(&handle, command).await;
     match output {
         Ok(out) => {
+            // v0.20（S9 真机验收修正）：断连取消时 exec 的 channel wait 收到 Close
+            // 自然结束循环，返回 **Ok**（exit_code=None）而非 Err——Err 分支的取消
+            // 检测覆盖不到。Ok 分支同样要查 cancel_requested：置位则收敛 Cancelled
+            // （exit_code unknown），否则才记 Done。
             let mut body = out.stdout;
             if !out.stderr.is_empty() {
                 body.push_str("\n--- stderr ---\n");
                 body.push_str(&out.stderr);
             }
             super::job_store::append_output(&job_id, body.as_bytes()).await;
-            super::job_store::settle(&job_id, super::job_store::JobStatus::Done, out.exit_code, None).await;
+            let cancelled = super::job_store::snapshot(&job_id)
+                .await
+                .map(|s| s.cancel_requested)
+                .unwrap_or(false);
+            if cancelled {
+                super::job_store::settle(&job_id, super::job_store::JobStatus::Cancelled, None, None).await;
+            } else {
+                super::job_store::settle(&job_id, super::job_store::JobStatus::Done, out.exit_code, None).await;
+            }
         }
         Err(e) => {
             // 区分取消与失败：cancel_requested 已置 → 用户取消
