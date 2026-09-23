@@ -139,7 +139,14 @@ async function doRefreshRemoteFiles(path: string | null = null, { silent = false
   try {
     await pc().withFileOperation('remote', '正在读取远程目录...', async () => {
       const asset = pc().wb().selectedAsset;
-      if (!asset) return;
+      if (!asset) {
+        // v0.20 修复（2026-09-23）：无选中资产时静默 return 会表现为「点刷新毫无
+        // 反应」（连 loading 都立即结束）——明确提示用户先选资产，不再静默吞掉。
+        if (!silent) {
+          pc().announce('请先在左侧选择要浏览的资产，再刷新远程目录', { level: 'warn' });
+        }
+        return;
+      }
       // path=null 的语义 = 「刷新当前面板目录」（与 refreshLocalFiles 的本地侧一致）。
       // 只允许面板未加载（remotePath 为空）时回落到服务器默认目录——空 path 会让
       // 后端 canonicalize(".") 解析出登录家目录；若面板已加载仍传空，上传批次收尾/

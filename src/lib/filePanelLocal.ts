@@ -22,7 +22,7 @@ function pc(): FilePanelContext {
   return ctx;
 }
 
-export async function refreshLocalFiles(path: string | null = null) {
+async function doRefreshLocalFiles(path: string | null = null) {
   if (!isTauriRuntime()) {
     pc().announce('本地浏览需要桌面客户端（npm run tauri:dev）', { level: 'warn' });
     return;
@@ -37,6 +37,26 @@ export async function refreshLocalFiles(path: string | null = null) {
   } catch (error) {
     pc().announce('本地目录读取失败：' + errorMessage(error), { level: 'error' });
   }
+}
+
+/**
+ * 同一目标的本地刷新在途合一表（v0.20 补齐，对齐 filePanel 的
+ * remoteRefreshInFlight 先例）：刷新按钮/F5/右键菜单/导航会并发触发
+ * refreshLocalFiles，此前每路各自打一次 fs_local_list_dir（busy 栈叠多层
+ * loading、结果乱序回写）。合一后同目标并发只发一次，后来者复用同一 Promise；
+ * settled 后清理（含失败路径），失败不会被缓存。
+ */
+const localRefreshInFlight = new Map<string, Promise<void>>();
+
+export function refreshLocalFiles(path: string | null = null): Promise<void> {
+  const key = path ?? '';
+  const existing = localRefreshInFlight.get(key);
+  if (existing) return existing;
+  const promise = doRefreshLocalFiles(path).finally(() => {
+    if (localRefreshInFlight.get(key) === promise) localRefreshInFlight.delete(key);
+  });
+  localRefreshInFlight.set(key, promise);
+  return promise;
 }
 
 export async function navigateLocalPath(target: string) {
