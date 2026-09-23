@@ -169,7 +169,6 @@ struct SessionStatusEvent {
 /// inactivity 固定 = keepalive × 10（保持「inactivity 必须大于 keepalive」的
 /// 分工约束——间隔调小检测更快，但 inactivity 也随之等比收紧，不会出现
 
-
 /// 包裹私钥用于 publickey 认证。RSA 密钥必须指定 rsa-sha2-256：传 None 会
 /// 退回 SHA-1 的 ssh-rsa 算法，OpenSSH 8.8+ 服务器默认禁用该算法，导致
 /// RSA 私钥（云厂商下发的 PEM 几乎都是）对现代服务器必然认证失败。
@@ -455,93 +454,6 @@ pub async fn ssh_connect(
     })
 }
 
-#[tauri::command]
-pub async fn ssh_list_directory(
-    state: State<'_, AppState>,
-    host: String,
-    port: u16,
-    username: String,
-    password: String,
-    credential_id: Option<String>,
-    auth_method: Option<String>,
-    private_key_path: Option<String>,
-    passphrase: Option<String>,
-    passphrase_credential_id: Option<String>,
-    private_key_credential_id: Option<String>,
-    jump_host: Option<String>,
-    connect_timeout_secs: Option<u32>,
-    keepalive_interval_secs: Option<u32>,
-    path: String,
-) -> Result<RemoteDirectoryList, String> {
-    let handle = connect_authenticated(
-        &state,
-        &host,
-        port,
-        &username,
-        password,
-        credential_id,
-        auth_method,
-        private_key_path,
-        passphrase,
-        passphrase_credential_id,
-        private_key_credential_id,
-        jump_host,
-        connect_timeout_secs,
-        keepalive_interval_secs,
-    )
-    .await?;
-
-    // 走 SFTP 子系统列目录（对齐 sftp_list_dir 通道），替代旧 exec
-    // `find -printf`：-printf 是 GNU 扩展，BusyBox/Alpine/BSD/macOS 上整个
-    // 目录列表直接失败；且 %TY-%Tm-%Td 时间格式与 SFTP 路径的 epoch 秒
-    // 不一致（前端按数字排序）。该连接本为一次性，SFTP 会话随连接丢弃。
-    let channel = handle
-        .channel_open_session()
-        .await
-        .map_err(|e| format!("SFTP channel open failed: {e}"))
-        .inspect_err(|m| error!("ssh_list_directory (host {host}): {m}"))?;
-    channel
-        .request_subsystem(true, "sftp")
-        .await
-        .map_err(|e| format!("SFTP subsystem request failed: {e}"))
-        .inspect_err(|m| error!("ssh_list_directory (host {host}): {m}"))?;
-    let sftp = SftpSession::new(channel.into_stream())
-        .await
-        .map_err(|e| format!("SFTP session init failed: {e}"))
-        .inspect_err(|m| error!("ssh_list_directory (host {host}): {m}"))?;
-
-    // 空 path = 服务器默认目录：canonicalize(".") 解析出真实绝对路径
-    //（SFTP 服务进程 cwd 起始于登录用户家目录，与 sftp_list_dir 语义一致）。
-    let requested_path = if path.trim().is_empty() {
-        sftp.canonicalize(".")
-            .await
-            .map_err(|e| format!("SFTP canonicalize failed: {e}"))
-            .inspect_err(|m| error!("ssh_list_directory (host {host}): {m}"))?
-    } else {
-        path
-    };
-
-    let mut entries: Vec<RemoteFileEntry> = sftp
-        .read_dir(&requested_path)
-        .await
-        .map_err(|e| format!("SFTP read_dir failed: {e}"))
-        .inspect_err(|m| {
-            error!("ssh_list_directory (host {host}, path {requested_path}): {m}")
-        })?
-        .into_iter()
-        .map(dir_entry_to_remote_file_entry)
-        .collect();
-
-    // 排序与 sftp_list_dir 一致：目录优先，同类型按名称字母序。
-    entries.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
-
-    Ok(RemoteDirectoryList {
-        host,
-        path: requested_path,
-        entries,
-    })
-}
-
 /// 「keepalive 5s + inactivity 300s」这类探测重试窗口不足的失衡组合）。
 pub fn build_client_config_with(keepalive_secs: Option<u32>) -> Arc<client::Config> {
     let keepalive = keepalive_secs.unwrap_or(30).max(1);
@@ -552,7 +464,7 @@ pub fn build_client_config_with(keepalive_secs: Option<u32>) -> Arc<client::Conf
     })
 }
 
-async fn connect_authenticated(
+pub(crate) async fn connect_authenticated(
     state: &State<'_, AppState>,
     host: &str,
     port: u16,
