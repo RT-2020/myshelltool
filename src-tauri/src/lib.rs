@@ -469,7 +469,6 @@ pub fn run() {
             get_credential_status,
             delete_credential,
             ssh::ssh_connect,
-            ssh::ssh_list_directory,
             ssh::session_cmds::ssh_write,
             ssh::session_cmds::ssh_resize,
             ssh::ssh_disconnect,

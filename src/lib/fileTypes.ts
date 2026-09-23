@@ -70,13 +70,6 @@ export interface FilesSessionsStoreLike {
 activeSession: FilesSessionLike | null;
 sessions: FilesSessionLike[];
 connectSelected(): Promise<unknown>;
-/**
- * 登记一次性的「非会话连接」（ssh_list_directory 回落分支），返回注销函数。
- * 该连接走 ssh.rs 的同一交互式 handler，未知主机密钥会 emit
- * ssh-host-key-verify；不登记的话跨窗口路由守卫认不出它属于本窗口，确认
- * 请求被丢弃、后端空等 60s。可选：旧注入方缺该方法时降级为「不登记」。
- */
-registerEphemeralConnection?(asset: NormalizedConnectionAsset): () => void;
 }
 
 /** files store 实际消费的 workbench bridge 最小结构。 */

@@ -360,10 +360,10 @@ console.error('[step] scenario-4');
   // ════ 场景 4：host key 事件 → 弹窗 → resolve 回传 ════
   await fixtureBackend(page, { 'ssh_confirm_host_key': spec(null) });
   // 跨窗口路由守卫：本窗口无 connecting 会话时不认领 hostkey 事件（正确行为）。
-  // 登记一条在途一次性连接让本窗口具备认领资格（files store 回落通道同款机制）。
+  // host key 事件只来自真实会话连接，把本窗口会话置为 connecting 即具备认领资格。
   await page.evaluate(() => {
-    const w = window.__myshelltool.workbench;
-    window.__diagUnregister = window.__myshelltool.sessions.registerEphemeralConnection(w.assets[0]);
+    const s = window.__myshelltool.sessions.sessions[0];
+    s.status = 'connecting';
   });
   await emitEvent(page, 'ssh-host-key-verify', {
     request_id: 'rk-1', host_port: '127.0.0.1:2222', key_type: 'ssh-ed25519',

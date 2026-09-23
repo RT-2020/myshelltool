@@ -108,7 +108,7 @@ export interface RemoteFileEntry {
   group?: string | null;
 }
 
-/** sftp_list_dir / ssh_list_directory 返回。 */
+/** sftp_list_dir 返回。 */
 export interface RemoteDirectoryListResult {
   host?: string;
   path: string;

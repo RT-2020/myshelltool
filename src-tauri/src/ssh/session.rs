@@ -464,7 +464,7 @@ pub fn build_client_config_with(keepalive_secs: Option<u32>) -> Arc<client::Conf
     })
 }
 
-pub(crate) async fn connect_authenticated(
+async fn connect_authenticated(
     state: &State<'_, AppState>,
     host: &str,
     port: u16,

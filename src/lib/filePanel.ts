@@ -171,43 +171,21 @@ async function doRefreshRemoteFiles(path: string | null = null, { silent = false
         // 高频操作），过期结果写面板会把新资产错标成旧目录。
         if (pc().wb().selectedAsset?.id !== asset.id) return;
         applyRemoteListing(result.path || targetPath, result.entries || []);
+        if (!silent) pc().announce('远程文件已刷新：' + asset.name);
         return;
       }
-      // 无活跃会话 → 回落一次性 SSH 连接（ssh_list_directory）。
-      // 该连接不在 sessions 里（用户不该看到一个没有终端的会话条目），但它走
-      // ssh.rs 同一个交互式 handler，未知/变更主机密钥同样会 emit
-      // ssh-host-key-verify 并等 60s。因此在途期间必须在 sessions store 登记，
-      // 否则跨窗口路由守卫认不出事件归属，确认框永不出现。
-      // 参数名必须是 camelCase：Tauri 2 命令宏把 Rust snake_case 参数名转
-      // lowerCamelCase 后才到前端 payload 取值（多词 snake_case 键会静默失配
-      // 成 None——曾致 credential_id/auth_method 全部丢失，回落连接恒报
-      // 「No password provided and no stored credential」）。与 ssh_connect
-      // 调用（sessions.ts attachSessionStream）保持同形。
-      const unregister = pc().wb().sessionsStore()?.registerEphemeralConnection?.(asset);
-      let result: RemoteDirectoryListResult;
-      try {
-        result = await invokeBackend<RemoteDirectoryListResult>('ssh_list_directory', {
-          host: asset.host,
-          port: asset.port,
-          username: asset.username,
-          password: '',
-          credentialId: asset.credential_id || null,
-          authMethod: asset.auth_method,
-          privateKeyPath: asset.private_key_path,
-          passphrase: null,
-          passphraseCredentialId: asset.passphrase_credential_id || null,
-          privateKeyCredentialId: asset.private_key_credential_id || null, jumpHost: asset.jump_host || null, connectTimeoutSecs: asset.connect_timeout_secs ?? null, keepaliveIntervalSecs: asset.keepalive_interval_secs ?? null,
-          path: targetPath
-        });
-      } finally {
-        // 一次性连接结束（成功/失败/超时）即注销：不能留下幽灵会话，否则之后
-        // 别的路径产生的主机密钥确认会被本窗口误认领。
-        unregister?.();
+      // v0.20 修复（用户实测 2026-09-23）：无活跃会话不再回落 ssh_list_directory
+      // 独立连接——用户刚断开的资产，点刷新会静默把服务器重新连上取目录，违反
+      // 「断开」语义、与终端区域「手动断开即断开」不一致（自动重连仅限远端异常
+      // 关闭），公网服务器还有认证惩罚风险。改为与终端一致：非 silent 明确提示
+      // 先连接；silent 调用（自动加载链/OSC 跟随的时序缝隙）静默返回——面板空态
+      // 由断开钩子（handleSessionClosed → resetRemotePanel）负责，不重复打扰。
+      // 文案不带资产名/主机标识（用户实测 2026-09-23 二次反馈）：此时是未连接
+      // 任何资产的状态，指向某台服务器会误导；固定通用文案也杜绝空名拼接出
+      // 「会话已断开：，」这类残缺形态。
+      if (!silent) {
+        pc().announce('请重新连接会话，重新连接后文件区域会自动加载', { level: 'warn' });
       }
-      // 迟到守卫：同上，过期结果不写面板（见 sftp_list_dir 分支注释）。
-      if (pc().wb().selectedAsset?.id !== asset.id) return;
-      applyRemoteListing(result.path || targetPath, Array.isArray(result.entries) ? result.entries : []);
-      pc().announce('远程文件已刷新：' + asset.name);
     });
     pc().remoteError.value = '';
   } catch (error) {
@@ -259,8 +237,7 @@ export function applyRemoteListing(path: string, entries: RemoteFileEntry[]) {
   pc().remotePath.value = path;
   pc().remoteEntries.value = entries;
   pc().remoteLoaded.value = true;
-  // 列表归属当前面板资产（sftp_list_dir / ssh_list_directory 两条路都按
-  // selectedAsset 发起，此处即其归属）
+  // 列表归属当前面板资产（sftp_list_dir 按 selectedAsset 发起，此处即其归属）
   pc().remoteLoadedAssetId.value = pc().wb().selectedAsset?.id ?? null;
 }
 
@@ -302,8 +279,8 @@ export async function handleSessionConnected(assetId?: string | null) {
   if (pc().remoteLoaded.value && pc().remoteLoadedAssetId.value === assetId) return;
   // ssh_connect 返回时 SFTP 通道已可用（workbench status watcher 已无延迟刷新）：
   // 立即加载，仅当失败（瞬时 SFTP 未就绪）才按 1s/2s/5s 退避重试，上限 3 次。
-  // 重试前必须确认该资产仍有活跃会话——禁止回落到 refreshRemoteFiles 内的
-  // ssh_list_directory 独立连接分支静默新开一条 SSH 连接。失败静默（空态已有
+  // 重试前必须确认该资产仍有活跃会话——refreshRemoteFiles 已无独立连接回落
+  // 分支（2026-09-23 删除），但确认会话存活可省去必败请求。失败静默（空态已有
   // 「加载失败 + 重试」，不弹错误打扰）。
   if (autoLoadRetryToken) autoLoadRetryToken.cancelled = true;
   const token = { cancelled: false };

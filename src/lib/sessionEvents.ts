@@ -103,63 +103,24 @@ export function bindSessionEventsContext(ctx: SessionEventsContext): void {
 // ============================================================
 // Listeners — 三个 unlisten 句柄（CRITICAL Critic 改进 2/4）
 // ============================================================
-// 一次性的「非会话连接」登记表（assetId → 在途请求）。
-//
-// 为什么需要：`ssh_list_directory`（文件面板在资产无活跃会话时的回落通道）
-// 走的是 ssh.rs 里**同一个交互式 handler**，未知/变更主机密钥同样会 emit
-// `ssh-host-key-verify` 并等 60s。这类连接不在 `sessions` 里（用户不应看到
-// 一个没有终端的会话条目），因此只按 `sessions.status === 'connecting'`
-// 路由的守卫会把确认请求整条丢弃——确认框永不出现、后端空等 60s，用户只
-// 看到与真实原因无关的「SSH connect failed」。
-//
-// 为什么用独立登记表而不是塞一个「虚拟 connecting 会话」进 public state：
-// `sessions` 是所有窗口共享语义的 UI 权威状态（tab 条 / 侧栏圆点 / 状态栏
-// 都由它派生），幽灵条目会污染这些视图，也会被其他窗口当成真实会话。登记表
-// 与 sessions 完全隔离，且由发起方在 finally 中登记/注销，天然是一次性作用域。
-export interface EphemeralConnection {
-  host: string;
-  port?: number;
-  /** 发起该连接的资产（映射用；确认弹窗展示资产名也来自它）。 */
-  asset: NormalizedConnectionAsset;
-}
-const ephemeralConnections = new Map<string, EphemeralConnection>();
-
-/** 登记一条在途的一次性连接（跨窗口路由守卫据此认领 host key 事件）。 */
-export function registerEphemeralConnection(asset: NormalizedConnectionAsset) {
-  const key = asset.id || `${asset.host}:${asset.port}`;
-  ephemeralConnections.set(key, { host: asset.host, port: asset.port, asset });
-  // 返回注销函数（注意：Map.set 本身返回 Map，不能直接当返回值用）
-  return () => { ephemeralConnections.delete(key); };
-}
-
-/** 查在途一次性连接（供 host key handler 取展示用资产）；无则 null。 */
-function findEphemeralConnection(hostPort?: string | null): EphemeralConnection | null {
-  if (!hostPort) return null;
-  for (const entry of ephemeralConnections.values()) {
-    if (entry.port && hostPort === `${entry.host}:${entry.port}`) return entry;
-    if (String(hostPort).replace(/:\d+$/, '') === entry.host) return entry;
-  }
-  return null;
-}
-
 // 跨窗口事件路由守卫（多 WebviewWindow / 每窗口独立 Pinia 实例）：
 // Rust 侧 app.emit 是全局广播，所有窗口都会收到同一份 host key /
-// keyboard 事件。认领条件 = 本窗口「有 status==='connecting' 的会话」或
-// 「有在途的一次性连接」——**不认领即代表事件属于别的窗口**，静默跳过是
-// 正确的路由行为（不是吞错误）。守卫对本窗口 connecting 会话恒通过，
-// 单窗口使用路径行为不变。
+// keyboard 事件。认领条件 = 本窗口有 status==='connecting' 的会话——
+// **不认领即代表事件属于别的窗口**，静默跳过是正确的路由行为（不是吞错误）。
+// 守卫对本窗口 connecting 会话恒通过，单窗口使用路径行为不变。
+// （v0.20 2026-09-23：原「在途一次性连接」条件随 ssh_list_directory 回落分支
+// 删除——文件面板不再有会话外的连接，host key 事件只可能来自真实会话。）
 export function ownsConnectPrompt(hostPort?: string | null) {
   if (!hostPort) {
     // keyboard 事件 payload 无 host 字段，无法精确路由：本窗口有 connecting
-    // 会话或在途一次性连接即认领。残留边界：两窗口同时 connecting（尤其同
-    // 一 host）时无法区分归属，可能双弹框——已知边界，暂不修。
-    return ec().sessions.value.some(s => s.status === 'connecting') || ephemeralConnections.size > 0;
+    // 会话即认领。残留边界：两窗口同时 connecting（尤其同一 host）时无法区分
+    // 归属，可能双弹框——已知边界，暂不修。
+    return ec().sessions.value.some(s => s.status === 'connecting');
   }
   // host key 事件按主机路由：payload.host_port 形如 "host:port"（Rust
   // HostKeyVerifyEvent 无 rename_all，序列化字段名即 host_port）。优先
   // host:port 全等（asset.port 经 normalizeAsset 默认 22），回退去端口
   // 等值比较。
-  if (findEphemeralConnection(hostPort)) return true;
   return ec().sessions.value.some(s => {
     if (s.status !== 'connecting') return false;
     const a = s.asset;
@@ -175,10 +136,9 @@ export function onHostKeyVerifyEvent(event: TauriEvent) {
   const payload = (event?.payload || null) as HostKeyVerifyPayload | null;
   if (!ownsConnectPrompt(payload?.host_port)) return;
   ec().hostKeyPrompt.value = payload;
-  // 展示用资产：在途一次性连接优先（多窗口下 selectedAsset 可能属于别的窗口
-  // 的选中项，弹窗会指错资产）。该连接不在 sessions 里，故从登记表取原资产。
-  const ephemeral = findEphemeralConnection(payload?.host_port);
-  ec().setModal({ type: 'hostKeyVerify', asset: ephemeral ? ephemeral.asset : ec().selectedAsset() });
+  // 展示用资产：host key 事件只来自真实会话的连接（回落分支已删），用本窗口
+  // 选中资产（多窗口下 connecting 会话即本窗口发起，归属一致）。
+  ec().setModal({ type: 'hostKeyVerify', asset: ec().selectedAsset() });
 }
 
 export function onKeyboardInteractiveEvent(event: TauriEvent) {
