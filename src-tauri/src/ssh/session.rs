@@ -622,7 +622,25 @@ async fn connect_authenticated(
     info!("SSH TCP connected to {host}:{port}");
 
     let resolved_password: Option<String> = if auth_method.as_deref() == Some("PrivateKey") {
-        None
+        // v0.20 修复（真机验收 2026-09-23）：PrivateKey 模式也解析密码——
+        // AuthenticationMethods publickey,password 的双因子服务器需要它做第二因子。
+        // 纯私钥单因子场景无密码是正常的（None 不报错）；读凭据失败只 warn
+        // 不阻断主私钥认证（密码是辅助因子，主方式仍是私钥）。
+        if !password.is_empty() {
+            Some(password.clone())
+        } else if let Some(ref cred_id) = credential_id {
+            match myshelltool_core::SecretStore::new(&secret_store_dir, Box::new(crate::dpapi_codec::DpapiCodec))
+                .read(cred_id)
+            {
+                Ok(p) => p.filter(|p| !p.is_empty()),
+                Err(e) => {
+                    warn!("读取存储密码失败（跳过 password 第二因子）: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        }
     } else if password.is_empty() {
         if let Some(ref cred_id) = credential_id {
             Some(
@@ -749,8 +767,14 @@ async fn connect_authenticated(
                 } else { false }
             } else { false }
         } else if auth_method.as_deref() == Some("Password") {
-            // Password 主方式失败 + 配有私钥：尝试 publickey 第二因子
-            if let (Some(key_str), Some(passphrase)) = (second_factor_key.as_deref(), second_factor_passphrase.as_deref()) {
+            // Password 主方式失败 + 配有私钥：尝试 publickey 第二因子。
+            // v0.20 修复（真机验收 2026-09-23）：publickey 返回 false 可能是
+            // 「第一因子已被接受、还需第二因子」被 russh 折叠——服务器此时已
+            // 记住 publickey 因子，再提交一次 password 即可完成 publickey,password
+            // 双因子链。故 publickey 未确认且有存密码时无条件补试（单因子服务器
+            // 上 publickey 真被拒时 password 同样被拒，幂等无害；MaxAuthTries 默认
+            // 6，此处最多用到 3 次认证请求）。
+            let pk_ok = if let (Some(key_str), Some(passphrase)) = (second_factor_key.as_deref(), second_factor_passphrase.as_deref()) {
                 match russh::keys::decode_secret_key(key_str, Some(passphrase)) {
                     Ok(key_pair) => {
                         info!(
@@ -766,6 +790,15 @@ async fn connect_authenticated(
                         false
                     }
                 }
+            } else { false };
+            if pk_ok {
+                true
+            } else if let Some(pwd) = resolved_password.as_deref().filter(|p| !p.is_empty()) {
+                info!(
+                    "auth: second-factor publickey not confirmed for {username}@{host}:{port}, completing chain with password"
+                );
+                handle.authenticate_password(username, pwd).await
+                    .map_err(|e| format!("Chain-completing password auth failed: {e}"))?
             } else { false }
         } else { false };
 

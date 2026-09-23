@@ -230,7 +230,24 @@ where
 {
     // 解析密码（从凭据存储或参数）
     let resolved_password: Option<String> = if params.auth_method.as_deref() == Some("PrivateKey") {
-        None
+        // v0.20 修复（真机验收 2026-09-23，同 GUI 路径）：PrivateKey 模式也解析
+        // 密码——AuthenticationMethods publickey,password 双因子服务器的第二因子
+        // 素材。纯私钥单因子场景无密码是正常的（None 不报错）；读凭据失败只 warn。
+        if !params.password.is_empty() {
+            Some(params.password.clone())
+        } else if let Some(ref cred_id) = params.credential_id {
+            match myshelltool_core::SecretStore::new(&params.secret_store_dir, Box::new(crate::dpapi_codec::DpapiCodec))
+                .read(cred_id.as_str())
+            {
+                Ok(p) => p.filter(|p| !p.is_empty()),
+                Err(e) => {
+                    warn!("读取存储密码失败（跳过 password 第二因子）: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        }
     } else if params.password.is_empty() {
         if let Some(ref cred_id) = params.credential_id {
             Some(
@@ -298,8 +315,11 @@ where
                     .map_err(|e| format!("Second-factor password auth failed: {e}"))? } else { false }
             } else { false }
         } else if params.auth_method.as_deref() == Some("Password") {
-            // Password 模式 + params 有私钥素材：尝试 publickey 第二因子
-            if let Some(key_path) = params.private_key_path.as_deref() {
+            // Password 模式 + params 有私钥素材：尝试 publickey 第二因子。
+            // v0.20 修复（同 GUI 路径）：publickey 返回 false 可能是「第一因子已被
+            // 接受、还需第二因子」被 russh 折叠——publickey 未确认且有密码时再补
+            // 一次 password 完成双因子链（单因子服务器幂等无害）。
+            let pk_ok = if let Some(key_path) = params.private_key_path.as_deref() {
                 match crate::ssh::expand_home_path(key_path).and_then(|p| std::fs::read(&p).map_err(|e| format!("{e}"))) {
                     Ok(data) => {
                         let key_str = String::from_utf8_lossy(&data).to_string();
@@ -314,6 +334,13 @@ where
                     }
                     Err(e) => { warn!("second-factor key read failed: {e}"); false }
                 }
+            } else { false };
+            if pk_ok {
+                true
+            } else if let Some(pwd) = resolved_password.as_deref().filter(|p| !p.is_empty()) {
+                info!("headless: second-factor publickey not confirmed, completing chain with password for {}", params.username);
+                handle.authenticate_password(&params.username, pwd).await
+                    .map_err(|e| format!("Chain-completing password auth failed: {e}"))?
             } else { false }
         } else { false };
         if second_ok {
