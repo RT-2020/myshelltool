@@ -176,9 +176,11 @@ export const useFilesStore = defineStore('files', () => {
   // Computed（原 workbench.js:101-139）
   // ============================================================
   const activeTransfers = computed(() => transferQueue.value.filter(item => item.status === 'running' || item.status === 'pending'));
-  // 「完成」只算真正完成项；失败/取消归入 failedTransfers（状态栏/抽屉计数拆分）。
-  const completedTransfers = computed(() => transferQueue.value.filter(item => item.status === 'done'));
-  const failedTransfers = computed(() => transferQueue.value.filter(item => item.status === 'error' || item.status === 'cancelled'));
+  // v0.20 修复（真机验收 2026-09-23）：「已完成」= 终结且非失败（done + cancelled，
+  // 行内药丸仍显示「已取消」可区分）；「已失败」只算 error——cancelled 计入失败
+  // 会让「已失败 1」的计数误导用户以为传输出错（实际是用户主动取消）。
+  const completedTransfers = computed(() => transferQueue.value.filter(item => item.status === 'done' || item.status === 'cancelled'));
+  const failedTransfers = computed(() => transferQueue.value.filter(item => item.status === 'error'));
   const remoteBusy = computed(() => fileOperationStack.value.remote.length > 0);
   const localBusy = computed(() => fileOperationStack.value.local.length > 0);
   const remoteBusyMessage = computed(() => {

@@ -31,8 +31,9 @@ const filesStore = useFilesStore();
 const { transferQueue, completedTransfers, failedTransfers } = storeToRefs(filesStore);
 
 // 分类 tab（FinalShell 式：传输中/队列中/已完成/已失败 带计数）。
-// 归类口径与 store getter 对齐：已完成 = done；已失败 = error + cancelled
-// （取消是需用户注意的终结态，归入失败 tab 以便找到；药丸文字仍显示「已取消」可区分）。
+// 归类口径与 store getter 对齐（v0.20 修复 2026-09-23）：已完成 = done + cancelled
+// （cancelled 计入「已失败」会让计数误导用户以为出错——实际是主动取消；行内
+// 药丸仍显示「已取消」可区分）；已失败 = error。
 type TransferTabId = 'running' | 'pending' | 'done' | 'failed';
 const activeTab = ref<TransferTabId>('running');
 const runningCount = computed(() => transferQueue.value.filter(i => i.status === 'running').length);
@@ -48,8 +49,8 @@ const filteredQueue = computed(() => {
   switch (activeTab.value) {
     case 'running': return q.filter(i => i.status === 'running');
     case 'pending': return q.filter(i => i.status === 'pending');
-    case 'done': return q.filter(i => i.status === 'done');
-    case 'failed': return q.filter(i => i.status === 'error' || i.status === 'cancelled');
+    case 'done': return q.filter(i => i.status === 'done' || i.status === 'cancelled');
+    case 'failed': return q.filter(i => i.status === 'error');
   }
 });
 
