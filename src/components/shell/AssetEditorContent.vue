@@ -137,6 +137,19 @@ function toggleClearPassphrase() {
           </AppButton>
         </div>
       </label>
+      <!-- v0.20 修复（真机验收 2026-09-23）：双因子第二因子的密码入口——服务器
+           AuthenticationMethods publickey,password 时，私钥过第一因子后还需密码。
+           纯私钥单因子登录留空即可（后端无密码则跳过该补试）。 -->
+      <label class="stack" style="max-width: 480px;">
+        <span class="muted">密码（可选——双因子服务器 publickey,password 的第二因子；单因子私钥登录留空）</span>
+        <div class="inline-field-row">
+          <AppInput :model-value="credential.password" type="password" placeholder="编辑时留空保留既有密码"
+            @update:model-value="v => { credential.password = v; credential.clearPassword = false; }" data-asset-field="password" />
+          <AppButton v-if="asset.credential_id" size="sm" variant="danger" @click="toggleClearPassword">
+            {{ credential.clearPassword ? '撤销清除' : '清除密码' }}
+          </AppButton>
+        </div>
+      </label>
     </div>
   </div>
 </template>
