@@ -45,6 +45,10 @@ const CATEGORIES = [
  * 拆回硬上限内的文件必须从此表除名——本脚本会对「表内但已达标」报错。
  */
 const RATCHET = {
+  // v0.20 双因子修复（2026-09-23 真机验收）后 832 行——认证链（resolved_password
+  // 解析 + 顺序因子策略）随修复扩容。拆分去向：认证链抽 ssh/session_auth.rs
+  // （与 keyboard.rs 同级先例），下轮触碰 session.rs 时执行。
+  'src-tauri/src/ssh/session.rs': { baseline: 832, note: '认证链抽 session_auth.rs' },
 };
 
 function toRel(abs) {

@@ -1,6 +1,12 @@
 {
-  "generatedAt": "2026-09-22T14:10:59.378Z",
+  "generatedAt": "2026-09-23T03:23:31.088Z",
   "entries": [
+    {
+      "version": "0.19.1",
+      "tag": "v0.19.1",
+      "date": "2026-09-23",
+      "notes": "## v0.19.1\n\n_区间: v0.19.0 → v0.19.1_\n\n### ✨ 新功能\n- **frontend**: S2 十四刀拆分（RATCHET 清零）+ MCP 面板 + 导入向导 + 连接参数表单\n- **backend**: MCP 阶段 A/B/C 全部 + SSH P0/P1/P2 + S8/S9\n- **core+fork**: MCP 鉴权/scope 判定内核、OpenSSH config 解析、资产连接参数字段；vendored fork set_metadata 透传\n\n### 📚 文档\n- **readme**: 版本演进同步 v0.19.1\n- 二十轮迭代的契约/边界/演进登记\n\n### 🔧 杂项\n- **ci**: 门禁与 CI 机械化——size-guard ratchet / ipc-contract-check / UI 测试与跨平台 portability job / Dependabot / 诊断按钮与 issue 模板\n\n### 📦 其他\n- v0.19.1\n"
+    },
     {
       "version": "0.19.0",
       "tag": "v0.19.0",
