@@ -28,7 +28,7 @@ log = { version = "0.4", features = ["std"] }
 # MCP server 接入（D3 锁定 rmcp ~1.7，MCP 协议 2025-06-18 基线）
 # v1.1：加 elicitation feature（高危命令客户端内确认）+ schemars（elicit<T> 泛型版需要）
 # v1.4：加 transport-streamable-http-server（MCP 内嵌 GUI，Streamable HTTP transport）
-rmcp = { version = "~1.7", features = ["server", "transport-io", "transport-streamable-http-server", "elicitation", "schemars"] }
+rmcp = { version = "~3.4", features = ["server", "transport-io", "transport-streamable-http-server", "elicitation", "schemars"] }
 # 危险命令检测（D5：翻译 dangerousCommands.js，GUI 与 MCP 共享）
 regex = "1"
 # MCP v1.1 elicitation：elicit::<T>() 需要 schemars 直接依赖（生成 JSON Schema）
