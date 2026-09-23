@@ -195,6 +195,9 @@ function goUp() {
   else filesStore.navigateRemoteUp();
 }
 function refresh() {
+  // F5 与按钮一致走 busy 守卫（按钮已 disabled=isBusy，F5 此前无守卫——
+  // 连点会并发触发刷新；v0.20 补齐，配合 lib 层的在途合一双保险）
+  if (isBusy.value) return;
   if (isLocal.value) filesStore.refreshLocalFiles();
   else filesStore.refreshRemoteFiles();
 }
