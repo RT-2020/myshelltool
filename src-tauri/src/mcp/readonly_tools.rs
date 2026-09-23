@@ -93,6 +93,9 @@ pub(crate) async fn tool_port_listen(
 }
 
 /// 注入防护：sortBy 枚举白名单（cpu/mem）、limit 数字——无自由文本。
+/// 三层降级：procps --no-headers → procps 带表头（老 procps）→ busybox 列集
+/// （无 %cpu/%mem 列，sortBy 一律按 RSS 降序并注明——Alpine 等真机验收发现
+/// busybox 对 -o %cpu 整条失败导致空输出+rc=0 伪装成功，v0.20 修复）。
 pub(crate) async fn tool_process_list(
     ctx: &McpToolContext,
     args: &Map<String, serde_json::Value>,
@@ -113,9 +116,17 @@ pub(crate) async fn tool_process_list(
     let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20).min(200);
 
     let cmd = format!(
-        "(env LC_ALL=C ps -eo pid,ppid,user,%cpu,%mem,rss,stat,etime,comm --no-headers 2>/dev/null \
-          || env LC_ALL=C ps -eo pid,ppid,user,%cpu,%mem,rss,stat,etime,comm) \
-         | env LC_ALL=C sort -k{sort_by} -nr | head -{limit}; echo rc_chain=$?"
+        "__t=$(mktemp 2>/dev/null || echo /tmp/.myshelltool-ps.$$); \
+         if env LC_ALL=C ps -eo pid,ppid,user,%cpu,%mem,rss,stat,etime,comm --no-headers >$__t 2>/dev/null && grep -q . $__t; then \
+           env LC_ALL=C sort -k{sort_by} -nr <$__t | head -{limit}; \
+         elif env LC_ALL=C ps -eo pid,ppid,user,%cpu,%mem,rss,stat,etime,comm >$__t 2>/dev/null && grep -q . $__t; then \
+           env LC_ALL=C sort -k{sort_by} -nr <$__t | head -{limit}; \
+         elif env LC_ALL=C ps -eo pid,ppid,user,rss,stat,comm >$__t 2>/dev/null && grep -q . $__t; then \
+           echo '# busybox ps 无 %cpu/%mem 列：sortBy 已按 RSS(kB) 降序替代'; \
+           env LC_ALL=C sort -k4 -nr <$__t | head -{limit}; \
+         else \
+           echo 'process_list: 所有 ps 形态均失败（procps 与 busybox 列集都不可用）'; false; \
+         fi; rc=$?; rm -f $__t 2>/dev/null; echo rc_chain=$rc"
     );
     exec_on_asset(ctx, args, &cmd).await
 }
