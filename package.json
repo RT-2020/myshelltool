@@ -20,7 +20,7 @@
     "@tauri-apps/cli": "^2.9.5",
     "playwright": "^1.60.0",
     "sass": "^1.101.0",
-    "typescript": "^5.9.3",
+    "typescript": "^7.0.2",
     "vite": "^7.2.7",
     "vue-tsc": "^3.3.11"
   },
