@@ -68,7 +68,7 @@ rand = "0.8"
 # 这里只是类型与零散转换，同版本 0.8 共享一份）
 encoding_rs = "0.8"
 # MCP 文件传输校验和计算
-sha2 = "0.10"
+sha2 = "0.11"
 
 # Windows-only：凭据存储 DPAPI 加密（v1.3 SecretStore 升级）。
 # SecretCodec trait 在 core 层，DPAPI 实现在此（cfg(windows)）。
