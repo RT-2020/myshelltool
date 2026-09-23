@@ -197,7 +197,7 @@ pub fn summarize(outcome: &FanoutOutcome) -> Value {
         .count();
     let errors = outcome.targets.iter().filter(|t| t.status == "error").count();
     let truncated = outcome.targets.iter().filter(|t| t.truncated).count();
-    serde_json::json!({
+    let mut summary = serde_json::json!({
         "summary": {
             "total": outcome.targets.len(),
             "ok": ok,
@@ -206,6 +206,17 @@ pub fn summarize(outcome: &FanoutOutcome) -> Value {
             "truncated": truncated,
         },
         "targets": outcome.targets,
-        "note": "逐目标输出超 16KiB 已截断（truncated=true）；被拒目标换用 list_assets 确认可访问范围",
-    })
+    });
+    // note 按实际状态条件生成——零截断零拒绝时不输出，避免误导
+    let mut notes: Vec<String> = Vec::new();
+    if truncated > 0 {
+        notes.push(format!("{truncated} 个目标输出超 16KiB 已截断（该目标 truncated=true）"));
+    }
+    if denied > 0 {
+        notes.push("被拒目标换用 list_assets 确认可访问范围".to_string());
+    }
+    if !notes.is_empty() {
+        summary["note"] = Value::String(notes.join("；"));
+    }
+    summary
 }
