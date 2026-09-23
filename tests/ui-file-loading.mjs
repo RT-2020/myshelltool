@@ -70,7 +70,7 @@ try {
           if (cmd === 'ssh_connect') {
             return Promise.resolve({ session_id: 'session-slow-host' });
           }
-          if (cmd === 'ssh_list_directory' || cmd === 'sftp_list_dir') {
+          if (cmd === 'sftp_list_dir') {
             window.__MST_FILE_LOADING_MOCK.listStarted += 1;
             return new Promise(resolve => {
               window.__MST_FILE_LOADING_MOCK.releaseList = () => resolve({
@@ -115,6 +115,14 @@ try {
 
   await page.evaluate(() => {
     const pinia = document.querySelector('#app').__vue_app__.config.globalProperties.$pinia;
+    // v0.20：刷新已无「无会话回落独立连接」分支（断开后点刷新静默重连属缺陷，
+    // 已删除）——本测试验证的列表 loading/busy 禁用现在只属于会话分支，注入
+    // 一个最小 connected 会话（refreshRemoteFiles 只消费 sessionId/asset.id）。
+    pinia._s.get('sessions').sessions.push({
+      sessionId: 'session-slow-host',
+      status: 'mock-ready',
+      asset: { id: 'slow-host', name: 'Slow SSH', host: 'slow.example.test', port: 22, username: 'deploy' }
+    });
     pinia._s.get('workbench').setTab('files');
   });
 

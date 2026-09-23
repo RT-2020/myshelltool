@@ -55,7 +55,6 @@ import {
   disposeEventListeners,
   ensureHostKeyListeners,
   ownsConnectPrompt,
-  registerEphemeralConnection,
   resolveHostKeyPrompt,
   resolveKeyboardPrompt,
   setupEventListeners
@@ -429,9 +428,6 @@ export const useSessionsStore = defineStore('sessions', () => {
     activeSessions,
     // bridge
     attachWorkbench,
-    // 一次性（非会话）连接的 host key 路由登记——files store 的
-    // ssh_list_directory 回落分支使用，见 registerEphemeralConnection 注释
-    registerEphemeralConnection,
     // lifecycle
     setupEventListeners,
     disposeEventListeners,

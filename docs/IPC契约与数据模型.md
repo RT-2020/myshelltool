@@ -38,9 +38,9 @@
 - `sync_oauth_cancel()` → 清内存槽（单槽：新 start 覆盖旧 start）
 
 **SSH 会话/终端**（`ssh.rs`）
-- `ssh_connect({...})` → 返回 `session_id`；参数含 host/port/username/authMethod（**v0.20 新增 Agent**：SSH agent 认证——named pipe 优先→Pageant 兜底、逐 key 尝试、私钥留在 agent 进程密钥零复制；headless/MCP 同路径支持）/credentialId/privateKeyPath 等；【v0.20/SSH P1】新增可选 `connectTimeoutSecs`（TCP+握手超时，空=不设）与 `keepaliveIntervalSecs`（keepalive 间隔，空=默认 30；inactivity 固定 = keepalive×10，保持「探测重试窗口充足」的分工约束）。资产 ConnectionAsset 增同名字段（serde default 兼容旧 JSON），编辑器表单可配；GUI/headless/MCP/SFTP/隧道/跳板全路径生效（跳板连接用跳板资产自己的参数）。ssh_list_directory 同形态参数
+- `ssh_connect({...})` → 返回 `session_id`；参数含 host/port/username/authMethod（**v0.20 新增 Agent**：SSH agent 认证——named pipe 优先→Pageant 兜底、逐 key 尝试、私钥留在 agent 进程密钥零复制；headless/MCP 同路径支持）/credentialId/privateKeyPath 等；【v0.20/SSH P1】新增可选 `connectTimeoutSecs`（TCP+握手超时，空=不设）与 `keepaliveIntervalSecs`（keepalive 间隔，空=默认 30；inactivity 固定 = keepalive×10，保持「探测重试窗口充足」的分工约束）。资产 ConnectionAsset 增同名字段（serde default 兼容旧 JSON），编辑器表单可配；GUI/headless/MCP/SFTP/隧道/跳板全路径生效（跳板连接用跳板资产自己的参数）。
 - **【v0.20/SSH P2】partial-success 认证链**：服务器 `AuthenticationMethods publickey,password` 双因子场景——russh 0.49 把 USERAUTH_FAILURE 的 partial 标志折叠成 false（无法精确区分「被拒」与「需第二因子」），故采用**顺序因子策略**（语义超集）：主方式失败后先尝试另一因子（PrivateKey 失败+有存密码→password；Password 失败+有私钥素材→publickey，素材惰性预读），成功即过；第二因子也失败落回原 keyboard-interactive 兜底。单因子服务器零影响。GUI 与 headless 双路径
-- `ssh_list_directory` → 一次性 SFTP 列目录（走独立连接开 sftp 子系统，空 path 时 canonicalize 家目录；不依赖远端用户态工具，曾用 GNU-only `find -printf` 在 BusyBox/BSD 上必挂，已弃用）
+- **【v0.20 已删】`ssh_list_directory`**（原「无会话回落一次性连接列目录」）：用户实测（2026-09-23）断开资产后点文件区刷新会静默把服务器重新连上取目录——违反断开语义、与终端「手动断开即断开」不一致（自动重连仅限远端异常关闭）、公网服务器有认证惩罚风险。文件面板刷新现仅走 `sftp_list_dir` 会话通道，无会话时明确提示先连接；连带删除 ephemeral 连接登记机制（host key 跨窗口路由只认 connecting 会话）
 - `ssh_write` / `ssh_resize` / `ssh_disconnect` / `ssh_confirm_host_key` / `ssh_keyboard_response`
 
 **SFTP**（`ssh.rs`）
@@ -85,7 +85,7 @@
 - `mcp_clear_execution_logs` → 【v2】清空 MCP 执行日志。
 - 【v1.4 已删】`mcp_approval_resolve`（原 v1.1 pipe 审批回传，内嵌后无 pipe）
 - **MCP 工具面【v0.20/3-6 月段】**：`exec_many`（多机 fan-out：`asset_ids` 数组 + `command` + `intent`；单次上限 64 台、并发 8 台排队（= 会话池容量）；逐目标 scope 判定 / 三层会话复用（GUI→池→新建）/ 每目标 16KiB 输出限幅标 truncated；审批按 command 文本一次判定（ShellExec 策略）放行整批。MCP 工具总数 15）
-- **C1 长任务【v0.20/3-6 月段】**：`ssh_exec_async`（后台执行返回 job_id；断连真取消——远端收 SIGHUP）+ `job_status`（状态/退出码/输出字节/错误）+ `job_output`（offset/limit 分页，单页上限 1MiB）+ `job_cancel`（disconnect 收敛 cancelled）。job 内存态不落盘、TTL 30 分钟、条数上限 32、单 job 输出 8MiB ring buffer（截头保尾如实报 dropped）。ssh_exec_async 标注 rmcp TaskSupport::Optional（host 支持原生 tasks 时自动走任务流）。工具总数 19
+- **C1 长任务【v0.20/3-6 月段】**：`ssh_exec_async`（后台执行返回 job_id；断连真取消——远端收 SIGHUP）+ `job_status`（状态/退出码/输出字节/错误）+ `job_output`（offset/limit 分页，单页上限 1MiB）+ `job_cancel`（disconnect 收敛 cancelled）。job 内存态不落盘、TTL 30 分钟、条数上限 32、单 job 输出 8MiB ring buffer（截头保尾如实报 dropped）。ssh_exec_async 标注 rmcp TaskSupport::Optional（host 支持原生 tasks 时自动走任务流）。工具总数 19。**【v0.19.1 真机验收修正】**断连取消时 exec 的 channel wait 收到 Close 自然结束循环返回 Ok——**Ok 分支同样查 cancel_requested 收敛 Cancelled**（否则取消后误记 done/exit_code=unknown）
 - **C3 只读工具【v0.20/3-6 月段】**：`journal_query`（journalctl 结构化查询：unit/since/until/grep/limit——服务端固定模板 `env LC_ALL=C journalctl --no-pager -o short-iso -n <limit>`；跨发行版口径：不用 -g（systemd>=237 限制）改管道 grep -F、非 systemd 返回 127 与降级指引；注入防护：unit 白名单 + since/until/grep 禁单引号反斜杠）
 - `port_listen`（监听端口结构化：**ss → netstat → lsof 三级降级链固化在服务端**（`if command -v ss … elif netstat … elif lsof … else exit 127`），输出首行标注实际命中工具；三段均 `env LC_ALL=C`；lsof 兜底段后置 grep LISTEN（rc 反映 grep）；tcpOnly 参数收窄协议面；无自由文本参数——模板完全固定不可注入）
 - `process_list`（进程列表结构化：ps POSIX 列集 `pid,ppid,user,%cpu,%mem,rss,stat,etime,comm`；`--no-headers` 是 procps 扩展——**子 shell 包裹** `(cmd1 || cmd2)` 保证 BSD 降级路径也进同一 `sort -k<N> -nr | head -N` 管道（shell `|` 优先于 `||`，不包裹首选路径会绕过排序）；sortBy=cpu/mem 枚举白名单、limit 数字——无自由文本）

@@ -232,7 +232,6 @@ pub struct RemoteDirectoryList {
 mod headless;
 mod known_hosts;
 mod monitor;
-mod dir_listing; // v0.20：无会话回落列目录（session.rs 行数红线拆出）
 mod session;
 pub mod agent; // v0.20（SSH P1）：SSH agent 认证桥（named pipe → Pageant，逐 key 尝试）
 pub mod session_cmds; // v0.20：轻量通道命令（write/resize），注册表经完整路径引用
@@ -250,7 +249,6 @@ pub use jump::*;
 // keyboard 的 keyboard_interactive_loop 是 pub(crate)——不对外 re-export（facade 内部路径引用）
 pub use monitor::*;
 pub use headless::*;
-pub use dir_listing::*;
 pub use session::*;
 pub use sftp::*;
 pub use text_file::*;
