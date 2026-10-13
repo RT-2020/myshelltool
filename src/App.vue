@@ -6,7 +6,7 @@ import { usePanelResize } from './composables/usePanelResize';
 import { useAdaptiveLayout } from './composables/useAdaptiveLayout';
 import { useAutoUpdate } from './composables/useAutoUpdate';
 import { bootAssetWindow } from './lib/assetWindowBoot';
-import { isAssetWindowMode } from './lib/assetWindows';
+import { isAssetWindowMode, restoreAssetWindows } from './lib/assetWindows';
 import { matchAppShortcut } from './lib/terminalGuards';
 import { announceHandoffReady, setupHandoffListeners } from './lib/sessionHandoff';
 import { useSessionsStore } from './stores/sessions';
@@ -48,7 +48,11 @@ onMounted(() => {
       }))
       .catch(() => null);
   } else {
-    store.initialize();
+    store
+      .initialize()
+      // v0.21 B1：资产列表就绪后恢复上次打开的独立窗口（无记录/资产已删除时跳过）
+      .then(() => restoreAssetWindows(store.assets))
+      .catch(() => null);
     autoUpdate.init();
     window.addEventListener('keydown', handleGlobalKeydown);
   }

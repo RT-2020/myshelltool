@@ -12,6 +12,7 @@ import {
   isTauriRuntime,
   normalizeTunnelStatus
 } from '../services/backend';
+import { disposeCrossWindowSync, installCrossWindowSync } from '@/lib/crossWindowSyncRuntime';
 import { applyTheme } from '../composables/useTheme';
 import { errorMessage } from '../lib/errorMessage';
 import { useSessionsStore } from './sessions';
@@ -138,11 +139,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     );
   }
 
-  // workbench.setupEventListeners 仅做转发：
-  // - sessions store 处理 host key / keyboard 监听
-  // - files store 处理 sftp-transfer-progress 监听
-  // - ui store 处理 system theme 监听（在 initializeTheme 中初始化）
-  // - mcp store 处理 mcp-tool-approval 监听（v1.5 GUI 弹窗审批）
+  // setupEventListeners 做转发：sessions（host-key/keyboard）/files（进度）/
+  // ui（系统主题）/mcp（审批）；跨窗同步由 installCrossWindowSync 注册。
   async function setupEventListeners(assetMode = false) {
     if (!isTauriRuntime()) return;
     // v1.2 启动即探测 MCP / v1.3 刷新同步状态 / v1.6 探测远端更新；asset 模式（独立
@@ -155,12 +153,14 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     await Promise.all([
       sessionsStore.setupEventListeners(),
       filesStore.setupEventListeners(),
+      installCrossWindowSync(uiStore, assetsStore, announce, assetMode),
       ...(assetMode ? [] : [mcpStore.setupEventListeners()])
     ]);
   }
 
   async function disposeEventListeners() {
     uiStore.disposeSystemThemeListener();
+    disposeCrossWindowSync();
     await Promise.all([
       sessionsStore.disposeEventListeners(),
       filesStore.disposeEventListeners(),

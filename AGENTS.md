@@ -54,7 +54,7 @@
 - ❌ 硬编码颜色/z-index/间距：用 `var(--token)`（见 `src/styles/_tokens.scss`）。
 - ❌ 同一概念多份实现：连接状态等用权威定义点（见指南 §5）。
 - ❌ 死代码：未被 import 的模块确认后删除。
-- ❌ 靠猜测代替事实：对外部环境（家目录/工具链/locale/时钟域/就绪信号/身份键）不做臆断——协议求证（SFTP canonicalize/stat、pty 终端模式）、解析命令输出加 `LC_ALL=C` + POSIX 选项（写法必须 `env LC_ALL=C <cmd>`，`VAR=值 cmd` 在 csh/tcsh 下整条命令失败）、比较同钟域、身份用完整键、探测三态（真/假/未知按保守处理）。详见指南 §7；**机械门禁**：`npm run lint:facts`（`scripts/fact-guards.mjs`，17 条规则，随 build/CI/发版强制执行；含 animation 简写双缓动拦截）。新增远程能力**默认走 SFTP/协议**，确需 exec 解析输出时注释平台假设与降级策略。
+- ❌ 靠猜测代替事实：对外部环境（家目录/工具链/locale/时钟域/就绪信号/身份键）不做臆断——协议求证（SFTP canonicalize/stat、pty 终端模式）、解析命令输出加 `LC_ALL=C` + POSIX 选项（写法必须 `env LC_ALL=C <cmd>`，`VAR=值 cmd` 在 csh/tcsh 下整条命令失败）、比较同钟域、身份用完整键、探测三态（真/假/未知按保守处理）。详见指南 §7；**机械门禁**：`npm run lint:facts`（`scripts/fact-guards.mjs`，20 条规则，随 build/CI/发版强制执行；含 animation 简写双缓动拦截）。新增远程能力**默认走 SFTP/协议**，确需 exec 解析输出时注释平台假设与降级策略。
 - ❌ 靠形状猜测（形态 E）：用正则/前缀/子串去认结构化对象（命令串/路径/设备树/身份）必被等价写法绕过——命令按 shell 词法分段后**逐段**判定（`df -h; cat /etc/shadow` 不得因前缀 `df` 免审批）、路径先归一再按**组件**判定（`./.ssh/id_rsa`、`\\?\UNC\...`、`/home/x/.ssh/id_rsa` 同罪）、设备按**拓扑**判重（LVM/RAID 的 `dm-*`/`md*` 与物理盘记同一份 IO）。
 - ❌ 失败朝宽松方向折叠：涉及审批/凭据/拦截等级/数据覆盖的读盘或解析失败，**只允许回落到更严的一档**（fail-closed）+ 日志 + 损坏文件隔离改名；只有「文件不存在 = 用户无偏好」才可用产品默认档。「读不出来」永远不等于「空数据/不存在」——已两次导致静默丢数据（拦截等级降级为零审批放行、整份审计日志被 1 条覆盖）。
 
@@ -228,12 +228,12 @@ cd src-tauri && cargo check       # 更快的类型检查
 - `sanitize_credential_id` 是删除式清洗、不同 id 可碰撞（暂不改；改规则需迁移既有凭据文件）。
 - **Windows 工具链坑**：`cargo build` 偶被 windres build script 阻断 → `cargo check` 兜底；src-tauri 测试二进制缺 Tauri runtime DLL 跑不起来 → `cargo check --tests` 验编译，**安全判据测试必须放 core 真跑**。
 - **改前端后必须先 `npm run build` 再编译 Rust**：`frontendDist` 在 Rust build script 阶段打进二进制；调试期用 `npm run tauri:dev`（前端走 devUrl，刷新即生效）。
-- **多窗口已知限制**：窗口不持久化恢复、资产删除不跨窗口同步、主题不跨窗口实时同步、Esc 取消的窗外拖拽可能误开窗；MERGE_ACK 宽限期后到达不自动移交（文案已诚实，维持现状）。
+- **多窗口（v0.21 B1 起）**：上次打开的资产窗口可恢复（localStorage 列表 + asset-window-opened/closed 事件）；资产增删改与主题跨窗口实时同步（crossWindowSyncRuntime，事件带 source 防回环）；终端迁移在 serialize 可用时保持 alt 屏与软换行。仍有限制：窗口几何不恢复、Esc 取消的窗外拖拽可能误开窗；MERGE_ACK 宽限期后到达不自动移交（文案已诚实，维持现状）。
 - **MCP 端口**：release 恒 41235 / debug 默认 41500（`MYSHELLTOOL_MCP_PORT` 可覆盖）；dev 与正式版仍共享 `app_data_dir`。**【v0.20/A1】入口已加 token 鉴权**（URL 内嵌 `/mcp/<token>` + Bearer 兼容；判定在 `core::mcp_auth`；重置走 `mcp_reset_token` 或面板按钮）——升级后旧 host 配置里的无 token URL 会 401，需在 MCP 面板重新「复制配置」。
 - **【v0.18】内置编辑器**（CodeMirror 6 覆盖面板，双击文本类文件进入）：单文件上限 2 MiB；编码白名单严格转码（GBK 等，绝不 lossy）；写回带 expected 守护（冲突三选）+ temp/rename 原子写（与 MCP 共享 rename 兜底）+ 可选写前备份（app-data 滚动 3 份）；草稿存 app-data（重开较新时引导恢复）。下载完成 toast 的「打开」= ShellExecute 系统默认程序（下载的 .exe 会执行，与浏览器下载条一致）。
 - **【v0.20/S8】CSP 已启用**（tauri.conf.json `app.security.csp`）：default-src 'self'；script-src 'self'（**禁 eval**——新增依赖若用 new Function/eval 会被 CSP 静默拦截）；style-src 含 'unsafe-inline'（Vue SFC 运行时注入样式所需）+ Google Fonts；connect-src 含 `ipc:` 与 `http://ipc.localhost`（**Tauri 2 WebView2 IPC 通道形态，缺这条 invoke 全挂——改动 CSP 前必读**）。新增外联资源（字体/图床/API）须同步登记进 CSP 对应指令；无消费面的授权不写（blob: 曾被写后删）。真实 CSP 只在 Tauri shell 生效（tauri:dev/build），浏览器 dev 页面不受影响。
 - **russh-sftp 是 vendored fork**（`third-party/russh-sftp`，把非 UTF-8 文件名可逆编码为 PUA-A）：升级 russh-sftp 需重放补丁（buf.rs/ser.rs 两处 + v0.20 set_metadata 透传 + 往返单测）。
-- **MCP 会话复用未做**：`tools.rs::exec_on_asset` 直走 headless 建连；可注入 GUI 会话池复用（follow-up）。
+- **MCP 会话复用已做（GUI → 池 → 新建三层）**：`tools.rs::exec_on_asset` 命中 GUI 同主机会话时优先复用（`sessionSource=gui`），否则走 `mcp/session_pool.rs`，凭据快照变化/会话断开自动重建。对外文档同步由 fact-guards 的 docs 规则守护（工具数/带 token URL/过期 Follow-up）。
 
 ---
 

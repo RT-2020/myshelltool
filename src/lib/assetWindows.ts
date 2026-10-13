@@ -10,6 +10,8 @@ import {
   getExistingTauriWebviewWindow,
   isTauriRuntime
 } from '../services/backend';
+import { CROSS_WINDOW_EVENTS, emitCrossWindow } from './crossWindowEvents';
+import { markAssetWindowOpened, readOpenAssetWindows } from './windowState';
 
 // tauri.d.ts 只声明了 backend.ts 实际用到的窗口方法；本文件的 setFocus /
 // unminimize / once 以局部交叉类型补齐（运行时可选调用，与原防御式写法一致）。
@@ -124,6 +126,9 @@ export async function openAssetWindow(asset: AssetLike | null | undefined, { ado
     (win as ListenableWebviewWindow)?.once?.('tauri://error', event => {
       console.error('[assetWindows] window creation error:', event?.payload || event);
     });
+    // v0.21 B1：记入「上次打开列表」并广播，主窗口据此持久化（跨窗口实时增量）。
+    markAssetWindowOpened(asset!.id);
+    void emitCrossWindow(CROSS_WINDOW_EVENTS.ASSET_WINDOW_OPENED, { assetId: asset!.id });
   } catch (error) {
     // 报错后 rethrow：调用方（主窗口侧）可 announce 给用户
     console.error('[assetWindows] create window failed:', error);
@@ -135,4 +140,28 @@ export async function openAssetWindow(asset: AssetLike | null | undefined, { ado
 // 基准（可为负/超界），Phase 2 拖出资产判定用。
 export function isPointOutsideViewport(clientX: number, clientY: number): boolean {
   return clientX < 0 || clientY < 0 || clientX > window.innerWidth || clientY > window.innerHeight;
+}
+
+/**
+ * 主窗口 boot 完成后恢复上次打开的资产窗口（v0.21 B1）。
+ *
+ * 只在主窗口调用；资产 id 已不存在（被删除/同步覆盖）时跳过，不创建空窗。
+ * 单个窗口恢复失败不阻塞其余（console 留痕由 openAssetWindow 内部完成）。
+ */
+export async function restoreAssetWindows(
+  assets: Array<{ id?: string } | null | undefined> | null | undefined
+): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const ids = readOpenAssetWindows();
+  if (!ids.length) return;
+  const list = Array.isArray(assets) ? assets : [];
+  for (const id of ids) {
+    const asset = list.find(item => item?.id === id);
+    if (!asset) continue;
+    try {
+      await openAssetWindow(asset as AssetLike);
+    } catch {
+      /* 单窗恢复失败：openAssetWindow 已 console 记录；不阻塞其它窗口 */
+    }
+  }
 }

@@ -26,6 +26,7 @@ import {
 import type { ThemeMode } from '../composables/useTheme';
 import { errorMessage } from '../lib/errorMessage';
 import { parseSshTarget } from '../lib/parseSshTarget';
+import { CROSS_WINDOW_EVENTS, emitCrossWindow } from '@/lib/crossWindowEvents';
 
 // localStorage key（CRITICAL: do NOT rename — Critic 改进 3）
 const THEME_STORAGE_KEY = 'myshelltool-theme';
@@ -162,6 +163,9 @@ export const useUiStore = defineStore('ui', () => {
   const assetsCollapsed = ref(readStored(ASSETS_COLLAPSED_KEY) === 'collapsed');
   const rightCollapsed = ref(readStored(RIGHT_COLLAPSED_KEY) === 'collapsed');
   const middleClickAutoscroll = ref(readStored(MIDDLE_AUTOSCROLL_KEY) === 'on');
+  // v0.21 B1：资产窗口被主窗口删除后置位，AssetWindowShell 收到后走关窗流程。
+  // 只会在 asset 窗口被置位（主窗口不消费）。
+  const assetWindowDefunct = ref(false);
   const statusMessage = ref('就绪：连接资产可收起，双击主机打开 SSH 会话。');
   const modal = ref<ModalState>({ type: null, asset: null });
   const searchState = ref<SearchState>({ open: false, query: '', suggestions: [] });
@@ -218,7 +222,30 @@ export const useUiStore = defineStore('ui', () => {
     } catch {
       /* localStorage 不可用，静默 */
     }
+    void emitCrossWindow(CROSS_WINDOW_EVENTS.THEME_CHANGED, { theme: theme.value });
     announce('主题已切换：' + (THEME_LABELS[theme.value] || theme.value));
+  }
+
+  /**
+   * 跨窗口收到主窗口的主题广播后应用（v0.21 B1）。
+   * 与 setTheme 的差异：不再广播（防回环），不再 announce（被动同步不打扰用户），
+   * 但仍更新本窗口 localStorage（后续本窗口冷启动/刷新读到最新偏好）。
+   */
+  function applyExternalTheme(value: string) {
+    const next = normalizeStoredTheme(value);
+    if (next === theme.value) return;
+    theme.value = next;
+    applyTheme(effectiveTheme.value);
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, theme.value);
+    } catch {
+      /* localStorage 不可用，静默 */
+    }
+  }
+
+  /** 主窗口删除了本资产窗口对应的资产：置为 defunct，由壳组件走关窗流程。 */
+  function markAssetWindowDefunct() {
+    assetWindowDefunct.value = true;
   }
 
   // 设置面板「外观」tab 用：点哪个选哪个（区别于 toggleTheme 的循环切换）。
@@ -233,6 +260,7 @@ export const useUiStore = defineStore('ui', () => {
     } catch {
       /* localStorage 不可用，静默 */
     }
+    void emitCrossWindow(CROSS_WINDOW_EVENTS.THEME_CHANGED, { theme: theme.value });
     announce('主题已切换：' + (THEME_LABELS[theme.value] || theme.value));
   }
 
@@ -418,6 +446,7 @@ export const useUiStore = defineStore('ui', () => {
     rightCollapsed,
     middleClickAutoscroll,
     statusMessage,
+    assetWindowDefunct,
     toasts,
     modal,
     searchState,
@@ -430,6 +459,8 @@ export const useUiStore = defineStore('ui', () => {
     toggleTheme,
     setTheme,
     applyThemeValue,
+    applyExternalTheme,
+    markAssetWindowDefunct,
     initializeTheme,
     disposeSystemThemeListener,
     // 面板折叠 actions

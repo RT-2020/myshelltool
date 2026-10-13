@@ -16,6 +16,7 @@ import {
   slugify
 } from '../services/backend';
 import { errorMessage } from '../lib/errorMessage';
+import { CROSS_WINDOW_EVENTS, emitCrossWindow } from '@/lib/crossWindowEvents';
 
 /** assets store 实际消费的 workbench bridge 最小结构。 */
 interface AssetsWorkbenchBridge {
@@ -67,6 +68,15 @@ export const useAssetsStore = defineStore('assets', () => {
     }
     return workbenchBridge;
   }
+  /**
+   * 广播资产库变更（v0.21 B1 跨窗口同步）。
+   * 事件接收方 reloadAssets({ broadcast: false }) 回读磁盘，保证最终一致；
+   * 本窗口不依赖事件（本地已更新），失败也只是其它窗口稍后刷新才看到。
+   */
+  function broadcastAssetsChanged() {
+    void emitCrossWindow(CROSS_WINDOW_EVENTS.ASSETS_CHANGED, { count: assets.value.length });
+  }
+
   function announce(message: string) {
     if (workbenchBridge && typeof workbenchBridge.announce === 'function') {
       return workbenchBridge.announce(message);
@@ -240,6 +250,7 @@ export const useAssetsStore = defineStore('assets', () => {
     selectAsset(item.id, false);
     wb().modal = { type: null, asset: null };
     announce('连接资产已保存：' + item.name);
+    broadcastAssetsChanged();
     maybeAutoPush(); // v1.6 自动同步（moveAsset/duplicateAsset 复用本函数，自动覆盖）
   }
 
@@ -267,6 +278,7 @@ export const useAssetsStore = defineStore('assets', () => {
     }
     wb().modal = { type: null, asset: null };
     announce('已删除连接资产：' + (target?.name || id));
+    broadcastAssetsChanged();
     maybeAutoPush();
   }
 
@@ -281,7 +293,7 @@ export const useAssetsStore = defineStore('assets', () => {
   // 本 store，故载入逻辑写在这里；sync store 经 workbench bridge 注入调用，
   // 不直接 import（AGENTS.md §4.2 禁止循环 import）。
   // ------------------------------------------------------------
-  async function reloadAssets() {
+  async function reloadAssets({ broadcast = true }: { broadcast?: boolean } = {}) {
     const result = await invokeBackend<AssetListResult>('list_connection_assets');
     assets.value = normalizeAssetList(result.assets);
     declaredGroups.value = result.groups || [];
@@ -291,6 +303,9 @@ export const useAssetsStore = defineStore('assets', () => {
     if (!selectedAssetId.value || !assets.value.some(asset => asset.id === selectedAssetId.value)) {
       selectedAssetId.value = assets.value[0]?.id || null;
     }
+    // 事件驱动的跨窗口回读必须 broadcast:false（否则 A reload → 广播 → B reload →
+    // 再广播的无限回环）；本窗口主动拉取（sync）保留广播，让其它窗口跟上。
+    if (broadcast) broadcastAssetsChanged();
   }
 
   // ------------------------------------------------------------
@@ -337,6 +352,7 @@ export const useAssetsStore = defineStore('assets', () => {
     assetSource.value = { ...result, count: result.count ?? result.assets?.length ?? assets.value.length };
     wb().modal = { type: null };
     announce('分组已重命名：' + oldPath + ' → ' + newPath);
+    broadcastAssetsChanged();
     maybeAutoPush();
   }
 
@@ -346,6 +362,7 @@ export const useAssetsStore = defineStore('assets', () => {
     declaredGroups.value = result.groups || [];
     assetSource.value = { ...result, count: result.count ?? result.assets?.length ?? assets.value.length };
     announce('分组已解散：' + path);
+    broadcastAssetsChanged();
     maybeAutoPush();
   }
 
@@ -356,6 +373,7 @@ export const useAssetsStore = defineStore('assets', () => {
     assetSource.value = { ...result, count: result.count ?? result.assets?.length ?? assets.value.length };
     wb().modal = { type: null };
     announce('已新建分组：' + path);
+    broadcastAssetsChanged();
     maybeAutoPush();
   }
 
@@ -377,6 +395,7 @@ export const useAssetsStore = defineStore('assets', () => {
     try {
       const result = await invokeBackend<AssetListResult>('reorder_asset_groups', { paths: next });
       declaredGroups.value = result.groups || [];
+      broadcastAssetsChanged();
       maybeAutoPush();
     } catch (error) {
       announce('分组排序失败：' + errorMessage(error));
