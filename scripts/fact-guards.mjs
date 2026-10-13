@@ -43,7 +43,11 @@ const TARGETS = {
     exclude: ['scripts/fact-guards.mjs']
   },
   // build.rs 位于 src-tauri 根目录（不在 src-tauri/src 下），单文件 target。
-  buildRs: { files: ['src-tauri/build.rs'] }
+  buildRs: { files: ['src-tauri/build.rs'] },
+  // 已发布文档的事实一致性（README + MCP 配置指南）：MCP 工具数 / 接入 URL
+  // 随代码演进，文档漂移曾真实发生（v0.19.1 扩到 26 工具后 README 仍写 13 个、
+  // 配置示例仍给无 token URL）。只扫这两份对外文档，历史规格/计划不扫。
+  docs: { files: ['README.md', 'docs/mcp-setup.md'] }
 };
 
 /**
@@ -57,6 +61,28 @@ function allowFor(line, ruleId) {
   if (!m || m[1] !== ruleId) return false;
   return m[2].trim().replace(/\s+/g, '').length >= 8;
 }
+
+/**
+ * MCP 工具数的单一事实源：registry.rs 的 `static REGISTRY: [ToolSpec; N]`。
+ * 文档同步规则用它做交叉核对——工具增删时只改 registry 必然让 README/MCP 指南
+ * 的门禁变红，逼着同一次提交同步文档。
+ */
+function readMcpToolCount() {
+  const registryPath = path.join(ROOT, 'src-tauri/src/mcp/registry.rs');
+  const source = fs.readFileSync(registryPath, 'utf8');
+  const m = source.match(/static\s+REGISTRY:\s*\[ToolSpec;\s*(\d+)\s*\]/);
+  if (!m) {
+    console.error('✗ fact-guards：无法从 registry.rs 解析 static REGISTRY: [ToolSpec; N]——文档同步门禁拒绝在未知数上宣称通过。');
+    process.exit(1);
+  }
+  const count = Number(m[1]);
+  if (!Number.isInteger(count) || count <= 0) {
+    console.error(`✗ fact-guards：registry.rs 解析出的 MCP 工具数非法（${m[1]}）。`);
+    process.exit(1);
+  }
+  return count;
+}
+const MCP_TOOL_COUNT = readMcpToolCount();
 
 const RULES = [
   {
@@ -358,6 +384,43 @@ const RULES = [
         ]
       }
     }
+  },
+  {
+    id: 'mcp-tool-count-doc-sync',
+    title: 'README / MCP 指南的 MCP 工具数必须与 registry.rs 的 REGISTRY 数量一致',
+    fix: `把文档里的旧计数改为当前 ${MCP_TOOL_COUNT} 个，或同步 registry.rs（工具增删时同时更新 README 与 docs/mcp-setup.md）。事故：v0.19.1 扩到 26 个工具后 README 仍写 13 个，用户看不到真实能力面。`,
+    targets: ['docs'],
+    pattern: /\b(\d+)\s*个\s*(?:Tools?|工具)/,
+    unless: new RegExp(`(?:^|[^0-9])${MCP_TOOL_COUNT}\\s*个\\s*(?:Tools?|工具)`),
+    samples: {
+      bad: [`**${MCP_TOOL_COUNT + 1} 个 Tools = 旧计数**`],
+      good: [`**${MCP_TOOL_COUNT} 个 Tools = 当前计数**`]
+    }
+  },
+  {
+    id: 'mcp-endpoint-url-needs-token',
+    title: 'MCP 配置示例的 URL 必须含 token（无 token URL 一律 401）',
+    fix: '统一写成「从 GUI MCP 面板复制完整 URL」或 `http://127.0.0.1:<端口>/mcp/<token>`；A1 后无 token 一律 401。事故：升级后旧文档仍给无 token URL，新用户照抄连不上核心差异化能力。',
+    targets: ['docs'],
+    pattern: /https?:\/\/127\.0\.0\.1:\d+\/mcp(?!\/)/,
+    samples: {
+      bad: ['"url": "http://127.0.0.1:41235/mcp"'],
+      good: [
+        '"url": "http://127.0.0.1:41235/mcp/<token>"',
+        '"url": "<从 GUI MCP 面板复制的完整 URL>"'
+      ]
+    }
+  },
+  {
+    id: 'docs-no-stale-mcp-followups',
+    title: 'README / MCP 指南不得再把已实现能力列为 Follow-up',
+    fix: '删除这些过期条目；当前真限制是 Claude Desktop 需 mcp-remote 桥接、headless MFA 不支持、MCP 隧道仅 remote 创建且无 stop/delete 工具、本机 FS 需显式授权。事故：会话复用/下载取消/隧道工具已实现，文档却仍写未做。',
+    targets: ['docs'],
+    pattern: /会话不复用|直走 headless 独立建连|仍不可取消|隧道类工具未实现/,
+    samples: {
+      bad: ['- **会话不复用**：ssh_exec 直走 headless 独立建连'],
+      good: ['- **MCP 仅 remote 隧道创建**：local/dynamic 需在 GUI 隧道面板建']
+    }
   }
 ];
 
@@ -365,9 +428,10 @@ const RULES = [
  * 单行判定。返回 'clean' | 'comment' | 'skip' | 'unless' | 'allowed' | 'violation'。
  * 顺序：注释行 > 跳过 > 命中 > unless 反证 > 豁免 > 违规。
  */
-function judgeLine(rule, line) {
-  // 注释行不执行任何逻辑，一律不判（规则只约束代码）
-  if (/^\s*(\/\/|\/\*|\*)/.test(line)) return 'comment';
+function judgeLine(rule, line, docsTarget = false) {
+  // 注释行不执行任何逻辑，一律不判（规则只约束代码）。docs 目标例外：
+  // Markdown 的 **加粗** 行首会被注释正则误判成块注释，导致文档事实规则漏检。
+  if (!docsTarget && /^\s*(\/\/|\/\*|\*)/.test(line)) return 'comment';
   if (rule.skipLine && rule.skipLine.test(line)) return 'skip';
   if (!rule.pattern.test(line)) return 'clean';
   if (rule.unless && rule.unless.test(line)) return 'unless';
@@ -532,14 +596,15 @@ function selfTest() {
       }
       continue;
     }
+    const docsTarget = rule.targets.includes('docs');
     for (const line of rule.samples.bad) {
-      if (judgeLine(rule, line) !== 'violation') {
+      if (judgeLine(rule, line, docsTarget) !== 'violation') {
         console.log(`  ✗ 自检失败 [${rule.id}] 应命中但未命中: ${line}`);
         failed += 1;
       }
     }
     for (const line of rule.samples.good) {
-      if (judgeLine(rule, line) === 'violation') {
+      if (judgeLine(rule, line, docsTarget) === 'violation') {
         console.log(`  ✗ 自检失败 [${rule.id}] 不应命中但命中: ${line}`);
         failed += 1;
       }
@@ -558,6 +623,7 @@ function scan() {
   const violations = [];
   const allowCount = {};
   for (const rule of RULES) {
+    const docsTarget = rule.targets.includes('docs');
     for (const target of rule.targets) {
       for (const file of filesByTarget[target]) {
         const content = fs.readFileSync(file, 'utf8');
@@ -569,7 +635,7 @@ function scan() {
         }
         const lines = content.split(/\r?\n/);
         for (let i = 0; i < lines.length; i += 1) {
-          const verdict = judgeLine(rule, lines[i]);
+          const verdict = judgeLine(rule, lines[i], docsTarget);
           if (verdict === 'allowed') {
             allowCount[rule.id] = (allowCount[rule.id] ?? 0) + 1;
           } else if (verdict === 'violation') {
