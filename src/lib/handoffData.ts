@@ -57,7 +57,7 @@ export interface HandoffWorkbenchStore {
 
 // 遍历 normal buffer 导出纯文本（serialize addon 不可用时的回退）。已知限制：
 // 不处理 isWrapped 软换行（超宽行会被拆成多行还原）；alternate buffer 场景
-// （vim/less 中拖出）只能还原进 alt 前的 normal 内容。
+// 只能还原 alt 前的 normal 内容——serialize 可用时会走带 alt 的路径（见下）。
 export function exportTerminalText(term?: Terminal | null, maxLines: number = SCROLLBACK_MAX_LINES): string {
   const buffer = term?.buffer?.normal;
   if (!buffer) return '';
@@ -75,14 +75,19 @@ export function exportTerminalText(term?: Terminal | null, maxLines: number = SC
 // 颜色/样式的文本，回放后 prompt 等 ANSI 色得以保留（曾用纯文本导出，迁移后
 // 终端历史整体褪成默认前景色——用户实测「debian@debian:~ 蓝色 prompt 变白」）。
 // excludeModes：不带源终端 mode 状态（光标形状等，回放端不该继承）；
-// excludeAltBuffer：拖出时正在 vim/less 只还原 normal buffer（与旧语义一致）。
+// alt 屏（v0.21 B1）：源终端当前在 alternate buffer（vim/less）时置
+// excludeAltBuffer=false——SerializeAddon 会输出 `ESC[?1049h` + alt 屏内容，
+// 回放端进入 alt 屏并恢复屏幕；之后远端退出 vim 的 `?1049l` 会正常切回
+// normal buffer。不在 alt 时仍排除，避免把历史 alt 状态误当当前状态。
+// 软换行由 SerializeAddon 依据 isWrapped 保持（fallback 纯文本路径不具备）。
 export function exportTerminalScrollback(session?: HandoffSessionEntry | null, maxLines: number = SCROLLBACK_MAX_LINES): string {
   if (session?.serialize) {
+    const inAltBuffer = session?.term?.buffer?.active?.type === 'alternate';
     try {
       const text = session.serialize.serialize({
         scrollback: maxLines,
         excludeModes: true,
-        excludeAltBuffer: true
+        excludeAltBuffer: !inAltBuffer
       });
       if (text) return text;
     } catch { /* serialize 失败回退纯文本（老会话对象无 addon 等） */ }

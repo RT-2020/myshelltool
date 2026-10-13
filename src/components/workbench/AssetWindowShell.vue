@@ -22,16 +22,18 @@
  *  - Esc 取消的窗外拖拽可能误开窗（Phase 2 拖出交互，待实测）；
  *  - 主窗口关闭后本窗口存活，属 Tauri 多窗口正常生命周期。
  */
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ArrowUpDown, Minus, Moon, PanelRight, Square, Sun, Undo2, X } from 'lucide-vue-next';
 import TerminalSurface from '@/components/terminal/TerminalSurface.vue';
 import FileSurface from '@/components/files/FileSurface.vue';
 import RightSidebar from '@/components/shell/RightSidebar.vue';
 import { AppBrandLogo } from '@/components/ui';
 import { useSessionsStore } from '@/stores/sessions';
+import { useUiStore } from '@/stores/ui';
 import { useEditorStore } from '@/stores/editor';
 import { pushSessionToMainWindow } from '@/lib/sessionHandoff';
 import { createAssetWindowClose } from '@/lib/assetWindowClose';
+import { CROSS_WINDOW_EVENTS, emitCrossWindow } from '@/lib/crossWindowEvents';
 import {
   closeTauriWindow,
   getExistingTauriWebviewWindow,
@@ -66,11 +68,15 @@ const props = withDefaults(defineProps<{
 
 const isMaximized = ref(false);
 let unlistenClose: (() => void) | null = null;
+// 本窗口所属资产 id（模块加载即定）：资产被删后 selectedAsset 可能先回落到其它
+// 资产，close/持久化收尾必须认 URL 里的原始 id，不能用 asset.value?.id。
+const assetWindowAssetId = new URLSearchParams(window.location.search).get('assetId') || '';
 
 // ============================================================
 // 「移回主窗口」（tab 条已删，回迁入口收敛到标题栏按钮）
 // ============================================================
 const sessionsStore = useSessionsStore();
+const uiStore = useUiStore();
 // 主窗口存活才显示回迁按钮。getExistingTauriWebviewWindow 是 async（getByLabel
 // 返回 Promise），不能进 computed 同步消费（Promise 恒 truthy 会恒显示）。
 // 探测只在「挂载 + 窗口获得焦点/重新可见」时各做一次（事件驱动）：探测失败
@@ -174,11 +180,31 @@ function requestClose() {
 // 关窗流程（核心）：v0.20 拆至 lib/assetWindowClose.ts（S2 刀，行为零变化；
 // 传输守卫 → 编辑器 dirty 三选 → 会话确认 → settle 轮询 → 断开全部 → destroy）
 // ============================================================
-const { requestCloseAssetWindow, destroyWindow: destroyAssetWindow } = createAssetWindowClose({
+const { requestCloseAssetWindow } = createAssetWindowClose({
   store: props.store,
   editorStore,
-  activeTransferCount: () => activeTransferCount.value
+  activeTransferCount: () => activeTransferCount.value,
+  // v0.21 B1：窗口销毁前广播 CLOSED，主窗口收到后从「上次打开列表」摘除本窗口
+  // （正常关窗/资产删除共用）。摘除权威只在主窗口——本窗口【不】写 localStorage：
+  // 主窗口已死时（退出应用场景）本地写经 WebView2 存储重启后共享，会把退出时
+  // 开着的窗口也摘掉，破坏「退出后恢复」语义（真机实测 2026-10-13）。
+  onDestroyed: async () => {
+    const id = assetWindowAssetId || asset.value?.id;
+    if (!id) return;
+    await emitCrossWindow(CROSS_WINDOW_EVENTS.ASSET_WINDOW_CLOSED, { assetId: id });
+  }
 });
+
+// v0.21 B1：主窗口删除本资产后，ui store 的 assetWindowDefunct 置位 → 走既有
+// 关窗流程（在途传输/未保存编辑器守卫仍生效，不会静默丢数据）。
+watch(
+  () => uiStore.assetWindowDefunct,
+  defunct => {
+    if (!defunct) return;
+    props.store.announce?.('该资产已被删除，正在关闭窗口', { level: 'warn' });
+    void requestCloseAssetWindow();
+  }
+);
 
 
 

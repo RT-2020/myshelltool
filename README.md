@@ -38,7 +38,7 @@ myshelltool 有**两种身份**：
 ┌─────────────────┐   Streamable HTTP       ┌──────────────────────────┐
 │ 任意 MCP 客户端  │   (JSON-RPC over HTTP)  │  myshelltool.exe (GUI)   │
 │ (AI 工具)       │ ──────────────────────→ │  内嵌 MCP server         │
-└─────────────────┘                         │  127.0.0.1:41235/mcp     │
+└─────────────────┘                         │  本机 HTTP + token 鉴权  │
                                             └────────────┬─────────────┘
                                                          │ russh SSH（同进程）
                                                          ▼
@@ -57,7 +57,7 @@ myshelltool 有**两种身份**：
 
 - **连接资产管理** — 多级嵌套分组（`/` 分隔）、标签、筛选、收藏；`user@host:port` 连接串快速解析（含 IPv6 括号形式）
 - **SSH 终端** — 多标签会话、xterm.js、UTF-8 中文、自动 fit、深/浅主题、自动重连（带稳定窗口判定，不无限重试）
-- **多窗口工作台** — 资产可拖出为独立 OS 窗口；已连接的终端 tab 可跨窗口迁移（scrollback 带颜色回放），也可一键移回主窗口
+- **多窗口工作台** — 资产可拖出为独立 OS 窗口；上次打开的窗口随应用恢复；主题与资产变更跨窗口实时同步；已连接的终端 tab 可跨窗口迁移（scrollback 带颜色回放，vim/less alt 屏保持），也可一键移回主窗口
 - **Host Key 验证** — 首次连接指纹确认、变更高危警告、known_hosts 持久化
 - **多认证方式** — 密码、私钥（文件选择器选取）、passphrase、keyboard-interactive
 - **凭据安全存储** — 密码/passphrase 走本地 SecretStore（Windows DPAPI），不进资产 JSON / 日志
@@ -79,9 +79,10 @@ myshelltool 有**两种身份**：
 
 ### MCP Server
 
-- **内嵌 GUI 进程** — axum HTTP service（Streamable HTTP transport），随 GUI 启停，默认 `127.0.0.1:41235/mcp`
-- **13 个 Tools** — 7 个系统类（资产/会话/磁盘/系统/服务/资源监控/命令执行）+ 6 个文件类（list/read/write/upload/download/remove），文件传输全能力无桩化
-- **4 Resources / 3 Prompts** — 资产/会话/known-hosts 随机读取；诊断/安全审计/磁盘清理结构化引导
+- **内嵌 GUI 进程** — axum HTTP service（Streamable HTTP transport），随 GUI 启停；只监听 localhost（release 默认 41235，debug 默认 41500，被占用 +1）
+- **入口 token 鉴权** — URL 内嵌 256-bit 随机 token（形如 `http://127.0.0.1:<端口>/mcp/<token>`），无 token 一律 401；面板可一键重置，旧配置立即失效
+- **26 个 Tools** — 16 只读（资产/会话/磁盘/系统/服务/资源快照/日志/端口/进程/文件搜索/隧道清单/长任务与截断输出读取/远程文件读）+ 6 写与控制（服务控制/隧道创建/长任务取消/远程文件写·上传·下载）+ 4 执行与删除（`ssh_exec`/`exec_many`/长任务/文件删除），文件传输全能力无桩化
+- **4 Resources / 3 Prompts** — 资产/会话/known-hosts/当前授权范围；诊断/安全审计/磁盘清理结构化引导（支持多资产对比）
 - **拦截等级可配置** — Minimal（默认）/ Strict，GUI 面板一键切换，改档即时生效
 - **审批三级降级** — elicitation（客户端内确认框）→ GUI 弹窗（60s 超时）→ fail-secure 拒绝
 - **执行审计日志** — 触发远程执行的调用逐条记录（命令已脱敏），GUI 内查看/搜索/清空
@@ -198,24 +199,24 @@ myshelltool 内嵌 MCP server（Streamable HTTP，随 GUI 启停，无独立 exe
 ### 三步接入
 
 1. **启动 GUI 并配好资产**——MCP 读取与 GUI 相同的数据目录，且仅服务已完成首次连接（信任 host key）的资产
-2. **在 GUI「MCP」面板查看 endpoint**——默认 `http://127.0.0.1:41235/mcp`（端口被占用会 +1，以面板显示为准；只监听 localhost）
-3. **客户端 MCP 配置填入 URL**——任何支持 `streamable-http` 的客户端通用：
+2. **在 GUI「MCP」面板复制完整 endpoint**——只监听 localhost；release 默认起始端口 41235（被占用会 +1，debug 构建默认 41500）。面板显示的是**内嵌入口 token 的完整 URL**（形如 `http://127.0.0.1:<端口>/mcp/<token>`）
+3. **把完整 URL 填进客户端配置**——任何支持 `streamable-http` 的客户端通用：
 
 ```json
 {
   "mcpServers": {
     "myshelltool": {
-      "url": "http://127.0.0.1:41235/mcp"
+      "url": "<从 GUI MCP 面板复制的完整 URL>"
     }
   }
 }
 ```
 
-> ⚠️ Claude Desktop 目前不支持 `streamable-http`，需经 [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) 桥接；其余主流客户端原生可用。各客户端配置位置与已知问题见 [`docs/mcp-setup.md`](./docs/mcp-setup.md)。
+> ⚠️ Claude Desktop 目前不支持 `streamable-http`，需经 [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) 桥接；其余主流客户端原生可用。URL 里的 token 等同凭据，泄露时在 MCP 面板重置 token（旧配置会立即 401）。各客户端配置位置与已知问题见 [`docs/mcp-setup.md`](./docs/mcp-setup.md)。
 
 ### 能力一览
 
-**13 个 Tools = 7 系统类 + 6 文件类**：资产/会话/磁盘/系统/服务/资源快照/**任意 shell 命令**，加文件 list/read/write/upload/download/remove（流式传输 + SHA256 校验）。另有 4 个 Resources（资产/会话/known-hosts/会话日志）与 3 个诊断 Prompts（健康诊断/安全审计/磁盘清理）。逐工具说明与审批语义见 [`docs/mcp-setup.md`](./docs/mcp-setup.md)。
+**26 个 Tools = 16 只读 + 6 写/控制 + 4 执行/删除**：只读覆盖资产/会话/磁盘/系统/服务/资源快照/日志/端口/进程/文件搜索/隧道清单/长任务与截断输出/远程文件读；写与控制覆盖服务控制/隧道创建/长任务取消/远程文件写·上传·下载；执行类提供单机与多机 Shell、后台长任务与文件删除。另有 4 个 Resources（资产/会话/known-hosts/授权范围）与 3 个诊断 Prompts（健康诊断/安全审计/磁盘清理，均支持多资产对比）。逐工具说明与审批语义见 [`docs/mcp-setup.md`](./docs/mcp-setup.md)。
 
 ### 安全机制
 
@@ -355,6 +356,7 @@ cd src-tauri && cargo check   # Rust 类型检查
 | v0.18.0 | 内置 CodeMirror 6 编辑器替换 Monaco CDN（编码白名单严格转码、冲突守护 + 原子写、草稿/备份、查找替换、JSON 校验/MD 分屏预览）；上传服务端流式化 + 远程转发补全 + 门禁块级引擎；低分辨率源头自适应布局（断点折叠替换缩放）；窄窗 flyout 与空态溢出修复 |
 | v0.19.0 | 上传区域正下方新增上传进度提示条（批次聚合、展开看逐文件速度/剩余、关闭提示不中断上传、失败可重试）；修复深层目录上传/刷新后面板跳回登录家目录的问题 |
 | v0.19.1 | MCP 大版本扩展（26 工具 + 3 多资产 prompts）：token 鉴权、授权范围、会话池、批量执行/长任务/日志·端口·进程·文件查询、服务控制与隧道管理；SSH 侧：OpenSSH config 一键导入、ProxyJump 跳板、SSH agent 认证、双因子顺序认证链、连接超时/keepalive 可配、chmod/查看链接目标、下载可取消；门禁机械化（大小红线 ratchet / IPC 契约对账 / UI 测试与三平台 CI）+ CSP + 诊断信息一键复制 |
+| v0.19.2 | 修复 v0.19.1 真机验收发现的一批问题（断开后刷新不再静默重连、SFTP 刷新 30s 超时与 busy 守卫、SSH agent 双通道聚合、双因子认证链、长任务取消状态、busybox 进程列表、host key 弹窗时序）；对外文档与门禁收口（README / MCP 配置指南同步 26 工具与带 token 接入 URL、文档事实门禁、删除无调用方的裸 SFTP IPC 命令）；B 线第一批：多窗口打开恢复 + 主题/资产跨窗同步、终端迁移 alt 屏回放 |
 
 ---
 
@@ -362,19 +364,20 @@ cd src-tauri && cargo check   # Rust 类型检查
 
 ### MCP
 
-- **会话不复用**：`ssh_exec`/`sftp_*` 工具当前直走 headless 独立建连，工具级会话复用仍为 follow-up
-- **Claude Desktop 不直连**：不支持 `streamable-http`，需经 `mcp-remote` 桥接
-- headless 建连不支持 MFA（仅密码/私钥/keyboard-interactive 密码类 prompt）
-- MCP 隧道类工具未实现（隧道的创建/管理目前在 GUI）
+- **Claude Desktop 不直连**：不支持 `streamable-http`，需经 [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) 桥接（这也是下一步优先要消除的接入摩擦）
+- **headless MFA 不支持**：MCP 独立建连只支持密码/私钥/keyboard-interactive 密码类 prompt；非密码 prompt（MFA 等）需先在 GUI 建立该资产会话，MCP 会优先复用 GUI 会话（`sessionSource=gui`）
+- **MCP 隧道工具是 MVP**：`tunnel_create` 仅支持 remote，local/dynamic 需在 GUI 隧道面板建立；工具暂无隧道停止/删除（GUI 面板可管理）
+- **本机 FS 默认不开放**：一旦配置了授权范围（分组/标签/排除项），`sftp_upload` / `sftp_download` 需在 MCP 面板显式勾选「允许本机文件」
+- **提示词注入风险**：AI 可能被远端内容诱导执行恶意命令；靠三段式人工确认、最小权限 scope 与执行审计缓解（行业级未解难题）
 
 ### GUI
 
-- 下载已流式化但**仍不可取消**（单次 invoke、后端无中断通道）；上传已服务端流式化、可取消
-- 远程转发已实现但每条走独立 SSH 连接（russh `tcpip_forward` 需要 `&mut Handle`）；host key 需先在 GUI 信任过、凭据需已存库；ProxyJump/跳板链未实现
+- 远程转发（remote）每条走独立 SSH 连接（russh `tcpip_forward` 需要 `&mut Handle`）；host key 需先在 GUI 信任、凭据需已存库；私钥托管凭据（`private_key_credential_id`）形态暂不支持该路径
+- **ProxyJump 仅单跳**：`jump_host` 只认资产库中的一台跳板；链式跳板（跳板自身再配 `jump_host`）会被忽略并告警；`user@host` / IPv6 字面量形态不支持
 - 内置编辑器单文件上限 2 MiB；编码仅限白名单（UTF-8/UTF-16/GBK 系等，严格转码不 lossy）
-- 多窗口：窗口不持久化恢复、资产删除不跨窗口同步、主题跨窗口不实时同步
-- 终端 tab 迁移回放不含 alt 屏与软换行（vim/less 中拖出只还原进 alt 前内容）
-- 超标文件拆分计划见 [`docs/architecture-log.md`](./docs/architecture-log.md) 的 Baseline snapshot
+- 多窗口：已支持上次打开窗口恢复、资产增删改跨窗同步、主题跨窗实时同步；窗口几何（位置/大小）暂不恢复，Esc 取消的窗外拖拽仍可能误开窗
+- 终端 tab 迁移回放：serialize 可用时保留 alt 屏（vim/less 拖出后仍在 alt 屏，退出后正常切回 normal）与软换行；serialize 不可用或 scrollback 超预算截断时退回纯文本路径，仍有 alt/软换行限制
+- 上传与下载均已支持取消（上传 ≤1 MiB、下载 64 KiB 块边界检查），取消后的半截文件会尽力清理
 
 ---
 

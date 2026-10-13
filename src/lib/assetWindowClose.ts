@@ -44,6 +44,10 @@ export interface AssetWindowCloseCtx {
   store: AssetWindowCloseStore;
   editorStore: AssetWindowCloseEditorStore;
   activeTransferCount(): number;
+  /** 窗口销毁前的回调（v0.21 B1：广播 asset-window-closed，主窗口据此从恢复列表
+   *  移除本窗口；正常关窗/资产删除共用）。必须在 destroy() 之前完成——destroy
+   *  会连 JS 上下文一起销毁，之后 emit 发不出去，已关闭的窗口会在下次启动复活。 */
+  onDestroyed?: () => void | Promise<void>;
 }
 
 export function createAssetWindowClose(ctx: AssetWindowCloseCtx) {
@@ -143,9 +147,13 @@ export function createAssetWindowClose(ctx: AssetWindowCloseCtx) {
     await destroyWindow();
   }
 
-  // destroy 绕过 close-requested（防确认弹窗递归）；失败仅记录，不静默吞
+  // destroy 绕过 close-requested（防确认弹窗递归）；失败仅记录，不静默吞。
+  // onDestroyed（CLOSED 事件广播）必须先于 destroy 完成：destroy 销毁的不只是
+  // 窗口，还有本窗口的 JS 上下文——挪到之后执行的话 emit 永远发不出去（真机
+  // 实测 2026-10-13：正常关闭的资产窗口下次启动全部复活）。
   async function destroyWindow() {
     try {
+      await ctx.onDestroyed?.();
       await (getTauriWindow() as CloseableTauriWindow | null)?.destroy?.();
     } catch (error) {
       console.error('[assetWindowClose] destroy window failed:', error);
