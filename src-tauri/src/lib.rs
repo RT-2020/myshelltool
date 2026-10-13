@@ -475,8 +475,6 @@ pub fn run() {
             ssh::ssh_confirm_host_key,
             ssh::ssh_keyboard_response,
             ssh::sftp_list_dir,
-            ssh::sftp_read_file,
-            ssh::sftp_write_file,
             ssh::sftp_upload_from_file,
             ssh::sftp_upload_cancel,
             ssh::sftp_download_cancel,

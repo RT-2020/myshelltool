@@ -114,11 +114,10 @@ export async function withTransfer<T>(itemId: string, task: () => Promise<T>) {
 }
 
 /**
- * 取消上传：置 cancelled 标记（UI 即时反馈）+ 调 `sftp_upload_cancel` 置后端
- * 共享旗标——流式上传循环在下一个块边界（≤1 MiB）看到旗标即中止，并尽力
- * 删除远端半截文件。后端 reject 后由 runPathUpload 按 cancelled 标记收敛状态。
- * 下载仍不可取消——`sftp_download_to_file` 是单次 invoke、后端没有中断通道，
- * TransferDrawer 对下载行不渲染取消按钮（勿造假按钮）。
+ * 取消传输：置 cancelled 标记（UI 即时反馈）+ 按方向调 `sftp_upload_cancel` /
+ * `sftp_download_cancel` 置后端共享旗标——上传在 ≤1 MiB / 下载在 64KiB 块边界
+ * 看到旗标即中止，并清理半截文件。后端 reject 后由对应 run* 流程按 cancelled
+ * 标记收敛状态（不挂重试）。两条命令写字面量，供 IPC 契约门禁静态对账。
  */
 export function cancelTransfer(id: string) {
   const item = tc().transferQueue.value.find(entry => entry.id === id);
@@ -127,10 +126,13 @@ export function cancelTransfer(id: string) {
   if (item.status !== 'running' && item.status !== 'pending') return;
   item.cancelled = true;
   tc().announce('正在取消' + (item.direction === 'upload' ? '上传' : '下载') + '：' + item.name, { level: 'warn' });
-  // 取消命令失败（会话已断等）可忽略：上传随即会因写失败以错误态收尾，
-  // 状态同样由 runPathUpload 收敛，不会因为取消命令丢失而卡 running。
-  const cancelCmd = item.direction === 'upload' ? 'sftp_upload_cancel' : 'sftp_download_cancel';
-  invokeBackend(cancelCmd, { transferId: id }).catch(() => null);
+  // 取消命令失败（会话已断等）可忽略：传输随即会因读写失败以错误态收尾，
+  // 状态同样由对应流程收敛，不会因为取消命令丢失而卡 running。
+  if (item.direction === 'upload') {
+    invokeBackend('sftp_upload_cancel', { transferId: id }).catch(() => null);
+  } else {
+    invokeBackend('sftp_download_cancel', { transferId: id }).catch(() => null);
+  }
 }
 
 /**

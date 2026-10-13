@@ -172,65 +172,6 @@ pub async fn sftp_list_dir(
     })
 }
 
-#[tauri::command]
-pub async fn sftp_read_file(
-    state: State<'_, AppState>,
-    session_id: String,
-    path: String,
-) -> Result<String, String> {
-    // lossy 文件名守卫：见 core::remote_text::is_lossy_remote_path（按名寻址失真
-    // 名可能 No such file，也可能命中字面含 U+FFFD 的另一个真实文件）
-    if myshelltool_core::is_lossy_remote_path(&path) {
-        return Err(myshelltool_core::lossy_remote_path_error(&path));
-    }
-    let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
-    let sftp = sftp_arc.lock().await;
-
-    let mut file = sftp
-        .open(&path)
-        .await
-        .map_err(|e| format!("SFTP open failed: {e}"))?;
-
-    use tokio::io::AsyncReadExt;
-    let mut contents = String::new();
-    file.read_to_string(&mut contents)
-        .await
-        .map_err(|e| format!("SFTP read failed: {e}"))?;
-
-    Ok(contents)
-}
-
-#[tauri::command]
-pub async fn sftp_write_file(
-    state: State<'_, AppState>,
-    session_id: String,
-    path: String,
-    content: String,
-) -> Result<(), String> {
-    // lossy 守卫（create = O_CREAT|O_TRUNC 覆盖语义，分不清新建与覆盖——
-    // 失真名可能静默覆盖字面含 U+FFFD 的另一个真实文件，多角色审查 Issue 3）
-    if myshelltool_core::is_lossy_remote_path(&path) {
-        return Err(myshelltool_core::lossy_remote_path_error(&path));
-    }
-    let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
-    let sftp = sftp_arc.lock().await;
-
-    let mut file = sftp
-        .create(&path)
-        .await
-        .map_err(|e| format!("SFTP create failed: {e}"))?;
-
-    use tokio::io::AsyncWriteExt;
-    file.write_all(content.as_bytes())
-        .await
-        .map_err(|e| format!("SFTP write failed: {e}"))?;
-    file.shutdown()
-        .await
-        .map_err(|e| format!("SFTP flush failed: {e}"))?;
-
-    Ok(())
-}
-
 #[derive(Clone, Serialize)]
 struct TransferProgressEvent {
     transfer_id: String,

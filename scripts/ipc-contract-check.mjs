@@ -2,7 +2,7 @@
 /**
  * ipc-contract-check —— IPC 契约清单级一致性门禁
  *
- * 背景：78 个 IPC 命令 + 12 类事件的两侧契约靠手工镜像（src/types/domain.ts、
+ * 背景：全部 IPC 命令 + 事件的两侧契约靠手工镜像（src/types/domain.ts、
  * 各处 listenBackendEvent 字面量），重命名/漏注册类错误全部延迟到运行时。
  * 本脚本做三个事实源的对账（清单级，不校验字段形状——字段级 codegen 是
  * 另一项独立评估，见架构评审 S4）：
@@ -36,18 +36,18 @@ const UNLISTENED_OK = {
 };
 
 /** 注册了但前端不直接调用的命令（每条必须给出理由；新命令一律应有前端调用点）。 */
-const REGISTERED_NOT_INVOKED_OK = {
-  sftp_read_file: '裸读命令：GUI 编辑器链路走 sftp_read_text（编码白名单），裸读保留给 MCP/未来预览；疑似死命令，待下个迭代确认后删除或接线',
-  sftp_write_file: '裸写命令：同上（GUI 走 sftp_write_text 的 expected 守护 + 原子写）',
-  sftp_upload_cancel: 'transferQueueOps 的 cancelCmd 按方向字面量分发（三元给 grep 两形态）',
-  sftp_download_cancel: '同上（S9 下载取消，共用 transfer_cancels 旗标通道）'
-};
+const REGISTERED_NOT_INVOKED_OK = {};
 
 /** 用变量包装 listenBackendEvent 的文件：该文件内声明的事件形态常量（kebab-case 字符串）全部视为已监听。 */
 const WRAPPER_LISTENER_FILES = ['src/lib/sessionHandoff.ts'];
-// transferQueueOps 的 cancelCmd 按方向选命令（上传/下载共用旗标通道 S9）——
-// 静态字面量在该文件 grep 两形态后豁免动态判定
 
+/**
+ * 用变量包装 emitBackendEvent 的文件（v0.21 B1：crossWindowEvents 的泛型
+ * emitCrossWindow）。该文件内声明的事件形态常量全部视为「可能发送」——静态
+ * 门禁无法知道本次调用具体发的是哪个，按全集保守记账；接收面仍按真实监听
+ * 清单核对，不会放过「发了没人听」。
+ */
+const WRAPPER_EMITTER_FILES = ['src/lib/crossWindowEvents.ts'];
 function toRel(abs) {
   return path.relative(ROOT, abs).split(path.sep).join('/');
 }
@@ -165,7 +165,6 @@ function frontendInvocations(files) {
     for (const m of content.matchAll(dynamicRe)) {
       const arg = m[1].trim();
       if (/^\w+\s*:/.test(arg)) continue; // backend.ts 的函数定义（command: string）
-      if (/cancelCmd/.test(arg)) continue; // S9：方向字面量分发的取消命令
     }
   }
   return { invoked, dynamic };
@@ -212,12 +211,15 @@ function frontendEvents(files) {
           else if (Array.isArray(r)) names = r;
         }
         if (names.length === 0) {
-          if (WRAPPER_LISTENER_FILES.includes(rel)) {
-            // 包装器（sessionHandoff 的 on() 间接层）：该文件自己声明的事件常量全部计入
+          const isListenerWrapper = label === 'listenBackendEvent' && WRAPPER_LISTENER_FILES.includes(rel);
+          const isEmitterWrapper = label === 'emitBackendEvent' && WRAPPER_EMITTER_FILES.includes(rel);
+          if (isListenerWrapper || isEmitterWrapper) {
+            // 包装器（sessionHandoff 的 on() / crossWindowEvents 的 emitCrossWindow）：
+            // 该文件自己声明的事件常量全部计入（监听/发送各按语义）。
             names = localEventNames[rel] ?? [];
           }
           if (names.length === 0) {
-            unresolved.push(`${rel}: ${label}(${parsed.value}) 无法静态解析——改字面量/常量，或登记 WRAPPER_LISTENER_FILES`);
+            unresolved.push(`${rel}: ${label}(${parsed.value}) 无法静态解析——改字面量/常量，或登记 WRAPPER_LISTENER_FILES / WRAPPER_EMITTER_FILES`);
           }
         }
         for (const n of names) into.set(n, rel);

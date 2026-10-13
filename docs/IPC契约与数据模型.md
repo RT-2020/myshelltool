@@ -44,7 +44,7 @@
 - `ssh_write` / `ssh_resize` / `ssh_disconnect` / `ssh_confirm_host_key` / `ssh_keyboard_response`
 
 **SFTP**（`ssh.rs`）
-- `sftp_list_dir` / `sftp_read_file` / `sftp_write_file`
+- `sftp_list_dir`（裸读写 `sftp_read_file` / `sftp_write_file` 已删除：GUI 编辑器走 `sftp_read_text` / `sftp_write_text`，MCP 文件工具走 `mcp/file_tools.rs`，两者都不经过 IPC 裸命令）
 - **`sftp_chmod({ sessionId, path, mode })`【v0.20/SSH P2】**：修改远端权限（mode 八进制字符串，前置校验 3-4 位、仅 0-7、4 位首位须 0——setuid/setgid/sticky 暂不支持；russh-sftp setstat 只改 permissions 位；vendored fork 新增 `set_metadata` 透传）。GUI 入口：远程面板右键「修改权限…」（编辑器通用输入弹窗，预填当前权限，前后端双校验）
 - **`sftp_readlink({ sessionId, path })`【v0.20/SSH P2】**：读符号链接目标。GUI 入口：symlink 条目右键「查看链接目标」
 - `sftp_list_dir` 的 **path 为空串 = 服务器默认目录**：后端 `canonicalize(".")` 解析登录用户真实家目录（root → /root）并在返回的 `path` 字段回传绝对路径；前端不再猜测 home（旧版 `/home/<username>` 对 root 必错、tag 硬编码目录不存在即 No such file，已废弃）
