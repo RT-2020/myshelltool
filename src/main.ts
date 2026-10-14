@@ -50,4 +50,19 @@ if (import.meta.env.DEV) {
     files: useFilesStore(),
     editor: useEditorStore()
   };
+  // 【B2 验收基建】Ctrl+Alt+D：对面板当前目录里的 rconf.txt 发起下载（不指定目标
+  // 目录——原生目录对话框照常弹出，供 CUA 驱动完整真实链路）。背景：CUA 无法在
+  // WebView2 上合成条目右键（contextmenu 被 WebView 忽略），下载入口自动化不了；
+  // 本快捷键与 __myshelltool 同性质的 DEV-only 触发器，生产构建整段剔除。
+  document.addEventListener('keydown', (event) => {
+    if (!event.ctrlKey || !event.altKey || event.key.toLowerCase() !== 'd') return;
+    event.preventDefault();
+    const files = useFilesStore();
+    const entry = files.remoteEntries.find(e => e.name === 'rconf.txt');
+    if (!entry) {
+      console.warn('[accept-hook] rconf.txt not in current remote listing');
+      return;
+    }
+    void files.downloadEntry(entry);
+  });
 }

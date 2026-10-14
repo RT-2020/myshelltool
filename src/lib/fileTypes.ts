@@ -35,20 +35,36 @@ names: string[];
 assetId: string | null;
 }
 
-/** 上传覆盖确认暂存（resolve 由 confirmFileOverwrite/cancelFileOverwrite 调用）。 */
-export interface PendingFileOverwrite {
-entry: RemoteFileEntry | null;
-remoteTarget: string;
-resolve: (choice: boolean) => void;
-/**
- * 已被 confirm/cancel/中止清理 settle 过。
- *
- * 为什么需要它：一个上传批次中止时要把「自己那一条」确认收掉，但它并不知道
- * 自己那条此刻是不是队首（用户可能正在回答别批次弹出的确认）。有了这个标记，
- * 调用方就能用**自己的 resolve 引用**安全地只 settle 本方那条 —— 命中已 settle
- * 的项直接跳过，绝不会把别人的确认误判成取消。
- */
-settled: boolean;
+/** 上传/下载覆盖确认的用户决策（B2 三选）：重命名携带新名（只改目标路径，
+ *  不走 rename 命令）。skip=跳过该文件不中断整批。 */
+export type OverwriteDecision =
+  | { kind: 'overwrite' }
+  | { kind: 'skip' }
+  | { kind: 'rename'; name: string };
+
+/** 覆盖确认暂存（confirmFileOverwrite/cancelFileOverwrite/renameFileOverwrite
+ *  调用 resolve 结算；B2 起上传与下载共用同一队列）。
+ *  单一权威点在此——fileTransfers/fileOverwrite 均从这里 import。 */
+export interface PendingOverwrite {
+  entry: RemoteFileEntry | null;
+  /** 冲突目标全路径（上传=远端，下载=本地）。 */
+  target: string;
+  /** 目标所在目录（重命名探测新名时拼路径用）。 */
+  dir: string;
+  /** 冲突方向：决定弹窗文案与重命名探测走远端还是本地。 */
+  direction: 'upload' | 'download';
+  /** 所属传输批次（目录整传/多文件批）；勾选「应用到剩余」时按它记批次默认。 */
+  batchId?: string;
+  resolve: (choice: OverwriteDecision) => void;
+  /**
+   * 已被 confirm/cancel/rename/中止清理 settle 过。
+   *
+   * 为什么需要它：一个上传批次中止时要把「自己那一条」确认收掉，但它并不知道
+   * 自己那条此刻是不是队首（用户可能正在回答别批次弹出的确认）。有了这个标记，
+   * 调用方就能用**自己的 resolve 引用**安全地只 settle 本方那条 —— 命中已 settle
+   * 的项直接跳过，绝不会把别人的确认误判成取消。
+   */
+  settled: boolean;
 }
 
 /** 右键菜单状态。 */

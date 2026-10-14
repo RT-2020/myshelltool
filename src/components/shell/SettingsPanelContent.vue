@@ -22,7 +22,7 @@
  */
 import { ref, computed, onMounted, watch } from 'vue';
 import { storeToRefs } from 'pinia';
-import { Info, LayoutGrid, Palette, RefreshCw, Plug, ExternalLink, Server } from 'lucide-vue-next';
+import { Info, LayoutGrid, Palette, RefreshCw, Plug, ExternalLink, Server, ArrowUpDown } from 'lucide-vue-next';
 import { useWorkbenchStore } from '@/stores/workbench';
 import type { useAutoUpdate } from '@/composables/useAutoUpdate';
 import { errorMessage } from '@/lib/errorMessage';
@@ -34,6 +34,7 @@ import UpdateSection from '@/components/shell/UpdateSection.vue';
 import ChangelogSection from '@/components/shell/ChangelogSection.vue';
 import AppearanceTab from '@/components/shell/AppearanceTab.vue';
 import AssetsTabContent from '@/components/shell/AssetsTabContent.vue';
+import TransferSettingsTab from '@/components/shell/TransferSettingsTab.vue';
 import { openExternal } from '@/lib/openExternal';
 import { invokeBackend, isTauriRuntime } from '@/services/backend';
 
@@ -65,6 +66,7 @@ const resetLayout = computed(() => modalExtras.value.resetLayout || null);
 const TABS = [
   { id: 'about', label: '关于与更新', icon: Info },
   { id: 'appearance', label: '外观', icon: Palette },
+  { id: 'transfer', label: '传输', icon: ArrowUpDown },
   { id: 'sync', label: '同步', icon: RefreshCw },
   { id: 'mcp', label: 'MCP', icon: Plug },
   { id: 'assets', label: '资产', icon: Server }
@@ -219,6 +221,9 @@ async function copyDiagnostics() {
 
       <!-- ② 外观（v0.20 拆至 AppearanceTab.vue，S2 第一刀：主题/排版/鼠标整体迁移） -->
       <AppearanceTab v-if="visitedTabs.includes('appearance')" v-show="activeTab === 'appearance'" />
+
+      <!-- ③ 传输（文件并发与传输偏好） -->
+      <TransferSettingsTab v-if="visitedTabs.includes('transfer')" v-show="activeTab === 'transfer'" />
 
       <!-- ③ 同步（复用 SyncPanelContent + PatConfigCard，零 props 自包含） -->
       <section v-if="visitedTabs.includes('sync')" v-show="activeTab === 'sync'" class="stack tab-pane">

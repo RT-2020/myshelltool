@@ -69,6 +69,14 @@ function pillLabel(item: TransferQueueItem) {
   return (item.percent || 0) + '%';
 }
 
+// B2：进行中的目录批次（上传或下载）可整批取消——这是下载方向整批取消的
+// 唯一入口（上传另有进度条上的「取消整批」）。目标恒为最近发起的活跃批次。
+const activeDirBatchId = computed(() => filesStore.latestActiveDirBatch());
+function cancelActiveDirBatch() {
+  const id = activeDirBatchId.value;
+  if (id) filesStore.cancelDirBatch(id);
+}
+
 // 抽屉打开时注册 Escape 关闭，关闭/卸载时移除；打开瞬间做一次智能默认 tab
 // （有传输看传输，无传输看队列，否则看完成——只定初始值，不抢用户后续切换）
 function onDrawerKeydown(event: KeyboardEvent) {
@@ -100,6 +108,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
         <div class="transfer-sheet-head">
           <div class="transfer-sheet-title">
             <strong>传输队列</strong>
+            <button
+              v-if="activeDirBatchId"
+              type="button"
+              class="transfer-batch-cancel"
+              aria-label="取消当前目录批次"
+              title="取消整批（剩余文件不再传输，进行中的文件中止并清理半截）"
+              @click="cancelActiveDirBatch"
+            >取消批次</button>
           </div>
           <button
             class="transfer-sheet-close"
@@ -253,6 +269,20 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
 .transfer-sheet-title strong {
   font-size: var(--text-sm);
   font-weight: 600;
+}
+/* B2：取消目录批次（warn 描边小按钮，与右上角「收起」区分） */
+.transfer-batch-cancel {
+  padding: 2px 8px;
+  font-size: var(--text-xs);
+  color: var(--warn);
+  background: transparent;
+  border: 1px solid color-mix(in oklab, var(--warn), transparent 55%);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
+}
+.transfer-batch-cancel:hover {
+  background: color-mix(in oklab, var(--warn), transparent 88%);
 }
 .transfer-sheet-close {
   display: inline-flex;

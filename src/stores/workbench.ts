@@ -407,11 +407,11 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     batchRemoteDelete: filesStore.batchRemoteDelete,
     batchRemoteDownload: filesStore.batchRemoteDownload,
     copyRemotePath: filesStore.copyRemotePath,
-    // S2：删除确认链 + 上传覆盖 + 传输取消/重试
     confirmFileDelete: filesStore.confirmFileDelete,
     cancelFileDelete: filesStore.cancelFileDelete,
     confirmFileOverwrite: filesStore.confirmFileOverwrite,
     cancelFileOverwrite: filesStore.cancelFileOverwrite,
+    renameFileOverwrite: filesStore.renameFileOverwrite,
     cancelTransfer: filesStore.cancelTransfer,
     retryTransfer: filesStore.retryTransfer,
     toggleLocalSelection: filesStore.toggleLocalSelection,

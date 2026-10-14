@@ -9,7 +9,7 @@ import type {
   FileOperationEntry,
   FilesWorkbenchBridge,
   PendingFileDelete,
-  PendingFileOverwrite,
+  PendingOverwrite,
   QueueItem
 } from '@/lib/fileTypes';
 import {
@@ -68,17 +68,26 @@ import {
   disposeEventListeners,
   downloadEntry,
   handleFileOverwrite,
+  renameFileOverwrite,
   retryTransfer,
   setupEventListeners,
   updateTransferProgress,
   markTransferError,
   pruneFinishedTransfers,
+  withTransfer,
+  type FileTransfersContext
+} from '@/lib/fileTransfers';
+// B2：上传入口（uploadLocalPaths/uploadLocalEntry）迁 lib/dirTransfer（目录
+// 路由与树收集同域），目录下载与批次取消也在此；ctx 与 fileTransfers 共享。
+import {
+  bindDirTransferContext,
   uploadLocalEntry,
   uploadLocalPaths,
-  withTransfer,
-  type FileTransfersContext,
-  type PendingOverwrite
-} from '@/lib/fileTransfers';
+  uploadDirectory,
+  downloadDirectory,
+  cancelDirBatch,
+  latestActiveDirBatch
+} from '@/lib/dirTransfer';
 /**
  * useFilesStore — Wave 2 Step 2.2
  *
@@ -128,12 +137,13 @@ export const useFilesStore = defineStore('files', () => {
   // 删除确认链：removeRemote / localDelete / batchRemoteDelete 只组装 pending 并弹
   // confirmFileDelete modal，真正删除在 confirmFileDelete()（用户点「删除」后）执行。
   const pendingFileDelete = ref<PendingFileDelete | null>(null);
-  // 上传覆盖保护：同名目标存在时挂起上传循环，等 confirmFileOverwrite / cancelFileOverwrite resolve。
-  // 必须用【队列】而不是单例 ref：两个上传批次同时命中同名确认时，单例会被后者
-  // 覆盖，前者的 resolve 随之丢失——那个上传循环永久挂起，传输抽屉里永远残留一条
+  // 上传/下载覆盖保护（B2 三选）：同名目标存在时挂起传输循环，等
+  // confirmFileOverwrite / cancelFileOverwrite / renameFileOverwrite resolve。
+  // 必须用【队列】而不是单例 ref：两个传输批次同时命中同名确认时，单例会被后者
+  // 覆盖，前者的 resolve 随之丢失——那个传输循环永久挂起，传输抽屉里永远残留一条
   // 假「传输中」，且旧清理逻辑会把另一条 pending 一起清掉。队列保证每个 pending
   // 都能被 settle，并且确认/取消只作用于队首。
-  const overwriteQueue = ref<PendingFileOverwrite[]>([]);
+  const overwriteQueue = ref<PendingOverwrite[]>([]);
   // 远程目录加载错误（列表空态显示「加载失败 + 重试」）。
   const remoteError = ref('');
   // 远程目录是否成功加载过（区分「尚未加载」与「该目录为空」）。
@@ -237,13 +247,13 @@ export const useFilesStore = defineStore('files', () => {
     if (!paths.length) return;
     const targets = paths
       .map(path => remoteEntries.value.find(e => e.path === path))
-      .filter((e): e is RemoteFileEntry => !!e && e.kind === 'file');
+      .filter((e): e is RemoteFileEntry => !!e && (e.kind === 'file' || e.kind === 'directory'));
     if (!targets.length) return;
-    // 整批只问一次保存目录，再让每个文件落进同一目录（避免逐文件弹框）。
+    // 整批只问一次保存目录，再让每个文件/目录落进同一目录（避免逐文件弹框）。
     // 用户取消则整批取消（与逐文件取消的语义一致：不算失败）。
     const dir = await invokeBackend<string | null>('plugin:dialog|open', {
       options: {
-        title: '选择下载保存目录（本批 ' + targets.length + ' 个文件）',
+        title: '选择下载保存目录（本批 ' + targets.length + ' 项）',
         directory: true,
         multiple: false,
         defaultPath: localPath.value || undefined
@@ -253,11 +263,18 @@ export const useFilesStore = defineStore('files', () => {
       announce('已取消批量下载', { level: 'warn' });
       return;
     }
-    // 下载不走 withFileOperation：传输 busy 与浏览 busy 解耦，不锁列表
+    // 下载不走 withFileOperation：传输 busy 与浏览 busy 解耦，不锁列表。
+    // B2：目录条目走目录整传（递归收集 + 本地建目录 + 逐文件冲突三选）。
     for (const entry of targets) {
-      await downloadEntry(entry, dir).catch(error =>
-        announce('下载失败：' + entry.name + '：' + errorMessage(error), { level: 'error' })
-      );
+      if (entry.kind === 'directory') {
+        await downloadDirectory(entry, dir).catch(error =>
+          announce('目录下载失败：' + entry.name + '：' + errorMessage(error), { level: 'error' })
+        );
+      } else {
+        await downloadEntry(entry, dir).catch(error =>
+          announce('下载失败：' + entry.name + '：' + errorMessage(error), { level: 'error' })
+        );
+      }
     }
   }
 
@@ -344,6 +361,8 @@ export const useFilesStore = defineStore('files', () => {
   }
   bindFilePanelContext(panelCtx);
   bindFileTransfersContext(transfersCtx);
+  // B2：目录整传域与传输域共享同一 ctx（并联注入，不反向依赖）
+  bindDirTransferContext(transfersCtx);
 
   // ============================================================
   // clearSelectionOnAssetSwitch — assets store selectAsset 时调用
@@ -426,7 +445,11 @@ export const useFilesStore = defineStore('files', () => {
     syncTerminalCwd,
     uploadLocalEntry,
     uploadLocalPaths,
+    uploadDirectory,
     downloadEntry,
+    downloadDirectory,
+    cancelDirBatch,
+    latestActiveDirBatch,
     mkdirRemote,
     renameRemote,
     removeRemote,
@@ -434,9 +457,10 @@ export const useFilesStore = defineStore('files', () => {
     // 删除确认链
     confirmFileDelete,
     cancelFileDelete,
-    // 上传覆盖保护
+    // 上传覆盖保护（B2 三选）
     confirmFileOverwrite,
     cancelFileOverwrite,
+    renameFileOverwrite,
     // local fs
     refreshLocalFiles,
     navigateLocalPath,

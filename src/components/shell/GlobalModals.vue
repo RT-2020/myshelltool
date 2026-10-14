@@ -41,6 +41,8 @@ import ReauthPasswordContent from '@/components/shell/ReauthPasswordContent.vue'
 import TunnelCreateContent from '@/components/shell/TunnelCreateContent.vue';
 import GroupFormsContent from '@/components/shell/GroupFormsContent.vue';
 import FileOpFormsContent from '@/components/shell/FileOpFormsContent.vue';
+import FileOverwriteContent from '@/components/shell/FileOverwriteContent.vue';
+import { overwriteForm } from '@/lib/fileOverwrite';
 import { dispatchModalSubmit, type ModalSubmitContext } from '@/lib/modalSubmit';
 import { modalTitleFor } from '@/lib/modalTitles';
 import { useModalDismiss } from '@/composables/useModalDismiss';
@@ -368,12 +370,14 @@ const { onBackdropClick } = useModalDismiss(
           <p class="danger-note">此操作不可撤销，且不经回收站。</p>
         </div>
 
-        <!-- confirmFileOverwrite（S2：上传覆盖同名确认） -->
-        <div v-else-if="view.type === 'confirmFileOverwrite'" class="stack">
-          <p>远程已存在同名文件，覆盖将替换其内容：</p>
-          <p class="num overwrite-path">{{ view.payload?.path }}</p>
-          <p class="muted">此操作不可撤销。</p>
-        </div>
+        <!-- confirmFileOverwrite（B2 冲突三选：覆盖/跳过/重命名，body 在子组件） -->
+        <FileOverwriteContent
+          v-else-if="view.type === 'confirmFileOverwrite'"
+          :direction="(view.payload?.direction as 'upload' | 'download') || 'upload'"
+          :path="String(view.payload?.path || '')"
+          :form="overwriteForm"
+          :has-batch="!!view.payload?.batchId"
+        />
 
         <!-- renameGroup / createGroup / moveAsset（表单体抽到 GroupFormsContent） -->
         <GroupFormsContent
@@ -440,13 +444,24 @@ const { onBackdropClick } = useModalDismiss(
         >
           <span v-if="submitting" class="btn-spinner" aria-hidden="true"></span>删除
         </button>
-        <button
-          v-else-if="view.type === 'confirmFileOverwrite'"
-          class="btn primary"
-          id="modalPrimary"
-          :disabled="submitting"
-          @click="store.confirmFileOverwrite"
-        >覆盖</button>
+        <!-- B2 冲突三选：重命名 + 覆盖同属一支（template 包裹保持 v-else-if 链——
+             拆成两个同条件 v-else-if 会让第二支成为死分支，覆盖按钮不渲染，
+             2026-10-14 真机验收抓出） -->
+        <template v-else-if="view.type === 'confirmFileOverwrite'">
+          <button
+            class="btn"
+            id="modalRename"
+            :disabled="submitting || overwriteForm.applyAll"
+            :title="overwriteForm.applyAll ? '已勾选「应用到剩余」，本批按统一策略处理；如需逐个重命名请取消勾选' : '以新名称传输（输入框）'"
+            @click="store.renameFileOverwrite(overwriteForm.rename)"
+          >重命名</button>
+          <button
+            class="btn primary"
+            id="modalPrimary"
+            :disabled="submitting"
+            @click="store.confirmFileOverwrite"
+          >覆盖</button>
+        </template>
         <!-- editorDialog：按钮完全由 payload 定义（danger/primary/顺序），逐个分发 -->
         <template v-else-if="view.type === 'editorDialog'">
           <button

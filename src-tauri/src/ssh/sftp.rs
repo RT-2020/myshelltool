@@ -112,6 +112,14 @@ pub(crate) async fn get_or_create_sftp(
     let arc = Arc::new(Mutex::new(sftp));
     {
         let mut mgr = state.ssh_sessions.lock().await;
+        // 并发冷缓存竞争（B2 并发传输）：N 个并发首传在 miss 后各自建链（check
+        // 与 insert 之间锁已释放，建链最长 15s），直接 insert 会瞬时开 N 条
+        // channel 且后者覆盖前者——OpenSSH MaxSessions 默认 10，叠加已有
+        // channel 后逼近上限。二次检查：已有缓存条目则丢弃本次新建的
+        // （SftpSession drop 即关 channel），各调用方复用同一条。
+        if let Some(existing) = mgr.sftp_cache.get(session_id) {
+            return Ok(existing.clone());
+        }
         mgr.sftp_cache.insert(session_id.to_string(), arc.clone());
     }
     Ok(arc)
@@ -567,11 +575,19 @@ pub async fn sftp_download_to_file(
             );
         }
         // v0.20（S9）：取消路径的条目移除 + 错误语义——「取消」对前端不是 error
-        // （上传侧由 runPathUpload 按 cancelled 标记收敛，此处对齐）
+        // （上传侧由 runPathUpload 按 cancelled 标记收敛，此处对齐）。
+        // 摘条目与上传侧同款 Arc 同一性比对（B2 并发修复对齐）：条目若已被
+        // cleanup_session_tables 摘除，不误删后续同 transfer_id 的新传输
+        //（重试沿用同 id）刚登记的条目。
         {
             let ssh_mgr = state.ssh_sessions.lock().await;
             let mut cancels = ssh_mgr.transfer_cancels.lock().await;
-            cancels.remove(&transfer_id);
+            if cancels
+                .get(&transfer_id)
+                .is_some_and(|entry| Arc::ptr_eq(&entry.flag, &cancel))
+            {
+                cancels.remove(&transfer_id);
+            }
         }
         if e == "download cancelled" {
             return Err("[download:cancelled]".to_string()); // 前端按前缀识别取消态
@@ -579,11 +595,16 @@ pub async fn sftp_download_to_file(
         return Err(e);
     }
 
-    // 成功路径同样移除条目（finally 语义）
+    // 成功路径同样移除条目（finally 语义；Arc 同一性比对同上）
     {
         let ssh_mgr = state.ssh_sessions.lock().await;
         let mut cancels = ssh_mgr.transfer_cancels.lock().await;
-        cancels.remove(&transfer_id);
+        if cancels
+            .get(&transfer_id)
+            .is_some_and(|entry| Arc::ptr_eq(&entry.flag, &cancel))
+        {
+            cancels.remove(&transfer_id);
+        }
     }
 
     Ok(())
@@ -694,13 +715,23 @@ pub async fn sftp_stat(
     state: State<'_, AppState>,
     session_id: String,
     path: String,
-) -> Result<RemoteFileEntry, String> {
+) -> Result<Option<RemoteFileEntry>, String> {
     let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
     let sftp = sftp_arc.lock().await;
-    let meta = sftp
-        .metadata(&path)
-        .await
-        .map_err(|e| format!("SFTP stat failed: {e}"))?;
+    let meta = match sftp.metadata(&path).await {
+        Ok(meta) => meta,
+        // NoSuchFile → Ok(None)（结构化三态，与 fs_local_stat 契约对齐）：前端
+        // 覆盖确认门需要区分「明确不存在」与「无法确认」——此前前端对错误串
+        // 做 /no such file/i 正则匹配（形状猜测），错误文案一变就会把「无法
+        // 确认」误判成「不存在」，绕过覆盖确认静默覆盖远端文件。其余错误
+        // （权限/超时/连接断）保持 Err，前端保守走确认路径（fail-closed）。
+        Err(russh_sftp::client::error::Error::Status(status))
+            if status.status_code == russh_sftp::protocol::StatusCode::NoSuchFile =>
+        {
+            return Ok(None)
+        }
+        Err(e) => return Err(format!("SFTP stat failed: {e}")),
+    };
 
     let name = std::path::Path::new(&path)
         .file_name()
@@ -708,7 +739,7 @@ pub async fn sftp_stat(
         .unwrap_or(&path)
         .to_string();
 
-    Ok(RemoteFileEntry {
+    Ok(Some(RemoteFileEntry {
         name,
         path,
         kind: if meta.is_dir() {
@@ -725,5 +756,5 @@ pub async fn sftp_stat(
         permissions: meta.permissions.map(|p| format!("{:04o}", p & 0o7777)),
         user: meta.user.clone(),
         group: meta.group.clone(),
-    })
+    }))
 }
