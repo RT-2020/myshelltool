@@ -62,7 +62,7 @@ pub struct SshSessionManager {
     transfer_cancels: Arc<Mutex<HashMap<String, TransferCancelEntry>>>,
     app: AppHandle,
     secret_store_dir: PathBuf,
-    known_hosts_path: PathBuf,
+    pub(crate) known_hosts_path: PathBuf, // v0.22 网关向导预写 known_hosts（gateway_cmd）经此取路径
     pending_host_decisions: PendingDecisions,
     pending_keyboard: PendingKeyboardResponses,
 }

@@ -1,0 +1,36 @@
+# myshelltool-relay 的 sshd 配置（预置进镜像，勿在容器内手改——改镜像）
+# 逐项理由见 Dockerfile 头注释与 docs/计划/网关模式-实施计划.md。
+
+Port 22222
+ListenAddress 0.0.0.0
+
+# 仅公钥认证（向导挂载钥）；密钥由 -e AUTHORIZED_KEYS 注入
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+PermitRootLogin no
+AuthorizedKeysFile /etc/ssh/authorized_keys
+
+# 挂载口绑 0.0.0.0（本机直连必需）；MaxSessions 抬高（经网关连接各占一 channel）
+GatewayPorts clientspecified
+MaxSessions 100
+MaxStartups 30:30:60
+
+# 最小权限：仅 remote forward；无 shell / 无 pty / 无 agent / 无 X11
+AllowTcpForwarding remote
+PermitTTY no
+AllowAgentForwarding no
+X11Forwarding no
+PermitTunnel no
+
+# 常规硬化
+StrictModes yes
+IgnoreRhosts yes
+HostbasedAuthentication no
+PrintMotd no
+Subsystem sftp internal-sftp
+LogLevel INFO
+
+# host key 走持久化 volume（/etc/ssh/hostkeys；entrypoint 生成并软链）
+HostKey /etc/ssh/hostkeys/ssh_host_ed25519_key
+HostKey /etc/ssh/hostkeys/ssh_host_rsa_key

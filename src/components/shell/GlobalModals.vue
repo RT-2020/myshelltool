@@ -39,6 +39,7 @@ import PatConfigCard from '@/components/shell/PatConfigCard.vue';
 import AssetEditorContent from '@/components/shell/AssetEditorContent.vue';
 import ReauthPasswordContent from '@/components/shell/ReauthPasswordContent.vue';
 import TunnelCreateContent from '@/components/shell/TunnelCreateContent.vue';
+import GatewayWizardContent from '@/components/shell/GatewayWizardContent.vue';
 import GroupFormsContent from '@/components/shell/GroupFormsContent.vue';
 import FileOpFormsContent from '@/components/shell/FileOpFormsContent.vue';
 import FileOverwriteContent from '@/components/shell/FileOverwriteContent.vue';
@@ -287,6 +288,11 @@ const { onBackdropClick } = useModalDismiss(
           :form="tunnelForm"
         />
 
+        <!-- gatewayWizard（v0.22 网关部署向导：两段式自包含，表单/提交均在组件内） -->
+        <GatewayWizardContent
+          v-else-if="view.type === 'gatewayWizard'"
+        />
+
         <!-- hostKeyVerify -->
         <div v-else-if="view.type === 'hostKeyVerify'" class="stack">
           <p class="muted">检测到主机密钥，请确认是否信任该主机。</p>
@@ -419,8 +425,8 @@ const { onBackdropClick } = useModalDismiss(
       <div class="modal-actions">
         <button v-if="view.type === 'hostKeyVerify'" class="btn danger" :disabled="submitting" @click="denyHostKey">拒绝</button>
         <button v-else-if="view.type === 'mcpApproval'" class="btn danger" :disabled="submitting" @click="denyMcpApproval">拒绝执行</button>
-        <!-- mcpPanel / syncPanel / settings / editorDialog 等自包含面板隐藏「取消」（操作在面板内部完成） -->
-        <button v-if="view.type !== 'mcpPanel' && view.type !== 'syncPanel' && view.type !== 'settings' && view.type !== 'editorDialog'" class="btn" id="modalSecondary" :disabled="submitting" @click="secondaryAction">取消</button>
+        <!-- mcpPanel / syncPanel / settings / editorDialog / gatewayWizard 等自包含面板隐藏「取消」（操作在面板内部完成） -->
+        <button v-if="view.type !== 'mcpPanel' && view.type !== 'syncPanel' && view.type !== 'settings' && view.type !== 'editorDialog' && view.type !== 'gatewayWizard'" class="btn" id="modalSecondary" :disabled="submitting" @click="secondaryAction">取消</button>
         <button
           v-if="view.type === 'confirmDelete'"
           class="btn danger"
@@ -476,7 +482,7 @@ const { onBackdropClick } = useModalDismiss(
           </button>
         </template>
         <!-- v1.2 mcpPanel / v1.3 syncPanel / v1.8 settings：自包含面板，主按钮「关闭」 -->
-        <button v-else-if="view.type === 'mcpPanel' || view.type === 'syncPanel' || view.type === 'settings'" class="btn primary" id="modalPrimary" :disabled="submitting" @click="submitModal">关闭</button>
+        <button v-else-if="view.type === 'mcpPanel' || view.type === 'syncPanel' || view.type === 'settings' || view.type === 'gatewayWizard'" class="btn primary" id="modalPrimary" :disabled="submitting" @click="submitModal">关闭</button>
         <button v-else class="btn primary" id="modalPrimary" :disabled="submitting" @click="submitModal">
           <span v-if="submitting" class="btn-spinner" aria-hidden="true"></span>确认
         </button>

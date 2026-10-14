@@ -85,8 +85,23 @@ function selectAsset(id: string) {
 }
 
 function connectAsset(id: string) {
+  // v0.22 网关资产不提供终端（内嵌 server 仅 direct-tcpip）：拦截并指路——
+  // 网关的用途是被内网机器资产的「跳板机」字段引用
+  const target = props.store.assets?.find(a => a.id === id);
+  if (target?.tags?.includes('gateway')) {
+    props.store.announce(
+      `网关资产不提供终端连接：新建内网机器资产时，「跳板机」填 ${target.host}:${target.port} 即经网关访问`,
+      { level: 'info' }
+    );
+    return;
+  }
   props.store.selectAsset(id);
   props.store.connectSelected();
+}
+
+// v0.22 网关部署向导（自包含面板，表单/提交在 GatewayWizardContent 内）
+function openGatewayWizard() {
+  props.store.modal = { type: 'gatewayWizard' };
 }
 
 // ConnectionSidebar 的 quick-connect 解析结果（username/host/port）
@@ -331,6 +346,7 @@ onUnmounted(() => {
         @quick-connect="quickConnectAsset"
         @toggle-collapse="emit('toggle-assets')"
         @create-asset="emit('create-asset')"
+        @create-gateway="openGatewayWizard"
         @create-asset-in-group="emit('create-asset-in-group', $event)"
         @create-group="emit('create-group')"
         @edit-asset="editAsset"
