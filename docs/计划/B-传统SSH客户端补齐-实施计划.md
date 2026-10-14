@@ -1,7 +1,7 @@
 ---
 title: B 线 · 传统 SSH 客户端补齐 · 实施计划
 project: myshelltool
-status: B1 已验收通过；B2 已落地并真机验收通过（拖拽/OS 拖入两入口待用户手测）；B3 ProxyJump 链已落地并验收通过（2026-10-14）；B3 本地终端待实施
+status: B 线收官（2026-10-14）——六项交付五项（多窗口/alt 回放/SFTP 冲突三选/目录整传+并发/ProxyJump 链全部落地验收），本地终端经调研后砍掉（对标完整度项非核心工作流，见 B3 节）；B2 拖拽/OS 拖入两入口待用户手测
 created_at: 2026-09-30
 purpose: 在 MCP 暂缓适配的前提下，按用户指定顺序补齐传统 SSH 客户端六项能力
 ---
@@ -191,7 +191,15 @@ purpose: 在 MCP 暂缓适配的前提下，按用户指定顺序补齐传统 SS
 - 目标：目标 → jump1 → jump2 → … 链式 direct-tcpip；循环检测 + 深度上限
   （默认 4 跳）+ 每跳复用该资产的凭据/host key 信任（headless 语义）。
 
-### 本地终端
+### 本地终端【已砍掉——2026-10-14 用户决策，B 线收官】
+- **砍掉理由**（调研结论沉淀，2026-10-14）：对标完整度项而非核心工作流——
+  FinalShell/XTerminal 均有本地终端（品类惯例），但桌面已有 Windows Terminal，
+  该功能买到的只是「不离应用的连贯性」，不是新能力；而成本是六项中最高
+  （前端约 12 文件波及：SessionEntry.asset 必填是唯一强耦合点，5 处必崩点
+  + 10 余处渲染/门控适配；后端新模块 ~250 行 + portable-pty 0.9 依赖 +
+  Job Object 防孤儿）。portable-pty 0.9 已核实纯 Rust 无 C 编译（不踩本机
+  gcc 坑），Win 走 ConPTY——将来想做时此调研仍有效，半天可出实施计划。
+- 原始设计要点（保留存档）：
 - 目标：新标签/菜单开本地 shell（Windows 默认 PowerShell/ComSpec），
   与 SSH 终端共用 TerminalSurface/xterm 交互；不进入资产树。
 - 后端：优先 `portable-pty`（ConPTY）拉本地 pty；新增
