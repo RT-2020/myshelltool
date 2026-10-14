@@ -3,8 +3,13 @@
 //! 对照组：
 //!   A. russh AgentClient::connect_named_pipe + request_identities（复现缺陷路径）
 //!   B. tokio NamedPipeClient 手写 agent 协议（4B 长度 + 0x0B，读响应）——绕开 russh
+//!
+//! 仅 Windows：named pipe 与 connect_named_pipe 均为 Windows 机制
+//! （portability 基线：非 Windows 平台编译为占位 main）。
+#[cfg(windows)]
 use russh::keys::agent::client::AgentClient;
 
+#[cfg(windows)]
 #[tokio::main]
 async fn main() {
     let pipe = r"\\.\pipe\openssh-ssh-agent";
@@ -28,7 +33,14 @@ async fn main() {
     }
 }
 
+/// 非 Windows 占位：named pipe 探针无意义，编译占位保持 example 目标存在。
+#[cfg(not(windows))]
+fn main() {
+    println!("agent_probe 仅 Windows（named pipe / connect_named_pipe）");
+}
+
 /// 手写 agent 协议：连 pipe → 写 [00 00 00 01 0B] → 读 4B 长度 → 读载荷。
+#[cfg(windows)]
 async fn manual_pipe_probe(path: &str) -> Result<usize, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
