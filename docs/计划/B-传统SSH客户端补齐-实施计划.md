@@ -1,7 +1,7 @@
 ---
 title: B 线 · 传统 SSH 客户端补齐 · 实施计划
 project: myshelltool
-status: B1 已验收通过（2026-10-13）；B2 已落地并真机验收通过（2026-10-14，拖拽/OS 拖入两入口待用户手测）；B3 待实施
+status: B1 已验收通过；B2 已落地并真机验收通过（拖拽/OS 拖入两入口待用户手测）；B3 ProxyJump 链已落地并验收通过（2026-10-14）；B3 本地终端待实施
 created_at: 2026-09-30
 purpose: 在 MCP 暂缓适配的前提下，按用户指定顺序补齐传统 SSH 客户端六项能力
 ---
@@ -165,14 +165,31 @@ purpose: 在 MCP 暂缓适配的前提下，按用户指定顺序补齐传统 SS
 
 ## B3 · ProxyJump 链 + 本地终端（第三批）
 
-### ProxyJump 链
+### B3-ProxyJump 实施结论（2026-10-14，代码落地待真机验收）
+- 方案经审查修订后实施（审查抓出 P1×2：链解析缺目标参数检不出「指回目标」环、
+  后续跳 connect_stream 不包超时的理由不成立；P2×4：验证按改动面走不跑 build、
+  config 导入逗号链无感知失败、连接数视角缺声明、单跳保活假设从未验收）。
+- 链解析下沉 `core::jump_chain`（`parse_jump_host` 迁入 + `resolve_jump_chain`
+  环/深度/缺资产 fail-closed 判据，240 单测真跑含新增 7 个）；链由资产嵌套表达，
+  上限 4 跳，「跳板==目标」也算环。
+- `ssh/jump.rs` 循环展开逐跳建连（消「绕开 connect_headless_with 防递归」旧结构）；
+  每跳 connect/connect_stream+认证纳入该跳资产 `connect_timeout_secs` 超时
+  （顺带修掉旧版裸 connect）；错误带链位（「跳板链 t→j1→j2：第 2 跳 …」）；
+  `open_direct_stream` 签名未变——GUI/headless/MCP×3/隧道 remote 全路径自动获得。
+- config 导入净化：`sanitizeProxyJump` 逗号链/user@ 跳过该字段 + 导入结果警示
+  （资产本体照常导入）；jump_host 不支持逗号链（链单一权威 = 资产嵌套）。
+- 机器验证：test:core 240 过 / cargo check(--tests) 过 / type-check 过。
+- **真机验收通过（2026-10-14 用户确认）**；七项清单：① 单跳回归
+  ② 双跳连接+终端+SFTP ③ 环/指回目标报错 ④ 5 跳拒绝 ⑤ 缺资产/未信任
+  报错文案 ⑥ 断中间跳板下游表现（含单跳保活假设补验）⑦ 跳板不可达超时。
+- 已知边界：调用方目标握手（headless.rs/session.rs `connect_stream`）无超时
+  （延续现状）；每会话独立建链 N 跳 = N 条连接（MaxStartups 视角）；
+  session_pool AuthSnapshot 不含 jump_host（资产增删改路径兜底池失效）。
+
+### ProxyJump 链（原始设计要点，保留存档）
 - 现状：`ssh/jump.rs` 单跳，跳板资产自身 `jump_host` 被忽略并告警。
 - 目标：目标 → jump1 → jump2 → … 链式 direct-tcpip；循环检测 + 深度上限
   （默认 4 跳）+ 每跳复用该资产的凭据/host key 信任（headless 语义）。
-- 关键：每跳 `client::connect_stream` + `authenticate_headless`；中间 Handle
-  保活假设需 tauri:dev 真机验收（现有单跳同样假设）；GUI/headless/MCP/SFTP/
-  隧道所有走 `open_direct_stream` 的路径自动获得链能力。
-- 文档：README/AGENTS/IPC 契约的「仅单跳」声明同步改为「链式（上限 N）」。
 
 ### 本地终端
 - 目标：新标签/菜单开本地 shell（Windows 默认 PowerShell/ComSpec），

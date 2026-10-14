@@ -16,7 +16,7 @@
 - `save_connection_asset({ asset })` → upsert，返回更新后的列表
 - `delete_connection_asset({ id })` → 删除 + 容错清理关联凭据
 - `rename_asset_group({ oldPath, newPath })` / `dissolve_asset_group({ path })` / `create_asset_group({ path })` → 分组批量操作
-- **`import_ssh_config_preview({ path? })`**【v0.20/P0-1】→ 解析 OpenSSH config（默认 `~/.ssh/config`；core::ssh_config，first-match-wins + 通配参数组 + 逐块容错）返回 `{ sourcePath, candidates[] }`；每项含 alias/host/port/username/identityFile/proxyJump 与**冲突标记**（同 host:port:username 的现有资产 id——导入执行复用 `save_connection_asset`，前端逐条提交走与手工建资产完全相同的链路）。ProxyJump 映射为资产的 `jumpHost` 字段。
+- **`import_ssh_config_preview({ path? })`**【v0.20/P0-1】→ 解析 OpenSSH config（默认 `~/.ssh/config`；core::ssh_config，first-match-wins + 通配参数组 + 逐块容错）返回 `{ sourcePath, candidates[] }`；每项含 alias/host/port/username/identityFile/proxyJump 与**冲突标记**（同 host:port:username 的现有资产 id——导入执行复用 `save_connection_asset`，前端逐条提交走与手工建资产完全相同的链路）。ProxyJump 映射为资产的 `jumpHost` 字段；逗号链（`j1,j2`）与 `user@host` 形态不支持直接导入——前端净化（`lib/sshImport.ts::sanitizeProxyJump`）跳过该字段并在导入结果警示（v0.21/B3）。
 
 **凭据**（`lib.rs`，存 `<app_data_dir>/credentials/<id>.cred`）
 - `save_credential({ id, secret })` / `get_credential_status({ id })` / `delete_credential({ id })`
@@ -115,7 +115,7 @@ id, name, host, port(u16), username, auth_method(Password|PrivateKey|Token),
 private_key_path(Option), group(String, '/' 分隔多级路径如 "生产/数据库"),
 tags(Vec<String>), status(Connected|Warning|Idle), last_connected,
 credential_id(Option), passphrase_credential_id(Option),
-private_key_credential_id(Option), jump_host(Option, "host"/"host:port"【v0.20/P0-2】)
+private_key_credential_id(Option), jump_host(Option, "host"/"host:port"；链由资产嵌套表达、上限 4 跳【v0.21/B3】)
 ```
 - 前端经 `normalizeAsset()`（`backend.ts`）规整：默认 port=22、group=「未分组」、status=Idle。
 - **分组不是独立实体**，是 `asset.group` 字符串字段（`/` 分隔层级）。空分组用 `ConnectionAssetStore.groups: Vec<String>` 单独持久化。

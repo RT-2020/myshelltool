@@ -34,6 +34,9 @@ pub mod mcp_scope;
 // v0.20（SSH P0-1）OpenSSH client config 解析：~/.ssh/config → 导入候选
 // （first-match-wins / 通配参数组 / 逐块容错，见模块注释的诚实边界）
 pub mod ssh_config;
+// v0.21（B3）ProxyJump 链解析内核：跳板标识解析 + 链展开 + 环/深度上限判据。
+// 原单跳版在 src-tauri/src/ssh/jump.rs，迁入 core 使判据真正被 cargo test 执行
+pub mod jump_chain;
 
 // 便捷再导出：调用方写 `myshelltool_core::redact_command(...)`（日志落盘点最常用）
 pub use redact::redact_command;

@@ -373,7 +373,7 @@ cd src-tauri && cargo check   # Rust 类型检查
 ### GUI
 
 - 远程转发（remote）每条走独立 SSH 连接（russh `tcpip_forward` 需要 `&mut Handle`）；host key 需先在 GUI 信任、凭据需已存库；私钥托管凭据（`private_key_credential_id`）形态暂不支持该路径
-- **ProxyJump 仅单跳**：`jump_host` 只认资产库中的一台跳板；链式跳板（跳板自身再配 `jump_host`）会被忽略并告警；`user@host` / IPv6 字面量形态不支持
+- **ProxyJump 链式（上限 4 跳）**：链由资产嵌套表达（目标 `jump_host`=跳板 A，A 再配 `jump_host`=跳板 B……），每跳必须是资产库成员（复用其凭据与 host key 信任）；环检测（含指回目标）与超深整链拒绝；`user@host` / IPv6 字面量 / 逗号链（`j1,j2`）形态不支持——config 导入遇逗号链/user@ 会跳过该字段并警示；每会话独立建链（N 跳 = N 条 SSH 连接，服务器 MaxStartups 配额视角）
 - 内置编辑器单文件上限 2 MiB；编码仅限白名单（UTF-8/UTF-16/GBK 系等，严格转码不 lossy）
 - 多窗口：已支持上次打开窗口恢复、资产增删改跨窗同步、主题跨窗实时同步；窗口几何（位置/大小）暂不恢复，Esc 取消的窗外拖拽仍可能误开窗
 - 终端 tab 迁移回放：serialize 可用时保留 alt 屏（vim/less 拖出后仍在 alt 屏，退出后正常切回 normal）与软换行；serialize 不可用或 scrollback 超预算截断时退回纯文本路径，仍有 alt/软换行限制

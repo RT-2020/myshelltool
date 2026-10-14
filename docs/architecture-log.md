@@ -284,3 +284,11 @@ MCP server 原先仅具备单一 exec shell 通道，导致 AI 宿主无法浏�
 - **独立窗口删除顶部 tab 条**（用户需求：窗口即会话，标题栏已标识资产）：TerminalSurface 新增 `showTabs` prop（默认 true，主窗口零变化）+ `.no-tabs` grid 收行；pull 协议（跨窗口 drop 合并：HANDOFF_MIME/DROP_CLAIMED/MERGE_REQUEST/MERGE_READY/250ms 仲裁）因失去全部触发路径整体移除（WebView2 跨窗口自定义 MIME 本就不可靠）。
 - **回迁入口改标题栏按钮**：「移回主窗口」（Undo2）置于 AssetWindowShell 标题栏（mainAlive 探测、非 connected disabled、push 后空窗自动关），主窗口已关时拒绝迁移防会话无主。
 - 验证：cargo check / npm run build / ui-smoke / ui-host-key 全 exit 0；六个死符号 grep 0 残留。
+
+## 2026-10-14 — B3 ProxyJump 链式跳板（单跳 → 链式，审查驱动修订）
+
+- **链解析下沉 core**：新增 `core/src/jump_chain.rs`（`parse_jump_host` 自 jump.rs 迁入 + `resolve_jump_chain` 环/深度/缺资产 fail-closed 判据 + 7 单测；「跳板==目标」也算环——审查修订 P1-1，签名带 target_host/port）。判据放 core 真跑是 src-tauri 测试二进制跑不起来的既有纪律。
+- **jump.rs 循环展开**：`open_direct_stream` 逐跳建连（第一跳 `client::connect`，后续跳上一跳 direct-tcpip 流上 `connect_stream`），消掉旧「跳板建连绕开 connect_headless_with 防递归」特殊结构；每跳 connect/connect_stream+认证纳入该跳资产 `connect_timeout_secs` 超时（审查修订 P1-2——旧版裸 connect 顺带修复）；错误带链位。**签名未变，GUI/headless/MCP×3/隧道 remote 全路径零改动获得链能力**（jump_host_of 保留薄委托稳调用路径）。
+- **config 导入净化**（审查修订 P2-4）：`lib/sshImport.ts::sanitizeProxyJump`——逗号链（`j1,j2`）/`user@host` 跳过该字段 + 导入结果 warn 警示；jump_host 不支持逗号，链单一权威 = 资产嵌套。
+- 审查另出：验证按改动面走（前端仅纯函数层 → type-check，不跑 build 防 changelog 时间戳脏文件）；单跳保活假设自 P0-2 起从未真机验收（本笔验收单补）；连接数视角（N 跳 = N 条连接）入文档边界。
+- 验证：`test:core` 240/240（+7 jump_chain）、`cargo check`/`--tests` 0 错、type-check 过。**真机验收待做**：单跳回归 / 双跳（同机双 sshd 端口可构造）/ 环与超深报错 / 缺资产文案 / 断中间跳板（保活假设）/ 跳板不可达超时。

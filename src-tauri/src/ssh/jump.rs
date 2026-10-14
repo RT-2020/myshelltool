@@ -1,65 +1,78 @@
-//! ProxyJump 单跳（v0.20，SSH P0-2）。
+//! ProxyJump 链式跳板（v0.21 B3；单跳为 v0.20 SSH P0-2）。
 //!
-//! ## 机制
+//! ## 机制（循环展开，无递归）
 //!
-//! 目标资产带 `jump_host` 时，连接不再直连目标，而是：
-//! ① 按主机标识解析跳板资产（host+port 匹配资产库，**复用其凭据与 host key
-//!    信任**——跳板必须是已在 GUI 信任过的资产，与 headless 同策略）；
-//! ② 正常 SSH 连上跳板（headless 语义：known_hosts 精确匹配，不弹窗）；
-//! ③ `channel_open_direct_tcpip(target)` 开转发通道；
-//! ④ `channel.into_stream()` 得到 AsyncRead+AsyncWrite 流；
-//! ⑤ 目标的 SSH 握手跑在这条流上（russh `connect_stream`）。
+//! 目标资产带 `jump_host` 时，链由资产库嵌套表达（target.jump_host=j1，
+//! j1 资产.jump_host=j2，最内层为空）。[`open_direct_stream`] 先用
+//! `core::jump_chain::resolve_jump_chain` 展开链（环/深度/缺资产 fail-closed
+//! 判据在 core 真跑单测），再逐跳建立：
+//! ① 第一跳直连 `client::connect` + headless 认证；
+//! ② 第 2..N 跳在上一跳 handle 上 `channel_open_direct_tcpip` → 通道流上
+//!    `client::connect_stream` 握手 + 认证（host key 按该跳自己的 host:port
+//!    精确匹配 known_hosts，跳板必须是已在 GUI 信任过的资产）；
+//! ③ 最末跳开 direct-tcpip 到目标，目标 SSH 握手由调用方在这条流上跑。
+//! 旧单跳版「跳板建连绕开 connect_headless_with 防互相递归」的特殊结构被
+//! 循环展开天然取代。
+//!
+//! ## 每跳超时（v0.21）
+//!
+//! 每跳的 connect/connect_stream + 认证整体纳入该跳资产
+//! `connect_timeout_secs` 的 timeout 包裹（None 不包，语义与 headless.rs
+//! 直连分支一致）。最末跳开目标通道不包（开在已认证连接上，失败路径明确，
+//! keepalive 兜底半开）。
 //!
 //! ## 保活假设（tauri:dev 验收项）
 //!
-//! 跳板的 `Handle` 在开完通道后即可 drop：russh 0.49 的连接由独立任务驱动，
-//! Handle drop 不主动 disconnect；direct-tcpip 通道开着跳板连接就活着，
-//! 目标连接关闭 → 通道关 → 跳板连接自然回收。若实测不符，改为把跳板
-//! Handle 与目标 Handle 一起存放（调用方持有）。
+//! 中间跳板的 `Handle` 在开完通道后即可 drop：russh 0.49 连接由独立任务
+//! 驱动，Handle drop 不主动 disconnect；direct-tcpip 通道开着跳板连接就活着。
+//! 多跳下任一中间跳断开则下游全部断链——真机验收覆盖。
 //!
 //! ## 边界（诚实声明）
 //!
-//! - **单跳**：跳板资产自身的 jump_host 被忽略（检测到则告警）；链式跳板
-//!   （A over B over C）显式不支持。
-//! - 主机标识只支持 `host` / `host:port`（端口缺省 22）；`user@host` 形态
-//!   不支持（跳板登录用户 = 匹配资产的 username——资产库里已表达）。
-//! - IPv6 字面量 `[::1]:22` 不解析（资产库里 host 字段单列，无需括号形态）。
+//! - 链上限 [`myshelltool_core::jump_chain::MAX_JUMP_HOPS`]（4 跳）；
+//! - 主机标识只支持 `host` / `host:port`（端口缺省 22）；`user@host` /
+//!   IPv6 字面量 / 逗号链形态不支持（跳板登录用户 = 匹配资产的 username）；
+//! - 每会话独立建链：N 跳 = N 条 SSH 连接（服务器 MaxStartups 配额视角）。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use super::{HeadlessConnectParams, HeadlessSshClient};
-use crate::ssh::SshSessionManager;
+use myshelltool_core::jump_chain::{describe_chain, resolve_jump_chain};
 
-/// 解析跳板标识 "host" / "host:port" → (host, port)。
-/// 尾部 :port 非法（非数字/超范围）报错——不静默当 22（配置错误要暴露）。
-pub fn parse_jump_host(jump_host: &str) -> Result<(String, u16), String> {
-    let s = jump_host.trim();
-    if s.is_empty() {
-        return Err("跳板主机标识为空".to_string());
-    }
-    if s.contains('@') || s.contains('/') {
-        return Err(format!(
-            "跳板主机标识 '{s}' 不支持 user@host / 路径形态（请填 host 或 host:port；跳板登录用户取资产库中该主机的资产）"
-        ));
-    }
-    match s.rsplit_once(':') {
-        Some((h, p)) => {
-            let port: u16 = p
-                .parse()
-                .map_err(|_| format!("跳板端口非法（'{p}'，期望 1-65535）"))?;
-            if port == 0 {
-                return Err("跳板端口不能为 0".to_string());
-            }
-            Ok((h.to_string(), port))
-        }
-        None => Ok((s.to_string(), 22)),
+use super::{build_client_config_with, authenticate_headless, HeadlessConnectParams, HeadlessSshClient};
+
+/// 从跳板资产构造 headless 认证参数（凭据引用照搬该资产——链的每一跳
+/// 复用自己的凭据与 host key 信任，这是 headless 语义的根基）。
+fn params_from_asset(
+    asset: &myshelltool_core::ConnectionAsset,
+    secret_store_dir: &Path,
+    known_hosts_path: &Path,
+) -> HeadlessConnectParams {
+    HeadlessConnectParams {
+        host: asset.host.clone(),
+        port: asset.port,
+        username: asset.username.clone(),
+        password: String::new(),
+        credential_id: asset.credential_id.clone(),
+        auth_method: Some(format!("{:?}", asset.auth_method)),
+        private_key_path: asset.private_key_path.clone(),
+        private_key_credential_id: asset.private_key_credential_id.clone(),
+        passphrase: None,
+        passphrase_credential_id: asset.passphrase_credential_id.clone(),
+        secret_store_dir: PathBuf::from(secret_store_dir),
+        known_hosts_path: PathBuf::from(known_hosts_path),
+        jump_host: None,
+        connect_timeout_secs: asset.connect_timeout_secs,
+        keepalive_interval_secs: asset.keepalive_interval_secs,
+        asset_store_path: None,
     }
 }
 
-/// 经跳板开一条到目标的 direct-tcpip 流（目标 SSH 握手在其上跑）。
+/// 经跳板链开一条到目标的 direct-tcpip 流（目标 SSH 握手在其上跑）。
 ///
-/// 跳板资产解析：host+port 全匹配优先；同主机多账号取第一个匹配（跳板的
-/// 登录用户即该资产的 username，文档已声明）。
+/// 链解析与环/深度/缺资产判据在 `core::jump_chain::resolve_jump_chain`
+/// （fail-closed，单测真跑）；本函数只做逐跳建连。错误信息带链位置
+/// （「跳板链 t→j1→j2：第 2 跳 …」）。
 pub async fn open_direct_stream(
     jump_host: &str,
     target_host: &str,
@@ -68,88 +81,78 @@ pub async fn open_direct_stream(
     secret_store_dir: &std::path::Path,
     known_hosts_path: &std::path::Path,
 ) -> Result<russh::ChannelStream<russh::client::Msg>, String> {
-    let (jump_addr, jump_port) = parse_jump_host(jump_host)?;
-
     let store = myshelltool_core::load_connection_asset_store(asset_store_path)
-        .map_err(|e| format!("加载资产库失败（解析跳板）: {e}"))?;
-    let jump_asset = store
-        .assets
-        .iter()
-        .find(|a| a.host == jump_addr && a.port == jump_port)
-        .ok_or_else(|| {
-            format!(
-                "跳板主机 {jump_addr}:{jump_port} 不在资产库中——请先添加该主机并完成一次连接（host key 信任），再启用跳板"
-            )
-        })?;
+        .map_err(|e| format!("加载资产库失败（解析跳板链）: {e}"))?;
+    let hops = resolve_jump_chain(&store.assets, jump_host, target_host, target_port)?;
+    let chain_desc = describe_chain(target_host, target_port, &hops);
 
-    // 链式跳板守卫：跳板自身再带 jump_host 属配置错误（显式不支持）
-    if jump_asset.jump_host.as_deref().is_some_and(|j| !j.is_empty()) {
-        log::warn!(
-            "ProxyJump: 跳板资产 {} 自身配置了 jump_host（链式跳板不支持，已忽略）",
-            jump_asset.id
-        );
+    // 逐跳建连：第一跳直连，后续跳在上一跳的 direct-tcpip 流上握手。
+    // handle 在开完下一跳通道后就地重赋值（旧 Handle drop，保活假设见模块头）。
+    let mut handle: Option<russh::client::Handle<HeadlessSshClient>> = None;
+    for (i, hop) in hops.iter().enumerate() {
+        let pos = format!("{chain_desc}：第 {} 跳 {}:{}", i + 1, hop.host, hop.port);
+        let params = params_from_asset(hop, secret_store_dir, known_hosts_path);
+        let handler = HeadlessSshClient {
+            host_port: format!("{}:{}", hop.host, hop.port),
+            known_hosts_path: PathBuf::from(known_hosts_path),
+        };
+        let config = build_client_config_with(hop.keepalive_interval_secs);
+        let prev = handle.take();
+
+        let hop_fut = async {
+            let mut h = match prev {
+                Some(prev) => {
+                    let channel = prev
+                        .channel_open_direct_tcpip(
+                            hop.host.clone(),
+                            hop.port as u32,
+                            "127.0.0.1".to_string(),
+                            0,
+                        )
+                        .await
+                        .map_err(|e| format!("{pos} 转发通道打开失败: {e}"))?;
+                    russh::client::connect_stream(config, channel.into_stream(), handler)
+                        .await
+                        .map_err(|e| format!("{pos} SSH 握手失败: {e}"))?
+                }
+                None => russh::client::connect(config, (hop.host.as_str(), hop.port), handler)
+                    .await
+                    .map_err(|e| format!("{pos} 连接失败: {e}"))?,
+            };
+            authenticate_headless(&mut h, &params)
+                .await
+                .map_err(|e| format!("{pos} 认证失败: {e}"))?;
+            Ok::<_, String>(h)
+        };
+        handle = Some(match hop.connect_timeout_secs {
+            Some(secs) => tokio::time::timeout(Duration::from_secs(secs as u64), hop_fut)
+                .await
+                .map_err(|_| format!("{pos} 超时（{secs}s，含建连+认证）"))??,
+            None => hop_fut.await?,
+        });
+        log::info!("ProxyJump: {pos} 已建立");
     }
 
-    let params = HeadlessConnectParams {
-        host: jump_asset.host.clone(),
-        port: jump_asset.port,
-        username: jump_asset.username.clone(),
-        password: String::new(),
-        credential_id: jump_asset.credential_id.clone(),
-        auth_method: Some(format!("{:?}", jump_asset.auth_method)),
-        private_key_path: jump_asset.private_key_path.clone(),
-        private_key_credential_id: jump_asset.private_key_credential_id.clone(),
-        passphrase: None,
-        passphrase_credential_id: jump_asset.passphrase_credential_id.clone(),
-        secret_store_dir: PathBuf::from(secret_store_dir),
-        known_hosts_path: PathBuf::from(known_hosts_path),
-        jump_host: None, // 跳板自身不再经跳板（链式不支持，上面已告警）
-        connect_timeout_secs: jump_asset.connect_timeout_secs,
-        keepalive_interval_secs: jump_asset.keepalive_interval_secs,
-        asset_store_path: None,
-    };
-
-    // 跳板建连：直连 + 独立认证段（**不经 connect_headless_with**——本函数被
-    // 它调用，绕经会构成 async 递归；host key 由 HeadlessSshClient 精确匹配）。
-    let handler = HeadlessSshClient {
-        host_port: format!("{jump_addr}:{jump_port}"),
-        known_hosts_path: PathBuf::from(known_hosts_path),
-    };
-    let config = super::build_client_config_with(jump_asset.keepalive_interval_secs);
-    let mut handle = russh::client::connect(
-        config,
-        (jump_asset.host.as_str(), jump_asset.port),
-        handler,
-    )
-    .await
-    .map_err(|e| format!("连接跳板 {jump_addr}:{jump_port} 失败: {e}"))?;
-    super::authenticate_headless(&mut handle, &params)
-        .await
-        .map_err(|e| format!("跳板 {jump_addr}:{jump_port} 认证失败: {e}"))?;
-
+    let handle = handle
+        .ok_or_else(|| "跳板链为空（内部错误：resolve_jump_chain 返回空链）".to_string())?;
     let channel = handle
         .channel_open_direct_tcpip(target_host.to_string(), target_port as u32, "127.0.0.1".to_string(), 0)
         .await
-        .map_err(|e| format!("跳板转发通道打开失败（{target_host}:{target_port}）: {e}"))?;
-
+        .map_err(|e| format!("跳板链 {chain_desc}：打开目标通道失败（{target_host}:{target_port}）: {e}"))?;
     log::info!(
-        "ProxyJump: {}:{} via {}:{} (direct-tcpip 已建立)",
+        "ProxyJump: {}:{} 经 {} 跳链建立（direct-tcpip 已通）",
         target_host,
         target_port,
-        jump_addr,
-        jump_port
+        hops.len()
     );
-    // 跳板 Handle 就地 drop（保活假设见模块头注释；tauri:dev 验收覆盖）
+    // 最末跳 Handle 就地 drop（保活假设见模块头注释；真机验收覆盖）
     Ok(channel.into_stream())
 }
 
-/// 便捷：判断某资产是否配置了跳板（空串视为未配置——导入/旧数据防御）。
+/// 便捷：判断某资产是否配置了跳板（薄委托 core——MCP/隧道 4 处入口共用，
+/// 保持既有调用路径 `crate::ssh::jump_host_of` 稳定）。
 pub fn jump_host_of(asset: &myshelltool_core::ConnectionAsset) -> Option<&str> {
-    asset
-        .jump_host
-        .as_deref()
-        .map(str::trim)
-        .filter(|j| !j.is_empty())
+    myshelltool_core::jump_chain::jump_host_of(asset)
 }
 
 /// headless 连接参数的有效跳板（trim + 空串归 None，构造方防御）。
@@ -160,8 +163,3 @@ pub fn jump_host_ref(params: &HeadlessConnectParams) -> Option<&str> {
         .map(str::trim)
         .filter(|j| !j.is_empty())
 }
-
-// 引用 SshSessionManager 仅为文档锚点（跳板复用其认证语义），无运行时依赖。
-const _: Option<std::sync::Arc<tokio::sync::Mutex<SshSessionManager>>> = None;
-// HeadlessSshClient 经 connect_headless 内部使用，此处显式引用保持意图可见。
-const _: Option<HeadlessSshClient> = None;
