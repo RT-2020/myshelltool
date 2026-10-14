@@ -358,6 +358,7 @@ cd src-tauri && cargo check   # Rust 类型检查
 | v0.19.0 | 上传区域正下方新增上传进度提示条（批次聚合、展开看逐文件速度/剩余、关闭提示不中断上传、失败可重试）；修复深层目录上传/刷新后面板跳回登录家目录的问题 |
 | v0.19.1 | MCP 大版本扩展（26 工具 + 3 多资产 prompts）：token 鉴权、授权范围、会话池、批量执行/长任务/日志·端口·进程·文件查询、服务控制与隧道管理；SSH 侧：OpenSSH config 一键导入、ProxyJump 跳板、SSH agent 认证、双因子顺序认证链、连接超时/keepalive 可配、chmod/查看链接目标、下载可取消；门禁机械化（大小红线 ratchet / IPC 契约对账 / UI 测试与三平台 CI）+ CSP + 诊断信息一键复制 |
 | v0.19.2 | 修复 v0.19.1 真机验收发现的一批问题（断开后刷新不再静默重连、SFTP 刷新 30s 超时与 busy 守卫、SSH agent 双通道聚合、双因子认证链、长任务取消状态、busybox 进程列表、host key 弹窗时序）；对外文档与门禁收口（README / MCP 配置指南同步 26 工具与带 token 接入 URL、文档事实门禁、删除无调用方的裸 SFTP IPC 命令）；B 线第一批：多窗口打开恢复 + 主题/资产跨窗同步、终端迁移 alt 屏回放 |
+| v0.20.0 | **网关模式**：跳板机装一个 myshelltool 以 `--gateway` 常驻（内嵌 SSH server + 出站挂载、断线自动重连），经任意一台公网服务器（docker run 一条命令即成 relay）直接访问客户内网——终端/SFTP/隧道/MCP 全走 ProxyJump 链，两段式向导免手敲配置；**传输（B2）**：上传/下载同名冲突三选（覆盖/跳过/重命名）、目录整传、并发传输（1~5 可配）；**SSH（B3）**：ProxyJump 链式跳板（上限 4 跳，GUI/headless/MCP/隧道全路径）；**MCP**：会话跨重启稳定（rmcp ~3.5 + FileSessionStore 持久化 + token 跨重启复用） |
 
 ---
 
