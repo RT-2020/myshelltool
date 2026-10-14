@@ -345,14 +345,21 @@ pub fn fs_local_rename(old_path: String, new_path: String) -> Result<(), String>
 }
 
 /// 单路径 stat：供上传入口（原生文件对话框 / OS 拖入的路径列表）拿
-/// 名称/大小/类型——目录在此被前端过滤跳过（当前不支持目录上传），
-/// 大小作为传输队列的进度分母初始值（真实分母以流式上传的进度事件为准）。
+/// 名称/大小/类型——目录在此被前端按 B2 目录上传分流，大小作为传输队列的
+/// 进度分母初始值（真实分母以流式上传的进度事件为准）。
 /// symlink_metadata 不跟随 symlink（与 list_dir 一致）。
+/// NotFound（含 Windows ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND，两者在
+/// std 均映射 NotFound）返回 Ok(None)：下载冲突门需要区分「明确不存在」与
+/// 「无法确认」（权限等）——Err 一律按可能存在走确认是 fail-closed，但若
+/// 不区分则每次全新下载都会弹覆盖确认，不可用。
 #[command]
-pub fn fs_local_stat(path: String) -> Result<RemoteFileEntry, String> {
+pub fn fs_local_stat(path: String) -> Result<Option<RemoteFileEntry>, String> {
     let target = resolve_input_path(&path)?;
-    let meta = std::fs::symlink_metadata(&target)
-        .map_err(|e| format!("stat failed for {}: {e}", target.display()))?;
+    let meta = match std::fs::symlink_metadata(&target) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("stat failed for {}: {e}", target.display())),
+    };
     let name = target
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -373,7 +380,7 @@ pub fn fs_local_stat(path: String) -> Result<RemoteFileEntry, String> {
     };
     #[cfg(not(unix))]
     let permissions = None;
-    Ok(RemoteFileEntry {
+    Ok(Some(RemoteFileEntry {
         name,
         path: target.to_string_lossy().into_owned(),
         kind,
@@ -382,7 +389,7 @@ pub fn fs_local_stat(path: String) -> Result<RemoteFileEntry, String> {
         permissions,
         user: None,
         group: None,
-    })
+    }))
 }
 
 // ─── v0.18 内置编辑器：本地文本读写（与 ssh::text_file 的远端链路同构）───

@@ -302,6 +302,8 @@ try {
     'sftp_list_dir': spec({ path: '/root', entries: [] }),
     'sftp_download_to_file': spec(null),
     'plugin:dialog|open': spec('C:\\dl'),
+    // B2 下载冲突门：本地目标探测（null = 明确不存在 → 不弹冲突窗）
+    'fs_local_stat': spec(null),
   });
   await page.evaluate(async () => {
     const w = window.__myshelltool.workbench;

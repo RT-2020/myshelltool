@@ -53,6 +53,11 @@
 - **`sftp_download_cancel({ transferId })`【v0.20/S9】** → 下载取消：与上传共用 `transfer_cancels` 旗标表（`UploadCancelEntry` 已更名 `TransferCancelEntry`），下载循环在 64KiB 读块边界检查；取消后端返回 `[download:cancelled]` 错误前缀，前端收敛为 cancelled 态（非 error、不弹重试），半截本地文件走既有清理分支删除。TransferDrawer 上传/下载行均有取消按钮（「下载不可取消」边界解除）。
 - `sftp_download_to_file` / `sftp_mkdir` / `sftp_rename` / `sftp_remove` / `sftp_stat`
   - 下载已改为**流式落盘**（后端分块读 → `tokio::fs` 直接写本地文件，进度事件节流 1 MiB / 200ms）；字节不再经过 IPC，也不返回 `Vec<u8>`。前端用 `plugin:dialog|open`（`directory: true`）让用户选**保存目录**、文件名沿用远端名，再调用它；批量下载整批只弹一次目录框（不是每文件一次）。
+- **【v0.21/B2】冲突三选 + 目录整传 = 前端编排，仅 `sftp_stat` 契约细化**：
+  - 上传/下载同名冲突统一「覆盖 / 跳过 / 重命名」三选（`lib/fileOverwrite.ts` 串行确认队列，重命名只改目标路径直接传、不走 rename 命令；探测：远端 `sftp_stat`、本地 `fs_local_stat`，**无法确认一律按可能存在走确认** fail-closed）。下载此前对本地已存在文件静默覆盖，B2 起有冲突门。目录/多文件批次可勾选「应用到本批剩余冲突」（仅覆盖/跳过；重命名始终逐条；并发批次下已入队的同批 pending 随默认一并结算，不逐个弹窗）。
+  - **`sftp_stat` 三态契约（与 `fs_local_stat` 对齐）**：`Ok(null)` = 明确不存在（后端结构化判定 `StatusCode::NoSuchFile`，**不是**前端对错误串做 /no such file/ 正则——那是形状猜测，错误文案一变就会把「无法确认」误判成「不存在」绕过覆盖确认）；`Err` = 无法确认（权限/超时/连接断，前端保守走确认）。
+  - 目录整传（`lib/dirTransfer.ts`）：前端逐层 `fs_local_list_dir` / `sftp_list_dir` 递归收集（深度上限 16、文件数上限 2000，超限整批中止不截断；symlink 跳过不下钻）→ mkdir 幂等（失败 → stat 复核为 directory 则复用，是文件/无法确认/明确不存在均中止）→ 逐文件复用流式上传/下载管线。整批取消走批次旗标（收集/mkdir 即停）+ 现有 `transfer_cancels` 通道中止在途文件（并发批次下已在途的文件一并取消收敛 cancelled）。
+  - **并发传输（B2 并发修复）**：设置面板可配全局并发 1~5（默认 3，`lib/transferConcurrency.ts`，localStorage 持久化）；目录上传/下载按池并行（单项失败不炸批，批摘要如实区分完成/失败/跳过）。**同目标互斥**：同一会话内对同一目标路径（上传=远端、下载=本地）的「探测→决策→写入」经 `serializeOnTarget` 串行化——SFTP create 是 O_TRUNC，两条传输交错写同一文件会静默损坏内容；串行化保证后到者探测必然看到先到者落盘（含半截文件），正确走冲突三选。后端锁模型：`sftp_cache` 的 Mutex 只覆盖 create/open（打开句柄），数据循环在锁外（russh-sftp 内部 req_id+oneshot 支持并发请求）；`get_or_create_sftp` insert 前二次检查防并发冷缓存重复建链。
 
 **编辑器文本读写**（`ssh/text_file.rs` + `fs_local.rs` + `editor_store.rs`，v0.18 内置编辑器专用链路）
 - `sftp_read_text({ sessionId, path, encoding? })` / `fs_local_read_text({ path, encoding? })` → `ReadTextResult { content, encoding, hasBom, eol("lf"|"crlf"|"mixed"), size, modified, readOnly? }`。防线：lossy 路径守卫 → 句柄/路径 stat 判 **2 MiB 上限**（超过 `[editor:too-large]`，确定性错误不给重试）→ 二进制嗅探（`core::remote_text` 三态，选了 GBK 也救不了 PNG）→ 未指定编码仅接受 UTF-8（非 UTF-8 报 `[editor:not-utf8]` 含首个非法偏移，前端提供「按 GBK 重试」）→ 指定编码走 `core::text_codec` 白名单严格转码（encoding_rs `had_errors` 当硬错误，绝不 lossy）。UTF-8 BOM 读入剥离、写回按 keepBom 还原。
@@ -73,7 +78,7 @@
 
 **本地文件**（`fs_local.rs`）
 - `fs_local_home_dir` / `fs_local_list_dir` / `fs_local_mkdir` / `fs_local_delete` / `fs_local_rename` / `fs_local_stat`
-  - `fs_local_stat(path)` → 单路径 stat（`RemoteFileEntry`：name/path/kind/size/modified），供上传入口（原生文件对话框 / OS 拖入）过滤目录并取进度分母初始值。
+  - `fs_local_stat(path)` → 单路径 stat（`Option<RemoteFileEntry>`：name/path/kind/size/modified）。**【v0.21/B2】`Ok(null)` = 明确不存在**（`ErrorKind::NotFound`，Windows 的 ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND 均映射此 kind），其余失败仍 Err——下载冲突门据此区分「明确不存在」与「无法确认」（Err 一律按可能存在走确认，fail-closed；若不区分则每次全新下载都会误弹覆盖确认）。上传入口继续用它过滤目录并取进度分母初始值。
   - 【v2.9 已删】`fs_local_read_chunk` / `fs_local_write_chunk`：分块上传链路消亡后双双无调用方（后者本就无），按死代码红线移除。
 
 **MCP 服务**（`lib.rs` 调 `mcp/http_server.rs` + `mcp/probe.rs`）

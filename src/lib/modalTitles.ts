@@ -29,7 +29,7 @@ export function modalTitleFor(
     case 'terminalSearch': return '终端搜索';
     case 'confirmDelete': return '删除连接资产';
     case 'confirmFileDelete': return '删除文件确认';
-    case 'confirmFileOverwrite': return '覆盖同名文件？';
+    case 'confirmFileOverwrite': return '同名文件已存在';
     case 'renameGroup': return '重命名分组';
     case 'createGroup': return '新建分组';
     case 'moveAsset': return '移动到分组';

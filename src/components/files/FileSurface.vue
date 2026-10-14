@@ -86,6 +86,27 @@ async function triggerFileUpload() {
   if (paths.length) filesStore.uploadLocalPaths(paths);
 }
 
+// B2：上传目录到当前远程目录（选一个本地目录，整树递归上传）
+async function triggerDirectoryUpload() {
+  if (remoteBusy.value) return;
+  if (!isTauriCore.value) {
+    uiStore.notify('浏览器预览不支持上传（需桌面客户端 npm run tauri:dev）', { level: 'warn' });
+    return;
+  }
+  const selected = await invokeBackend<string | null>('plugin:dialog|open', {
+    options: {
+      title: '选择要上传的目录（整目录递归上传）',
+      multiple: false,
+      directory: true,
+      defaultPath: filesStore.localPath || undefined
+    }
+  }).catch(err => {
+    uiStore.notify('打开目录对话框失败：' + (err?.message || err), { level: 'error' });
+    return null;
+  });
+  if (selected) filesStore.uploadDirectory(selected);
+}
+
 // OS 拖拽上传：tauri.conf 未设 dragDropEnabled=false，OS 文件拖放由 Tauri 拦截
 // 并转发为窗口级事件（HTML5 drop 在 Windows 上不会触发——因此这里必须是
 // onDragDropEvent，而不是元素上的 @drop）。事件是窗口级的：拖入任意区域
@@ -166,18 +187,10 @@ async function onRemoteColumnDrop(event: DragEvent) {
   }
   const entries = Array.isArray(payload?.entries) ? payload.entries.filter((e) => e && e.path) : [];
   if (!entries.length) return;
-  // uploadLocalEntry 仅接受 kind='file'（目录在其内部即拒），此处先过滤。
-  const fileEntries = entries.filter((e) => e.kind === 'file');
-  if (!fileEntries.length) {
-    uiStore.notify('暂不支持目录上传', { level: 'warn' });
-    return;
-  }
-  for (const entry of fileEntries) {
-    // 逐条 await：同名覆盖确认等交互按序进行，避免并发上传互踩。
+  // B2：目录条目走目录整传（uploadLocalEntry 内部路由），符号链接由其内部
+  // 拒绝并提示；逐条 await 保持按序（覆盖确认等交互不并发互踩）。
+  for (const entry of entries) {
     await filesStore.uploadLocalEntry(entry);
-  }
-  if (fileEntries.length < entries.length) {
-    uiStore.notify(`已跳过 ${entries.length - fileEntries.length} 个目录（暂不支持目录上传）`, { level: 'warn' });
   }
 }
 
@@ -277,6 +290,10 @@ const contextMenuItems = computed<FileMenuItem[]>(() => {
         if (isDir) filesStore.navigateRemotePath(entry.path);
         else filesStore.downloadEntry(entry);
       }));
+      if (entry.kind === 'directory') {
+        // B2：目录整传下载（symlink 不递归，不给入口）
+        items.push(make('下载目录', () => { void filesStore.downloadDirectory(entry); }));
+      }
       if (!isDir) {
         items.push(editMenuItem(entry, 'remote'));
       }
@@ -293,6 +310,7 @@ const contextMenuItems = computed<FileMenuItem[]>(() => {
     }
     // 目录级操作（下沉自原 toolbar）。
     items.push(make('上传文件到当前目录', () => triggerFileUpload()));
+    items.push(make('上传目录到当前目录', () => { void triggerDirectoryUpload(); }));
     items.push(make('新建远程目录', () => { uiStore.modal = { type: 'mkdir', entry: null } as ModalState; }));
     items.push(make('刷新当前目录', () => filesStore.refreshRemoteFiles()));
     items.push(make(remoteListMode.value === 'detailed' ? '切换为紧凑列表' : '切换为详细列表', () =>
@@ -309,6 +327,10 @@ const contextMenuItems = computed<FileMenuItem[]>(() => {
       if (isDir) filesStore.navigateLocalPath(entry.path);
       else filesStore.uploadLocalEntry(entry);
     }));
+    if (entry.kind === 'directory') {
+      // B2：本地目录整树上传（uploadLocalEntry 的目录路由同链路，菜单显式入口）
+      items.push(make('上传目录到远程', () => { void filesStore.uploadDirectory(entry.path); }));
+    }
     if (!isDir) {
       items.push(editMenuItem(entry, 'local'));
     }

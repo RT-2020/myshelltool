@@ -106,6 +106,16 @@ const summaryText = computed(() =>
   batchItems.value.length > 1 ? `${batchItems.value.length} 个文件 · 按字节加权` : batchItems.value[0]?.name || ''
 );
 
+/** B2：当前批次是「进行中的目录批次」时可整批取消（注册表判定，非 id 前缀猜测）。 */
+const canCancelBatch = computed(
+  () => phase.value === 'uploading' && !!currentBatchId.value && filesStore.latestActiveDirBatch() === currentBatchId.value
+);
+
+function cancelBatch() {
+  const bid = currentBatchId.value;
+  if (bid) filesStore.cancelDirBatch(bid);
+}
+
 function rowTone(item: QueueItem): 'uploading' | 'done' | 'failed' | 'cancelled' {
   if (item.status === 'done') return 'done';
   if (item.status === 'error') return 'failed';
@@ -181,6 +191,19 @@ onBeforeUnmount(() => { if (hideTimer) { clearTimeout(hideTimer); hideTimer = nu
         @click="dismiss()"
       >
         <X :size="14" />
+      </button>
+      <!-- B2：取消整批（目录批次：置批次旗标停后续入队 + 当前文件走旗标通道中止）。
+           仅上传中显示；与 ✕ 关闭（只隐藏提示）语义严格分离。 -->
+      <button
+        v-if="canCancelBatch"
+        type="button"
+        class="ups-action ups-cancel-batch"
+        data-up-progress-cancel-batch
+        aria-label="取消整批上传"
+        title="取消整批上传（剩余文件不再上传）"
+        @click="cancelBatch()"
+      >
+        <XCircle :size="14" />
       </button>
     </div>
 
@@ -355,6 +378,8 @@ onBeforeUnmount(() => { if (hideTimer) { clearTimeout(hideTimer); hideTimer = nu
 }
 .ups-action:hover { background: var(--app-hover); color: var(--app-strong); }
 .ups-action:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* 取消整批：与 ✕ 关闭视觉区分（warn 色悬停反馈，纯绘制属性） */
+.ups-cancel-batch:hover { background: color-mix(in oklab, var(--warn), transparent 85%); color: var(--warn); }
 .ups-chev { transition: transform var(--dur-fast) var(--ease-standard); }
 .ups-chev.open { transform: rotate(180deg); }
 
