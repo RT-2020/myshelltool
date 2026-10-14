@@ -24,10 +24,10 @@ use std::time::Duration;
 use rmcp::{
     ServerHandler,
     model::{
-        CallToolRequestParams, CallToolResult, GetPromptRequestParams, GetPromptResult,
-        Implementation, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
-        ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams,
-        ReadResourceResult, ServerCapabilities, ServerInfo,
+        CallToolRequestParams, CallToolResult, CallToolResponse, GetPromptRequestParams,
+        GetPromptResponse, Implementation, InitializeResult, ListPromptsResult,
+        ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+        ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities, ServerConfig,
     },
     service::{Peer, RequestContext},
     ErrorData as McpError,
@@ -380,7 +380,8 @@ rmcp::elicit_safe!(ApprovalForm);
 
 /// 辅助：构造 error CallToolResult。
 fn error_result(message: &str) -> CallToolResult {
-    let mut result = CallToolResult::success(vec![rmcp::model::Content::text(message.to_string())]);
+    let mut result =
+        CallToolResult::success(vec![rmcp::model::ContentBlock::text(message.to_string())]);
     result.is_error = Some(true);
     result
 }
@@ -400,7 +401,7 @@ impl MyshellToolMcpServer {
 }
 
 impl ServerHandler for MyshellToolMcpServer {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         let capabilities = ServerCapabilities::builder()
             .enable_tools()
             .enable_resources()
@@ -423,6 +424,11 @@ impl ServerHandler for MyshellToolMcpServer {
             next_cursor: None,
             tools,
             meta: None,
+            // 3.x 新增缓存控制字段（SEP-2322/2549）：None = 线上不携带，
+            // 旧协议行为完全一致；新协议 peer 按规范把缺失视作 complete。
+            result_type: None,
+            ttl_ms: None,
+            cache_scope: None,
         }))
     }
 
@@ -440,7 +446,7 @@ impl ServerHandler for MyshellToolMcpServer {
         &self,
         request: CallToolRequestParams,
         context: RequestContext<rmcp::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
+    ) -> impl std::future::Future<Output = Result<CallToolResponse, McpError>> + Send + '_ {
         let ctx = self.ctx.clone();
         let tool_name = request.name.clone();
         let arguments = request.arguments.clone();
@@ -517,7 +523,7 @@ impl ServerHandler for MyshellToolMcpServer {
                             )
                             .await;
                         }
-                        return Ok(error_result(&msg));
+                        return Ok(error_result(&msg).into());
                     }
                     extras_base.scope_result = "allowed";
                 }
@@ -558,7 +564,7 @@ impl ServerHandler for MyshellToolMcpServer {
                             )
                             .await;
                         }
-                        return Ok(error_result(&reason));
+                        return Ok(error_result(&reason).into());
                     }
                     super::approval::ApprovalDecision::RequestElicitation(info) => {
                         // v1.5：elicitation 优先，不支持时降级 GUI 弹窗（ctx 透传）
@@ -582,7 +588,7 @@ impl ServerHandler for MyshellToolMcpServer {
                                     )
                                     .await;
                                 }
-                                return Ok(error_result(&reason));
+                                return Ok(error_result(&reason).into());
                             }
                             ElicitOutcome::Timeout => {
                                 if let Some(scope) = &log_scope {
@@ -597,7 +603,7 @@ impl ServerHandler for MyshellToolMcpServer {
                                     )
                                     .await;
                                 }
-                                return Ok(error_result("GUI 审批超时（60s 未响应），已拒绝执行"));
+                                return Ok(error_result("GUI 审批超时（60s 未响应），已拒绝执行").into());
                             }
                             ElicitOutcome::NotSupported(reason) => {
                                 // GUI 审批通道不可用 → fail-secure 拒绝（两档等级行为一致）
@@ -614,7 +620,7 @@ impl ServerHandler for MyshellToolMcpServer {
                                     )
                                     .await;
                                 }
-                                return Ok(error_result(&reason));
+                                return Ok(error_result(&reason).into());
                             }
                         }
                     }
@@ -662,7 +668,7 @@ impl ServerHandler for MyshellToolMcpServer {
                     .await;
             }
 
-            Ok(result)
+            Ok(result.into())
         }
     }
 
@@ -677,16 +683,19 @@ impl ServerHandler for MyshellToolMcpServer {
             next_cursor: None,
             resources,
             meta: None,
+            result_type: None,
+            ttl_ms: None,
+            cache_scope: None,
         }))
     }
 
     /// 读取资源内容（Layer 4）。v0.20（B4）：透传会话清单与 scope——
-    /// ://sessions 返回真实会话、://assets 与 ://mcp/scope 按 B1 语义渲染。
+    /// ://sessions 返回真实会话、://assets 与 ://mcp/scope 按 B1 语义。
     fn read_resource(
         &self,
         request: ReadResourceRequestParams,
         _context: RequestContext<rmcp::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<ReadResourceResult, McpError>> + Send + '_ {
+    ) -> impl std::future::Future<Output = Result<ReadResourceResponse, McpError>> + Send + '_ {
         let ctx = self.ctx.clone();
         async move {
             let asset_path = ctx.asset_store_path.clone();
@@ -703,6 +712,7 @@ impl ServerHandler for MyshellToolMcpServer {
                 &sessions,
                 &scope,
             )
+            .map(Into::into)
             .map_err(|e| {
                 log::warn!("MCP read_resource error: {}", e);
                 McpError::invalid_request(e, None)
@@ -722,6 +732,9 @@ impl ServerHandler for MyshellToolMcpServer {
             next_cursor: None,
             resource_templates: templates,
             meta: None,
+            result_type: None,
+            ttl_ms: None,
+            cache_scope: None,
         }))
     }
 
@@ -736,6 +749,9 @@ impl ServerHandler for MyshellToolMcpServer {
             next_cursor: None,
             prompts,
             meta: None,
+            result_type: None,
+            ttl_ms: None,
+            cache_scope: None,
         }))
     }
 
@@ -744,9 +760,9 @@ impl ServerHandler for MyshellToolMcpServer {
         &self,
         request: GetPromptRequestParams,
         _context: RequestContext<rmcp::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<GetPromptResult, McpError>> + Send + '_ {
+    ) -> impl std::future::Future<Output = Result<GetPromptResponse, McpError>> + Send + '_ {
         std::future::ready(match super::prompts::get_prompt(&request) {
-            Ok(result) => Ok(result),
+            Ok(result) => Ok(result.into()),
             Err(e) => {
                 log::warn!("MCP get_prompt error: {}", e);
                 Err(McpError::invalid_request(e, None))

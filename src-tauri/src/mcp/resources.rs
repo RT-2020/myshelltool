@@ -11,17 +11,15 @@
 
 use std::path::Path;
 
-use rmcp::model::{
-    AnnotateAble, RawResource, ReadResourceRequestParams, ReadResourceResult, ResourceContents,
-};
+use rmcp::model::{ReadResourceRequestParams, ReadResourceResult, ResourceContents};
 
 /// 返回静态资源清单。
 pub fn list_resources() -> Vec<rmcp::model::Resource> {
     vec![
-        RawResource::new("myshelltool://assets", "assets").no_annotation(),
-        RawResource::new("myshelltool://sessions", "sessions").no_annotation(),
-        RawResource::new("myshelltool://known-hosts", "known-hosts").no_annotation(),
-        RawResource::new("myshelltool://mcp/scope", "mcp-scope").no_annotation(),
+        rmcp::model::Resource::new("myshelltool://assets", "assets"),
+        rmcp::model::Resource::new("myshelltool://sessions", "sessions"),
+        rmcp::model::Resource::new("myshelltool://known-hosts", "known-hosts"),
+        rmcp::model::Resource::new("myshelltool://mcp/scope", "mcp-scope"),
     ]
 }
 

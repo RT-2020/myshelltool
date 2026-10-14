@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use rmcp::model::{CallToolRequestParams, CallToolResult, Content, Tool};
+use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock, Tool};
 use serde_json::{json, Map};
 use tauri::AppHandle;
 use tokio::sync::{oneshot, Mutex, RwLock};
@@ -630,11 +630,11 @@ pub(crate) fn schema_with_required_session() -> Map<String, serde_json::Value> {
 }
 
 fn text_result(text: &str) -> CallToolResult {
-    CallToolResult::success(vec![Content::text(text.to_string())])
+    CallToolResult::success(vec![ContentBlock::text(text.to_string())])
 }
 
 fn error_result(message: &str) -> CallToolResult {
-    let mut result = CallToolResult::success(vec![Content::text(message.to_string())]);
+    let mut result = CallToolResult::success(vec![ContentBlock::text(message.to_string())]);
     result.is_error = Some(true);
     result
 }

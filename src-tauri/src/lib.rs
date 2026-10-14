@@ -356,10 +356,19 @@ pub fn run() {
                     &mcp::config::mcp_config_path(&mcp_dir),
                 )),
             );
-            // v0.20（A1）：MCP 入口鉴权 token——启动时生成，AppState 与 HTTP
+            // v0.20（A1）：MCP 入口鉴权 token——首次启动生成，AppState 与 HTTP
             // 中间件共享同一 Arc（重置即生效，无需重启 server）。
+            // v0.21：跨重启复用（启动时从 mcp-endpoint.json 恢复旧 token，读不到/
+            // 为空才新生成）——此前每次重启轮换，host 配置的带 token URL 全部 401，
+            // 是 MCP 会话跨重启不稳定的第一道坎（比 session 丢失更早发生）。
+            // 手动轮换走 mcp_reset_token（连带清 session 名单）。
             let mcp_auth_token: Arc<std::sync::RwLock<String>> =
-                Arc::new(std::sync::RwLock::new(mcp::http_server::generate_token()));
+                Arc::new(std::sync::RwLock::new(
+                    mcp::http_server::read_endpoint(&mcp_dir)
+                        .map(|e| e.auth_token)
+                        .filter(|t| !t.is_empty())
+                        .unwrap_or_else(mcp::http_server::generate_token),
+                ));
             app.manage(AppState {
                 asset_store_path: app_data_dir.join("connection-assets.json"),
                 secret_store_dir: app_data_dir.join("credentials"),

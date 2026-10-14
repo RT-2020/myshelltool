@@ -37,6 +37,7 @@ pub mod registry_handlers; // handler 包装
 pub mod resources;
 pub mod server;
 pub mod service_tools; // v0.20（C4）：service_control + 隧道工具
-pub mod session_pool; // v0.20（B3）：headless 连接池（GUI 会话 → 池 → 新建 的中间层）
+pub mod session_pool;  // v0.20（B3）：headless 连接池（GUI 会话 → 池 → 新建 的中间层）
+pub mod session_store; // v0.21：session 名单持久化（会话跨重启恢复）
 pub mod sftp_ops;
 pub mod tools;

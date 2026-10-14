@@ -2,7 +2,7 @@
 //! ssh_exec_async（后台执行返回 job_id）/ job_status / job_output / job_cancel。
 //! 状态机与存储在 job_store.rs（内存态、TTL 30 分钟、不落盘）。
 
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::{Map, Value};
 
 use super::registry::ToolFuture;
@@ -10,11 +10,11 @@ use super::tools::McpToolContext;
 use crate::ssh::HeadlessConnectParams;
 
 fn text_result(text: String) -> CallToolResult {
-    CallToolResult::success(vec![Content::text(text)])
+    CallToolResult::success(vec![ContentBlock::text(text)])
 }
 
 fn error_result(message: &str) -> CallToolResult {
-    let mut result = CallToolResult::success(vec![Content::text(message.to_string())]);
+    let mut result = CallToolResult::success(vec![ContentBlock::text(message.to_string())]);
     result.is_error = Some(true);
     result
 }
