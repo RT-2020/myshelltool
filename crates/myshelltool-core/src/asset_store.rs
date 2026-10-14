@@ -29,9 +29,10 @@ pub struct ConnectionAsset {
     /// PrivateKey 模式下，托管在 SecretStore 中的私钥内容引用 ID（如 "<asset_id>:private_key"）
     #[serde(default, alias = "privateKeyCredentialId")]
     pub private_key_credential_id: Option<String>,
-    /// v0.20（SSH P0-2）：ProxyJump 跳板主机标识（"host" 或 "host:port"，端口缺省 22）。
-    /// 连接时在资产库按 host+port 匹配跳板资产（复用其凭据/host key 信任）；
-    /// 匹配不到明确报错。链式跳板不支持（跳板资产自身再有 jump_host 会被忽略并告警）。
+    /// v0.20（SSH P0-2）/ v0.21（B3 链式）：ProxyJump 跳板主机标识（"host" 或
+    /// "host:port"，端口缺省 22）。连接时在资产库按 host+port 匹配跳板资产（复用
+    /// 其凭据/host key 信任）；匹配不到明确报错。跳板资产自身可再配 jump_host
+    /// 构成链（上限 4 跳、环检测，见 core::jump_chain）。
     #[serde(default, alias = "jumpHost")]
     pub jump_host: Option<String>,
     /// v0.20（SSH P1）：TCP 建连超时（秒）。None = 不设超时（现状）；Some(n) =

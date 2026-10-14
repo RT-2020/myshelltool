@@ -101,7 +101,14 @@ async function onImport() {
       importGroup.value
     );
     if (outcome.failed.length === 0) {
-      store.announce(`已导入 ${outcome.ok} 台主机`, { level: 'success' });
+      if (outcome.warnings.length > 0) {
+        store.announce(
+          `已导入 ${outcome.ok} 台主机（${outcome.warnings.length} 条警示——${outcome.warnings[0]}${outcome.warnings.length > 1 ? ' 等' : ''}）`,
+          { level: 'warn' }
+        );
+      } else {
+        store.announce(`已导入 ${outcome.ok} 台主机`, { level: 'success' });
+      }
       assetsStore.closeImportDialog();
     } else {
       store.announce(

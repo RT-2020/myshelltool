@@ -163,10 +163,10 @@ pub async fn connect_headless(
 /// 认证流程与 connect_headless 完全一致（密码/私钥/keyboard-interactive 密码类
 /// prompt 自动响应），host key 策略由注入的 handler 决定。
 ///
-/// v0.20（SSH P0-2）：带跳板时目标握手跑在跳板的 direct-tcpip 流上
-/// （connect_stream 与 connect 同构，只是 transport 来源不同——认证/
-/// host key 校验逻辑完全共用）。跳板自身的建连在 jump.rs（直接
-/// client::connect + authenticate_headless，不经本函数——否则互相递归）。
+/// v0.20（SSH P0-2）/ v0.21（B3 链式）：带跳板时目标握手跑在跳板链的
+/// direct-tcpip 流上（connect_stream 与 connect 同构，只是 transport 来源
+/// 不同——认证/host key 校验逻辑完全共用）。跳板链的逐跳建连在 jump.rs
+/// 循环展开（不经本函数——链解析与建连单点在 core::jump_chain + jump.rs）。
 pub async fn connect_headless_with<H>(
     params: &HeadlessConnectParams,
     handler: H,
