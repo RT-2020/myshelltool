@@ -18,6 +18,7 @@ import { computed, provide, ref } from 'vue';
 import {
   FolderPlus,
   ListTree,
+  Network,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
@@ -71,6 +72,7 @@ const emit = defineEmits<{
   'quick-connect': [target: QuickConnectTarget];
   'toggle-collapse': [];
   'create-asset': [];
+  'create-gateway': []; // v0.22 网关部署向导（经公网 VPS relay 访问客户内网）
   // 分组头悬停「+」：在该分组内快捷新增（父级打开预填分组的资产编辑器）
   'create-asset-in-group': [group: string];
   'create-group': [];
@@ -353,22 +355,14 @@ provide('connectionSidebar', {
           <PanelLeftClose v-if="!assetsCollapsed" :size="16" />
           <PanelLeftOpen v-else :size="16" />
         </button>
-        <button
-          type="button"
-          class="icon-btn"
-          aria-label="新建分组"
-          title="新建分组"
-          @click="emit('create-group')"
-        >
+        <!-- header 工具按钮组（紧凑格式：本组贴 size 硬上限，格式紧凑统一） -->
+        <button type="button" class="icon-btn" aria-label="部署跳板网关" title="部署跳板网关（经公网 VPS 访问客户内网）" @click="emit('create-gateway')">
+          <Network :size="16" />
+        </button>
+        <button type="button" class="icon-btn" aria-label="新建分组" title="新建分组" @click="emit('create-group')">
           <FolderPlus :size="16" />
         </button>
-        <button
-          type="button"
-          class="icon-btn primary"
-          aria-label="新增连接"
-          title="新增连接"
-          @click="emit('create-asset')"
-        >
+        <button type="button" class="icon-btn primary" aria-label="新增连接" title="新增连接" @click="emit('create-asset')">
           <Plus :size="16" />
         </button>
       </div>

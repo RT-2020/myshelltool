@@ -218,3 +218,48 @@ export function slugify(value: unknown): string {
   const slug = String(value).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   return slug || 'asset';
 }
+
+// ─── v0.22 网关向导（内核在 crates/myshelltool-gateway，命令注册见 gateway_cmd.rs）───
+
+export interface GatewayWizardStartResult {
+  mount_public_key: string;
+  docker_template: string;
+}
+
+export interface GatewayWizardFinishResult {
+  bundle_path: string;
+  client_private_key: string;
+  known_host_port: string;
+  known_key_type: string;
+  known_key_hex: string;
+  asset_host: string;
+  asset_port: number;
+}
+
+export function gatewayWizardStart(vpsHost: string, vpsPort: number, vpsUsername: string) {
+  return invokeBackend<GatewayWizardStartResult>('gateway_wizard_start', { vpsHost, vpsPort, vpsUsername });
+}
+
+export function gatewayWizardFinish(input: {
+  vpsHost: string;
+  vpsPort: number;
+  vpsUsername: string;
+  remotePort: number;
+  allowedTargets: string[];
+  password: string;
+  savePath: string;
+}) {
+  return invokeBackend<GatewayWizardFinishResult>('gateway_wizard_finish', {
+    vpsHost: input.vpsHost,
+    vpsPort: input.vpsPort,
+    vpsUsername: input.vpsUsername,
+    remotePort: input.remotePort,
+    allowedTargets: input.allowedTargets,
+    password: input.password,
+    savePath: input.savePath
+  });
+}
+
+export function gatewayPretrustHostKey(hostPort: string, keyType: string, keyHex: string) {
+  return invokeBackend<null>('gateway_pretrust_host_key', { hostPort, keyType, keyHex });
+}

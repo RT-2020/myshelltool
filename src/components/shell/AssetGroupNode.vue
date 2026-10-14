@@ -153,7 +153,15 @@ function assetIndicatorClasses(asset: NormalizedConnectionAsset) {
           @dragend="sidebar.onAssetDragEnd($event)"
         >
           <span class="sb-asset-indicator dot" :class="assetIndicatorClasses(asset)" aria-hidden="true"></span>
-          <div class="sb-asset-title asset-name">{{ asset.name }}</div>
+          <div class="sb-asset-title asset-name">
+            {{ asset.name }}
+            <!-- v0.22 网关资产徽标（tag=gateway：被 jump_host 引用的跳板网关，无终端） -->
+            <span
+              v-if="asset.tags?.includes('gateway')"
+              class="asset-gateway-badge"
+              title="网关资产：供内网机器资产的「跳板机」引用，不提供终端"
+            >网关</span>
+          </div>
           <!-- 悬停快捷按钮：编辑 / 删除 -->
           <div class="asset-trail">
             <div class="asset-quick-actions">
@@ -375,6 +383,19 @@ function assetIndicatorClasses(asset: NormalizedConnectionAsset) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+// v0.22 网关资产徽标：常驻占位（不参与 hover 显隐），纯绘制属性着色
+.asset-gateway-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: var(--radius-xs, 3px);
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--app-strong);
+  background: var(--app-faint, rgba(127, 127, 127, 0.15));
+  border: 1px solid var(--app-border, rgba(127, 127, 127, 0.35));
 }
 
 .asset-trail {

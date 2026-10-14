@@ -6,6 +6,11 @@
 pub(crate) use myshelltool_core::dangerous_commands;
 
 mod dpapi_codec;
+// v0.22 网关模式：Windows 控制台（AttachConsole/口令静默读）、headless CLI 编排、
+// 向导 Tauri 命令（内核在 crates/myshelltool-gateway）
+pub mod gateway_cli;
+pub mod gateway_cmd;
+pub mod gateway_console;
 // v0.20（S7）：FileLogger（5 MiB × 3 滚动）——自 lib.rs 拆出守 800 行 Rust 硬上限
 mod file_logger;
 /// 出站 HTTP 单例客户端（GitHub Gist / OAuth 共用）+ reqwest 错误链工具。
@@ -520,7 +525,11 @@ pub fn run() {
             resource_monitor::resource_monitor_start,
             resource_monitor::resource_monitor_stop,
             resource_monitor::resource_monitor_snapshot,
-            resource_monitor::resource_monitor_list_active
+            resource_monitor::resource_monitor_list_active,
+            // v0.22 网关向导（两段式：start 出挂载公钥/docker 模板 → finish probe+导出+防轮换）
+            gateway_cmd::gateway_wizard_start,
+            gateway_cmd::gateway_wizard_finish,
+            gateway_cmd::gateway_pretrust_host_key
         ])
         .run(tauri::generate_context!())
         .expect("failed to run myshelltool");

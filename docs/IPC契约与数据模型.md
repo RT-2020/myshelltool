@@ -76,6 +76,12 @@
 **资源监控**（`resource_monitor.rs`）
 - `resource_monitor_start` / `_stop` / `_snapshot` / `_list_active`
 
+**网关向导**（`gateway_cmd.rs`，v0.22；内核在 `crates/myshelltool-gateway`，见部署指南）
+- `gateway_wizard_start({ vpsHost, vpsPort, vpsUsername })` — 两段式第一步：生成挂载密钥对（私钥暂存 SecretStore `gateway-wizard-mount-key`，finish 时消费删除），返回 `{ mount_public_key, docker_template }`（已代入公钥的 relay docker run 模板）
+- `gateway_wizard_finish({ vpsHost, vpsPort, vpsUsername, remotePort, allowedTargets?, password, savePath })` — 第二步：probe 连 VPS 抓 host key pin（**认证前 KEX 阶段**，fail 即 Err 带部署指引）→ 生成网关 host key + 客户端钥 → **防静默轮换**（known_hosts 已有 `VPS:挂载口` 的不同公钥则阻止）→ 组 bundle 加密导出到 savePath → 返回 `{ bundle_path, client_private_key, known_host_port, known_key_type, known_key_hex, asset_host, asset_port }`。**凭据不经此命令落库**：客户端私钥由前端经常规 `saveAsset` 链保存（`<资产id>:private_key` 常规命名，同步/删除/Gist 备份零特判）
+- `gateway_pretrust_host_key({ hostPort, keyType, keyHex })` — 预写本机 known_hosts（幂等：相同 key 重复写 no-op；不同 key 拒绝防覆盖既有信任）
+- 同一 exe 的 `--gateway [--import <file>]` CLI 分支不经 IPC（main.rs 在 Tauri 之前分流，AttachConsole 回显 + gateway.log）
+
 **本地文件**（`fs_local.rs`）
 - `fs_local_home_dir` / `fs_local_list_dir` / `fs_local_mkdir` / `fs_local_delete` / `fs_local_rename` / `fs_local_stat`
   - `fs_local_stat(path)` → 单路径 stat（`Option<RemoteFileEntry>`：name/path/kind/size/modified）。**【v0.21/B2】`Ok(null)` = 明确不存在**（`ErrorKind::NotFound`，Windows 的 ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND 均映射此 kind），其余失败仍 Err——下载冲突门据此区分「明确不存在」与「无法确认」（Err 一律按可能存在走确认，fail-closed；若不区分则每次全新下载都会误弹覆盖确认）。上传入口继续用它过滤目录并取进度分母初始值。
@@ -83,7 +89,7 @@
 
 **MCP 服务**（`lib.rs` 调 `mcp/http_server.rs` + `mcp/probe.rs`）
 - `mcp_status` → 【v1.4】HTTP 健康检查 + 聚合能力清单。返回 `McpStatus { serverName, serverVersion, endpoint, dataDir, probe: McpProbeResult, tools[], resources[], prompts[] }`。`probe.ok` 是状态灯唯一信号源（向自己的 HTTP endpoint 发 initialize 握手，不再 spawn 子进程）。`endpoint` 是 MCP HTTP URL，**【v0.20/A1】含入口鉴权 token**（如 `http://127.0.0.1:41235/mcp/<token>`），面板「复制配置」直接可用；探测请求同样带 token（否则 401，状态灯全灭）。
-- `mcp_reset_token` → 【v0.20/A1】重置入口鉴权 token：换新（CSPRNG 256-bit → base64url）→ 更新共享 Arc（运行中 server 立即按新值校验，**旧 token 即刻失效**）→ 重写 mcp-endpoint.json → 返回含新 token 的完整 URL。endpoint 文件缺失（server 未起来）或落盘失败返回 Err（不假装成功）。
+- `mcp_reset_token` → 【v0.20/A1】重置入口鉴权 token：换新（CSPRNG 256-bit → base64url）→ 更新共享 Arc（运行中 server 立即按新值校验，**旧 token 即刻失效**）→ 重写 mcp-endpoint.json → 【v0.21】连带清空 mcp-sessions.json 名单（旧 token 的 host URL 已 401，到不了 session 层）→ 返回含新 token 的完整 URL。endpoint 文件缺失（server 未起来）或落盘失败返回 Err（不假装成功）。
 - `mcp_get_config` → 【v2】读 MCP 危险命令拦截等级（内存共享配置，不动盘）。
 - `mcp_set_config({ level })` → 【v2】切换拦截等级（`minimal` 仅硬拦毁灭性命令、其余直接执行 / `strict` 非白名单一律确认；毁灭性命令两档恒拦）→ 更新共享 Arc（已建 MCP 会话下次调用即生效）→ 落盘 mcp-config.json；无效 level 返 Err。
 - `mcp_list_execution_logs({ limit? })` → 【v2】读 MCP 工具执行日志最近条目（timestampMs 倒序，limit 缺省 200）。
@@ -129,8 +135,9 @@ private_key_credential_id(Option), jump_host(Option, "host"/"host:port"；链由
 - **Gist 同步载荷** → `SyncPayload { version, blob{salt,nonce,ciphertext}, remote_rev }`。**【v2.7】`blob.salt` 必须非空**：会话密钥 = `Argon2id(主密码, salt)`，salt 不随载荷上传时换机后主密码无法重建同一把 key（备份永久解不开）。会话密钥路径与主密码路径共用同一 salt，故**同一份密文两条路都能解**；`crypto::encrypt_with_key` 对空 salt 直接返回 Err（fail-closed，杜绝再产出「只有本机能解」的载荷）。**【v2.7】只支持这一种格式**：`parse_vault_plaintext` 只认 `SyncVaultData`（不再兼容旧版「纯 assets JSON」），`crypto::decrypt` / `decrypt_with_key` 对空 salt 统一返回 `LEGACY_PAYLOAD_REJECTED`（明确说「旧格式不再支持，请重推一次」）——不允许出现「密码路径报错、会话密钥路径却能悄悄解开」的半支持状态
 - **known_hosts** → `known_hosts.json`
 - **MCP 拦截等级** → `mcp-config.json`（【v2】minimal/strict，缺省 Minimal；与 endpoint 同目录，经 mcp_data_dir() 解析）
-- **MCP 入口鉴权 token** → `mcp-endpoint.json` 的 `authToken` 字段（【v0.20/A1】256-bit CSPRNG → base64url 43 字符；server 每次启动重写本文件；`#[serde(default)]` 兼容旧文件——读出空串时 fail-closed 全拒。token 同时存于 AppState 内存 Arc 供中间件校验，**不进日志**）
+- **MCP 入口鉴权 token** → `mcp-endpoint.json` 的 `authToken` 字段（【v0.20/A1】256-bit CSPRNG → base64url 43 字符；`#[serde(default)]` 兼容旧文件——读出空串时 fail-closed 全拒。token 同时存于 AppState 内存 Arc 供中间件校验，**不进日志**。**【v0.21】跨重启复用**：启动时先从本文件恢复旧 token（读不到/为空才新生成），仅手动 `mcp_reset_token` 轮换——此前每次重启轮换会让 host 配置的带 token URL 全部 401）
 - **MCP 执行日志** → `mcp-execution-log.json`（【v2】30 天惰性清理 + 上限 1000 条，append 时触发；tokio Mutex 串行化 + `.tmp`/rename 原子写；不含任何凭据字段）
+- **MCP transport 会话名单** → `mcp-sessions.json`（【v0.21】最近 16 条 session id + host initialize 参数，超出按插入序淘汰；损坏读作空名单=等价无恢复。配合 token 复用实现 MCP 会话跨重启恢复：rmcp tower 层在内存 miss 时自动 load → 同 id 重建 → 重放握手。`mcp_reset_token` 连带清空；条目无凭据，恢复仍受 token 鉴权前置拦截）
 - **活跃会话/隧道/SFTP 缓存** → 纯内存（重启丢失）
 
 ### McpStatus / McpProbeResult（MCP 健康检查，`lib.rs` + `mcp/probe.rs` + `mcp/http_server.rs`）

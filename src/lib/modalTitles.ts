@@ -15,6 +15,7 @@ export function modalTitleFor(
     case 'assetEditor': return opts.editingExistingAsset ? '编辑连接资产' : '新增连接资产';
     case 'reauthPassword': return '重新输入密码';
     case 'tunnelCreate': return '新增隧道';
+    case 'gatewayWizard': return '网关部署向导';
     case 'tokenConfig': return '配置 / 更新 GitHub token';
     case 'hostKeyVerify': return '主机密钥验证';
     case 'keyboardInteractive': return '键盘交互认证';
