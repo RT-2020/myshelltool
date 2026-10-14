@@ -29,10 +29,16 @@
 //! 私钥永远留在 agent 进程——本应用只收公钥与签名，不触私钥字节。
 //! 这是 agent 模式的根本价值：密钥零复制（§8 精神的自然延伸）。
 
+// agent 双通道（named pipe / Pageant）是 Windows 专属机制，russh 的
+// connect_pageant/connect_named_pipe 也仅在 Windows 编译——非 Windows 平台
+// 直接以明确文案失败，不编译任一通道（portability 基线：2026-10-14 CI 首曝）。
+#[cfg(windows)]
 use russh::keys::agent::client::AgentClient;
+#[cfg(windows)]
 use russh::keys::ssh_key::PublicKey;
 
 /// Windows OpenSSH agent 的默认 named pipe 路径。
+#[cfg(windows)]
 const OPENSSH_AGENT_PIPE: &str = r"\\.\pipe\openssh-ssh-agent";
 
 /// Agent 认证结果。
@@ -44,6 +50,7 @@ pub enum AgentAuthOutcome {
 }
 
 /// 单通道尝试的结论（供聚合最终文案）。
+#[cfg(windows)]
 enum ChannelResult {
     /// 该通道认证成功（唯一终止成功的路径）。
     Authenticated,
@@ -58,6 +65,7 @@ enum ChannelResult {
 }
 
 /// 用 agent 完成公钥认证：named pipe 优先，Pageant 兜底，逐 key 尝试。
+#[cfg(windows)]
 #[allow(clippy::type_complexity)]
 pub async fn authenticate_with_agent<U, H>(
     handle: &mut russh::client::Handle<H>,
@@ -114,7 +122,23 @@ where
     ))
 }
 
+/// 非 Windows：agent 双通道（named pipe / Pageant）均为 Windows 机制，不提供
+/// Unix socket agent（产品 Windows 优先，本路径只为 portability 编译基线存在）。
+#[cfg(not(windows))]
+#[allow(clippy::type_complexity)]
+pub async fn authenticate_with_agent<U, H>(
+    _handle: &mut russh::client::Handle<H>,
+    _username: U,
+) -> AgentAuthOutcome
+where
+    U: Into<String> + Clone,
+    H: russh::client::Handler<Error = russh::Error> + Send + 'static,
+{
+    AgentAuthOutcome::Failed("SSH agent 认证仅支持 Windows（OpenSSH named pipe / Pageant）".into())
+}
+
 /// 聚合两通道结论为最终报错文案——如实区分「key 被拒」与「通道不可用」。
+#[cfg(windows)]
 fn summarize(pipe: &ChannelResult, pageant: &ChannelResult) -> String {
     let part = |r: &ChannelResult, name: &str| -> String {
         match r {
@@ -140,6 +164,7 @@ fn summarize(pipe: &ChannelResult, pageant: &ChannelResult) -> String {
 /// 逐 key 尝试认证。
 /// 泛型 S：两种通道的流类型不同（NamedPipeClient / PageantStream），AgentClient<S>
 /// 对满足 AgentStream+Send+Unpin+'static 的 S 均实现 Signer。
+#[cfg(windows)]
 async fn try_all_keys<S, H>(
     handle: &mut russh::client::Handle<H>,
     username: impl Into<String> + Clone,
