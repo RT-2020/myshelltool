@@ -100,7 +100,7 @@ pub(crate) fn h_exec_many<'a>(ctx: &'a McpToolContext, args: &'a Map<String, Val
         log::info!("exec_many: {} targets, intent={:?}, command={:?}", asset_ids.len(), intent, myshelltool_core::redact_command(command));
         let outcome = super::orchestrator::exec_many_on_assets(ctx, &asset_ids, command).await?;
         let summary = super::orchestrator::summarize(&outcome);
-        Ok(rmcp::model::CallToolResult::success(vec![rmcp::model::Content::text(
+        Ok(rmcp::model::CallToolResult::success(vec![rmcp::model::ContentBlock::text(
             serde_json::to_string_pretty(&summary).unwrap_or_default(),
         )]))
     })

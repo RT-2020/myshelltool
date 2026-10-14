@@ -157,23 +157,19 @@ pub struct ToolSpec {
     /// Strict 档审批文案；NoApproval / ShellExec（走 approval::evaluate）为 None。
     pub approval: Option<ApprovalSpec>,
     pub handler: ToolHandler,
-    /// v0.20（C1）：长任务工具标 TaskSupport::Optional（rmcp 协议 tasks——
-    /// host 支持时自动走原生任务流；不支持时走自建 job_* 轮询。两条路并存）。
+    /// v0.20（C1）：长任务工具标记。v0.21 起 rmcp 3.x 把协议 tasks 从
+    /// Tool 声明位（ToolExecution/TaskSupport，已删除）迁到 SEP-2663
+    /// `io.modelcontextprotocol/tasks` 扩展——声明暂摘除，host 侧统一走
+    /// 自建 job_* 轮询；字段保留待扩展接线（先声明后接线，同 scope_req）。
+    #[allow(dead_code)]
     pub long_running: bool,
 }
 
 impl ToolSpec {
     /// 生成 rmcp 协议层 Tool（A3：附 annotations）。
     pub fn to_tool(&self) -> Tool {
-        let mut tool = Tool::new(self.name, self.description, (self.schema)())
-            .with_annotations(self.risk.annotations());
-        if self.long_running {
-            tool = tool.with_execution(
-                rmcp::model::ToolExecution::new()
-                    .with_task_support(rmcp::model::TaskSupport::Optional),
-            );
-        }
-        tool
+        Tool::new(self.name, self.description, (self.schema)())
+            .with_annotations(self.risk.annotations())
     }
 
     /// 构造 Strict 档审批的三段式信息（intent 缺失时用 intent_default——

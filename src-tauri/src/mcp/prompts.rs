@@ -18,8 +18,8 @@
 //! 不得据此判定无异常——假阴性结论比查不到更危险。
 
 use rmcp::model::{
-    GetPromptRequestParams, GetPromptResult, Prompt, PromptArgument, PromptMessage,
-    PromptMessageContent, PromptMessageRole,
+    ContentBlock, GetPromptRequestParams, GetPromptResult, Prompt, PromptArgument, PromptMessage,
+    Role,
 };
 
 /// 返回 3 个 prompt schema（含 arguments 定义）。
@@ -159,8 +159,8 @@ pub fn get_prompt(request: &GetPromptRequestParams) -> Result<GetPromptResult, S
 
     Ok(
         GetPromptResult::new(vec![PromptMessage::new(
-            PromptMessageRole::User,
-            PromptMessageContent::text(message_text),
+            Role::User,
+            ContentBlock::text(message_text),
         )])
         .with_description(description),
     )
@@ -203,7 +203,7 @@ mod tests {
             .messages
             .first()
             .and_then(|m| match &m.content {
-                rmcp::model::PromptMessageContent::Text { text } => Some(text.clone()),
+                rmcp::model::ContentBlock::Text(text) => Some(text.text.clone()),
                 _ => None,
             })
             .unwrap_or_default()

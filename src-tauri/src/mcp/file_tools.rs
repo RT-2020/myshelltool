@@ -13,7 +13,7 @@
 
 use std::path::PathBuf;
 
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::{Map, Value};
 
 use super::file_policy::{is_protected_local_write_path, normalize_remote_path};
@@ -21,11 +21,11 @@ use super::sftp_ops::HeadlessSftpSession;
 use super::tools::McpToolContext;
 
 fn text_result(text: &str) -> CallToolResult {
-    CallToolResult::success(vec![Content::text(text.to_string())])
+    CallToolResult::success(vec![ContentBlock::text(text.to_string())])
 }
 
 fn error_result(message: &str) -> CallToolResult {
-    let mut result = CallToolResult::success(vec![Content::text(message.to_string())]);
+    let mut result = CallToolResult::success(vec![ContentBlock::text(message.to_string())]);
     result.is_error = Some(true);
     result
 }

@@ -8,18 +8,18 @@
 //! （同一 SshSessionManager / tunnel_start，**不另写**——G3 决策）。
 //! tunnel_create 的 Policy=RemoteWrite（建立端口转发 = 改变网络暴露面）。
 
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::{json, Map, Value};
 
 use super::registry::ToolFuture;
 use super::tools::McpToolContext;
 
 fn text_result(text: String) -> CallToolResult {
-    CallToolResult::success(vec![Content::text(text)])
+    CallToolResult::success(vec![ContentBlock::text(text)])
 }
 
 fn error_result(message: &str) -> CallToolResult {
-    let mut result = CallToolResult::success(vec![Content::text(message.to_string())]);
+    let mut result = CallToolResult::success(vec![ContentBlock::text(message.to_string())]);
     result.is_error = Some(true);
     result
 }

@@ -9,7 +9,7 @@ use super::tools::{McpToolContext, exec_on_asset};
 
 /// 内联错误结果（tools.rs 的 error_result 是私有——此处四件共用一个本地副本）。
 fn error_result(message: &str) -> CallToolResult {
-    let mut result = CallToolResult::success(vec![rmcp::model::Content::text(message.to_string())]);
+    let mut result = CallToolResult::success(vec![rmcp::model::ContentBlock::text(message.to_string())]);
     result.is_error = Some(true);
     result
 }

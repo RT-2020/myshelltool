@@ -27,12 +27,15 @@
 //!
 //! 「只监听 127.0.0.1」在多进程桌面上不是安全边界：本机任意进程（含同机其他
 //! Windows 用户）都能连回环端口，而工具面含 ssh_exec。因此入口加 token：
-//! 启动时生成 256-bit CSPRNG token，路由形态 `/mcp/<token>`（同时兼容
-//! `Authorization: Bearer` header），无 token 一律 401——不区分「路径错」与
-//! 「token 错」，不做探测预言机。判定逻辑在 `myshelltool_core::mcp_auth`
-//! （安全判据 core 真跑）。token 只写进 mcp-endpoint.json（authToken 字段）
-//! 与内存（AppState 共享 Arc<RwLock>），**绝不进日志**（凭据红线延伸）；
-//! 拒绝日志只记脱敏后的路径摘要（redacted_path_summary）。
+//! 首次启动生成 256-bit CSPRNG token，此后跨重启复用（lib.rs setup 从本文件
+//! 恢复），路由形态 `/mcp/<token>`（同时兼容 `Authorization: Bearer` header），
+//! 无 token 一律 401——不区分「路径错」与「token 错」，不做探测预言机。
+//! v0.21 起不再每次重启轮换：轮换会让所有 host 配置的带 token URL 失效（401），
+//! 是 MCP 会话跨重启不稳定的第一道坎；手动轮换走 `mcp_reset_token`。
+//! 判定逻辑在 `myshelltool_core::mcp_auth`（安全判据 core 真跑）。token 只写进
+//! mcp-endpoint.json（authToken 字段）与内存（AppState 共享 Arc<RwLock>），
+//! **绝不进日志**（凭据红线延伸）；拒绝日志只记脱敏后的路径摘要
+//! （redacted_path_summary）。
 //!
 //! ## 生命周期
 //!
@@ -242,11 +245,19 @@ pub async fn run_http_server(
     log::info!("MCP HTTP server serving at {}（已启用 token 鉴权）", endpoint.url);
 
     // handler factory：每个 MCP 会话独立构造一个 MyshellToolMcpServer（ctx 是 Clone 的 Arc）。
-    // LocalSessionManager = 单进程内存会话管理（不做跨进程/分布式会话）。
+    // LocalSessionManager = 单进程内存会话管理（不做跨进程/分布式会话）；
+    // v0.21 起配 FileSessionStore：session 名单落盘，GUI 重启后 tower 层对
+    // 内存 miss 的旧 session id 自动 load → restore → 重放 initialize（rmcp
+    // 内建编排，host 无感知）。前提：token 跨重启复用（lib.rs setup 恢复）。
+    let mut http_config = StreamableHttpServerConfig::default();
+    // non_exhaustive 结构体不能字面量构造，字段逐一赋值（builder 无 store 项）
+    http_config.session_store = Some(Arc::new(super::session_store::FileSessionStore::new(
+        &data_dir,
+    )));
     let service = StreamableHttpService::new(
         move || Ok(MyshellToolMcpServer::new(ctx.clone())),
         LocalSessionManager::default().into(),
-        StreamableHttpServerConfig::default().with_cancellation_token(shutdown_token.child_token()),
+        http_config.with_cancellation_token(shutdown_token.child_token()),
     );
     let router = axum::Router::new()
         .nest_service("/mcp", service)

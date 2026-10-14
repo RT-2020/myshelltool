@@ -175,6 +175,9 @@ pub fn mcp_reset_token(state: State<'_, AppState>) -> Result<String, String> {
         .ok_or_else(|| "MCP endpoint 尚未生成（server 未启动），请重启应用后重试".to_string())?;
     endpoint.auth_token = new_token;
     crate::mcp::http_server::persist_endpoint(&state.mcp_data_dir, &endpoint)?;
+    // v0.21：token 轮换后旧 session 名单一并作废（旧 token 的 host URL 在
+    // 鉴权层就 401，到不了 session 层；名单条目留着是死数据）。
+    crate::mcp::session_store::clear(&state.mcp_data_dir);
     log::info!("MCP 入口 token 已重置（内容不入日志）");
     Ok(crate::mcp::http_server::with_token(&endpoint.url, &endpoint.auth_token))
 }
