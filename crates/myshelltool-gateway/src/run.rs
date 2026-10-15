@@ -80,6 +80,14 @@ pub fn load_runtime(data_dir: &Path, secret_store: &SecretStore) -> Result<Loade
         .map_err(|e| format!("读取 {} 失败（尚未导入配置？）：{e}", path.display()))?;
     let rt = config::parse_runtime(&json)?;
 
+    if rt.mode == config::MODE_SECRET {
+        // v0.21「服务器+口令」：口令在 SecretStore，密钥现派生（不落盘）
+        let secret = secret_store
+            .read(config::SECRET_GATEWAY_SECRET)?
+            .ok_or("缺少网关口令（gateway-secret）：请在跳板机重新输入服务器地址与口令")?;
+        return loaded_from_secret(&rt, &secret);
+    }
+
     let host_key_private = secret_store
         .read(SECRET_HOST_KEY)?
         .ok_or_else(|| SECRET_MISSING_HINT.to_string())?;
@@ -144,6 +152,40 @@ pub fn loaded_from_bundle(bundle: &crate::config::GatewayBundle) -> Result<Loade
         authorized_key_line: bundle.gateway.authorized_key.clone(),
         allowed_targets: bundle.gateway.allowed_targets.clone(),
         runtime: rt,
+    })
+}
+
+/// v0.21「服务器+口令」的内存直通装载：从口令现派生挂载钥、网关 host key、
+/// 客户端钥（authorized_key），pin 由派生 relay host key 确定性得出——零秘密落盘。
+pub fn loaded_from_secret(
+    rt: &crate::config::GatewayRuntimeConfig,
+    secret: &str,
+) -> Result<LoadedGateway, String> {
+    rt.validate()?;
+    let (mount_pem, _) = keys::derive_ed25519(secret, keys::LABEL_MOUNT)?;
+    let (host_pem, host_pub) = keys::derive_ed25519(secret, keys::LABEL_GATEWAY_HOSTKEY)?;
+    let (_, client_pub) = keys::derive_ed25519(secret, keys::LABEL_CLIENT)?;
+    let (_, relay_pub) = keys::derive_ed25519(secret, keys::LABEL_RELAY_HOSTKEY)?;
+    let pin = crate::config::HostKeyPin {
+        key_type: "ssh-ed25519".into(),
+        key_hex: keys::public_key_hex(&keys::parse_public_key_line(&relay_pub)?),
+    };
+    let _ = host_pub;
+    Ok(LoadedGateway {
+        mount_params: MountParams {
+            vps_host: rt.vps_host.clone(),
+            vps_port: rt.vps_port,
+            vps_username: rt.vps_username.clone(),
+            private_key_pem: mount_pem,
+            passphrase: None,
+            pin,
+            mount: rt.mount.clone(),
+            gateway_listen_port: rt.listen_port,
+        },
+        host_key_private: host_pem,
+        authorized_key_line: client_pub,
+        allowed_targets: rt.allowed_targets.clone(),
+        runtime: rt.clone(),
     })
 }
 

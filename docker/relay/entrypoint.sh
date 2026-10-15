@@ -1,31 +1,40 @@
 #!/bin/sh
-# myshelltool-relay 入口：host key 持久化 + authorized_keys 注入 + 前台 sshd。
+# myshelltool-relay 入口：凭据模式分流（GATEWAY_SECRET 派生 / AUTHORIZED_KEYS 文件）
+# + host key 就位 + 前台 sshd。
 set -eu
 
 HOSTKEY_DIR=/etc/ssh/hostkeys
 AUTH_KEYS=/etc/ssh/authorized_keys
+MOUNT_USER="${MOUNT_USER:-mount}"
 
 mkdir -p "$HOSTKEY_DIR"
 
-# host key：volume 无则生成（容器重建复用同一批 key——网关 pin 不失配）
-if [ ! -f "$HOSTKEY_DIR/ssh_host_ed25519_key" ]; then
-    echo "[relay] generating persistent host keys in $HOSTKEY_DIR"
-    ssh-keygen -t ed25519 -f "$HOSTKEY_DIR/ssh_host_ed25519_key" -N '' -q
-    ssh-keygen -t rsa -b 3072 -f "$HOSTKEY_DIR/ssh_host_rsa_key" -N '' -q
+if [ -n "${GATEWAY_SECRET}" ]; then
+    # ─── 口令派生模式（v0.21 零文件口径）───
+    # host key 与挂载公钥都从口令确定性派生：同口令永远同身份，无需 volume
+    # 持久化（容器重建/换机重部署，身份不变，跳板机与本机侧零感知）。
+    echo "[relay] GATEWAY_SECRET mode: deriving host key and authorized_keys from secret"
+    gw-derive "$GATEWAY_SECRET" relay-hostkey pem > "$HOSTKEY_DIR/ssh_host_ed25519_key"
+    chmod 600 "$HOSTKEY_DIR/ssh_host_ed25519_key"
+    printf '%s\n' "$(gw-derive "$GATEWAY_SECRET" mount pub)" > "$AUTH_KEYS"
+else
+    # ─── bundle 文件模式（v0.20）：公钥经 env 注入，host key 持久化 volume ───
+    if [ ! -f "$HOSTKEY_DIR/ssh_host_ed25519_key" ]; then
+        echo "[relay] generating persistent host keys in $HOSTKEY_DIR"
+        ssh-keygen -t ed25519 -f "$HOSTKEY_DIR/ssh_host_ed25519_key" -N '' -q
+    fi
+    if [ -z "${AUTHORIZED_KEYS}" ]; then
+        echo "[relay] FATAL: 需配置 GATEWAY_SECRET（口令模式）或 AUTHORIZED_KEYS（bundle 模式）其一" >&2
+        exit 1
+    fi
+    printf '%s\n' "$AUTHORIZED_KEYS" > "$AUTH_KEYS"
 fi
 
-# authorized_keys：必填（禁密码认证下空 = 谁也连不上，fail-fast 报错退出）
-if [ -z "${AUTHORIZED_KEYS}" ]; then
-    echo "[relay] FATAL: AUTHORIZED_KEYS env is empty — pass the mount public key from the wizard (docker run -e AUTHORIZED_KEYS='ssh-ed25519 AAAA...')" >&2
-    exit 1
-fi
-printf '%s\n' "$AUTHORIZED_KEYS" > "$AUTH_KEYS"
-# owner 必须是目标挂载用户（sshd 认证阶段以其身份读取；root:root 600 会
-# Permission denied——2026-10-14 relay 冒烟实测抓出）
-chown "${MOUNT_USER:-mount}:${MOUNT_USER:-mount}" "$AUTH_KEYS"
+# authorized_keys owner 必须是目标挂载用户（sshd 认证阶段以其身份读取）
+chown "${MOUNT_USER}:${MOUNT_USER}" "$AUTH_KEYS"
 chmod 600 "$AUTH_KEYS"
 
-# 监听口（host network 下避开宿主 22）与挂载账户名可覆盖
+# 监听口（host network 下避开宿主 22）
 sed -i "s/^Port .*/Port ${PORT:-22222}/" /etc/ssh/sshd_config
 
 echo "[relay] sshd listening on port ${PORT:-22222} (host network: mount port binds on the host directly)"

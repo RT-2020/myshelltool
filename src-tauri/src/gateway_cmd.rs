@@ -82,6 +82,55 @@ pub async fn gateway_import_bundle(
     })
 }
 
+/// v0.21「服务器+口令」跳板机配置（用户理想口径：只输 relay 地址与口令）。
+/// 落位：口令存 SecretStore（gateway-secret，DPAPI）；运行配置零秘密（mode=secret，
+/// 密钥各运行时现派生）。relay 侧须以同一口令 `docker run -e GATEWAY_SECRET=...` 部署。
+#[tauri::command]
+pub async fn gateway_setup_from_secret(
+    state: State<'_, AppState>,
+    host: String,
+    port: Option<u16>,
+    secret: String,
+) -> Result<GatewayImportResult, String> {
+    if host.trim().is_empty() {
+        return Err("请输入 relay 服务器地址".to_string());
+    }
+    // 提前校验口令强度与派生可用性（fail-fast，不在启动期才炸）
+    gw_keys::derive_ed25519(secret.trim(), gw_keys::LABEL_MOUNT)?;
+
+    let store = secret_store_of(&state);
+    store.save(gw_config::SECRET_GATEWAY_SECRET, secret.trim())?;
+
+    let rt = gw_config::GatewayRuntimeConfig::from_secret(host.trim(), port.unwrap_or(22222));
+    let data_dir = state
+        .asset_store_path
+        .parent()
+        .ok_or("无法定位应用数据目录")?
+        .to_path_buf();
+    myshelltool_core::write_atomic(
+        data_dir.join(gw_run::RUNTIME_CONFIG_FILE),
+        gw_config::runtime_to_json(&rt)?,
+    )?;
+    log::info!(
+        "gateway: 口令模式配置完成（relay {}:{}，挂载口 {}）",
+        rt.vps_host,
+        rt.vps_port,
+        rt.mount.remote_port
+    );
+    let exe = std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "myshelltool.exe".into());
+    Ok(GatewayImportResult {
+        vps_host: rt.vps_host,
+        vps_port: rt.vps_port,
+        mount_port: rt.mount.remote_port,
+        listen_port: rt.listen_port,
+        schtasks_command: format!(
+            "schtasks /Create /TN myshelltool-gateway /TR \"\\\"{exe}\\\" --gateway\" /SC ONSTART /RU %USERNAME% /RP"
+        ),
+    })
+}
+
 #[tauri::command]
 pub async fn gateway_launch() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("定位自身路径失败：{e}"))?;

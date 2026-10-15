@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": 520, "method": "tools/call", "params": {"name": "ssh_exec", "arguments": {"asset_id": "47-109-61-34", "command": "ls /root/crates 2>/dev/null || echo NO_CRATES", "intent": "check build context prerequisites"}}}
