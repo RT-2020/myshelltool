@@ -16,15 +16,13 @@
 import { computed, ref } from 'vue';
 import AppButton from '@/components/ui/AppButton.vue';
 import AppInput from '@/components/ui/AppInput.vue';
+import GatewayImportPanel from '@/components/shell/GatewayImportPanel.vue';
 import { useWorkbenchStore } from '@/stores/workbench';
 import {
   invokeBackend,
   gatewayWizardStart,
   gatewayWizardFinish,
-  gatewayPretrustHostKey,
-  gatewayImportBundle,
-  gatewayLaunch,
-  gatewaySetupFromSecret
+  gatewayPretrustHostKey
 } from '@/services/backend';
 
 const store = useWorkbenchStore();
@@ -52,68 +50,6 @@ const password = ref('');
 const password2 = ref('');
 const bundlePath = ref('');
 
-// ─── 导入页签（跳板机侧）───
-// v0.21 口径：输入 relay 服务器地址 + 口令即全部（密钥从口令派生，零文件）；
-// v0.20 bundle 文件导入保留为高级折叠入口（兼容旧交付物）。
-const setupHost = ref('');
-const setupSecret = ref('');
-const setupBusy = ref(false);
-const setupError = ref('');
-interface ImportSummary {
-  vps_host: string; vps_port: number; mount_port: number;
-  listen_port: number; schtasks_command: string;
-}
-const importResult = ref<ImportSummary | null>(null);
-const launched = ref(false);
-
-async function runSetupAndLaunch() {
-  if (!setupHost.value.trim()) { setupError.value = '请输入 relay 服务器地址'; return; }
-  if (!setupSecret.value.trim()) { setupError.value = '请输入口令'; return; }
-  setupError.value = '';
-  setupBusy.value = true;
-  try {
-    importResult.value = await gatewaySetupFromSecret(setupHost.value.trim(), setupSecret.value.trim());
-    await gatewayLaunch();
-    launched.value = true;
-    store.announce('网关已配置并启动', { level: 'success' });
-  } catch (e) {
-    setupError.value = String(e);
-  } finally {
-    setupBusy.value = false;
-  }
-}
-
-// ─── 高级：bundle 文件导入（v0.20 兼容）───
-const showFileImport = ref(false);
-const importPath = ref('');
-const importPassword = ref('');
-const importBusy = ref(false);
-const importError = ref('');
-
-async function chooseBundleFile() {
-  const path = await invokeBackend<string | null>('plugin:dialog|open', {
-    title: '选择网关 bundle 文件',
-    filters: [{ name: 'Gateway Bundle', extensions: ['json'] }]
-  });
-  if (path) importPath.value = path;
-}
-
-async function runImportAndLaunch() {
-  if (!importPath.value.trim()) { importError.value = '请先选择 bundle 文件'; return; }
-  if (!importPassword.value) { importError.value = '请输入 bundle 加密口令'; return; }
-  importError.value = '';
-  importBusy.value = true;
-  try {
-    importResult.value = await gatewayImportBundle(importPath.value.trim(), importPassword.value);
-    await gatewayLaunch();
-    launched.value = true;
-    store.announce('网关配置已导入并启动', { level: 'success' });
-  } catch (e) {
-    importError.value = String(e);
-  } finally {
-    importBusy.value = false;
-  }
-}
 
 // 完成指引的跳板机导入命令（含 bundle 文件名）
 const importCommand = computed(() =>
@@ -229,55 +165,8 @@ async function runStep2() {
       <button type="button" :class="['tab-btn', { active: tab === 'import' }]" role="tab" :aria-selected="tab === 'import'" @click="tab = 'import'">导入配置（跳板机）</button>
     </div>
 
-    <!-- ═══ 导入页签：跳板机侧「服务器 + 口令」两栏口径 ═══ -->
-    <template v-if="tab === 'import'">
-      <template v-if="!importResult">
-        <p class="muted">
-          这台机器是<b>跳板机</b>（客户内网）时用本页：输入 relay 服务器地址与口令，
-          一键配置并启动——其余全部自动完成。
-        </p>
-        <label class="stack"><span>relay 服务器地址</span>
-          <AppInput v-model="setupHost" placeholder="例如 47.109.61.34" data-gateway-field="setup-host" />
-        </label>
-        <label class="stack"><span>口令（运维方部署 relay 时设置的那个）</span>
-          <AppInput v-model="setupSecret" type="password" data-gateway-field="setup-secret" />
-        </label>
-        <p v-if="setupError" class="form-error" style="white-space:pre-wrap">{{ setupError }}</p>
-        <div class="wizard-actions">
-          <AppButton variant="primary" :disabled="setupBusy" @click="runSetupAndLaunch">
-            {{ setupBusy ? '正在配置…' : '连接并启动网关' }}
-          </AppButton>
-        </div>
-        <details class="advanced-fold">
-          <summary>高级：从 bundle 文件导入（旧版交付物）</summary>
-          <div class="stack" style="margin-top: var(--space-2)">
-            <div class="path-row">
-              <span class="path-value">{{ importPath || '未选择文件' }}</span>
-              <AppButton :disabled="importBusy" @click="chooseBundleFile">选择文件…</AppButton>
-            </div>
-            <AppInput v-model="importPassword" type="password" placeholder="bundle 加密口令" data-gateway-field="import-password" />
-            <p v-if="importError" class="form-error" style="white-space:pre-wrap">{{ importError }}</p>
-            <div class="wizard-actions">
-              <AppButton :disabled="importBusy" @click="runImportAndLaunch">
-                {{ importBusy ? '正在导入…' : '导入并启动' }}
-              </AppButton>
-            </div>
-          </div>
-        </details>
-      </template>
-      <template v-else>
-        <p class="muted">
-          {{ launched ? '✅ 网关已导入并在后台运行' : '✅ 网关配置已导入' }}（VPS {{ importResult.vps_host }}:{{ importResult.vps_port }}，
-          挂载口 {{ importResult.mount_port }}）。关闭本窗口不影响运行；
-          日志在 <code>%APPDATA%\com.redtei.myshelltool\logs\gateway.log</code>。
-        </p>
-        <p class="muted">最后一步（可选，开机自启）——在管理员 PowerShell 执行：</p>
-        <div class="code-block">
-          <pre>{{ importResult.schtasks_command }}</pre>
-          <button type="button" class="link-btn" @click="copyText(importResult.schtasks_command, '自启命令')">复制</button>
-        </div>
-      </template>
-    </template>
+    <!-- ═══ 导入页签：跳板机侧「服务器 + 口令」（独立面板：实时状态卡 + 两栏 + 高级折叠）═══ -->
+    <GatewayImportPanel v-if="tab === 'import'" />
 
     <!-- ═══ 部署页签：原两段式向导 ═══ -->
     <template v-else>
@@ -384,6 +273,8 @@ async function runStep2() {
 
 <style scoped lang="scss">
 @use '@/styles/_tokens' as *;
+
+
 
 .advanced-fold {
   margin-top: var(--space-3);

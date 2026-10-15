@@ -3,12 +3,7 @@
 // 第二层用 Tauri v2 官方插件 @tauri-apps/plugin-clipboard-manager（桌面端最可靠），
 // 替代旧 v1 的 window.__TAURI__.clipboard 注入（v2 不再注入该对象，是死分支）。
 // 动态 import + runtime 检测：浏览器预览模式（npm run dev）下不触发，避免 import 即崩。
-
-// Tauri v2 runtime 探测：__TAURI_INTERNALS__ 由 withGlobalTauri 的 webview 注入。
-// （类型来自 @/types/tauri.d.ts 的 Window 声明合并）
-function isTauriRuntime(): boolean {
-  return Boolean(typeof window !== 'undefined' && window.__TAURI_INTERNALS__);
-}
+import { isTauriRuntime } from '@/services/backend';
 
 // 动态加载 Tauri clipboard 插件并写入文本。非 Tauri runtime 直接返回 false（fallthrough）。
 async function tauriWriteText(text: string): Promise<boolean> {

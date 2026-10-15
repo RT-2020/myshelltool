@@ -82,6 +82,8 @@
 - `gateway_pretrust_host_key({ hostPort, keyType, keyHex })` — 预写本机 known_hosts（幂等：相同 key 重复写 no-op；不同 key 拒绝防覆盖既有信任）
 - `gateway_import_bundle({ path, password })` — **v0.20.1 跳板机侧 GUI 导入**（装完 mst 点选 bundle 替代 CLI `--import`）：与 CLI 同一内核 `gw_run::import_bundle`，DPAPI 落位于本应用数据目录（两路互认）；返回 `{ vps_host, vps_port, mount_port, listen_port, schtasks_command }`（schtasks 已代入当前安装路径）
 - `gateway_launch()` — spawn 独立 `--gateway` 常驻进程（Windows `DETACHED_PROCESS`，关 GUI 不随父退出）
+- `gateway_setup_from_secret({ host, secret, port? })` — **v0.21「服务器+口令」两栏口径**（密钥从口令 Argon2id 派生，零文件）：口令存 SecretStore `gateway-secret`（DPAPI），运行配置 mode=secret（密钥各运行时现派生不落盘）；relay 侧须同口令 `docker run -e GATEWAY_SECRET=...`
+- `gateway_status()` — 网关运行状态（跨进程只读）：独立网关进程写 `gateway-status.json`（状态迁移立即写 + 10s 心跳维持新鲜），GUI 读 + 25s 新鲜度判定；state ∈ mounted/mounting/reconnecting/stopped/not_configured
 - 同一 exe 的 `--gateway [--import <file>]` CLI 分支不经 IPC（main.rs 在 Tauri 之前分流，AttachConsole 回显 + gateway.log）
 
 **本地文件**（`fs_local.rs`）

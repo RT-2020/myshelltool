@@ -491,4 +491,4 @@ const { onBackdropClick } = useModalDismiss(
   </div>
 </template>
 
-<style scoped src="./GlobalModals.modal.css"></style>
+<style scoped lang="scss" src="./GlobalModals.modal.scss"></style>

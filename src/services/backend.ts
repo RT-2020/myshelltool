@@ -286,3 +286,17 @@ export function gatewayLaunch() {
 export function gatewaySetupFromSecret(host: string, secret: string, port?: number) {
   return invokeBackend<GatewayImportResult>('gateway_setup_from_secret', { host, secret, port });
 }
+
+// 网关运行状态（状态文件 + 心跳新鲜度；state: mounted/mounting/reconnecting/stopped/not_configured）
+export interface GatewayStatusView {
+  state: string;
+  vps_host: string;
+  vps_port: number;
+  mount_port: number;
+  detail: string | null;
+  age_secs: number;
+}
+
+export function gatewayStatus() {
+  return invokeBackend<GatewayStatusView>('gateway_status');
+}

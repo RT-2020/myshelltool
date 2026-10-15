@@ -8,7 +8,7 @@ import { reactive, type Ref } from 'vue';
 import type { NotifyOptions, TerminalSearchState } from '@/types/domain';
 import { invokeBackend } from '@/services/backend';
 import { useClipboard } from '@/composables/useClipboard';
-import { detectDangerousCommand } from '@/lib/dangerousCommands';
+import { checkDangerousPaste } from '@/lib/dangerousCommands';
 import { createDangerousPasteGuard } from '@/lib/terminalGuards';
 import type { DangerousPastePrompt } from '@/lib/terminalGuards';
 import type { SessionEntry } from '@/lib/terminalTypes';
@@ -117,7 +117,7 @@ export const dangerousPastePrompt = reactive<DangerousPastePrompt>({ open: false
 const pasteGuard = createDangerousPasteGuard({
   getSession: sessionId => oc().sessions.value.find(item => item.sessionId === sessionId) || null,
   prompt: dangerousPastePrompt,
-  detect: detectDangerousCommand
+  detect: checkDangerousPaste
 });
 
 export function requestDangerousPaste(sessionId: string, text: string) { return pasteGuard.request(sessionId, text); }

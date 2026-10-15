@@ -453,7 +453,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     resolveHostKeyPrompt: sessionsStore.resolveHostKeyPrompt,
     resolveKeyboardPrompt: sessionsStore.resolveKeyboardPrompt,
     // --- v1.2：MCP 服务可观测性 (re-export from useMcpStore) ---
-    mcpStatus: computed(() => mcpStore.status),    mcpProbe: computed(() => mcpStore.probe),
+    mcpStatus: computed(() => mcpStore.status),
+    mcpProbe: computed(() => mcpStore.probe),
     mcpClientConnected: computed(() => mcpStore.clientConnected),
     mcpLoading: computed(() => mcpStore.loading),
     mcpTools: computed(() => mcpStore.tools),
@@ -493,8 +494,3 @@ export function normalizeStatus(status: string | null | undefined): { label: str
   if (status === 'Warning' || status === 'warning') return { label: 'warning', dotClass: 'warn' };
   return { label: 'idle', dotClass: '' };
 }
-
-
-// 路径五助手已抽到 lib/pathUtils（v2.8 第五轮）；re-export 保持
-// '@/stores/workbench' 与 '@/lib/pathUtils' 两条 import 路径都可用。
-export { remotePathForAsset, parentPath, joinPath, joinLocalPath, parentLocalPath } from '@/lib/pathUtils';

@@ -18,6 +18,7 @@ import ConnectionSidebar from '@/components/shell/ConnectionSidebar.vue';
 import RightSidebar from '@/components/shell/RightSidebar.vue';
 import TerminalSurface from '@/components/terminal/TerminalSurface.vue';
 import FileSurface from '@/components/files/FileSurface.vue';
+import TitleBarSearch from '@/components/workbench/TitleBarSearch.vue';
 // v0.18 内置编辑器：懒加载（CodeMirror 及语言包不进主 bundle），覆盖中央区
 const EditorSurface = defineAsyncComponent(() => import('@/components/editor/EditorSurface.vue'));
 import { AppBrandLogo } from '@/components/ui';

@@ -27,7 +27,7 @@ use regex::Regex;
 use std::sync::OnceLock;
 
 /// 命中危险模式的详情（对齐 JS `detectDangerousCommand` 返回结构）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct DangerousMatch {
     /// 命中的正则源码（对应 JS `pattern.source`）。
     pub pattern: String,

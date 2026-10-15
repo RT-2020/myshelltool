@@ -12,7 +12,7 @@ import { invokeBackend } from '@/services/backend';
 import type { RemoteFileEntry } from '@/types/domain';
 import type { OverwriteDecision, PendingOverwrite } from '@/lib/fileTypes';
 import type { FileTransfersContext } from '@/lib/fileTransfers';
-import { joinLocalPath, joinPath } from '@/stores/workbench';
+import { joinLocalPath, joinPath } from '@/lib/pathUtils';
 
 let ctx: FileTransfersContext | null = null;
 

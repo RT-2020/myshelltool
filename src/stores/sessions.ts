@@ -17,10 +17,7 @@ import {
 import { buildTerminalOptions } from '../composables/useTerminalConfig';
 import { useClipboard } from '../composables/useClipboard';
 import { useAutoReconnect } from '../composables/useAutoReconnect';
-import { detectDangerousCommand } from '../lib/dangerousCommands';
 import { errorMessage } from '../lib/errorMessage';
-import { createDangerousPasteGuard, createNativePasteGuard } from '../lib/terminalGuards';
-import type { DangerousPastePrompt } from '../lib/terminalGuards';
 import { pickTerminalTheme } from '../lib/terminalThemes';
 import { createOscParser } from '@/lib/oscParser';
 import {
