@@ -229,8 +229,17 @@ pub async fn read_output(id: &str, offset: u64, limit: usize) -> Option<(String,
 mod tests {
     use super::*;
 
+    /// 全局存储是进程级共享（MAX_JOBS 容量驱逐），cargo test 并行调度下
+    /// 容量测试（灌 37 条）会驱逐并行 roundtrip 测试刚建的条目——CI 曾偶发
+    /// 「unwrap on None」（2026-10-15 首曝）。模块内全部测试经此锁串行。
+    async fn test_serial() -> tokio::sync::MutexGuard<'static, ()> {
+        static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        SERIAL.lock().await
+    }
+
     #[tokio::test]
     async fn lifecycle_running_to_done() {
+        let _serial = test_serial().await;
         let (id, mut rx) = create("asset-1", None).await;
         assert_eq!(snapshot(&id).await.unwrap().status, JobStatus::Running);
         append_output(&id, b"hello ").await;
@@ -245,6 +254,7 @@ mod tests {
 
     #[tokio::test]
     async fn output_paging_and_dropped_head_reported() {
+        let _serial = test_serial().await;
         let (id, _rx) = create("a", None).await;
         append_output(&id, &vec![b'x'; 3000]).await;
         let (chunk, total, eof, _) = read_output(&id, 0, 1000).await.unwrap();
@@ -257,6 +267,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_unknown_or_terminal_returns_false() {
+        let _serial = test_serial().await;
         assert!(!request_cancel("no-such-job").await);
         let (id, _rx) = create("a", None).await;
         assert!(request_cancel(&id).await);
@@ -266,6 +277,7 @@ mod tests {
 
     #[tokio::test]
     async fn job_count_bounded() {
+        let _serial = test_serial().await;
         for i in 0..(MAX_JOBS + 5) {
             let (id, _) = create(&format!("a{i}"), None).await;
             settle(&id, JobStatus::Done, Some(0), None).await;

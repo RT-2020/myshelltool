@@ -106,8 +106,17 @@ pub async fn read(
 mod tests {
     use super::*;
 
+    /// 全局缓存是进程级共享（MAX_ENTRIES 容量驱逐），并行调度下容量测试会驱逐
+    /// roundtrip 测试刚存的 cursor——CI 曾偶发「cursor 不存在」（2026-10-15）。
+    /// 模块内全部测试经此锁串行。
+    async fn test_serial() -> tokio::sync::MutexGuard<'static, ()> {
+        static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        SERIAL.lock().await
+    }
+
     #[tokio::test]
     async fn store_and_read_roundtrip_with_paging() {
+        let _serial = test_serial().await;
         let data = vec![b'a'; 1000];
         let cursor = store(data).await;
         // 首页 400 字节
@@ -127,6 +136,7 @@ mod tests {
 
     #[tokio::test]
     async fn oversize_entry_keeps_tail_and_reports_dropped() {
+        let _serial = test_serial().await;
         let data = vec![b'x'; MAX_ENTRY_BYTES + 100];
         let cursor = store(data).await;
         let (chunk, total, eof, dropped) = read(&cursor, 0, 10).await.unwrap();
@@ -138,12 +148,14 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_cursor_is_error_not_empty() {
+        let _serial = test_serial().await;
         let err = read("no-such-cursor", 0, 10).await.unwrap_err();
         assert!(err.contains("不存在"), "必须明确报错而非返回空段: {err}");
     }
 
     #[tokio::test]
     async fn entry_count_is_bounded() {
+        let _serial = test_serial().await;
         for i in 0..(MAX_ENTRIES + 5) {
             let c = store(vec![i as u8; 16]).await;
             assert!(!c.is_empty());
