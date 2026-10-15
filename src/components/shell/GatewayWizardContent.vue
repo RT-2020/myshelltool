@@ -21,11 +21,16 @@ import {
   invokeBackend,
   gatewayWizardStart,
   gatewayWizardFinish,
-  gatewayPretrustHostKey
+  gatewayPretrustHostKey,
+  gatewayImportBundle,
+  gatewayLaunch
 } from '@/services/backend';
 
 const store = useWorkbenchStore();
 
+// 顶层页签：「部署」（本机运维侧两段式向导）|「导入」（跳板机侧装完 mst 后
+// GUI 点选导入 bundle——v0.20.1 补齐，替代 CLI 拷文件+手敲命令）
+const tab = ref<'deploy' | 'import'>('deploy');
 const step = ref<1 | 2 | 3>(1); // 1 收集 VPS → 2 部署+导出 → 3 完成指引
 const busy = ref(false);
 const error = ref('');
@@ -45,6 +50,43 @@ const allowedTargetsText = ref('');
 const password = ref('');
 const password2 = ref('');
 const bundlePath = ref('');
+
+// ─── 导入页签（跳板机侧）───
+const importPath = ref('');
+const importPassword = ref('');
+const importBusy = ref(false);
+const importError = ref('');
+interface ImportSummary {
+  vps_host: string; vps_port: number; mount_port: number;
+  listen_port: number; schtasks_command: string;
+}
+const importResult = ref<ImportSummary | null>(null);
+const launched = ref(false);
+
+async function chooseBundleFile() {
+  const path = await invokeBackend<string | null>('plugin:dialog|open', {
+    title: '选择网关 bundle 文件',
+    filters: [{ name: 'Gateway Bundle', extensions: ['json'] }]
+  });
+  if (path) importPath.value = path;
+}
+
+async function runImportAndLaunch() {
+  if (!importPath.value.trim()) { importError.value = '请先选择 bundle 文件'; return; }
+  if (!importPassword.value) { importError.value = '请输入 bundle 加密口令'; return; }
+  importError.value = '';
+  importBusy.value = true;
+  try {
+    importResult.value = await gatewayImportBundle(importPath.value.trim(), importPassword.value);
+    await gatewayLaunch();
+    launched.value = true;
+    store.announce('网关配置已导入并启动', { level: 'success' });
+  } catch (e) {
+    importError.value = String(e);
+  } finally {
+    importBusy.value = false;
+  }
+}
 
 // 完成指引的跳板机导入命令（含 bundle 文件名）
 const importCommand = computed(() =>
@@ -154,6 +196,51 @@ async function runStep2() {
 
 <template>
   <div class="stack" data-gateway-wizard>
+    <!-- 顶层页签：本机走向导部署 | 跳板机（已装 mst）GUI 导入 -->
+    <div class="wizard-tabs" role="tablist">
+      <button type="button" :class="['tab-btn', { active: tab === 'deploy' }]" role="tab" :aria-selected="tab === 'deploy'" @click="tab = 'deploy'">部署向导（本机）</button>
+      <button type="button" :class="['tab-btn', { active: tab === 'import' }]" role="tab" :aria-selected="tab === 'import'" @click="tab = 'import'">导入配置（跳板机）</button>
+    </div>
+
+    <!-- ═══ 导入页签：跳板机侧装完 mst 后的 GUI 导入 ═══ -->
+    <template v-if="tab === 'import'">
+      <template v-if="!importResult">
+        <p class="muted">
+          这台机器是<b>跳板机</b>（客户内网）时用本页：选择运维方交付的 bundle 加密文件，
+          输口令导入并启动网关——无需命令行。
+        </p>
+        <label class="stack"><span>bundle 文件</span>
+          <div class="path-row">
+            <span class="path-value">{{ importPath || '未选择' }}</span>
+            <AppButton :disabled="importBusy" @click="chooseBundleFile">选择文件…</AppButton>
+          </div>
+        </label>
+        <label class="stack"><span>加密口令（导出方向导时设置的那个）</span>
+          <AppInput v-model="importPassword" type="password" data-gateway-field="import-password" />
+        </label>
+        <p v-if="importError" class="form-error" style="white-space:pre-wrap">{{ importError }}</p>
+        <div class="wizard-actions">
+          <AppButton variant="primary" :disabled="importBusy" @click="runImportAndLaunch">
+            {{ importBusy ? '正在导入…' : '导入并启动网关' }}
+          </AppButton>
+        </div>
+      </template>
+      <template v-else>
+        <p class="muted">
+          {{ launched ? '✅ 网关已导入并在后台运行' : '✅ 网关配置已导入' }}（VPS {{ importResult.vps_host }}:{{ importResult.vps_port }}，
+          挂载口 {{ importResult.mount_port }}）。关闭本窗口不影响运行；
+          日志在 <code>%APPDATA%\com.redtei.myshelltool\logs\gateway.log</code>。
+        </p>
+        <p class="muted">最后一步（可选，开机自启）——在管理员 PowerShell 执行：</p>
+        <div class="code-block">
+          <pre>{{ importResult.schtasks_command }}</pre>
+          <button type="button" class="link-btn" @click="copyText(importResult.schtasks_command, '自启命令')">复制</button>
+        </div>
+      </template>
+    </template>
+
+    <!-- ═══ 部署页签：原两段式向导 ═══ -->
+    <template v-else>
     <!-- 第一步：VPS 信息 → 生成挂载密钥 -->
     <template v-if="step === 1">
       <p class="muted">
@@ -251,11 +338,35 @@ async function runStep2() {
         完整文档见 docs/网关模式部署指南.md。
       </p>
     </template>
+    </template><!-- /部署页签 -->
   </div>
 </template>
 
 <style scoped lang="scss">
 @use '@/styles/_tokens' as *;
+
+.wizard-tabs {
+  display: flex;
+  gap: var(--space-1);
+  margin-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border);
+
+  .tab-btn {
+    padding: var(--space-1) var(--space-2);
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+
+    &.active {
+      color: var(--text-primary);
+      border-bottom-color: var(--accent, currentColor);
+      font-weight: 500;
+    }
+  }
+}
 
 .wizard-actions {
   display: flex;

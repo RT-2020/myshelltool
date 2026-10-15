@@ -80,6 +80,8 @@
 - `gateway_wizard_start({ vpsHost, vpsPort, vpsUsername })` — 两段式第一步：生成挂载密钥对（私钥暂存 SecretStore `gateway-wizard-mount-key`，finish 时消费删除），返回 `{ mount_public_key, docker_template }`（已代入公钥的 relay docker run 模板）
 - `gateway_wizard_finish({ vpsHost, vpsPort, vpsUsername, remotePort, allowedTargets?, password, savePath })` — 第二步：probe 连 VPS 抓 host key pin（**认证前 KEX 阶段**，fail 即 Err 带部署指引）→ 生成网关 host key + 客户端钥 → **防静默轮换**（known_hosts 已有 `VPS:挂载口` 的不同公钥则阻止）→ 组 bundle 加密导出到 savePath → 返回 `{ bundle_path, client_private_key, known_host_port, known_key_type, known_key_hex, asset_host, asset_port }`。**凭据不经此命令落库**：客户端私钥由前端经常规 `saveAsset` 链保存（`<资产id>:private_key` 常规命名，同步/删除/Gist 备份零特判）
 - `gateway_pretrust_host_key({ hostPort, keyType, keyHex })` — 预写本机 known_hosts（幂等：相同 key 重复写 no-op；不同 key 拒绝防覆盖既有信任）
+- `gateway_import_bundle({ path, password })` — **v0.20.1 跳板机侧 GUI 导入**（装完 mst 点选 bundle 替代 CLI `--import`）：与 CLI 同一内核 `gw_run::import_bundle`，DPAPI 落位于本应用数据目录（两路互认）；返回 `{ vps_host, vps_port, mount_port, listen_port, schtasks_command }`（schtasks 已代入当前安装路径）
+- `gateway_launch()` — spawn 独立 `--gateway` 常驻进程（Windows `DETACHED_PROCESS`，关 GUI 不随父退出）
 - 同一 exe 的 `--gateway [--import <file>]` CLI 分支不经 IPC（main.rs 在 Tauri 之前分流，AttachConsole 回显 + gateway.log）
 
 **本地文件**（`fs_local.rs`）
