@@ -532,7 +532,9 @@ pub fn run() {
             gateway_cmd::gateway_pretrust_host_key,
             // v0.20.1 跳板机侧 GUI 导入（装完 mst 点选 bundle + 一键启动）
             gateway_cmd::gateway_import_bundle,
-            gateway_cmd::gateway_launch
+            gateway_cmd::gateway_launch,
+            // v0.21「服务器+口令」两栏口径（密钥派生，零文件）
+            gateway_cmd::gateway_setup_from_secret
         ])
         .run(tauri::generate_context!())
         .expect("failed to run myshelltool");

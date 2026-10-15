@@ -850,6 +850,7 @@ dependencies = [
 name = "myshelltool-gateway"
 version = "0.22.0"
 dependencies = [
+ "argon2",
  "async-trait",
  "ipnet",
  "log",

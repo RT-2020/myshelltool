@@ -26,6 +26,12 @@ pub const RUNTIME_VERSION: u32 = 1;
 pub const SECRET_HOST_KEY: &str = "gateway-host-key";
 pub const SECRET_VPS_KEY: &str = "gateway-vps-key";
 pub const SECRET_VPS_PASSPHRASE: &str = "gateway-vps-passphrase";
+/// v0.21「服务器+口令」模式：口令本身存 SecretStore（派生在各运行时现算）。
+pub const SECRET_GATEWAY_SECRET: &str = "gateway-secret";
+
+/// 运行模式：bundle（v0.20 导入文件落 SecretStore）| secret（v0.21 口令派生）。
+pub const MODE_BUNDLE: &str = "bundle";
+pub const MODE_SECRET: &str = "secret";
 
 // ─── 导出方向（加密容器内） ───
 
@@ -100,7 +106,11 @@ pub struct GatewayServerConfig {
 #[serde(rename_all = "snake_case")]
 pub struct GatewayRuntimeConfig {
     pub version: u32,
-    /// VPS 地址与认证账户（私钥在 SecretStore `gateway-vps-key`）。
+    /// 运行模式：bundle（默认，导入文件落 SecretStore）| secret（口令派生，
+    /// 口令在 SecretStore `gateway-secret`，密钥各运行时现算不落盘）
+    #[serde(default = "default_mode")]
+    pub mode: String,
+    /// VPS 地址与认证账户（bundle 模式私钥在 SecretStore `gateway-vps-key`）。
     pub vps_host: String,
     pub vps_port: u16,
     pub vps_username: String,
@@ -112,11 +122,16 @@ pub struct GatewayRuntimeConfig {
     pub allowed_targets: Vec<String>,
 }
 
+fn default_mode() -> String {
+    MODE_BUNDLE.to_string()
+}
+
 impl GatewayBundle {
     /// 导入时剥离秘密、降为运行方向结构（秘密另落 SecretStore）。
     pub fn to_runtime(&self) -> GatewayRuntimeConfig {
         GatewayRuntimeConfig {
             version: RUNTIME_VERSION,
+            mode: MODE_BUNDLE.to_string(),
             vps_host: self.vps.host.clone(),
             vps_port: self.vps.port,
             vps_username: self.vps.username.clone(),
@@ -125,6 +140,26 @@ impl GatewayBundle {
             listen_port: self.gateway.listen_port,
             authorized_key: self.gateway.authorized_key.clone(),
             allowed_targets: self.gateway.allowed_targets.clone(),
+        }
+    }
+}
+
+impl GatewayRuntimeConfig {
+    /// v0.21「服务器+口令」模式的运行配置：零秘密（口令在 SecretStore，
+    /// 挂载钥/网关 host key/客户端钥各运行时从口令现派生，永不落盘）。
+    /// pin 与 authorized_key 由派生确定性保证，无需存储。
+    pub fn from_secret(vps_host: &str, vps_port: u16) -> Self {
+        GatewayRuntimeConfig {
+            version: RUNTIME_VERSION,
+            mode: MODE_SECRET.to_string(),
+            vps_host: vps_host.trim().to_string(),
+            vps_port,
+            vps_username: "mount".to_string(),
+            host_key_pin: HostKeyPin { key_type: String::new(), key_hex: String::new() },
+            mount: MountConfig { bind_addr: "0.0.0.0".into(), remote_port: 2222 },
+            listen_port: 22222,
+            authorized_key: String::new(),
+            allowed_targets: vec![],
         }
     }
 }
@@ -225,10 +260,29 @@ impl GatewayRuntimeConfig {
                 self.version
             ));
         }
-        validate_vps_common(&self.vps_host, self.vps_port, &self.vps_username, &self.host_key_pin)?;
+        let known_mode = self.mode == MODE_BUNDLE || self.mode == MODE_SECRET;
+        if !known_mode {
+            return Err(format!("未知运行模式 «{}»（支持 bundle/secret）", self.mode));
+        }
+        if self.mode == MODE_BUNDLE && self.host_key_pin.key_hex.trim().is_empty() {
+            return Err("bundle 模式缺少 host key pin（配置损坏？请重新导入）".to_string());
+        }
+        validate_vps_common(&self.vps_host, self.vps_port, &self.vps_username, &self.host_key_pin)
+            .or_else(|e| {
+                // secret 模式 pin 为空属正常（派生保证身份）；仅校验 host/port/username
+                if self.mode == MODE_SECRET && self.host_key_pin.key_hex.is_empty() {
+                    validate_vps_common(&self.vps_host, self.vps_port, &self.vps_username, &HostKeyPin {
+                        key_type: "ssh-ed25519".into(),
+                        key_hex: "ab".repeat(32), // 占位过 pin 格式校验
+                    })
+                    .map_err(|_| e)
+                } else {
+                    Err(e)
+                }
+            })?;
         validate_mount(&self.mount)?;
         validate_port(self.listen_port, "回环监听口（listen_port）")?;
-        if self.authorized_key.trim().is_empty() {
+        if self.mode == MODE_BUNDLE && self.authorized_key.trim().is_empty() {
             return Err("客户端公钥（authorized_key）为空".to_string());
         }
         for rule in &self.allowed_targets {

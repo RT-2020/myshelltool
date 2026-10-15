@@ -281,3 +281,8 @@ export function gatewayImportBundle(path: string, password: string) {
 export function gatewayLaunch() {
   return invokeBackend<null>('gateway_launch');
 }
+
+// v0.21「服务器+口令」跳板机配置（密钥从口令派生，零文件）
+export function gatewaySetupFromSecret(host: string, secret: string, port?: number) {
+  return invokeBackend<GatewayImportResult>('gateway_setup_from_secret', { host, secret, port });
+}

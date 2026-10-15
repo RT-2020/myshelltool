@@ -18,5 +18,13 @@ russh = "0.49"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "io-util", "time", "macros", "signal"] }
 async-trait = "0.1"
 log = "0.4"
+# 随机密钥生成（向导三钥 + 测试）
+rand = "0.8"
+# 口令派生密钥（Argon2id → ed25519 seed）：v0.21「服务器+口令」零文件口径
+argon2 = "0.5"
+# 跳板机/容器共用的免交互工具（relay 镜像内派生 host key 与 authorized_keys）
+[[bin]]
+name = "gw-derive"
+path = "src/bin/gw_derive.rs"
 # ed25519 密钥对生成（向导三钥 + 测试；与 core::crypto 同一代际 rand 0.8）
 rand = "0.8"
