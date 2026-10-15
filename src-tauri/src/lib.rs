@@ -529,7 +529,10 @@ pub fn run() {
             // v0.22 网关向导（两段式：start 出挂载公钥/docker 模板 → finish probe+导出+防轮换）
             gateway_cmd::gateway_wizard_start,
             gateway_cmd::gateway_wizard_finish,
-            gateway_cmd::gateway_pretrust_host_key
+            gateway_cmd::gateway_pretrust_host_key,
+            // v0.20.1 跳板机侧 GUI 导入（装完 mst 点选 bundle + 一键启动）
+            gateway_cmd::gateway_import_bundle,
+            gateway_cmd::gateway_launch
         ])
         .run(tauri::generate_context!())
         .expect("failed to run myshelltool");

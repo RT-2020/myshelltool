@@ -263,3 +263,21 @@ export function gatewayWizardFinish(input: {
 export function gatewayPretrustHostKey(hostPort: string, keyType: string, keyHex: string) {
   return invokeBackend<null>('gateway_pretrust_host_key', { hostPort, keyType, keyHex });
 }
+
+// ─── v0.20.1 跳板机侧 GUI 导入（装完 mst 点选 bundle，替代 CLI --import）───
+
+export interface GatewayImportResult {
+  vps_host: string;
+  vps_port: number;
+  mount_port: number;
+  listen_port: number;
+  schtasks_command: string;
+}
+
+export function gatewayImportBundle(path: string, password: string) {
+  return invokeBackend<GatewayImportResult>('gateway_import_bundle', { path, password });
+}
+
+export function gatewayLaunch() {
+  return invokeBackend<null>('gateway_launch');
+}

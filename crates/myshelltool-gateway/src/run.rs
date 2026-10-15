@@ -117,9 +117,39 @@ fn finish_loading(mut loaded: LoadedGateway) -> Result<LoadedGateway, String> {
 /// 网关主循环：起内嵌 server（回环）+ 挂载重连循环。永不正常返回（连接/认证
 /// 失败在循环内退避重试）——唯一的返回是 `Err`（配置/绑定级致命错误）。
 /// 停止方式：abort 外层任务或进程退出。
+/// 网关主循环（Windows exe 路径）：装载（数据目录 + SecretStore）→ 运行。
 pub async fn run_gateway(data_dir: &Path, secret_store: &SecretStore) -> Result<(), String> {
     let loaded = load_runtime(data_dir, secret_store)?;
+    run_loaded(loaded).await
+}
 
+/// 内存直通装载（v0.20.1 容器路径）：加密 bundle 解密后**不落盘**——秘密只在
+/// 内存，容器重启即重新解密，天然幂等；无 SecretStore/DPAPI 依赖（Linux 容器
+/// 可跑）。bundle 不变 → 网关 host key 不变 → 本机 known_hosts 预写长期有效。
+pub fn loaded_from_bundle(bundle: &crate::config::GatewayBundle) -> Result<LoadedGateway, String> {
+    bundle.validate()?;
+    let rt = bundle.to_runtime();
+    Ok(LoadedGateway {
+        mount_params: MountParams {
+            vps_host: bundle.vps.host.clone(),
+            vps_port: bundle.vps.port,
+            vps_username: bundle.vps.username.clone(),
+            private_key_pem: bundle.vps.private_key.clone(),
+            passphrase: bundle.vps.passphrase.clone(),
+            pin: bundle.vps.host_key_pin.clone(),
+            mount: bundle.mount.clone(),
+            gateway_listen_port: bundle.gateway.listen_port,
+        },
+        host_key_private: bundle.host_key_private.clone(),
+        authorized_key_line: bundle.gateway.authorized_key.clone(),
+        allowed_targets: bundle.gateway.allowed_targets.clone(),
+        runtime: rt,
+    })
+}
+
+/// 运行已装载的网关（两条装载路径汇合点）：回环 server + 挂载重连循环。
+/// 永不正常返回；唯一返回 Err 是配置/绑定级致命错误。
+pub async fn run_loaded(loaded: LoadedGateway) -> Result<(), String> {
     let state = GatewayServerState::new(
         &loaded.host_key_private,
         &loaded.authorized_key_line,
