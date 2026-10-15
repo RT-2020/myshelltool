@@ -51,7 +51,14 @@ fn parse_asset_ids(request: &GetPromptRequestParams) -> Result<Vec<String>, Stri
         .arguments
         .as_ref()
         .and_then(|args| args.get("asset_ids"))
-        .map(|v| v.to_string())
+        // rmcp 3.5：arguments 值是 JsonValue——字符串形态必须取 as_str（to_string
+        // 会带 JSON 引号转义，喂给下方 from_str 后退化为逗号切分带引号残渣，
+        // 2026-10-15 CI portability 首曝：1.7 时代参数表是 Map<String,String>，
+        // to_string 恒等，升级后语义变了）；真 JSON 数组走序列化形式给 from_str。
+        .map(|v| match v.as_str() {
+            Some(s) => s.to_string(),
+            None => v.to_string(),
+        })
         .unwrap_or_default();
     // 兼容旧参数名（asset_id 单值形态）
     let raw = if raw.is_empty() {
@@ -190,6 +197,9 @@ mod tests {
         // 单值 asset_ids 也是合法形态
         let ids = parse_asset_ids(&req("d", serde_json::json!({"asset_ids": "one"}))).unwrap();
         assert_eq!(ids, vec!["one".to_string()]);
+        // 真 JSON 数组（rmcp 3.5 起 arguments 值为 JsonValue，客户端可直传数组）
+        let ids = parse_asset_ids(&req("d", serde_json::json!({"asset_ids": ["x", "y"]}))).unwrap();
+        assert_eq!(ids, vec!["x".to_string(), "y".to_string()]);
     }
 
     #[test]
