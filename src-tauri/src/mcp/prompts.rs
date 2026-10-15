@@ -236,6 +236,8 @@ mod tests {
     fn single_asset_has_no_multi_table_noise() {
         let result = get_prompt(&req("diagnose_server", serde_json::json!({"asset_ids": "solo"}))).unwrap();
         let text = prompt_text(&result);
-        assert!(!text.contains("对比表"), "单资产不应输出多机对比噪音");
+        // 噪音标记 = 多机 header 的「多机对比表」；步骤 4 的「多机时输出对比表」是
+        // 条件指令（单/多共用模板），合法保留——故断言精确到 header 的整词。
+        assert!(!text.contains("多机对比表"), "单资产不应输出多机对比噪音");
     }
 }

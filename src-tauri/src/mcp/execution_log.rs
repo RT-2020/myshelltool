@@ -380,14 +380,16 @@ mod tests {
     fn cleanup_drops_expired_and_truncates_count() {
         let mut store = ExecutionLogStore {
             last_cleanup_ms: 0,
-            entries: (0..1200).map(|i| sample_entry(i, &format!("id{i:04}"))).collect(),
+            entries: (0..2500).map(|i| sample_entry(i, &format!("id{i:04}"))).collect(),
         };
-        // now = 1000：条目时间戳 < (1000 - 30天) 全删；再截断到 1000 条
-        maybe_cleanup(&mut store, 30 * 24 * 60 * 60 * 1000 + 1000);
+        // now = 30天+1200：cutoff = 1200，ts<1200 的 1200 条过期删除；余 1300 条
+        // （1200..2499）超 MAX 再截断到 1000——两条清理规则一次测全。
+        // （原版实参 30d+1000 配 now=1000 时代的断言，两条路径互相矛盾且从未真跑。）
+        maybe_cleanup(&mut store, 30 * 24 * 60 * 60 * 1000 + 1200);
         assert_eq!(store.entries.len(), MAX_ENTRIES);
-        // 保留的是时间戳最新（最大）的 1000 条
-        assert_eq!(store.entries.first().unwrap().timestamp_ms, 200);
-        assert_eq!(store.entries.last().unwrap().timestamp_ms, 1199);
+        // 截断保留的是时间戳最新（最大）的 1000 条
+        assert_eq!(store.entries.first().unwrap().timestamp_ms, 1500);
+        assert_eq!(store.entries.last().unwrap().timestamp_ms, 2499);
         assert!(store.last_cleanup_ms > 0);
     }
 
