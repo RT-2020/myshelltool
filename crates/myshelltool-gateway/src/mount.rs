@@ -216,9 +216,26 @@ pub async fn connect_and_mount(params: &MountParams) -> Result<Mounted, String> 
 /// 常驻挂载循环（autossh 语义）：挂载成功后守护连接，断了/失败后指数退避重试
 /// （1s 起、×2、30s 封顶；每次成功重置）。停止方式：abort 本任务所在的
 /// 外层任务（进程退出/测试 abort），挂载连接随 Handle drop 断开释放。
-pub async fn run_mount_loop(params: MountParams) {
+/// 各状态迁移点同步上报（status 文件，见 run.rs 状态通道设计）。
+pub async fn run_mount_loop(
+    params: MountParams,
+    status_dir: Option<&std::path::Path>,
+    sink: &crate::run::StatusSink,
+) {
+    use crate::run::{update_status, GatewayStatus, STATE_MOUNTED, STATE_MOUNTING, STATE_RECONNECTING};
     let mut backoff = Duration::from_secs(1);
     loop {
+        let status = |state: &str, mount_port: u16, detail: Option<String>| GatewayStatus {
+            updated_at: 0, // update_status 统一盖时间戳
+            state: state.to_string(),
+            vps_host: params.vps_host.clone(),
+            vps_port: params.vps_port,
+            mount_port,
+            detail,
+        };
+        if let Some(dir) = status_dir {
+            update_status(sink, dir, status(STATE_MOUNTING, params.mount.remote_port, None));
+        }
         match connect_and_mount(&params).await {
             Ok(mounted) => {
                 log::info!(
@@ -228,11 +245,20 @@ pub async fn run_mount_loop(params: MountParams) {
                     mounted.assigned_port
                 );
                 backoff = Duration::from_secs(1);
+                if let Some(dir) = status_dir {
+                    update_status(sink, dir, status(STATE_MOUNTED, mounted.assigned_port, None));
+                }
                 let _ = mounted.watcher.await;
                 log::warn!("gateway mount: 挂载连接断开，准备重连");
+                if let Some(dir) = status_dir {
+                    update_status(sink, dir, status(STATE_RECONNECTING, params.mount.remote_port, None));
+                }
             }
             Err(e) => {
                 log::error!("gateway mount: {e}");
+                if let Some(dir) = status_dir {
+                    update_status(sink, dir, status(STATE_RECONNECTING, params.mount.remote_port, Some(e)));
+                }
             }
         }
         log::info!("gateway mount: {}s 后重试挂载", backoff.as_secs());

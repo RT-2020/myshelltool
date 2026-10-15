@@ -99,6 +99,18 @@ fn app_relaunch(app: tauri::AppHandle) {
     app.restart();
 }
 
+// ─── 危险粘贴守卫的权威判定（GUI 终端粘贴路径）───
+//
+// FE 正则（lib/dangerousCommands.ts）与 core 黑名单 pattern 1 同源同漏：
+// `rm -fr /`、`rm -r -f /`、`--force --recursive` 逆序等价写法全部 MISS，
+// 粘贴路径零拦截。core 的 catastrophic 层 rm_root 正则才是全覆盖（此前
+// MCP 审批专用）。本命令取两层并集：命中任一 → 前端弹确认。纯函数无 State。
+#[tauri::command]
+fn dangerous_paste_check(text: String) -> Option<dangerous_commands::DangerousMatch> {
+    dangerous_commands::detect_catastrophic_command(&text)
+        .or_else(|| dangerous_commands::detect_dangerous_command(&text))
+}
+
 // ─── 跨窗口会话迁移内存中转（TTL 60s）───
 
 /// 会话迁移 TTL（秒）：迁移数据超过此时长未 take 即作废。
@@ -430,6 +442,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             backend_status,
             app_relaunch,
+            // 危险粘贴守卫权威判定（core 黑名单 ∪ catastrophic 层，FE 正则只作兜底）
+            dangerous_paste_check,
             // v1.2：MCP 服务可观测性聚合查询（前端状态栏/管理面板）
             mcp::commands::mcp_status,
             // v1.5：MCP 高危工具 GUI 弹窗审批的用户回传命令
@@ -534,7 +548,9 @@ pub fn run() {
             gateway_cmd::gateway_import_bundle,
             gateway_cmd::gateway_launch,
             // v0.21「服务器+口令」两栏口径（密钥派生，零文件）
-            gateway_cmd::gateway_setup_from_secret
+            gateway_cmd::gateway_setup_from_secret,
+            // 网关运行状态（状态文件 + 心跳新鲜度，跨进程只读）
+            gateway_cmd::gateway_status
         ])
         .run(tauri::generate_context!())
         .expect("failed to run myshelltool");

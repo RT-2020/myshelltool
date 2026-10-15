@@ -6,7 +6,7 @@
  */
 import type { LocalDirectoryListResult } from '@/types/domain';
 import { invokeBackend, isTauriRuntime } from '@/services/backend';
-import { joinLocalPath, parentLocalPath } from '@/stores/workbench';
+import { joinLocalPath, parentLocalPath } from '@/lib/pathUtils';
 import { errorMessage } from '@/lib/errorMessage';
 import type { FilePanelContext } from '@/lib/filePanel';
 

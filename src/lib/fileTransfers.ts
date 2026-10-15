@@ -6,7 +6,7 @@
 import type { Ref } from 'vue';
 import type { NormalizedConnectionAsset, NotifyOptions, RemoteFileEntry, TransferProgressPayload } from '@/types/domain';
 import { invokeBackend, isTauriRuntime, listenBackendEvent } from '@/services/backend';
-import { joinLocalPath, joinPath, parentLocalPath, parentPath } from '@/stores/workbench';
+import { joinLocalPath, joinPath, parentLocalPath, parentPath } from '@/lib/pathUtils';
 import { buildTransferItem } from '@/lib/transferUtils';
 import { errorMessage } from '@/lib/errorMessage';
 import { bindFileOverwrite, requireRemotePath, probeRemoteTarget, probeLocalTarget, askFileOverwrite } from '@/lib/fileOverwrite';

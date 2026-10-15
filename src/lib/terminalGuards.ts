@@ -1,4 +1,5 @@
 import type { Terminal } from '@xterm/xterm';
+import { UNVERIFIED_PASTE_PATTERN } from './dangerousCommands';
 
 // 终端输入守卫的纯函数工厂（与 store 解耦，便于单测）。
 //
@@ -125,20 +126,22 @@ export function composeKeyHandlers(...handlers: Array<(event: KeyboardEvent) => 
 
 // createDangerousPasteGuard — 危险粘贴守卫状态机（依赖注入，纯逻辑可单测）。
 // getSession(sessionId) 返回含 term 的 session（无则 null）；prompt 是 store 持有的
-// reactive 对象；detect 是 detectDangerousCommand。request 返回 true = 已拦截等确认。
+// reactive 对象；detect 是 checkDangerousPaste（异步权威判定，后端 core 分类器，
+// IPC 不可用时保守折叠为强制确认）。request 返回 true = 已拦截等确认。
 export interface DangerousPasteGuardOptions {
   getSession: (sessionId: string | null) => GuardSession | null;
   prompt: DangerousPastePrompt;
-  detect: (text: string) => { pattern: string } | null;
+  detect: (text: string) => Promise<{ pattern: string } | null>;
 }
 
 export function createDangerousPasteGuard({ getSession, prompt, detect }: DangerousPasteGuardOptions) {
-  function request(sessionId: string, text: string): boolean {
+  async function request(sessionId: string, text: string): Promise<boolean> {
     const session = getSession(sessionId);
     if (!session || !text) return false;
-    const danger = detect(text);
+    const danger = await detect(text);
     if (danger) {
-      // 本会话已放行的规则（approve 记录）直接放行
+      // 本会话已放行的规则（approve 记录）直接放行。权威判定不可用的哨兵
+      // 被折叠为空串（见下），永远进不了这张表——失败折叠只许误拦。
       if (session.allowedPastePatterns && session.allowedPastePatterns.has(danger.pattern)) {
         session.term.paste(text);
         return false;
@@ -146,7 +149,9 @@ export function createDangerousPasteGuard({ getSession, prompt, detect }: Danger
       prompt.open = true;
       prompt.sessionId = sessionId;
       prompt.command = text;
-      prompt.matchedPattern = danger.pattern;
+      // 哨兵 pattern 折叠为空：弹窗不显示「命中规则」行，approve 收到空串
+      // 也不会记进本会话放行表（防「一次放行 → 后端故障期全部直通」）。
+      prompt.matchedPattern = danger.pattern === UNVERIFIED_PASTE_PATTERN ? '' : danger.pattern;
       return true; // 已拦截，等待用户确认
     }
     session.term.paste(text);

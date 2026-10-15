@@ -8,6 +8,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 use async_trait::async_trait;
 use tokio::net::TcpListener;
 
@@ -128,7 +130,7 @@ fn finish_loading(mut loaded: LoadedGateway) -> Result<LoadedGateway, String> {
 /// 网关主循环（Windows exe 路径）：装载（数据目录 + SecretStore）→ 运行。
 pub async fn run_gateway(data_dir: &Path, secret_store: &SecretStore) -> Result<(), String> {
     let loaded = load_runtime(data_dir, secret_store)?;
-    run_loaded(loaded).await
+    run_loaded(loaded, Some(data_dir)).await
 }
 
 /// 内存直通装载（v0.20.1 容器路径）：加密 bundle 解密后**不落盘**——秘密只在
@@ -189,9 +191,79 @@ pub fn loaded_from_secret(
     })
 }
 
-/// 运行已装载的网关（两条装载路径汇合点）：回环 server + 挂载重连循环。
+// ─── 网关运行状态上报（独立进程 → GUI 的唯一状态通道）───
+//
+// 网关跑在独立 --gateway 进程里，GUI 无法直接感知。跨进程状态通道 = 状态文件
+// （app-data/gateway-status.json）+ 10s 心跳重写：状态迁移时立即写盘，稳态
+//（已挂载）由心跳维持时间戳新鲜。GUI 侧 gateway_status 命令读取并按 25s
+// 新鲜度判定（超时 = 进程已死/挂起 → stopped）。零 IPC、进程重启即失效自洽。
+
+/// 状态文件名（与 RUNTIME_CONFIG_FILE 同目录）。
+pub const STATUS_FILE: &str = "gateway-status.json";
+
+pub const STATE_MOUNTING: &str = "mounting";
+pub const STATE_MOUNTED: &str = "mounted";
+pub const STATE_RECONNECTING: &str = "reconnecting";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GatewayStatus {
+    pub state: String,
+    pub vps_host: String,
+    pub vps_port: u16,
+    pub mount_port: u16,
+    /// 附带信息（重连中的上次错误等）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// 毫秒时间戳（心跳维持新鲜度；GUI 据此判定进程活性）。
+    pub updated_at: u64,
+}
+
+/// 共享当前态 + 立即写盘（mount loop 各迁移点调用）。
+pub type StatusSink = Arc<Mutex<Option<GatewayStatus>>>;
+
+fn write_status_file(dir: &Path, st: &GatewayStatus) {
+    if let Ok(json) = serde_json::to_string(st) {
+        let _ = myshelltool_core::write_atomic(dir.join(STATUS_FILE), json);
+    }
+}
+
+/// 起一个状态心跳任务：每 10s 以共享当前态重写状态文件（时间戳刷新）。
+/// mount loop 死亡/退出后由调用方 abort。
+pub fn spawn_status_heartbeat(dir: std::path::PathBuf, sink: StatusSink) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            if let Ok(mut guard) = sink.lock() {
+                if let Some(mut st) = guard.clone() {
+                    st.updated_at = now_ms();
+                    *guard = Some(st.clone());
+                    write_status_file(&dir, &st);
+                }
+            }
+        }
+    })
+}
+
+/// 更新共享态并立即写盘（状态迁移点）。
+pub fn update_status(sink: &StatusSink, dir: &Path, mut st: GatewayStatus) {
+    st.updated_at = now_ms();
+    if let Ok(mut guard) = sink.lock() {
+        *guard = Some(st.clone());
+    }
+    write_status_file(dir, &st);
+}
+
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 运行已装载的网关（两条装载路径汇合点）：回环 server + 挂载重连循环 + 状态上报。
 /// 永不正常返回；唯一返回 Err 是配置/绑定级致命错误。
-pub async fn run_loaded(loaded: LoadedGateway) -> Result<(), String> {
+pub async fn run_loaded(loaded: LoadedGateway, status_dir: Option<&Path>) -> Result<(), String> {
     let state = GatewayServerState::new(
         &loaded.host_key_private,
         &loaded.authorized_key_line,
@@ -208,7 +280,14 @@ pub async fn run_loaded(loaded: LoadedGateway) -> Result<(), String> {
         loaded.runtime.vps_port
     );
 
-    run_mount_loop(loaded.mount_params).await;
+    // 状态上报：sink 经 mount loop 各迁移点更新；心跳维持稳态新鲜
+    let sink: StatusSink = Arc::new(Mutex::new(None));
+    let heartbeat = status_dir
+        .map(|d| spawn_status_heartbeat(d.to_path_buf(), Arc::clone(&sink)))
+        .map(|_| ());
+    let _ = heartbeat; // 心跳任务随进程生命周期存活（run_loaded 永不返回）
+
+    run_mount_loop(loaded.mount_params, status_dir, &sink).await;
     Ok(())
 }
 

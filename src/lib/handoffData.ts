@@ -145,6 +145,9 @@ export async function readHandoffData(sessionId: string): Promise<SessionHandoff
   try {
     return await invokeBackend<SessionHandoffData>('session_handoff_take', { sessionId }) || null;
   } catch {
+    // 可忽略：take 失败 = 迁移数据不存在 / 已被另一窗口取走 / IPC 桥不可用，
+    // 返回 null 后调用方走兜底路径（新建终端重连）——与「无迁移数据」同路，
+    // 安全方向（迁移只是锦上添花的 scrollback/标题恢复）。
     return null;
   }
 }

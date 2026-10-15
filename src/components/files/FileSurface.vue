@@ -183,6 +183,9 @@ async function onRemoteColumnDrop(event: DragEvent) {
   try {
     payload = JSON.parse(event.dataTransfer!.getData(FILE_DRAG_MIME) || 'null');
   } catch {
+    // 可忽略：拖拽载荷是本应用同帧写入的自有 MIME（FileSurface 拖出时
+    // JSON.stringify），解析失败只可能是事件顺序异常/外部注入脏数据，
+    // 置 null 走下方 entries 为空的早退（不触发任何上传）。
     payload = null;
   }
   const entries = Array.isArray(payload?.entries) ? payload.entries.filter((e) => e && e.path) : [];

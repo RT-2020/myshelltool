@@ -13,7 +13,7 @@ import type {
   RemoteFileEntry
 } from '@/types/domain';
 import { invokeBackend, isTauriRuntime } from '@/services/backend';
-import { joinLocalPath, joinPath, parentLocalPath, parentPath, remotePathForAsset } from '@/stores/workbench';
+import { joinLocalPath, joinPath, parentLocalPath, parentPath, remotePathForAsset } from '@/lib/pathUtils';
 import { errorMessage } from '@/lib/errorMessage';
 import { bindFilePanelLocal, refreshLocalFiles, navigateLocalPath } from '@/lib/filePanelLocal';
 import { bindFileListView, ls, bindRemoteListState } from '@/lib/fileListView';

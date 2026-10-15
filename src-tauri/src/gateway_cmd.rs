@@ -82,6 +82,59 @@ pub async fn gateway_import_bundle(
     })
 }
 
+#[derive(Serialize)]
+pub struct GatewayStatusView {
+    /// running(mounted/mounting/reconnecting) | stopped(心跳超时/进程死) | not_configured
+    pub state: String,
+    pub vps_host: String,
+    pub vps_port: u16,
+    pub mount_port: u16,
+    #[serde(rename = "detail")]
+    pub detail: Option<String>,
+    /// 状态文件最后更新距今秒数（stopped 判定依据）。
+    pub age_secs: u64,
+}
+
+#[tauri::command]
+pub async fn gateway_status(state: State<'_, AppState>) -> Result<GatewayStatusView, String> {
+    let data_dir = state
+        .asset_store_path
+        .parent()
+        .ok_or("无法定位应用数据目录")?
+        .to_path_buf();
+    let path = data_dir.join(gw_run::STATUS_FILE);
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => {
+            return Ok(GatewayStatusView {
+                state: "not_configured".into(),
+                vps_host: String::new(),
+                vps_port: 0,
+                mount_port: 0,
+                detail: None,
+                age_secs: 0,
+            })
+        }
+    };
+    let st: serde_json::Value = serde_json::from_str(&raw).map_err(|e| format!("状态文件损坏：{e}"))?;
+    let updated_at = st.get("updated_at").and_then(|v| v.as_u64()).unwrap_or(0);
+    let age_secs = gw_run::now_ms().saturating_sub(updated_at) / 1000;
+    // 25s 心跳超时 = 网关进程已死/挂起（心跳 10s 一拍，容 2 拍抖动）
+    let state_str = if age_secs > 25 {
+        "stopped".to_string()
+    } else {
+        st.get("state").and_then(|v| v.as_str()).unwrap_or("stopped").to_string()
+    };
+    Ok(GatewayStatusView {
+        state: state_str,
+        vps_host: st.get("vps_host").and_then(|v| v.as_str()).unwrap_or("").into(),
+        vps_port: st.get("vps_port").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
+        mount_port: st.get("mount_port").and_then(|v| v.as_u64()).unwrap_or(0) as u16,
+        detail: st.get("detail").and_then(|v| v.as_str()).map(String::from),
+        age_secs,
+    })
+}
+
 /// v0.21「服务器+口令」跳板机配置（用户理想口径：只输 relay 地址与口令）。
 /// 落位：口令存 SecretStore（gateway-secret，DPAPI）；运行配置零秘密（mode=secret，
 /// 密钥各运行时现派生）。relay 侧须以同一口令 `docker run -e GATEWAY_SECRET=...` 部署。
