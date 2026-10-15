@@ -166,6 +166,14 @@ pub fn is_protected_local_write_path(local_path: &Path) -> bool {
         Err(_) => return true,
     };
 
+    // OS 临时区放行（先于黑名单）：macOS 的 temp_dir 在 /var/folders，而 /var 是
+    // /private/var 的 symlink，黑名单的 \var 前缀会把系统指定临时区误判为敏感
+    // （2026-10-15 CI portability 首曝）。临时区是用户级可写空间，写它永远不算
+    // 「写系统目录」；本放行只作用于 MCP 本机写保护，fs_local 的共享黑名单不动。
+    if in_os_temp_dir(&absolute) {
+        return false;
+    }
+
     if crate::fs_local::is_sensitive_path(&absolute) {
         return true;
     }
@@ -189,6 +197,17 @@ pub fn is_protected_local_write_path(local_path: &Path) -> bool {
     // 目标与父目录都不存在：落盘会新建它们，路径上没有任何已存在的间接层
     // （symlink/junction），已绝对化归一的字面判定即最终判定（放行新文件下载）。
     false
+}
+
+/// 路径是否位于操作系统临时区内（字面前缀或 canonicalize 后的真形前缀都算）。
+/// macOS 场景：temp_dir() 字面返回 /var/folders/...，与 absolute 同形即命中；
+/// 若平台把 temp_dir 解析到 symlink 另一侧，则靠 canonical 真形前缀兜底。
+fn in_os_temp_dir(p: &Path) -> bool {
+    let td = std::env::temp_dir();
+    if p.starts_with(&td) {
+        return true;
+    }
+    td.canonicalize().map(|c| p.starts_with(&c)).unwrap_or(false)
 }
 
 #[cfg(test)]
