@@ -14,9 +14,9 @@ if [ -n "${GATEWAY_SECRET}" ]; then
     # host key 与挂载公钥都从口令确定性派生：同口令永远同身份，无需 volume
     # 持久化（容器重建/换机重部署，身份不变，跳板机与本机侧零感知）。
     echo "[relay] GATEWAY_SECRET mode: deriving host key and authorized_keys from secret"
-    gw-derive "$GATEWAY_SECRET" relay-hostkey pem > "$HOSTKEY_DIR/ssh_host_ed25519_key"
+    gw-derive.py "$GATEWAY_SECRET" relay-hostkey pem > "$HOSTKEY_DIR/ssh_host_ed25519_key"
     chmod 600 "$HOSTKEY_DIR/ssh_host_ed25519_key"
-    printf '%s\n' "$(gw-derive "$GATEWAY_SECRET" mount pub)" > "$AUTH_KEYS"
+    printf '%s\n' "$(gw-derive.py "$GATEWAY_SECRET" mount pub)" > "$AUTH_KEYS"
 else
     # ─── bundle 文件模式（v0.20）：公钥经 env 注入，host key 持久化 volume ───
     if [ ! -f "$HOSTKEY_DIR/ssh_host_ed25519_key" ]; then

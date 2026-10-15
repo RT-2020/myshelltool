@@ -39,9 +39,8 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          # context 为仓库根：relay 镜像多阶段编译 gw-derive 需要 gateway crate 源码
-          context: .
-          file: docker/relay/Dockerfile
+          # 单阶段镜像（python 派生，无 rust builder），context 即 docker/relay
+          context: docker/relay
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
