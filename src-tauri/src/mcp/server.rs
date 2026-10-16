@@ -27,7 +27,8 @@ use rmcp::{
         CallToolRequestParams, CallToolResult, CallToolResponse, GetPromptRequestParams,
         GetPromptResponse, Implementation, InitializeResult, ListPromptsResult,
         ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
-        ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities, ServerConfig,
+        ReadResourceRequestParams, ReadResourceResponse, ResultType, ServerCapabilities,
+        ServerConfig,
     },
     service::{Peer, RequestContext},
     ErrorData as McpError,
@@ -424,9 +425,11 @@ impl ServerHandler for MyshellToolMcpServer {
             next_cursor: None,
             tools,
             meta: None,
-            // 3.x 新增缓存控制字段（SEP-2322/2549）：None = 线上不携带，
-            // 旧协议行为完全一致；新协议 peer 按规范把缺失视作 complete。
-            result_type: None,
+            // SEP-2322 resultType 判别字段：协商到 2026-07-28+ 协议的 peer
+            // （如 Zcode）按规范 MUST 携带、严格校验，缺失即判响应无效，
+            // 故恒给 COMPLETE；旧版本 peer 由 rmcp 框架在响应时剥掉该字段
+            // （strip_result_type_for_legacy_peer），无需按 peer 版本分支。
+            result_type: Some(ResultType::COMPLETE),
             ttl_ms: None,
             cache_scope: None,
         }))
@@ -683,7 +686,7 @@ impl ServerHandler for MyshellToolMcpServer {
             next_cursor: None,
             resources,
             meta: None,
-            result_type: None,
+            result_type: Some(ResultType::COMPLETE),
             ttl_ms: None,
             cache_scope: None,
         }))
@@ -732,7 +735,7 @@ impl ServerHandler for MyshellToolMcpServer {
             next_cursor: None,
             resource_templates: templates,
             meta: None,
-            result_type: None,
+            result_type: Some(ResultType::COMPLETE),
             ttl_ms: None,
             cache_scope: None,
         }))
@@ -749,7 +752,7 @@ impl ServerHandler for MyshellToolMcpServer {
             next_cursor: None,
             prompts,
             meta: None,
-            result_type: None,
+            result_type: Some(ResultType::COMPLETE),
             ttl_ms: None,
             cache_scope: None,
         }))
