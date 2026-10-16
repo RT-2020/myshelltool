@@ -35,6 +35,19 @@ try {
   const windowBox = await page.locator('.window').boundingBox();
   if (!windowBox) throw new Error('window shell missing');
 
+  // 标题栏全局搜索（P1 回归锚点，2026-10）：TitleBarSearch 自 v0.20 S2 拆分起
+  // 曾因漏 import 静默不渲染（vue-tsc / vite / size / ipc 四道门禁都不查模板
+  // 组件解析），组件被 tree-shake 随版本发布。机械门禁
+  // （scripts/component-resolve-guard.mjs，随 build 执行）+ 本存在性断言双保险。
+  const searchBox = page.locator('.tb-search');
+  if (!await searchBox.isVisible()) {
+    throw new Error('titlebar global search (.tb-search) missing — TitleBarSearch unresolved again?');
+  }
+  const searchPlaceholder = await searchBox.locator('input').getAttribute('placeholder');
+  if (searchPlaceholder !== '搜索连接 / 命令 / 文件') {
+    throw new Error(`unexpected search placeholder: ${searchPlaceholder}`);
+  }
+
   // Wave 5: 5 区域可见性断言（AC22）
   const regions = ['titlebar', 'sidebar', 'center-top', 'center-bottom', 'right', 'statusbar'];
   for (const region of regions) {

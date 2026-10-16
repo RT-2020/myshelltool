@@ -230,39 +230,49 @@ pub async fn sftp_read_text(
     };
 
     let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
-    let sftp = sftp_arc.lock().await;
 
-    // 句柄外先按路径 stat（大小上限必须在读之前判；目录同理）
-    let meta = sftp
-        .metadata(&path)
-        .await
-        .map_err(|e| classify_missing("SFTP stat failed", &e, &path))?;
-    if meta.is_dir() {
-        return Err(ederr("dir", format!("目标路径是目录：{path}")));
-    }
-    if meta.len() > MAX_EDIT_BYTES {
-        return Err(ederr(
-            "too-large",
-            format!(
-                "文件 {} 字节，超过编辑器上限 {} 字节（2 MiB）。请下载后用本地工具编辑",
-                meta.len(),
-                MAX_EDIT_BYTES
-            ),
-        ));
-    }
+    // 整段数据面（stat → open → read_to_end）套统一超时：半开连接上这些请求
+    // 永不返回且无任何错误痕迹，前端「正在读取」永久转圈（v0.20.2 修复）。
+    // 编辑器上限 2 MiB，60s 墙上时间远超正常耗时，只拦死请求。
+    let (modified, read_only, size, buf) = sftp_with_timeout(&state, &session_id, "read_text", async {
+        let sftp = sftp_arc.lock().await;
+        // 句柄外先按路径 stat（大小上限必须在读之前判；目录同理）
+        let meta = sftp
+            .metadata(&path)
+            .await
+            .map_err(|e| classify_missing("SFTP stat failed", &e, &path))?;
+        if meta.is_dir() {
+            return Err(ederr("dir", format!("目标路径是目录：{path}")));
+        }
+        if meta.len() > MAX_EDIT_BYTES {
+            return Err(ederr(
+                "too-large",
+                format!(
+                    "文件 {} 字节，超过编辑器上限 {} 字节（2 MiB）。请下载后用本地工具编辑",
+                    meta.len(),
+                    MAX_EDIT_BYTES
+                ),
+            ));
+        }
+        let mut file = sftp
+            .open(&path)
+            .await
+            .map_err(|e| classify_missing("SFTP open failed", &e, &path))?;
+        let mut buf = Vec::with_capacity(meta.len() as usize);
+        use tokio::io::AsyncReadExt;
+        file.read_to_end(&mut buf)
+            .await
+            .map_err(|e| format!("SFTP read failed: {e}"))?;
+        let modified = crate::fs_local::format_modified(meta.modified());
+        let read_only = meta.permissions.map(|p| p & 0o222 == 0);
+        Ok((modified, read_only, meta.len(), buf))
+    })
+    .await
+    .map_err(|m| {
+        error!("sftp_read_text (session {session_id}, path {path}): {m}");
+        m
+    })?;
 
-    let mut file = sftp
-        .open(&path)
-        .await
-        .map_err(|e| classify_missing("SFTP open failed", &e, &path))?;
-    let mut buf = Vec::with_capacity(meta.len() as usize);
-    use tokio::io::AsyncReadExt;
-    file.read_to_end(&mut buf)
-        .await
-        .map_err(|e| format!("SFTP read failed: {e}"))?;
-
-    let modified = crate::fs_local::format_modified(meta.modified());
-    let read_only = meta.permissions.map(|p| p & 0o222 == 0);
     let (content, has_bom, used_label) = decode_for_editor(&buf, enc)?;
     let eol = eol_kind_to_str(myshelltool_core::text_codec::detect_eol(&content)).to_string();
 
@@ -271,7 +281,7 @@ pub async fn sftp_read_text(
         encoding: used_label,
         has_bom,
         eol,
-        size: meta.len(),
+        size,
         modified,
         read_only,
     })
@@ -308,92 +318,104 @@ pub async fn sftp_write_text(
     let bytes = encode_for_editor(&content, enc, &eol, keep_bom.unwrap_or(false))?;
 
     let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
-    let sftp = sftp_arc.lock().await;
 
-    // 冲突检测：expected 任一字段提供即视为「守护写」，比对失败返回 conflict。
-    // 两个 expected 都为 None = 强制写（新建/另存为——前端已做过自己的覆盖确认）。
-    let existing = match sftp.metadata(&path).await {
-        Ok(meta) => {
-            if meta.is_dir() {
-                return Err(ederr("dir", format!("目标路径是目录：{path}")));
-            }
-            if expected_size.is_some() || expected_modified.is_some() {
-                let modified = crate::fs_local::format_modified(meta.modified());
-                let size_match = expected_size.map_or(true, |v| v == meta.len());
-                let mtime_match = expected_modified.as_deref().map_or(true, |v| v == modified);
-                if !size_match || !mtime_match {
-                    return Ok(WriteTextResult {
-                        status: "conflict",
-                        size: meta.len(),
-                        modified,
-                        conflict_note: Some(
-                            "远端文件在打开后已被修改（大小或修改时间变化）。".to_string(),
-                        ),
-                    });
+    // 整段数据面（stat 守护 → 备份读 → temp 写 → rename → 写后 stat）套统一
+    // 超时（v0.20.2，与 read_text 同因：死通道上永久挂起）。超时中断在 temp+rename
+    // 原子写的任一阶段都安全：rename 未执行则原文件未动，重试幂等；rename 已
+    // 执行但 ack 未回时，重试的 stat 会拿到新基线触发 conflict 三选，不静默覆盖。
+    sftp_with_timeout(&state, &session_id, "write_text", async {
+        let sftp = sftp_arc.lock().await;
+
+        // 冲突检测：expected 任一字段提供即视为「守护写」，比对失败返回 conflict。
+        // 两个 expected 都为 None = 强制写（新建/另存为——前端已做过自己的覆盖确认）。
+        let existing = match sftp.metadata(&path).await {
+            Ok(meta) => {
+                if meta.is_dir() {
+                    return Err(ederr("dir", format!("目标路径是目录：{path}")));
                 }
-            }
-            Some(meta)
-        }
-        Err(e) => {
-            let raw = format!("SFTP stat failed: {e}");
-            if raw.to_lowercase().contains("no such file") {
                 if expected_size.is_some() || expected_modified.is_some() {
-                    // 打开时存在、保存时已消失——如实交还给用户决定
-                    return Ok(WriteTextResult {
-                        status: "conflict",
-                        size: 0,
-                        modified: String::new(),
-                        conflict_note: Some("远端文件已被删除。".to_string()),
-                    });
+                    let modified = crate::fs_local::format_modified(meta.modified());
+                    let size_match = expected_size.map_or(true, |v| v == meta.len());
+                    let mtime_match = expected_modified.as_deref().map_or(true, |v| v == modified);
+                    if !size_match || !mtime_match {
+                        return Ok(WriteTextResult {
+                            status: "conflict",
+                            size: meta.len(),
+                            modified,
+                            conflict_note: Some(
+                                "远端文件在打开后已被修改（大小或修改时间变化）。".to_string(),
+                            ),
+                        });
+                    }
                 }
-                None // 新建
-            } else {
-                return Err(raw);
+                Some(meta)
+            }
+            Err(e) => {
+                let raw = format!("SFTP stat failed: {e}");
+                if raw.to_lowercase().contains("no such file") {
+                    if expected_size.is_some() || expected_modified.is_some() {
+                        // 打开时存在、保存时已消失——如实交还给用户决定
+                        return Ok(WriteTextResult {
+                            status: "conflict",
+                            size: 0,
+                            modified: String::new(),
+                            conflict_note: Some("远端文件已被删除。".to_string()),
+                        });
+                    }
+                    None // 新建
+                } else {
+                    return Err(raw);
+                }
+            }
+        };
+
+        // 写前备份（fail-closed：备份写不进本地就中止保存，不带保护继续写等于裸覆盖）
+        if backup.unwrap_or(false) {
+            if let Some(meta) = &existing {
+                let mut old_file = sftp
+                    .open(&path)
+                    .await
+                    .map_err(|e| classify_missing("SFTP open failed", &e, &path))?;
+                let mut old_bytes = Vec::with_capacity(meta.len() as usize);
+                use tokio::io::AsyncReadExt;
+                old_file
+                    .read_to_end(&mut old_bytes)
+                    .await
+                    .map_err(|e| format!("SFTP read failed（备份读取）: {e}"))?;
+                crate::editor_store::put_backup(&app, "remote", &path, &old_bytes)?;
             }
         }
-    };
 
-    // 写前备份（fail-closed：备份写不进本地就中止保存，不带保护继续写等于裸覆盖）
-    if backup.unwrap_or(false) {
-        if let Some(meta) = &existing {
-            let mut old_file = sftp
-                .open(&path)
-                .await
-                .map_err(|e| classify_missing("SFTP open failed", &e, &path))?;
-            let mut old_bytes = Vec::with_capacity(meta.len() as usize);
-            use tokio::io::AsyncReadExt;
-            old_file
-                .read_to_end(&mut old_bytes)
-                .await
-                .map_err(|e| format!("SFTP read failed（备份读取）: {e}"))?;
-            crate::editor_store::put_backup(&app, "remote", &path, &old_bytes)?;
-        }
-    }
+        // 原子写：temp + rename（覆盖兜底共享 helper；失败不删 temp，见其注释）
+        let temp_path = format!("{path}.myshelltool.{}.tmp", uuid::Uuid::new_v4());
+        use tokio::io::AsyncWriteExt;
+        let mut temp = sftp
+            .create(&temp_path)
+            .await
+            .map_err(|e| format!("创建临时文件失败 ({temp_path}): {e}"))?;
+        temp.write_all(&bytes)
+            .await
+            .map_err(|e| format!("写入临时文件失败: {e}"))?;
+        temp.shutdown()
+            .await
+            .map_err(|e| format!("刷新临时文件失败: {e}"))?;
+        sftp_rename_with_overwrite_fallback(&sftp, &temp_path, &path).await?;
 
-    // 原子写：temp + rename（覆盖兜底共享 helper；失败不删 temp，见其注释）
-    let temp_path = format!("{path}.myshelltool.{}.tmp", uuid::Uuid::new_v4());
-    use tokio::io::AsyncWriteExt;
-    let mut temp = sftp
-        .create(&temp_path)
-        .await
-        .map_err(|e| format!("创建临时文件失败 ({temp_path}): {e}"))?;
-    temp.write_all(&bytes)
-        .await
-        .map_err(|e| format!("写入临时文件失败: {e}"))?;
-    temp.shutdown()
-        .await
-        .map_err(|e| format!("刷新临时文件失败: {e}"))?;
-    sftp_rename_with_overwrite_fallback(&sftp, &temp_path, &path).await?;
-
-    // 写后 stat 回传新基线（下一次保存的 expected）
-    let (new_size, new_modified) = match sftp.metadata(&path).await {
-        Ok(meta) => (meta.len(), crate::fs_local::format_modified(meta.modified())),
-        Err(_) => (bytes.len() as u64, String::new()),
-    };
-    Ok(WriteTextResult {
-        status: "written",
-        size: new_size,
-        modified: new_modified,
-        conflict_note: None,
+        // 写后 stat 回传新基线（下一次保存的 expected）
+        let (new_size, new_modified) = match sftp.metadata(&path).await {
+            Ok(meta) => (meta.len(), crate::fs_local::format_modified(meta.modified())),
+            Err(_) => (bytes.len() as u64, String::new()),
+        };
+        Ok(WriteTextResult {
+            status: "written",
+            size: new_size,
+            modified: new_modified,
+            conflict_note: None,
+        })
+    })
+    .await
+    .map_err(|m| {
+        error!("sftp_write_text (session {session_id}, path {path}): {m}");
+        m
     })
 }

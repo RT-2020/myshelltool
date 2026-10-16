@@ -208,6 +208,12 @@ pub fn upsert_connection_asset(
     asset: ConnectionAsset,
 ) -> Result<(), String> {
     validate_connection_asset(&asset)?;
+    // 表单/导入直输的新分组在此收口声明（幂等）：`asset.group` 只随资产存在，
+    // 空分组与「资产全部移走后分组不丢」靠 store.groups 持久化（含多级路径，
+    // 中间层级由前端 buildGroupTree 隐式补齐，无需逐级声明）。
+    if !asset.group.is_empty() && asset.group != "未分组" {
+        ensure_asset_group(store, &asset.group)?;
+    }
     if let Some(existing) = store.assets.iter_mut().find(|item| item.id == asset.id) {
         *existing = asset;
     } else {
@@ -260,8 +266,12 @@ pub fn rename_asset_group(
     if new_path == old_path {
         return Ok(()); // no-op
     }
-
     let prefix = format!("{}/", old_path);
+    // 防呆：不允许移进自己的子树（"生产" → "生产/数据库" 会把子级拼出
+    // "生产/数据库/数据库" 这类自嵌套路径，属输入错误，fail-closed 拒绝）
+    if new_path.starts_with(&prefix) {
+        return Err("new group path cannot be inside the renamed subtree".to_string());
+    }
     // 更新 assets.group：精确匹配或前缀匹配（子级路径）
     for asset in store.assets.iter_mut() {
         if asset.group == old_path {

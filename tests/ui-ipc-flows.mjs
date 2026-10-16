@@ -22,6 +22,8 @@
 //   必在第一次落盘后 + 冲突窗拦截）/ 并发上限生效（在途峰值 ≤ 配置）+
 //   单项失败不炸批（failed 如实计数）
 //   4. host key 事件 → 弹窗 → resolve 回传
+//   5. 资产编辑器直输新分组（AppCombobox）：菜单「新建」提示行 + blur 提交 +
+//      save_connection_asset 收到完整多级路径（后端 upsert 收口分组声明）
 
 import { chromium } from 'playwright';
 
@@ -797,7 +799,42 @@ console.error('[step] scenario-4');
   await page.evaluate(() => window.__myshelltool.sessions.resolveHostKeyPrompt('rk-1', true));
   await page.waitForFunction(() => window.__tauriMock.calls.some(c => c.command === 'ssh_confirm_host_key' && c.args.accepted === true), null, { timeout: 5000 });
 
-  console.log('IPC flow tests passed (connect+stream+reconnect / streaming upload / upload cancel / refresh-current-dir after upload / upload progress strip / overwrite 3-way + rename/skip/apply-all / dir upload+download+batch-cancel / host-key resolve)');
+console.error('[step] scenario-5');
+  // ════ 场景 5：资产编辑器直输新分组（AppCombobox 可选可输，2026-10 分组重做）════
+  // 直输不存在的多级路径 → 菜单出「新建」提示行；点保存（blur 先于 click 提交
+  // 输入值）→ save_connection_asset 收到完整分组路径（后端 upsert 收口声明）。
+  await fixtureBackend(page, {
+    'save_credential': spec(null),
+    'save_connection_asset': spec({ source: 'local', count: 1, assets: [ASSET], groups: ['生产/数据库/直输'] }),
+  });
+  await page.evaluate(() => {
+    window.__myshelltool.workbench.modal = { type: 'assetEditor', asset: null, payload: null };
+  });
+  await page.waitForSelector('[data-asset-field="group"] input', { timeout: 5000 });
+  // 必填：名称 + 密码（Password 认证首存校验，modalSubmit 拦截空密码）
+  await page.fill('[data-asset-field="name"] input', '直输分组机');
+  await page.fill('[data-asset-field="password"] input', 'pw-123');
+  // 分组 combobox：focus 开菜单 → 直输多级路径 → 末行出现「新建「…」」
+  const groupInput = '[data-asset-field="group"] input';
+  await page.click(groupInput);
+  await page.fill(groupInput, '生产/数据库/直输');
+  await page.waitForSelector('.app-combobox-create', { timeout: 3000 });
+  const createRowText = await page.textContent('.app-combobox-create');
+  if (!createRowText.includes('生产/数据库/直输')) {
+    throw new Error('combobox create row missing typed path: ' + createRowText);
+  }
+  await page.click('#modalPrimary');
+  await page.waitForFunction(() => window.__tauriMock.calls.some(c => c.command === 'save_connection_asset'), null, { timeout: 5000 });
+  const savedGroup = await page.evaluate(() =>
+    window.__tauriMock.calls.find(c => c.command === 'save_connection_asset').args.asset.group
+  );
+  if (savedGroup !== '生产/数据库/直输') {
+    throw new Error('typed group not committed on save: ' + JSON.stringify(savedGroup));
+  }
+  // 保存成功后弹窗收敛（失败会留在原地并显示 formError）
+  await page.waitForFunction(() => window.__myshelltool.workbench.modal.type === null, null, { timeout: 5000 });
+
+  console.log('IPC flow tests passed (connect+stream+reconnect / streaming upload / upload cancel / refresh-current-dir after upload / upload progress strip / overwrite 3-way + rename/skip/apply-all / dir upload+download+batch-cancel / host-key resolve / asset-editor typed-group create)');
 } finally {
   await browser.close();
 }

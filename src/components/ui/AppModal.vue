@@ -53,9 +53,8 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-function onBackdropClick(e: MouseEvent) {
-  if (e.target === e.currentTarget) close();
-}
+// 遮罩空白点击不关闭弹窗（防误触丢表单，与 GlobalModals 语义一致）：
+// 关闭只走右上角 × / 确认 / 取消按钮 + Esc。
 
 watch(
   () => props.open,
@@ -89,7 +88,7 @@ onBeforeUnmount(() => {
 <template>
   <Teleport to="body">
     <Transition name="app-modal">
-      <div v-if="open" class="app-modal-backdrop" @click="onBackdropClick">
+      <div v-if="open" class="app-modal-backdrop">
         <div
           ref="panelRef"
           class="app-modal"

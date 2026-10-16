@@ -13,6 +13,7 @@ import { computed } from 'vue';
 import AppButton from '@/components/ui/AppButton.vue';
 import AppInput from '@/components/ui/AppInput.vue';
 import AppSelect from '@/components/ui/AppSelect.vue';
+import AppCombobox from '@/components/ui/AppCombobox.vue';
 import AssetPrivateKeyInput from '@/components/shell/AssetPrivateKeyInput.vue';
 import type { AssetEditorForm, CredentialEditorForm } from '@/types/domain';
 
@@ -71,10 +72,12 @@ function toggleClearPassphrase() {
         <AppInput :model-value="asset.username" @update:model-value="v => asset.username = v" data-asset-field="username" />
       </label>
       <label class="stack"><span class="muted">分组</span>
-        <AppSelect
+        <!-- 可选可输：直输新分组路径（含「a/b」多级）即建组声明，保存时后端收口 -->
+        <AppCombobox
           :model-value="asset.group || '未分组'"
           :options="groupOptions"
-          @update:model-value="v => asset.group = String(v)"
+          placeholder="选择或输入，如 生产/数据库"
+          @update:model-value="v => asset.group = v"
           data-asset-field="group"
         />
       </label>

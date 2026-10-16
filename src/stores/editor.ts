@@ -237,47 +237,52 @@ export const useEditorStore = defineStore('editor', () => {
 
   /** 读取并落 tab（打开/重读共用）。 */
   async function loadTab(tab: EditorTab): Promise<void> {
-    tab.status = 'loading';
-    tab.error = null;
-    tab.conflict = null;
+    // 响应式修正（v0.20.2 修复「编辑器永久停在正在读取」）：openTarget 新建分支
+    // 传入的是 makeTab 的原始对象——直接改它的属性会绕过 reactive proxy，视图
+    // 收不到 status='ready'（后端其实早已返回数据，实测 data done 后 UI 仍转圈）。
+    // 必须经 tabs 数组取回 proxy 再改；查不到（异常时序）时退回原引用保底。
+    const live = tabs.value.find(t => t.id === tab.id) ?? tab;
+    live.status = 'loading';
+    live.error = null;
+    live.conflict = null;
     let sessionId: string | undefined;
-    if (tab.target.kind === 'remote') {
-      const resolved = resolveRemoteSession(tab.target);
+    if (live.target.kind === 'remote') {
+      const resolved = resolveRemoteSession(live.target);
       if ('error' in resolved) {
-        tab.status = 'error';
-        tab.error = resolved.error;
+        live.status = 'error';
+        live.error = resolved.error;
         return;
       }
       sessionId = resolved.sessionId;
     }
     try {
-      const result = await readText(tab.target, {
+      const result = await readText(live.target, {
         sessionId,
-        encoding: tab.encodingOverride
+        encoding: live.encodingOverride
       });
-      tab.baseline = {
+      live.baseline = {
         size: result.size,
         modified: result.modified,
         encoding: result.encoding,
         eol: result.eol,
         hasBom: result.hasBom
       };
-      tab.readOnly = Boolean(result.readOnly);
-      tab.readOnlyReason = result.readOnly
-        ? tab.target.kind === 'remote'
+      live.readOnly = Boolean(result.readOnly);
+      live.readOnlyReason = result.readOnly
+        ? live.target.kind === 'remote'
           ? '远端文件权限位不含写权限，按只读打开'
           : '本地文件是只读属性，按只读打开'
         : null;
-      tabContent.set(tab.id, result.content);
-      contentAccess.delete(tab.id); // 挂载中的 host 经版本号 watch 重载 doc
-      tab.contentVersion++;
-      tab.dirty = false;
-      tab.status = 'ready';
+      tabContent.set(live.id, result.content);
+      contentAccess.delete(live.id); // 挂载中的 host 经版本号 watch 重载 doc
+      live.contentVersion++;
+      live.dirty = false;
+      live.status = 'ready';
       // 草稿恢复：草稿比文件新 → 让用户选（恢复进编辑器 / 丢弃）
-      await offerDraftRecovery(tab, result.modified);
+      await offerDraftRecovery(live, result.modified);
     } catch (error) {
-      tab.status = 'error';
-      tab.error = toClassifiedError(error);
+      live.status = 'error';
+      live.error = toClassifiedError(error);
     }
   }
 

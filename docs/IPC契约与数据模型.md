@@ -43,6 +43,9 @@
 - **【v0.20 已删】`ssh_list_directory`**（原「无会话回落一次性连接列目录」）：用户实测（2026-09-23）断开资产后点文件区刷新会静默把服务器重新连上取目录——违反断开语义、与终端「手动断开即断开」不一致（自动重连仅限远端异常关闭）、公网服务器有认证惩罚风险。文件面板刷新现仅走 `sftp_list_dir` 会话通道，无会话时明确提示先连接；连带删除 ephemeral 连接登记机制（host key 跨窗口路由只认 connecting 会话）
 - `ssh_write` / `ssh_resize` / `ssh_disconnect` / `ssh_confirm_host_key` / `ssh_keyboard_response`
 
+**终端粘贴守卫**（`lib.rs`）
+- `dangerous_paste_check({ text })`【2026-10/审查修复】→ GUI 终端粘贴守卫的**权威判定**（纯函数，core「16 条黑名单 ∪ catastrophic 层（rm_root / chmod 系统目录）」并集），返回 `{ pattern, sample } | null`。FE 唯一调用方 `checkDangerousPaste`（`lib/dangerousCommands.ts`）；IPC 不可用时保守折叠（先回落 FE 正则、再未命中强制弹确认，哨兵 pattern 折叠为空串不可被「本会话不再拦截」记录）。背景：FE 正则与 core 黑名单 pattern 1 同源同漏 `rm -fr /` / `rm -r -f /` / `--force --recursive` 等分离/逆序形态，见修复史 2026-10-15 节。
+
 **SFTP**（`ssh.rs`）
 - `sftp_list_dir`（裸读写 `sftp_read_file` / `sftp_write_file` 已删除：GUI 编辑器走 `sftp_read_text` / `sftp_write_text`，MCP 文件工具走 `mcp/file_tools.rs`，两者都不经过 IPC 裸命令）
 - **`sftp_chmod({ sessionId, path, mode })`【v0.20/SSH P2】**：修改远端权限（mode 八进制字符串，前置校验 3-4 位、仅 0-7、4 位首位须 0——setuid/setgid/sticky 暂不支持；russh-sftp setstat 只改 permissions 位；vendored fork 新增 `set_metadata` 透传）。GUI 入口：远程面板右键「修改权限…」（编辑器通用输入弹窗，预填当前权限，前后端双校验）

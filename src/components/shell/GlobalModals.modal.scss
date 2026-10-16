@@ -95,23 +95,26 @@
   border-top: 1px solid var(--app-border);
 }
 
-/* —— settings 弹窗专属（左竖导航 + 右内容布局） ——
-   加宽到 760px 容纳 172px 导航列；标题「设置」降级为窗框小标签（真正的顶级分类
-   是左侧竖导航，标题不再与之争层级）；body 去 padding，由 SettingsPanelContent 撑满。 */
-.modal--settings {
+/* —— 左竖导航 + 右内容布局的弹窗（settings / gatewayWizard 同一设计语言） ——
+   加宽到 760px 容纳 172px 导航列；标题降级为窗框小标签（真正的顶级分类
+   是左侧竖导航，标题不再与之争层级）；body 去 padding，由面板内容组件撑满。 */
+.modal--settings,
+.modal--gatewayWizard {
   max-width: 760px;
   height: min(560px, calc(100vh - 80px));
 }
-.modal--settings .modal-head h2 {
+.modal--settings .modal-head h2,
+.modal--gatewayWizard .modal-head h2 {
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--app-subtle);
 }
-.modal--settings .modal-body {
+.modal--settings .modal-body,
+.modal--gatewayWizard .modal-body {
   padding: 0;
-  overflow: hidden; /* 滚动交给 SettingsPanelContent 的右侧内容区，避免双层滚动条 */
+  overflow: hidden; /* 滚动交给面板内容组件的右侧内容区，避免双层滚动条 */
   display: flex;
   flex-direction: column;
 }

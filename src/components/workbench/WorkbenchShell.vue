@@ -52,7 +52,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   'create-asset': [];
   'create-asset-in-group': [group: string];
-  'create-group': [];
+  'create-group': [parentPath?: string];
   'connect-selected': [];
   'open-settings': [];
   'open-mcp-panel': [];
@@ -349,7 +349,7 @@ onUnmounted(() => {
         @create-asset="emit('create-asset')"
         @create-gateway="openGatewayWizard"
         @create-asset-in-group="emit('create-asset-in-group', $event)"
-        @create-group="emit('create-group')"
+        @create-group="emit('create-group', $event)"
         @edit-asset="editAsset"
         @delete-asset="deleteAsset"
         @duplicate-asset="duplicateAsset"

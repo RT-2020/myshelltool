@@ -95,12 +95,13 @@ export function useModalFormSync(ctx: ModalFormSyncCtx) {
       reauthForm.error = '';
     }
     if (type === 'renameGroup') {
-      // 默认填入当前分组名的最后一段（方便就地改名）
-      const path = modal.value.path || '';
-      groupInputs.rename = path.split('/').pop() || '';
+      // 预填当前完整路径：重命名即完整路径编辑（可用 / 调整层级，子树随行）
+      groupInputs.rename = modal.value.path || '';
     }
     if (type === 'createGroup') {
-      groupInputs.create = '';
+      // 右键「新建子分组」预填「父路径/」，光标后续输入即可；全局入口无预填
+      const parentPath = (modal.value.payload as { parentPath?: unknown } | undefined)?.parentPath;
+      groupInputs.create = typeof parentPath === 'string' && parentPath ? `${parentPath}/` : '';
     }
     if (type === 'moveAsset') {
       // 默认填入资产当前分组

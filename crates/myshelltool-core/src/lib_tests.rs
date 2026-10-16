@@ -61,6 +61,43 @@ use crate::secret_store::{is_new_format, xor_transform};
     }
 
     #[test]
+    fn upsert_declares_typed_group_path() {
+        // 表单/导入直输的新分组（含多级）必须落进 store.groups——
+        // 否则资产全部移走后分组凭空消失（空分组持久化契约）。
+        let mut store = demo_asset_store();
+        let mut asset = store.assets[0].clone();
+        asset.id = "typed-group-1".to_string();
+        asset.group = "生产/数据库/主库".to_string();
+
+        upsert_connection_asset(&mut store, asset).expect("asset upserts");
+
+        assert!(store.groups.iter().any(|g| g == "生产/数据库/主库"));
+        // 幂等：同组再来一台不重复声明
+        let mut second = store.assets[0].clone();
+        second.id = "typed-group-2".to_string();
+        second.group = "生产/数据库/主库".to_string();
+        upsert_connection_asset(&mut store, second).expect("asset upserts");
+        assert_eq!(store.groups.iter().filter(|g| *g == "生产/数据库/主库").count(), 1);
+    }
+
+    #[test]
+    fn upsert_skips_group_declaration_for_ungrouped() {
+        let mut store = demo_asset_store();
+        let mut asset = store.assets[0].clone();
+        asset.id = "ungrouped-1".to_string();
+        asset.group = "未分组".to_string();
+
+        upsert_connection_asset(&mut store, asset).expect("asset upserts");
+
+        assert!(!store.groups.iter().any(|g| g == "未分组"));
+        let mut empty = store.assets[0].clone();
+        empty.id = "ungrouped-2".to_string();
+        empty.group = String::new();
+        upsert_connection_asset(&mut store, empty).expect("asset upserts");
+        assert!(!store.groups.iter().any(|g| g.is_empty()));
+    }
+
+    #[test]
     fn saves_and_loads_assets_from_json() {
         let path = temp_store_path("roundtrip");
         let mut store = demo_asset_store();
@@ -167,6 +204,23 @@ use crate::secret_store::{is_new_format, xor_transform};
         let mut store = demo_asset_store();
         // 「未分组」保留，不可重命名
         assert!(rename_asset_group(&mut store, "未分组", "Other").is_err());
+    }
+
+    #[test]
+    fn rename_group_rejects_moving_into_own_subtree() {
+        // 重命名放开完整路径后（改层级=移动节点），移进自己子树会把子级
+        // 拼出自嵌套路径（"生产/数据库" 资产会变 "生产/数据库/数据库"），拒绝。
+        let mut store = ConnectionAssetStore { assets: vec![], groups: vec![] };
+        store.assets.push(g_asset("a1", "A1", "h1", "生产/数据库"));
+        store.groups = vec!["生产/数据库".into()];
+
+        let err = rename_asset_group(&mut store, "生产", "生产/数据库").unwrap_err();
+        assert!(err.contains("subtree"));
+        // 原数据不受影响（fail-closed，不产生半截修改）
+        assert_eq!(store.assets[0].group, "生产/数据库");
+        // 移到祖先/兄弟路径合法（上提/平移是正常诉求）
+        rename_asset_group(&mut store, "生产/数据库", "生产").expect("flatten ok");
+        assert_eq!(store.assets[0].group, "生产");
     }
 
     #[test]

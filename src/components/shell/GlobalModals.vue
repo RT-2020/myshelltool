@@ -241,8 +241,9 @@ function denyMcpApproval() {
   store.modal = { type: null, asset: null };
 }
 
-// Esc / 遮罩关闭语义抽到 composables/useModalDismiss（行为契约见该文件）
-const { onBackdropClick } = useModalDismiss(
+// Esc 关闭语义抽到 composables/useModalDismiss（行为契约见该文件）。
+// 遮罩空白点击不关闭弹窗（防误触丢表单）：关闭只走右上角 × / 确认 / 取消按钮 + Esc。
+useModalDismiss(
   computed(() => modal.value.type),
   { closeModal, denyHostKey, denyMcpApproval }
 );
@@ -258,7 +259,7 @@ const { onBackdropClick } = useModalDismiss(
       - .modal-actions .btn.danger  (host-key test step reject)
     closing 态：store 已关闭、退场动画播放中（view 滞留最后载荷，见 useModalView）
   -->
-  <div class="modal-layer" id="modalLayer" :class="{ open: view.type, closing }" :aria-hidden="!view.type ? 'true' : 'false'" @click.self="onBackdropClick" @animationend="onExitAnimationEnd">
+  <div class="modal-layer" id="modalLayer" :class="{ open: view.type, closing }" :aria-hidden="!view.type ? 'true' : 'false'" @animationend="onExitAnimationEnd">
     <div class="modal" :class="`modal--${view.type}`" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
       <div class="modal-head">
         <h2 id="modalTitle">{{ modalTitle }}</h2>

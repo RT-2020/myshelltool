@@ -135,6 +135,43 @@ async fn evict_sftp_cache(state: &State<'_, AppState>, session_id: &str) {
     mgr.sftp_cache.remove(session_id);
 }
 
+/// SFTP 数据面（stat/open/read_dir/…）单命令墙上上限。半开 TCP 或远端 sftp
+/// 子系统僵死时这些请求永不返回——建链超时只管 channel 建立，管不到之后
+/// 的数据请求（v0.20.2 修复：编辑器读文件在死通道上无限转圈，日志无任何
+/// 错误痕迹）。编辑器链路上限 2 MiB、列目录单次往返，60s 远超正常耗时
+/// （<1s），只拦「永远不会完成」的死请求。
+pub(crate) const SFTP_DATA_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// SFTP 数据面统一超时包装：超时后淘汰该会话的 SFTP 缓存条目。
+///
+/// 为什么淘汰：挂死的 SftpSession 留在缓存里，后续每个请求都命中同一具
+/// 尸体（与建链超时同一处置）；淘汰后 TCP 仍活着时下次操作自动重建 channel
+/// （自愈），TCP 已死时建链的 15s 超时给出明确重连指引。future 被 timeout
+/// drop 时其中的 Mutex guard 一并释放，不会连锁卡死同会话的其它 SFTP 命令
+/// （修复前一个挂起操作永久持锁，列目录等全部排队等死）。
+pub(crate) async fn sftp_with_timeout<T, F>(
+    state: &State<'_, AppState>,
+    session_id: &str,
+    op: &'static str,
+    fut: F,
+) -> Result<T, String>
+where
+    F: std::future::Future<Output = Result<T, String>>,
+{
+    match tokio::time::timeout(SFTP_DATA_TIMEOUT, fut).await {
+        Ok(result) => result,
+        Err(_) => {
+            let m = format!(
+                "SFTP {op} timeout ({}s): session {session_id}（连接可能已半开或远端无响应，已重置 SFTP 通道，可重试）",
+                SFTP_DATA_TIMEOUT.as_secs()
+            );
+            error!("sftp {op} (session {session_id}): {m}");
+            evict_sftp_cache(state, session_id).await;
+            Err(m)
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn sftp_list_dir(
     state: State<'_, AppState>,
@@ -142,29 +179,38 @@ pub async fn sftp_list_dir(
     path: String,
 ) -> Result<RemoteDirectoryList, String> {
     let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
-    let sftp = sftp_arc.lock().await;
 
     // 空 path = 服务器默认目录：SFTP 服务进程 cwd 起始于登录用户家目录，
     // canonicalize(".") 解析出真实绝对路径。此前前端猜 /home/<username>，
     // 对 root（家在 /root）等非标准布局必错，报 "SFTP read_dir failed: No such file"。
-    let requested_path = if path.trim().is_empty() {
-        match sftp.canonicalize(".").await {
-            Ok(resolved) => resolved,
-            Err(e) => {
-                let m = format!("SFTP canonicalize failed: {e}");
-                error!("sftp_list_dir (session {session_id}): {m}");
-                return Err(m);
+    // 整段（canonicalize + read_dir）套统一超时：死通道上永久挂起 = 文件面板
+    // 无限转圈（v0.20.2 修复）。
+    let (requested_path, raw_entries) = sftp_with_timeout(&state, &session_id, "list_dir", async {
+        let sftp = sftp_arc.lock().await;
+        let requested_path = if path.trim().is_empty() {
+            match sftp.canonicalize(".").await {
+                Ok(resolved) => resolved,
+                Err(e) => {
+                    let m = format!("SFTP canonicalize failed: {e}");
+                    error!("sftp_list_dir (session {session_id}): {m}");
+                    return Err(m);
+                }
             }
-        }
-    } else {
-        path
-    };
-
-    let raw_entries = sftp
-        .read_dir(&requested_path)
-        .await
-        .map_err(|e| format!("SFTP read_dir failed: {e}"))
-        .inspect_err(|m| error!("sftp_list_dir (session {session_id}, path {requested_path}): {m}"))?;
+        } else {
+            path.clone()
+        };
+        let entries = sftp
+            .read_dir(&requested_path)
+            .await
+            .map_err(|e| format!("SFTP read_dir failed: {e}"))
+            .inspect_err(|m| error!("sftp_list_dir (session {session_id}, path {requested_path}): {m}"))?;
+        Ok((requested_path, entries))
+    })
+    .await
+    .map_err(|m| {
+        error!("sftp_list_dir (session {session_id}, path {path}): {m}");
+        m
+    })?;
 
     let mut entries: Vec<RemoteFileEntry> = raw_entries
         .into_iter()
@@ -233,12 +279,17 @@ pub async fn sftp_upload_from_file(
     // 时序不能变：先在 sftp_arc 锁内建好远端文件（create 有一次远端往返），
     // **之后**才取 ssh_sessions 锁登记取消条目。
     let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
-    let mut remote_file = {
+    let mut remote_file = sftp_with_timeout(&state, &session_id, "upload_create", async {
         let sftp = sftp_arc.lock().await;
         sftp.create(&remote_path)
             .await
-            .map_err(|e| format!("SFTP create failed: {e}"))?
-    };
+            .map_err(|e| format!("SFTP create failed: {e}"))
+    })
+    .await
+    .map_err(|m| {
+        error!("sftp_upload (session {session_id}, path {remote_path}): {m}");
+        m
+    })?;
 
     // 取消登记 + 重复 id 查重 + 会话存活校验在**同一临界区**（中间无 await）。
     // 必须校验会话存活：上面 create 的远端往返期间 cleanup_session_tables 完全可能
@@ -354,14 +405,22 @@ pub async fn sftp_upload_from_file(
     }
 
     if let Err(e) = transfer {
+        // 传输失败（含块级 120s 超时）大概率意味着通道已死：淘汰缓存条目，
+        // 用户重试时走新建 channel，不必再等一次 60s 超时。
+        evict_sftp_cache(&state, &session_id).await;
         // 先释放远端文件句柄再删半截文件（drop 不向远端等待应答，顺序仅为清晰）。
         drop(remote_file);
         // 尽力删除远端半截文件：不删的话远端会留下一个**看起来完整**的截断文件，
         // 下次有人打开才发现内容不全，且无从分辨是上传失败还是源文件本身损坏。
         // 删除失败只记日志不上报——真正的失败原因（e）比清理失败更值得占用错误串。
+        // 清理带 15s 上限：连接已死时这个 remove 请求本身会挂住，不能拖住错误返回。
         let sftp = sftp_arc.lock().await;
-        if let Err(cleanup_err) = sftp.remove_file(&remote_path).await {
-            warn!("sftp upload cleanup failed for {remote_path}: {cleanup_err}");
+        match tokio::time::timeout(SFTP_CLEANUP_TIMEOUT, sftp.remove_file(&remote_path)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(cleanup_err)) => {
+                warn!("sftp upload cleanup failed for {remote_path}: {cleanup_err}")
+            }
+            Err(_) => warn!("sftp upload cleanup timeout for {remote_path}"),
         }
         return Err(e);
     }
@@ -417,6 +476,12 @@ const UPLOAD_CHUNK_SIZE: usize = 1024 * 1024;
 const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 /// 上传收尾（shutdown 排空 write ack）上限：半开连接上这个等待理论无界。
 const FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// 单次下载读上限（v0.20.2）：死连接上 read 永不返回，且取消旗标的检查点
+/// 在 read **之后**——不设上限时挂死的 read 连「取消」都到不了。
+const READ_CHUNK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// 失败清理（删远端半截文件）上限：连接已死时清理请求本身会挂住，不能拖住
+/// 真正错误串的返回。
+const SFTP_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 #[tauri::command]
 pub async fn sftp_download_to_file(
@@ -441,7 +506,9 @@ pub async fn sftp_download_to_file(
     //
     // 顺序注意：先 drop 锁再做本地 IO（创建文件可能因磁盘慢/网络盘阻塞），锁的持有
     // 时间与本地磁盘性能解耦。metadata 与 open 的先后顺序不可倒置（下方注释说明）。
-    let (mut file, total) = {
+    // v0.20.2：整段套统一超时——死通道上 open/fstat 永不返回，传输行永久 running
+    // 且取消旗标（循环内检查）到不了。
+    let (mut file, total) = sftp_with_timeout(&state, &session_id, "download_open", async {
         let sftp = sftp_arc.lock().await;
         let file = sftp
             .open(&remote_path)
@@ -454,9 +521,14 @@ pub async fn sftp_download_to_file(
             .metadata()
             .await
             .map_err(|e| format!("SFTP stat failed: {e}"))?;
-        (file, attrs.len())
+        Ok((file, attrs.len()))
         // sftp guard 在此 drop；file 不借用它，后续 read 循环不再持锁。
-    };
+    })
+    .await
+    .map_err(|m| {
+        error!("sftp_download (session {session_id}, path {remote_path}): {m}");
+        m
+    })?;
 
     let app = { state.ssh_sessions.lock().await.app.clone() };
     let local = std::path::PathBuf::from(&local_path);
@@ -503,10 +575,18 @@ pub async fn sftp_download_to_file(
         let mut last_emit_bytes: u64 = 0;
 
         loop {
-            let n = file
-                .read(&mut buf)
-                .await
-                .map_err(|e| format!("SFTP read chunk failed: {e}"))?;
+            // 单次读上限（v0.20.2）：死连接上 read 永不返回；取消检查点在其后，
+            // 不设上限时挂死的 read 连取消按钮都救不了（对齐上传 write 的 120s）。
+            let n = match tokio::time::timeout(READ_CHUNK_TIMEOUT, file.read(&mut buf)).await {
+                Ok(Ok(n)) => n,
+                Ok(Err(e)) => return Err(format!("SFTP read chunk failed: {e}")),
+                Err(_) => {
+                    return Err(format!(
+                        "SFTP read timeout ({}s): remote not responding",
+                        READ_CHUNK_TIMEOUT.as_secs()
+                    ))
+                }
+            };
             // v0.20（S9）：取消检查点（块边界 ≤ 64 KiB，与上传同粒度）
             if cancel
                 .load(std::sync::atomic::Ordering::Relaxed)
@@ -564,6 +644,9 @@ pub async fn sftp_download_to_file(
     .await;
 
     if let Err(e) = transfer {
+        // 传输失败（含块级 120s 超时）大概率意味着通道已死：淘汰缓存条目，
+        // 用户重试时走新建 channel（与上传失败路径同款处置）。
+        evict_sftp_cache(&state, &session_id).await;
         // 尽力删除半截文件：不删的话用户磁盘上会留下一个**看起来完整**的坏文件
         // （前端进度条可能已到 100%、文件名也对），下次打开才发现内容被截断，
         // 而用户根本无从判断是下载失败还是远端文件本身损坏。删除失败只记日志
@@ -608,153 +691,4 @@ pub async fn sftp_download_to_file(
     }
 
     Ok(())
-}
-
-#[tauri::command]
-pub async fn sftp_mkdir(
-    state: State<'_, AppState>,
-    session_id: String,
-    path: String,
-) -> Result<(), String> {
-    let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
-    let sftp = sftp_arc.lock().await;
-    sftp.create_dir(&path)
-        .await
-        .map_err(|e| format!("SFTP mkdir failed: {e}"))
-}
-
-#[tauri::command]
-pub async fn sftp_rename(
-    state: State<'_, AppState>,
-    session_id: String,
-    old_path: String,
-    new_path: String,
-) -> Result<(), String> {
-    // 只拦「寻址既有文件」的 old_path；new_path 是用户显式输入的新名字（v2.6 backlog #2）
-    if myshelltool_core::is_lossy_remote_path(&old_path) {
-        return Err(myshelltool_core::lossy_remote_path_error(&old_path));
-    }
-    let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
-    let sftp = sftp_arc.lock().await;
-    sftp.rename(&old_path, &new_path)
-        .await
-        .map_err(|e| format!("SFTP rename failed: {e}"))
-}
-
-#[tauri::command]
-pub async fn sftp_remove(
-    state: State<'_, AppState>,
-    session_id: String,
-    path: String,
-    kind: String,
-) -> Result<(), String> {
-    // 删除是最高危操作：失真名可能误删「字面含 U+FFFD 的另一个真实文件」，fail-closed
-    if myshelltool_core::is_lossy_remote_path(&path) {
-        return Err(myshelltool_core::lossy_remote_path_error(&path));
-    }
-    let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
-    let sftp = sftp_arc.lock().await;
-    if kind == "directory" {
-        sftp.remove_dir(&path).await
-    } else {
-        sftp.remove_file(&path).await
-    }
-    .map_err(|e| format!("SFTP remove failed: {e}"))
-}
-
-/// v0.20（SSH P2）：chmod——russh-sftp setstat 只改 permissions 位。
-/// mode 输入是八进制字符串（如 "644"/"0755"）——前置解析校验（仅 0-7 数字，
-/// 3-4 位；4 位时首位须 0——不静默截断错误输入）。高危：Strict 审批之外还应有
-/// GUI 确认（远程列表面板右键入口带确认弹窗）。
-#[tauri::command]
-pub async fn sftp_chmod(
-    state: State<'_, AppState>,
-    session_id: String,
-    path: String,
-    mode: String,
-) -> Result<(), String> {
-    if myshelltool_core::is_lossy_remote_path(&path) {
-        return Err(myshelltool_core::lossy_remote_path_error(&path));
-    }
-    let trimmed = mode.trim();
-    if trimmed.len() < 3 || trimmed.len() > 4 || !trimmed.chars().all(|c| ('0'..='7').contains(&c)) {
-        return Err(format!("权限格式无效：{mode:?}（期望 3-4 位八进制，如 644 或 0755）"));
-    }
-    if trimmed.len() == 4 && !trimmed.starts_with('0') {
-        return Err(format!("权限格式无效：{mode:?}（4 位时首位须 0，setuid/setgid/sticky 位暂不支持）"));
-    }
-    let perms = u32::from_str_radix(trimmed, 8)
-        .map_err(|e| format!("权限解析失败: {e}"))?;
-    let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
-    let sftp = sftp_arc.lock().await;
-    let attrs = russh_sftp::protocol::FileAttributes {
-        permissions: Some(perms),
-        ..Default::default()
-    };
-    sftp.set_metadata(&path, attrs)
-        .await
-        .map_err(|e| format!("SFTP chmod 失败: {e}"))
-}
-
-/// v0.20（SSH P2）：readlink——返回符号链接的目标路径（协议 raw Name）。
-#[tauri::command]
-pub async fn sftp_readlink(
-    state: State<'_, AppState>,
-    session_id: String,
-    path: String,
-) -> Result<String, String> {
-    if myshelltool_core::is_lossy_remote_path(&path) {
-        return Err(myshelltool_core::lossy_remote_path_error(&path));
-    }
-    let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
-    let sftp = sftp_arc.lock().await;
-    sftp.read_link(&path).await.map_err(|e| format!("SFTP readlink 失败: {e}"))
-}
-#[tauri::command]
-pub async fn sftp_stat(
-    state: State<'_, AppState>,
-    session_id: String,
-    path: String,
-) -> Result<Option<RemoteFileEntry>, String> {
-    let sftp_arc = get_or_create_sftp(&state, &session_id).await?;
-    let sftp = sftp_arc.lock().await;
-    let meta = match sftp.metadata(&path).await {
-        Ok(meta) => meta,
-        // NoSuchFile → Ok(None)（结构化三态，与 fs_local_stat 契约对齐）：前端
-        // 覆盖确认门需要区分「明确不存在」与「无法确认」——此前前端对错误串
-        // 做 /no such file/i 正则匹配（形状猜测），错误文案一变就会把「无法
-        // 确认」误判成「不存在」，绕过覆盖确认静默覆盖远端文件。其余错误
-        // （权限/超时/连接断）保持 Err，前端保守走确认路径（fail-closed）。
-        Err(russh_sftp::client::error::Error::Status(status))
-            if status.status_code == russh_sftp::protocol::StatusCode::NoSuchFile =>
-        {
-            return Ok(None)
-        }
-        Err(e) => return Err(format!("SFTP stat failed: {e}")),
-    };
-
-    let name = std::path::Path::new(&path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(&path)
-        .to_string();
-
-    Ok(Some(RemoteFileEntry {
-        name,
-        path,
-        kind: if meta.is_dir() {
-            "directory"
-        } else if meta.is_symlink() {
-            "symlink"
-        } else {
-            "file"
-        }
-        .to_string(),
-        size: meta.len(),
-        // Unix 秒字符串（复用 fs_local::format_modified），与 sftp_list_dir 对齐
-        modified: crate::fs_local::format_modified(meta.modified()),
-        permissions: meta.permissions.map(|p| format!("{:04o}", p & 0o7777)),
-        user: meta.user.clone(),
-        group: meta.group.clone(),
-    }))
 }

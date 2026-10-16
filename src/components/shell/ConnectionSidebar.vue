@@ -75,7 +75,8 @@ const emit = defineEmits<{
   'create-gateway': []; // v0.22 网关部署向导（经公网 VPS relay 访问客户内网）
   // 分组头悬停「+」：在该分组内快捷新增（父级打开预填分组的资产编辑器）
   'create-asset-in-group': [group: string];
-  'create-group': [];
+  // 「新建分组」按钮无参；右键「新建子分组」带父路径（上游预填弹窗）
+  'create-group': [parentPath?: string];
   // 以下事件 payload 均为 asset 对象或 group path 字符串
   'edit-asset': [asset: NormalizedConnectionAsset];
   'delete-asset': [asset: NormalizedConnectionAsset];
@@ -297,6 +298,7 @@ const {
   onDeleteAsset: a => emit('delete-asset', a),
   onRenameGroup: path => emit('rename-group', path),
   onDissolveGroup: path => emit('dissolve-group', path),
+  onCreateSubgroup: path => emit('create-group', path),
   openDetached: openAssetDetached
 });
 
@@ -369,6 +371,18 @@ provide('connectionSidebar', {
     </header>
 
     <div class="sb-rail" role="toolbar" aria-orientation="vertical" aria-label="折叠侧栏快捷操作">
+      <!-- 展开开关置顶：顶部按钮天然被读作「还原侧栏」入口，与展开态 header 首位
+           收起开关同位（心智一致）；ListTree 置顶会被误当展开按钮点出 flyout -->
+      <button
+        type="button"
+        class="icon-btn"
+        aria-label="展开连接资产"
+        title="展开侧栏"
+        @click="emit('toggle-collapse')"
+      >
+        <PanelLeftOpen :size="16" />
+      </button>
+      <div class="sb-rail-divider" aria-hidden="true"></div>
       <!-- 资产菜单触发：hover/focus 弹出 flyout 面板（antd 折叠菜单式），点击聚焦可钉住 -->
       <button
         type="button"
@@ -378,16 +392,6 @@ provide('connectionSidebar', {
         title="资产菜单（悬停展开）"
       >
         <ListTree :size="16" />
-      </button>
-      <div class="sb-rail-divider" aria-hidden="true"></div>
-      <button
-        type="button"
-        class="icon-btn"
-        aria-label="展开连接资产"
-        title="展开侧栏"
-        @click="emit('toggle-collapse')"
-      >
-        <PanelLeftOpen :size="16" />
       </button>
       <button
         type="button"

@@ -1,11 +1,13 @@
 <script setup lang="ts">
 /**
- * EditorSurface — 内置编辑器覆盖面板（v0.18）。
+ * EditorSurface — 内置文本/配置文件编辑器弹窗（v0.18 覆盖面板，v0.20.2 起弹窗形态）。
  *
- * 挂载于主窗口 / 资产窗口的中央区（终端/文件面板之上，z 用 --z-sticky）。
+ * 挂载于主窗口 / 资产窗口的中央区之上（遮罩 --app-scrim + --z-modal，居中窗体）。
  * 由 stores/editor.ts 驱动：多文件 tab + 工具栏 + 编辑区/Markdown 分屏 +
  * 状态栏（行列/编码/EOL/只读原因）+ 打开失败分类面板（含按 GBK 重试）。
  * 拖拽：接收文件面板的内部 MIME 拖入（本地条目 → 逐个打开）。
+ * 关闭语义：遮罩空白点击与 Esc 均不关闭（防误关丢未保存内容，见模板内注释）；
+ * 关闭走 tab 关闭按钮（dirty 先三选）与 tab 栏收起按钮。
  *
  * 本组件经 defineAsyncComponent 懒加载（CodeMirror 及语言包不进主 bundle）。
  */
@@ -129,15 +131,20 @@ function onEolChange(event: Event) {
     @dragleave="onDragLeave"
     @drop="onDrop"
   >
-    <EditorTabBar
-      :tabs="store.tabs"
-      :active-tab-id="store.activeTabId"
-      @select="store.setActive"
-      @close="store.requestCloseTab"
-      @hide="store.hideSurface"
-    />
+    <!-- 弹窗形态（v0.20.2）：遮罩 + 居中窗，遮罩用 var(--app-scrim)（与 GlobalModals
+         同源）。产品决策——遮罩空白点击与 Esc 均【不】关闭编辑器（防误关丢未保存
+         内容）：关闭只走 tab 关闭按钮（dirty 先过三选弹窗）与 tab 栏收起按钮
+         （隐藏面板不丢 tab）。不要给本组件接 useModalDismiss 的 closeModal 语义。 -->
+    <div class="editor-window">
+      <EditorTabBar
+        :tabs="store.tabs"
+        :active-tab-id="store.activeTabId"
+        @select="store.setActive"
+        @close="store.requestCloseTab"
+        @hide="store.hideSurface"
+      />
 
-    <template v-if="tab">
+      <template v-if="tab">
       <EditorToolbar :tab="tab" :saving="saving" @jump="onJump" />
 
       <!-- 主区：加载 / 错误 / 编辑+预览 -->
@@ -230,21 +237,25 @@ function onEolChange(event: Event) {
           </button>
         </span>
       </div>
-    </template>
+      </template>
+    </div>
   </div>
 </template>
 
 <style scoped lang="scss">
 @use '@/styles/_tokens' as *;
 
+// 遮罩层：与 GlobalModals 的 .modal-layer 同源（--app-scrim + --z-modal）。
+// 不挂遮罩点击关闭、不接 Esc——见模板内产品决策注释。
 .editor-surface {
   position: absolute;
   inset: 0;
-  z-index: var(--z-sticky);
+  z-index: var(--z-modal);
   display: flex;
-  flex-direction: column;
-  background: var(--app-bg);
-  border-top: 1px solid var(--app-border);
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6);
+  background: var(--app-scrim);
 
   &.drag-over::after {
     content: '拖入以打开文件';
@@ -261,6 +272,20 @@ function onEolChange(event: Event) {
     font-size: var(--text-sm);
     pointer-events: none;
   }
+}
+
+// 弹窗窗体：编辑器本体（多 tab + 工具栏 + 主区 + 状态栏）。
+.editor-window {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  max-width: 1200px;
+  background: var(--app-bg);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
 }
 
 .editor-main {
