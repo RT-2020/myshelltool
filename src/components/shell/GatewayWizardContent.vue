@@ -1,19 +1,26 @@
 <script setup lang="ts">
 /**
- * 网关部署向导（v0.22，modal type: gatewayWizard）——自包含两段式：
+ * 网关部署向导（v0.22，modal type: gatewayWizard）——左竖导航两页：
  *
- * 第一步：VPS 信息 → 生成挂载密钥对（gateway_wizard_start）→ 展示公钥与
- *         已代入公钥的 docker run 模板，用户拿去 VPS 部署 relay。
- * 第二步：用户部署完成后 → 填挂载口/白名单/加密口令/保存路径 →
- *         gateway_wizard_finish（probe 抓 pin + 防轮换 + 导出 bundle）→
- *         gateway_pretrust_host_key 预写 known_hosts → 经**常规 saveAsset 链**
- *         保存网关资产（tag=gateway，私钥走 credentials 常规路径——同步/删除/
- *         Gist 备份全复用，勿另建存储：计划 §5 决策 16 / v3-L5）。
+ * 「部署网关」（本机·运维侧，默认页）三段式：
+ *   第一步：VPS 信息 → 生成挂载密钥对（gateway_wizard_start）→ 展示公钥与
+ *           已代入公钥的 docker run 模板，用户拿去 VPS 部署 relay。
+ *   第二步：用户部署完成后 → 填挂载口/白名单/加密口令/保存路径 →
+ *           gateway_wizard_finish（probe 抓 pin + 防轮换 + 导出 bundle）→
+ *           gateway_pretrust_host_key 预写 known_hosts → 经**常规 saveAsset 链**
+ *           保存网关资产（tag=gateway，私钥走 credentials 常规路径——同步/删除/
+ *           Gist 备份全复用，勿另建存储：计划 §5 决策 16 / v3-L5）。
+ *   第三步：完成指引（跳板机侧三条后续命令：拷文件 / 导入 / schtasks 模板）。
+ * 「导入配置」（跳板机侧）：GatewayImportPanel 自包含（装完 mst 后 GUI 点选，
+ *   v0.20.1 补齐，替代 CLI 拷文件+手敲命令）。
  *
- * 完成态展示跳板机侧三条后续命令（拷文件 / 导入 / schtasks 模板）。
+ * 布局镜像 SettingsPanelContent（左竖导航 + 右内容 + 页面标题，设计语言一致），
+ * 样式拆至 GatewayWizardContent.modal.scss（500 行 SFC 硬上限）。
+ * 两页 v-show 常驻：切页不丢部署表单/导入面板的轮询状态。
  * 表单状态自持（非 useModalFormSync）：本弹窗不进 dispatchModalSubmit 分发。
  */
 import { computed, ref } from 'vue';
+import { Import, Rocket } from 'lucide-vue-next';
 import AppButton from '@/components/ui/AppButton.vue';
 import AppInput from '@/components/ui/AppInput.vue';
 import GatewayImportPanel from '@/components/shell/GatewayImportPanel.vue';
@@ -27,8 +34,7 @@ import {
 
 const store = useWorkbenchStore();
 
-// 顶层页签：「部署」（本机运维侧两段式向导）|「导入」（跳板机侧装完 mst 后
-// GUI 点选导入 bundle——v0.20.1 补齐，替代 CLI 拷文件+手敲命令）
+// 顶层页签：「deploy」本机走向导部署 |「import」跳板机侧（已装 mst）GUI 导入
 const tab = ref<'deploy' | 'import'>('deploy');
 const step = ref<1 | 2 | 3>(1); // 1 收集 VPS → 2 部署+导出 → 3 完成指引
 const busy = ref(false);
@@ -158,18 +164,54 @@ async function runStep2() {
 </script>
 
 <template>
-  <div class="stack" data-gateway-wizard>
-    <!-- 顶层页签：本机走向导部署 | 跳板机（已装 mst）GUI 导入 -->
-    <div class="wizard-tabs" role="tablist">
-      <button type="button" :class="['tab-btn', { active: tab === 'deploy' }]" role="tab" :aria-selected="tab === 'deploy'" @click="tab = 'deploy'">部署向导（本机）</button>
-      <button type="button" :class="['tab-btn', { active: tab === 'import' }]" role="tab" :aria-selected="tab === 'import'" @click="tab = 'import'">导入配置（跳板机）</button>
-    </div>
+  <div class="gw-panel" data-gateway-wizard>
+    <!-- 左侧竖导航：本机走向导部署 | 跳板机（已装 mst）GUI 导入（规格镜像 settings-nav） -->
+    <nav class="gw-nav" aria-label="网关操作">
+      <button
+        type="button"
+        class="nav-item"
+        :class="{ active: tab === 'deploy' }"
+        :aria-current="tab === 'deploy' ? 'page' : undefined"
+        @click="tab = 'deploy'"
+      >
+        <Rocket :size="14" />
+        部署网关
+      </button>
+      <button
+        type="button"
+        class="nav-item"
+        :class="{ active: tab === 'import' }"
+        :aria-current="tab === 'import' ? 'page' : undefined"
+        @click="tab = 'import'"
+      >
+        <Import :size="14" />
+        导入配置
+      </button>
+    </nav>
 
-    <!-- ═══ 导入页签：跳板机侧「服务器 + 口令」（独立面板：实时状态卡 + 两栏 + 高级折叠）═══ -->
-    <GatewayImportPanel v-if="tab === 'import'" />
+    <!-- 右侧内容区：页面标题与左导航选中项呼应；页面副题回答「这一页在哪台机器、给谁用」 -->
+    <main class="gw-content">
+      <!-- ═══ 部署页（默认）：本机·运维侧三段式向导 ═══ -->
+      <section v-show="tab === 'deploy'" class="tab-pane">
+        <header class="page-title"><Rocket :size="15" />部署网关</header>
+        <p class="page-sub">在本机（运维侧）操作——第一次搭建网关从本页开始。</p>
 
-    <!-- ═══ 部署页签：原两段式向导 ═══ -->
-    <template v-else>
+        <!-- 使用流程：真实三段顺序（先部署后导入才能连），编号承载顺序信息 -->
+        <div class="flow-steps">
+          <div class="flow-step">
+            <span class="flow-no" aria-hidden="true">1</span>
+            <span><b>本机 · 部署</b>：在本页填公网 VPS 信息，向导生成部署命令，导出加密配置。</span>
+          </div>
+          <div class="flow-step">
+            <span class="flow-no" aria-hidden="true">2</span>
+            <span><b>跳板机 · 导入</b>：把左侧「导入配置」页发给客户内网那台机器，输入口令一键启动。</span>
+          </div>
+          <div class="flow-step">
+            <span class="flow-no" aria-hidden="true">3</span>
+            <span><b>本机 · 连接</b>：新建资产时跳板机选网关，终端 / 文件 / 隧道直达客户内网。</span>
+          </div>
+        </div>
+
     <!-- 第一步：VPS 信息 → 生成挂载密钥 -->
     <template v-if="step === 1">
       <p class="muted">
@@ -267,108 +309,18 @@ async function runStep2() {
         完整文档见 docs/网关模式部署指南.md。
       </p>
     </template>
-    </template><!-- /部署页签 -->
+      </section>
+
+      <!-- ═══ 导入页：跳板机侧「服务器 + 口令」（实时状态卡 + 两栏 + 高级折叠）═══ -->
+      <section v-show="tab === 'import'" class="tab-pane">
+        <header class="page-title"><Import :size="15" />导入配置</header>
+        <p class="page-sub">
+          在跳板机（客户内网的 Windows 机器）上的 myshelltool 中打开本页：填运维方给的服务器地址与口令，一键启动网关。
+        </p>
+        <GatewayImportPanel />
+      </section>
+    </main>
   </div>
 </template>
 
-<style scoped lang="scss">
-@use '@/styles/_tokens' as *;
-
-
-
-.advanced-fold {
-  margin-top: var(--space-3);
-  border-top: 1px dashed var(--border);
-  padding-top: var(--space-2);
-
-  summary {
-    cursor: pointer;
-    color: var(--text-secondary);
-    font-size: var(--font-size-sm);
-    user-select: none;
-  }
-}
-
-.wizard-tabs {
-  display: flex;
-  gap: var(--space-1);
-  margin-bottom: var(--space-2);
-  border-bottom: 1px solid var(--border);
-
-  .tab-btn {
-    padding: var(--space-1) var(--space-2);
-    border: none;
-    border-bottom: 2px solid transparent;
-    background: transparent;
-    color: var(--text-secondary);
-    font-size: var(--font-size-sm);
-    cursor: pointer;
-
-    &.active {
-      color: var(--text-primary);
-      border-bottom-color: var(--accent, currentColor);
-      font-weight: 500;
-    }
-  }
-}
-
-.wizard-actions {
-  display: flex;
-  gap: var(--space-2);
-  justify-content: flex-end;
-  margin-top: var(--space-3);
-}
-
-.code-block {
-  position: relative;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-3);
-  margin: var(--space-1) 0;
-
-  pre {
-    margin: 0;
-    font-family: var(--font-mono);
-    font-size: var(--font-size-xs);
-    white-space: pre-wrap;
-    word-break: break-all;
-    color: var(--text-primary);
-  }
-
-  .link-btn {
-    position: absolute;
-    top: var(--space-1);
-    right: var(--space-1);
-  }
-}
-
-.path-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-
-  .path-value {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--text-secondary);
-    font-family: var(--font-mono);
-    font-size: var(--font-size-xs);
-  }
-}
-
-.key-fragment {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-  word-break: break-all;
-}
-
-.steps {
-  padding-left: 1.2em;
-  display: grid;
-  gap: var(--space-2);
-}
-</style>
+<style scoped lang="scss" src="./GatewayWizardContent.modal.scss"></style>

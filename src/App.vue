@@ -104,8 +104,9 @@ function createAssetInGroup(group: string) {
   store.modal = { type: 'assetEditor', asset: null, payload: { presetGroup: group } };
 }
 
-function createGroup() {
-  store.modal = { type: 'createGroup' };
+// 新建分组：无参=顶层；右键「新建子分组」带父路径（payload 契约，useModalFormSync 消费预填）
+function createGroup(parentPath?: string) {
+  store.modal = { type: 'createGroup', payload: parentPath ? { parentPath } : null };
 }
 
 function connectSelected() {

@@ -1,7 +1,7 @@
 # AGENTS.md
 
 > 本文件是 **AI Coding Agent 的项目上下文单一信息源（Single Source of Truth）**，但只收录**每次协作都需要的常驻指令**。
-> 所有 AI 编码工具（Claude Code、Cursor、GitHub Copilot、ZCode 等）应首先读本文件。
+> 所有 AI 编码工具（Claude Code、Cursor、GitHub Copilot、ZCode 等）应首先读本文件。本文件是用户全局约定（`~/.zcode/AGENTS.md`，工程判据/协作纪律）的**项目层**：全局通用判据在本项目默认生效，本文件只收录项目专属事实与红线；两层冲突时以本文件为准。
 >
 > **分层原则（防膨胀，本文件自限 250 行以内）**：
 > - **本文件 = 常驻层**：协作方式、质量红线、约定、命令、安全红线——每次会话全量注入，必须短而硬。
@@ -48,7 +48,7 @@
 > ⚠️ 当前已超标的文件（重构候选）由 **`npm run lint:size`（`scripts/size-guard.mjs`）机械守门**：RATCHET 表登记存量超标文件的基线行数，只许缩不许涨；缩回限内必须除名（锁定成果）。软警告区清单随门禁输出实时打印；历史基线演进见 [`docs/architecture-log.md`](./docs/architecture-log.md)。新增功能时优先考虑拆分这些文件，而非继续往里堆。
 
 **禁止事项**：
-- ❌ 重复造轮子：写新逻辑/样式/正则前必须先搜（grep/Grep/Explore），已有则复用。
+- ❌ 重复造轮子，也禁止错误合并：写新逻辑/样式/正则前必须先搜（grep/Grep/Explore），但复用按全局判据 4 判定——契约一致**且**变更驱动一致才算等价，「长得像」不算，不得为通过检索强行合并；项目高频复用点：`ui/index.ts`、`workbench.ts` re-export、`backend.ts` normalize*。
 - ❌ 空catch {}：错误至少 `announce` 或显式注释「为何可忽略」。
 - ❌ `window.alert` / `window.confirm` / `window.prompt`：用内联校验 + `GlobalModals`。
 - ❌ 硬编码颜色/z-index/间距：用 `var(--token)`（见 `src/styles/_tokens.scss`）。
@@ -124,16 +124,16 @@ myshelltool/
 - **样式用 SCSS + 设计 token**（`@/styles/_tokens.scss`）。组件内 `<style scoped lang="scss">` 顶部 `@use '@/styles/_tokens' as *;`。
   - 颜色/间距/圆角/阴影/动效/z-index **必须用 `var(--xxx)` token**，不要硬编码。z-index 用 `var(--z-base|dropdown|sticky|drawer|modal|toast|tooltip)`。
   - 新增 token 加到 `_tokens.scss` 的 map 并暴露为 `:root` CSS 变量。
-- **hover/focus 反馈铁律（纯绘制属性）**：交互态只允许改 `color`/`background`/`border-color`/`opacity`/`box-shadow`/`outline-color`/`filter`/`transform`；**禁止**改一切盒模型与文档流属性（`padding`/`margin`/`border-width`/`width`/`height`/`min|max-*`/`font-size`/`font-weight`/`line-height`/`letter-spacing`/`gap`/`flex`/`grid-template`/`display`/`position`/`overflow`/`top|left|right|bottom`）——那会触发重排，hover 一行代码周边元素全位移（页面抖动）。悬停显隐元素必须**常驻占位**（默认 `opacity:0`/`visibility:hidden`，hover 改 `opacity:1`），**禁止** `display:none ↔ flex/grid` 切换；需要位移反馈用 `transform`（合成器属性，不重排）。排查记录与验证方法见 [`docs/已知边界与修复史.md`](./docs/已知边界与修复史.md)「hover 抖动排查」节。
+- **hover/focus 反馈铁律（纯绘制属性）**：交互态只允许改 `color`/`background`/`border-color`/`opacity`/`box-shadow`/`outline-color`/`filter`/`transform`；**禁止**改一切盒模型与文档流属性（`padding`/`margin`/`border-width`/`width`/`height`/`min|max-*`/`font-size`/`font-weight`/`line-height`/`letter-spacing`/`gap`/`flex`/`grid-template`/`display`/`position`/`overflow`/`top|left|right|bottom`）——那会触发重排，hover 一行代码周边元素全位移（页面抖动）。悬停显隐元素必须**常驻占位**（默认 `opacity:0`/`visibility:hidden`，hover 改 `opacity:1`），**禁止** `display:none ↔ flex/grid` 切换；需要位移反馈用 `transform`（合成器属性，不重排）。**登记例外（仅此一处）**：标题栏全局搜索 `.tb-search:focus-within` 的「宽度呼吸」——必须活在 `.tb-center` 固定宽度槽位内（同排元素零位移，reflow 圈在组件自身子树，见 workbench-shell.scss 注释）；复制此模式须同样配固定槽位并在此登记。排查记录与验证方法见 [`docs/已知边界与修复史.md`](./docs/已知边界与修复史.md)「hover 抖动排查」节。
 - **路径别名 `@`** → `src/`（vite.config.ts 配置）。import 用 `@/stores/...`、`@/components/...`。
 - **组件分层**：`ui/` 是无业务的基础组件（`App*` 命名，barrel 导出）；业务组件按域放 `shell/`、`terminal/`、`files/`、`resource-monitor/`。
 - **通用操作入口模式**：右键菜单用 `AppContextMenu`（`items: [{label, action, danger, separator, disabled}]`），参照 `FileSurface.vue` 用法。危险操作用 `danger: true`（红色）或 `AppButton variant="danger"`。
-- **弹窗**：业务弹窗统一走 `GlobalModals.vue`（`store.modal = { type, ...payload }`），按 `modal.type` 分支。新增 type 需同步改 `modalTitle` / `submitModal` / `watch`。保留 legacy 选择器（`#modalLayer`/`#modalBody`/`.modal-actions .btn.danger`）以兼容测试。
+- **弹窗**：既有业务弹窗走 `GlobalModals.vue`（`store.modal = { type, ...payload }`），按 `modal.type` 分支；新增 type 需同步改 `modalTitle` / `submitModal` / `watch`。**新弹窗双轨判据**：GlobalModals 已贴 500 行硬上限，自持复杂流程的新弹窗走 App 根级 overlay（`AppModal` + 独立 SFC，先例 `SshImportDialog.vue`，组件头注释须登记不走 GlobalModals 的理由）；简单确认类仍进 GlobalModals。保留 legacy 选择器（`#modalLayer`/`#modalBody`/`.modal-actions .btn.danger`）以兼容测试。
 
 ### 4.2 状态管理（跨 store 桥接）
 - **`workbench.ts` 是编排壳**：实例化 8 个子 store（sessions/files/tunnels/assets/ui/mcp/sync/editor，v0.18 起），`initialize()` 编排启动加载，用 plain-object 返回 + `computed()` 包裹子 store 的响应式 state（**不要直接暴露子 store 的 ref**，会丢响应性）。**注意 `resourceMonitor.ts` 不经 workbench 编排**——它由 `ResourceMonitorPanel.vue` 直接 `useResourceMonitorStore()` 使用（独立轮询生命周期，与全局初始化解耦）。
 - **跨 store 依赖用 lazy bridge**：子 store 通过 `attachWorkbench(bridge)` 注入跨 store 访问（如 assets store 调 workbench.announce / workbench.modal）。**禁止循环 import**。
-- **新 action 加到子 store**，再在 `workbench.ts` return 块 re-export（参照 `saveAsset`/`deleteAsset` 模式）。
+- **新 action 加到子 store**。跨域消费面（App.vue / GlobalModals 等顶层编排消费方）经 `workbench.ts` return 块 re-export（参照 `saveAsset`/`deleteAsset` 模式）；**领域组件直连本域子 store**（editor 模式，先例 `EditorSurface`/`AssetsTabContent`）——判断「跨域」的标准是逻辑本身横跨多个 store，不是组件文件在哪个目录。workbench.ts 贴 500 行硬上限，re-export 面只增不减时优先让新代码直连。
 
 ### 4.3 Rust 后端
 - **所有 Tauri 命令用 `State<'_, AppState>` 统一解析**（ADR v3 Option A 重构后）。**禁止** 双 `manage` hack。
@@ -170,6 +170,7 @@ npm run test:ui      # UI 五套：smoke / host-key / file-loading / **ipc-flows
 npm run lint:facts   # 「靠猜测代替事实」门禁：scripts/fact-guards.mjs（指南 §7）；build 首步即跑，CI/发版同步生效
 npm run lint:size    # 文件大小红线门禁：scripts/size-guard.mjs（RATCHET 制，见「质量红线」节）；随 build 生效
 npm run check:ipc    # IPC 契约清单级一致性：scripts/ipc-contract-check.mjs（命令注册表 × 调用面、事件 emit × 监听面）；随 build 生效
+npm run lint:components # SFC 模板组件解析门禁：scripts/component-resolve-guard.mjs（模板引用未 import 的组件即 fail——TitleBarSearch 漏 import 曾静默丢功能随版本发布）；随 build 生效
 npm run type-check   # vue-tsc --build，strict 全量；build 亦含此步
 
 # —— 后端单独验证 ——
@@ -252,7 +253,7 @@ cd src-tauri && cargo check       # 更快的类型检查
 收到任务时按此顺序判断：
 1. **是读/研究类**？→ 用 Explore 子 agent 并行搜索，给出结论而非文件堆。
 2. **涉及多文件/架构决策**？→ 先进 Plan 模式，产出计划并经确认。
-3. **有现成实现可复用**？→ 复用（查 `ui/index.ts`、`workbench.ts` re-export、`backend.ts` normalize*）。
+3. **有现成实现**？→ 按全局判据 4 判等价（契约 + 变更驱动）后再定复用/新建；高频复用点查 `ui/index.ts`、`workbench.ts` re-export、`backend.ts` normalize*。
 4. **要改 Rust 命令**？→ 别忘了在 `generate_handler!` 注册。
 5. **要加跨 store 逻辑**？→ 加子 store action + `workbench.ts` re-export，用 lazy bridge。
 6. **涉及外部环境**（远端路径/命令输出解析/locale/时钟/身份键/就绪信号）？→ 先按指南 §7 逐项想清求证方式：能协议求证（SFTP canonicalize/stat/read_dir、pty 模式）就不猜；确需 exec 解析必须 `LC_ALL=C` + POSIX 选项 + 注释平台假设。新硬编码写进代码前自问「换个合理环境还成立吗」。

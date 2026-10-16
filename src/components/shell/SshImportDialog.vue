@@ -25,7 +25,7 @@ import {
 import type { SshImportPreview } from '@/types/domain';
 import AppModal from '@/components/ui/AppModal.vue';
 import AppButton from '@/components/ui/AppButton.vue';
-import AppSelect from '@/components/ui/AppSelect.vue';
+import AppCombobox from '@/components/ui/AppCombobox.vue';
 
 const store = useWorkbenchStore();
 const assetsStore = useAssetsStore();
@@ -163,10 +163,11 @@ onMounted(() => {
           <span class="muted">共 {{ preview.candidates.length }} 台 · 已选 {{ selected.size }} 台（冲突项默认跳过）</span>
           <label class="setting-field group-field">
             <span class="muted field-label">导入到分组</span>
-            <AppSelect
+            <AppCombobox
               :model-value="importGroup"
               :options="groupOptions"
               class="group-select"
+              placeholder="选择或输入，如 生产/数据库"
               @update:model-value="v => (importGroup = String(v))"
             />
           </label>

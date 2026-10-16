@@ -160,18 +160,14 @@ export async function dispatchModalSubmit(ctx: ModalSubmitContext, type: ModalSt
       await run(() => store.deleteAsset(modal.asset?.id as string));
       return;
     case 'renameGroup': {
-      const newName = ctx.groupInputs.rename.trim();
-      if (!newName) {
-        ctx.groupFormError.value = '请输入新名称';
-        return;
-      }
-      if (newName.includes('/')) {
-        ctx.groupFormError.value = '名称不能包含 /';
+      // 完整路径编辑：输入即新路径（可用 / 调整层级=移动节点，子树随行）；
+      // 移进自己子树由后端 fail-closed 拒绝（防自嵌套路径）
+      const newPath = ctx.groupInputs.rename.trim();
+      if (!newPath) {
+        ctx.groupFormError.value = '请输入新分组路径';
         return;
       }
       const oldPath = modal.path || '';
-      const parent = oldPath.includes('/') ? oldPath.slice(0, oldPath.lastIndexOf('/')) : '';
-      const newPath = parent ? `${parent}/${newName}` : newName;
       await run(() => store.renameGroup(oldPath, newPath));
       return;
     }

@@ -1,6 +1,18 @@
 {
-  "generatedAt": "2026-10-15T08:08:37.380Z",
+  "generatedAt": "2026-10-16T08:30:47.870Z",
   "entries": [
+    {
+      "version": "0.20.2",
+      "tag": "v0.20.2",
+      "date": "2026-10-16",
+      "notes": "## v0.20.2\n\n_区间: v0.20.1 → v0.20.2_\n\n### 🐛 修复\n- **mcp**: 补齐 2026-07-28 协议 resultType 必填——4 处 List*Result 手写 result_type: None 被 serde skip，Zcode 等新协议 host 严格校验必填直接判 tools/list 无效（旧版本 host 走 rmcp strip 分支无感，故仅新客户端全挂）；改 Some(ResultType::COMPLETE)，旧 peer 仍由框架剥掉零影响\n\n### 📚 文档\n- **readme**: 版本演进同步 v0.20.2\n\n### 📦 其他\n- v0.20.2\n"
+    },
+    {
+      "version": "0.20.1",
+      "tag": "v0.20.1",
+      "date": "2026-10-15",
+      "notes": "## v0.20.1\n\n_区间: v0.20.0 → v0.20.1_\n\n### ✨ 新功能\n- **gateway**: 运行状态可视化与导入面板 UI 完善——跨进程状态通道（状态文件迁移即写 + 10s 心跳，GUI 25s 新鲜度判定五态）；「导入配置」独立面板（5s 轮询实时状态卡/口令可见性切换/重连错误折叠展示，向导瘦身 596→374 守 500 红线）\n- **gateway**: 「服务器+口令」零文件口径——密钥从口令 Argon2id 派生（relay hostkey/挂载钥/网关hostkey/客户端钥四域 label 隔离）：relay 镜像 GATEWAY_SECRET 模式（多阶段编译 gw-derive，hostkey+authorized_keys 全派生，纯 ed25519）；跳板机 gateway_setup_from_secret 两栏配置 + run 的 secret 模式（口令 DPAPI 存储，密钥现算不落盘）；导入页签收敛为「服务器+口令」，bundle 文件降为高级折叠；bundle 模式全兼容保留\n- **gateway**: 跳板机侧 GUI 导入——装完 mst 点选 bundle 即用（补「只需装本体」缺口）：向导加导入页签（选文件/口令/导入并启动），gateway_import_bundle 复用 CLI 同一内核 DPAPI 落位（两路互认），gateway_launch spawn 独立常驻进程（DETACHED）；run.rs 拆 run_loaded/loaded_from_bundle 为容器路径预留 API\n\n### 🐛 修复\n- **build**: 补提交 component-resolve-guard.mjs——上笔提交误收了 package.json 的 lint:components 挂载但漏了脚本本体，CI 发版构建 MODULE_NOT_FOUND（本机有文件故本地门禁全绿未曝）\n- **gateway**: relay 派生工具改 python 实现（大陆镜像源拉不动 rust:alpine）——Argon2id 参数与 rust 端逐字节对齐（互通已对拍：47 实机 host key == 本地派生 pin）；OpenSSH 私钥手工序列化修正（key-v1 magic/pk+sk 双字段/8 字节 padding/二进制输出防 CRLF）；镜像回单阶段 alpine+阿里 apk 源，build context 回 docker/relay；口令模式全链已验（本机→47 relay→本地网关→HTTP 200）；清理误入的会话临时文件\n- **mcp**: 本机写保护放行 OS 临时区——macOS temp_dir 在 /var/folders 会命中黑名单 \\var 前缀（portability 首曝）；放行仅作用于写保护，fs_local 共享黑名单不动\n- **mcp**: parse_asset_ids 适配 rmcp 3.5 的 JsonValue 参数——字符串形态须取 as_str（to_string 带 JSON 转义致三 forms 测试在 portability 首曝），补真数组形态测试\n- **build**: agent_probe 探针改为 Windows 专属编译——named pipe API 非 Windows 不存在，examples 连带 cargo test 编译故 portability 矩阵再曝\n- **ssh**: agent 双通道改为 Windows 专属编译——connect_pageant/connect_named_pipe 非 Windows 不存在，portability 矩阵修复\n\n### 📚 文档\n- **readme**: 版本演进同步 v0.20.1\n\n### 🧪 测试\n- **mcp**: job_store/output_cache 模块内测试串行化——进程级共享存储的容量测试会驱逐并行 roundtrip 条目（CI 偶发红根因，调度相关故此前时绿时红）\n- **mcp**: 修正两个从未真跑的 portability 测试——单资产噪音断言精确到 header 标记（条件指令合法保留）、cleanup 测试数学改为过期+截断两分支覆盖\n\n### 📦 其他\n- v0.20.1\n"
+    },
     {
       "version": "0.20.0",
       "tag": "v0.20.0",

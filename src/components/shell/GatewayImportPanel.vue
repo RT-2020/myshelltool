@@ -134,10 +134,6 @@ function copyText(text: string, what: string) {
     </div>
 
     <template v-if="!importResult">
-      <p class="muted">
-        这台机器是<b>跳板机</b>（客户内网）时用本页：输入 relay 服务器地址与口令，
-        一键配置并启动——其余全部自动完成。
-      </p>
       <label class="stack"><span>relay 服务器地址</span>
         <AppInput v-model="setupHost" placeholder="例如 47.109.61.34" data-gateway-field="setup-host" />
       </label>
@@ -193,12 +189,24 @@ function copyText(text: string, what: string) {
 <style scoped lang="scss">
 @use '@/styles/_tokens' as *;
 
+// .form-error 原定义在 GlobalModals.modal.scss（scoped），子组件内部元素够不着
+// ——本组件自 GlobalModals 模板抽出后该类一直未被命中，就地补齐（对齐其视觉）。
+.form-error {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in oklab, var(--danger), transparent 50%);
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklab, var(--danger), transparent 88%);
+  color: var(--danger);
+  font-size: var(--text-xs);
+}
+
 .gw-status-card {
   display: flex;
   align-items: flex-start;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border);
+  border: 1px solid var(--app-border);
   border-radius: var(--radius-sm);
   margin-bottom: var(--space-3);
 
@@ -208,15 +216,15 @@ function copyText(text: string, what: string) {
     height: 10px;
     margin-top: 4px;
     border-radius: 50%;
-    background: var(--text-secondary);
+    background: var(--app-muted);
   }
 
   .gw-status-body { display: grid; gap: 2px; min-width: 0; }
-  .gw-status-label { font-weight: 500; color: var(--text-primary); }
-  .gw-status-meta { font-size: var(--font-size-xs); color: var(--text-secondary); font-family: var(--font-mono); }
-  .gw-status-hint { font-size: var(--font-size-xs); color: var(--text-secondary); }
+  .gw-status-label { font-weight: 500; color: var(--app-text); }
+  .gw-status-meta { font-size: var(--text-xs); color: var(--app-muted); font-family: var(--font-mono); }
+  .gw-status-hint { font-size: var(--text-xs); color: var(--app-muted); }
   .gw-status-detail {
-    font-size: var(--font-size-xs);
+    font-size: var(--text-xs);
     color: var(--warn, #b8860b);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
@@ -243,16 +251,16 @@ function copyText(text: string, what: string) {
 
   .secret-toggle {
     flex: 0 0 auto;
-    font-size: var(--font-size-xs);
+    font-size: var(--text-xs);
     padding: 0 var(--space-2);
     height: 28px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--app-border);
     border-radius: var(--radius-sm);
     background: transparent;
-    color: var(--text-secondary);
+    color: var(--app-muted);
     cursor: pointer;
 
-    &:hover { border-color: var(--accent, currentColor); color: var(--text-primary); }
+    &:hover { border-color: var(--accent, currentColor); color: var(--app-text); }
   }
 }
 
@@ -265,12 +273,12 @@ function copyText(text: string, what: string) {
 
 .advanced-fold {
   margin-top: var(--space-3);
-  border-top: 1px dashed var(--border);
+  border-top: 1px dashed var(--app-border);
   padding-top: var(--space-2);
 
   summary {
     cursor: pointer;
-    color: var(--text-secondary);
+    color: var(--app-muted);
     font-size: var(--font-size-sm);
     user-select: none;
   }
@@ -284,16 +292,16 @@ function copyText(text: string, what: string) {
   .path-value {
     flex: 1; min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    color: var(--text-secondary);
+    color: var(--app-muted);
     font-family: var(--font-mono);
-    font-size: var(--font-size-xs);
+    font-size: var(--text-xs);
   }
 }
 
 .code-block {
   position: relative;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
+  background: var(--app-panel-2);
+  border: 1px solid var(--app-border);
   border-radius: var(--radius-sm);
   padding: var(--space-2) var(--space-3);
   margin: var(--space-1) 0;
@@ -301,10 +309,10 @@ function copyText(text: string, what: string) {
   pre {
     margin: 0;
     font-family: var(--font-mono);
-    font-size: var(--font-size-xs);
+    font-size: var(--text-xs);
     white-space: pre-wrap;
     word-break: break-all;
-    color: var(--text-primary);
+    color: var(--app-text);
   }
 
   .link-btn { position: absolute; top: var(--space-1); right: var(--space-1); }

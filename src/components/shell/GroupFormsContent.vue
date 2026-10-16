@@ -7,7 +7,7 @@
  * 对象 props 就地编辑——先例同 AssetEditorContent。
  */
 import AppInput from '@/components/ui/AppInput.vue';
-import AppSelect from '@/components/ui/AppSelect.vue';
+import AppCombobox from '@/components/ui/AppCombobox.vue';
 
 export type GroupFormKind = 'renameGroup' | 'createGroup' | 'moveAsset';
 
@@ -26,10 +26,10 @@ defineProps<{
 <template>
   <div class="stack">
     <template v-if="kind === 'renameGroup'">
-      <p class="muted">重命名分组「{{ path }}」的最后一段名称。
-        （改层级路径请用「新建分组」+「移动」组合）</p>
-      <label class="stack"><span>新名称（不含 '/'）</span>
-        <AppInput :model-value="inputs.rename" placeholder="分组名"
+      <p class="muted">输入分组「{{ path }}」的新完整路径，可用「/」调整层级
+        （如「生产/数据库」）；其子级分组与资产随行。</p>
+      <label class="stack"><span>新路径</span>
+        <AppInput :model-value="inputs.rename" placeholder="生产/数据库"
           @update:model-value="v => inputs.rename = v" />
       </label>
     </template>
@@ -43,10 +43,12 @@ defineProps<{
     <template v-else>
       <p>移动连接「<strong>{{ assetName }}</strong>」到分组：</p>
       <label class="stack"><span>目标分组</span>
-        <AppSelect
+        <!-- 可选可输：直输新分组路径即建组（保存时后端收口声明） -->
+        <AppCombobox
           :model-value="inputs.move || '未分组'"
           :options="groupOptions"
-          @update:model-value="v => inputs.move = String(v)"
+          placeholder="选择或输入，如 生产/数据库"
+          @update:model-value="v => inputs.move = v"
         />
       </label>
     </template>

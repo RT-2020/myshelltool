@@ -236,6 +236,7 @@ mod session;
 pub mod agent; // v0.20（SSH P1）：SSH agent 认证桥（named pipe → Pageant，逐 key 尝试）
 pub mod session_cmds; // v0.20：轻量通道命令（write/resize），注册表经完整路径引用
 mod sftp;
+mod sftp_meta; // v0.20.2 拆分：单 dispatch 元数据命令（mkdir/rename/remove/chmod/readlink/stat）
 mod text_file;
 mod tunnel;
 
@@ -251,6 +252,7 @@ pub use monitor::*;
 pub use headless::*;
 pub use session::*;
 pub use sftp::*;
+pub use sftp_meta::*;
 pub use text_file::*;
 pub use tunnel::*;
 
