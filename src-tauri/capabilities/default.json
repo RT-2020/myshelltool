@@ -30,6 +30,7 @@
     "opener:default",
     "opener:allow-open-path",
     "dialog:allow-open",
+    "dialog:allow-save",
     "updater:default"
   ]
 }
