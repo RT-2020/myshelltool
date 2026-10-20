@@ -147,20 +147,33 @@ impl GatewayBundle {
 impl GatewayRuntimeConfig {
     /// v0.21「服务器+口令」模式的运行配置：零秘密（口令在 SecretStore，
     /// 挂载钥/网关 host key/客户端钥各运行时从口令现派生，永不落盘）。
-    /// pin 与 authorized_key 由派生确定性保证，无需存储。
-    pub fn from_secret(vps_host: &str, vps_port: u16) -> Self {
-        GatewayRuntimeConfig {
+    /// pin 由派生确定性保证；此处顺手派生填入落盘配置做自描述（如 VPS 侧
+    /// 身份排查），运行时 loaded_from_secret 仍以现派生为唯一权威，不读本值。
+    /// 挂载口/白名单参数化（v0.21.2）：安全组只放行特权口的中转架构（如
+    /// iptables 80→18080）需要非默认挂载口；白名单执法在跳板机内嵌 server，
+    /// 空 = 允许全部（与 bundle 向导口径一致）。
+    pub fn from_secret(
+        vps_host: &str,
+        vps_port: u16,
+        mount_port: u16,
+        secret: &str,
+        allowed_targets: Vec<String>,
+    ) -> Result<Self, String> {
+        // 提前派生 relay pin：既做口令强度 fail-fast，又填充自描述字段。
+        // 旧版本落盘的空 pin 配置仍由 validate 的 secret 兜底分支放行（向后兼容）。
+        let (pin_type, pin_hex) = crate::keys::derive_relay_pin_fields(secret)?;
+        Ok(GatewayRuntimeConfig {
             version: RUNTIME_VERSION,
             mode: MODE_SECRET.to_string(),
             vps_host: vps_host.trim().to_string(),
             vps_port,
             vps_username: "mount".to_string(),
-            host_key_pin: HostKeyPin { key_type: String::new(), key_hex: String::new() },
-            mount: MountConfig { bind_addr: "0.0.0.0".into(), remote_port: 2222 },
+            host_key_pin: HostKeyPin { key_type: pin_type, key_hex: pin_hex },
+            mount: MountConfig { bind_addr: "0.0.0.0".into(), remote_port: mount_port },
             listen_port: 22222,
             authorized_key: String::new(),
-            allowed_targets: vec![],
-        }
+            allowed_targets,
+        })
     }
 }
 
@@ -635,5 +648,55 @@ mod tests {
         assert_eq!(rt.host_key_pin, b.vps.host_key_pin);
         let s = serde_json::to_string(&rt).unwrap();
         assert!(!s.contains("BEGIN"), "运行配置序列化后不得出现 PEM 内容");
+    }
+
+    // ─── 口令模式 from_secret（v0.21.2 挂载口/白名单参数化 + pin 自描述）───
+
+    const TEST_SECRET: &str = "correct-horse-battery-20";
+
+    #[test]
+    fn from_secret_custom_ports_and_targets() {
+        let rt = GatewayRuntimeConfig::from_secret(
+            "117.72.25.115",
+            443,
+            18080,
+            TEST_SECRET,
+            vec!["172.16.1.0/24".into()],
+        )
+        .expect("合法参数必须成功");
+        assert_eq!(rt.vps_port, 443);
+        assert_eq!(rt.mount.remote_port, 18080);
+        assert_eq!(rt.allowed_targets, vec!["172.16.1.0/24".to_string()]);
+        rt.validate().expect("自描述 pin 的 secret 配置必须过校验");
+    }
+
+    #[test]
+    fn from_secret_pin_matches_runtime_derivation() {
+        // 落盘配置的自描述 pin 必须与运行时派生（loaded_from_secret 同源 helper）一致
+        let rt =
+            GatewayRuntimeConfig::from_secret("203.0.113.10", 22222, 2222, TEST_SECRET, vec![])
+                .unwrap();
+        let (t, h) = crate::keys::derive_relay_pin_fields(TEST_SECRET).unwrap();
+        assert_eq!(rt.host_key_pin.key_type, t);
+        assert_eq!(rt.host_key_pin.key_hex, h);
+        assert!(is_lowercase_hex(&rt.host_key_pin.key_hex), "pin 必须是合法小写 hex");
+    }
+
+    #[test]
+    fn from_secret_short_secret_rejected() {
+        let err = GatewayRuntimeConfig::from_secret("203.0.113.10", 22222, 2222, "short", vec![])
+            .expect_err("短口令必须 fail-fast 拒绝");
+        assert!(err.contains("至少 8 位"));
+    }
+
+    #[test]
+    fn legacy_empty_pin_secret_config_still_validates() {
+        // 向后兼容回归线：v0.21 落盘的空 pin secret 配置必须仍可解析校验
+        // （运行时以派生为唯一权威，不得因补了自描述 pin 就拒载存量配置）
+        let mut rt =
+            GatewayRuntimeConfig::from_secret("203.0.113.10", 22222, 2222, TEST_SECRET, vec![])
+                .unwrap();
+        rt.host_key_pin = HostKeyPin { key_type: String::new(), key_hex: String::new() };
+        rt.validate().expect("旧空 pin secret 配置必须继续放行");
     }
 }

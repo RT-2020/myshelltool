@@ -1,6 +1,18 @@
 {
-  "generatedAt": "2026-10-16T08:30:47.870Z",
+  "generatedAt": "2026-10-20T09:38:55.491Z",
   "entries": [
+    {
+      "version": "0.21.1",
+      "tag": "v0.21.1",
+      "date": "2026-10-20",
+      "notes": "## v0.21.1\n\n_区间: v0.21.0 → v0.21.1_\n\n### 🐛 修复\n- **gateway**: 向导「选择位置」弹窗双缺陷修复——capabilities 补 dialog:allow-save（v0.18 起编辑器「本地另存为」同根因静默失败，editorDialogs 注释误记已补）+ dialog save 参数改 options 包裹（tauri-plugin-dialog 的 SaveDialogOptions 必填，平铺传参反序列化即拒、前端无 catch 静默）\n\n### 📚 文档\n- **readme**: 版本演进同步 v0.21.1\n\n### 📦 其他\n- v0.21.1\n"
+    },
+    {
+      "version": "0.21.0",
+      "tag": "v0.21.0",
+      "date": "2026-10-16",
+      "notes": "## v0.21.0\n\n_区间: v0.20.2 → v0.21.0_\n\n### ✨ 新功能\n- **assets**: 分组可直输新路径——新增 AppCombobox 可输入下拉（首消费面资产分组，upsert 幂等声明多级分组防资产移走后空组消失 + 组重命名拒嵌套进自身子树，侧栏右键「新建子分组」带父路径预填弹窗）；fix(terminal): 危险粘贴守卫改后端权威判定——新命令 dangerous_paste_check（core 黑名单∪catastrophic 并集）替换 FE 正则（rm -fr 逆序/分离形态漏报），IPC 失败保守折叠为哨兵强制弹窗（防空窗期直通）；refactor(sftp): sftp.rs 触及 800 行硬上限拆出 sftp_meta.rs（mkdir/rename/remove/chmod/readlink/stat 五元数据命令，数据面超时即淘汰通道缓存）；fix(workbench): 前端架构审查 P1-P3——TitleBarSearch 漏 import 自 v0.20 静默丢功能补回 + 新增 lint:components 门禁防同类复发、lib→store 运行时环切断（路径五助手收敛 @/lib/pathUtils）、isTauriRuntime 双实现收敛、AppDrawer/AppTooltip 死代码删除；fix(modal): 遮罩空白点击不再关闭弹窗（防误触丢表单，Esc/×/取消保留）；网关向导 form-error 样式补齐 + 组件 token 用法收敛 --app-* 体系\n\n### 📚 文档\n- **readme**: 版本演进同步 v0.21.0\n\n### 📦 其他\n- v0.21.0\n"
+    },
     {
       "version": "0.20.2",
       "tag": "v0.20.2",

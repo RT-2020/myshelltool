@@ -20,10 +20,11 @@
  * 表单状态自持（非 useModalFormSync）：本弹窗不进 dispatchModalSubmit 分发。
  */
 import { computed, ref } from 'vue';
-import { Import, Rocket } from 'lucide-vue-next';
+import { Import, KeyRound, Rocket } from 'lucide-vue-next';
 import AppButton from '@/components/ui/AppButton.vue';
 import AppInput from '@/components/ui/AppInput.vue';
 import GatewayImportPanel from '@/components/shell/GatewayImportPanel.vue';
+import GatewaySecretPanel from '@/components/shell/GatewaySecretPanel.vue';
 import { useWorkbenchStore } from '@/stores/workbench';
 import {
   invokeBackend,
@@ -34,8 +35,9 @@ import {
 
 const store = useWorkbenchStore();
 
-// 顶层页签：「deploy」本机走向导部署 |「import」跳板机侧（已装 mst）GUI 导入
-const tab = ref<'deploy' | 'import'>('deploy');
+// 顶层页签：「deploy」本机 bundle 向导 |「secret」本机口令模式 |「import」跳板机侧 GUI 导入。
+// 三页 v-show 常驻（沿用两页既有设计）：切页不丢部署表单/口令表单/导入面板的轮询状态。
+const tab = ref<'deploy' | 'secret' | 'import'>('deploy');
 const step = ref<1 | 2 | 3>(1); // 1 收集 VPS → 2 部署+导出 → 3 完成指引
 const busy = ref(false);
 const error = ref('');
@@ -182,6 +184,16 @@ async function runStep2() {
       <button
         type="button"
         class="nav-item"
+        :class="{ active: tab === 'secret' }"
+        :aria-current="tab === 'secret' ? 'page' : undefined"
+        @click="tab = 'secret'"
+      >
+        <KeyRound :size="14" />
+        口令模式
+      </button>
+      <button
+        type="button"
+        class="nav-item"
         :class="{ active: tab === 'import' }"
         :aria-current="tab === 'import' ? 'page' : undefined"
         @click="tab = 'import'"
@@ -311,6 +323,16 @@ async function runStep2() {
         完整文档见 docs/网关模式部署指南.md。
       </p>
     </template>
+      </section>
+
+      <!-- ═══ 口令模式页：本机·运维侧单页直配（v0.21.2，零文件交付）═══ -->
+      <section v-show="tab === 'secret'" class="tab-pane">
+        <header class="page-title"><KeyRound :size="15" />口令模式</header>
+        <p class="page-sub">
+          在本机（运维侧）操作：relay 与跳板机共用同一口令派生全部身份，零文件交付——
+          ① 复制部署命令去 VPS 执行一次，② 写入本机信任与网关资产；跳板机侧在「导入配置」页填同一口令。
+        </p>
+        <GatewaySecretPanel />
       </section>
 
       <!-- ═══ 导入页：跳板机侧「服务器 + 口令」（实时状态卡 + 两栏 + 高级折叠）═══ -->

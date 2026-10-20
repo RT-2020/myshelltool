@@ -165,14 +165,10 @@ pub fn loaded_from_secret(
 ) -> Result<LoadedGateway, String> {
     rt.validate()?;
     let (mount_pem, _) = keys::derive_ed25519(secret, keys::LABEL_MOUNT)?;
-    let (host_pem, host_pub) = keys::derive_ed25519(secret, keys::LABEL_GATEWAY_HOSTKEY)?;
+    let (host_pem, _) = keys::derive_ed25519(secret, keys::LABEL_GATEWAY_HOSTKEY)?;
     let (_, client_pub) = keys::derive_ed25519(secret, keys::LABEL_CLIENT)?;
-    let (_, relay_pub) = keys::derive_ed25519(secret, keys::LABEL_RELAY_HOSTKEY)?;
-    let pin = crate::config::HostKeyPin {
-        key_type: "ssh-ed25519".into(),
-        key_hex: keys::public_key_hex(&keys::parse_public_key_line(&relay_pub)?),
-    };
-    let _ = host_pub;
+    let (pin_type, pin_hex) = keys::derive_relay_pin_fields(secret)?;
+    let pin = crate::config::HostKeyPin { key_type: pin_type, key_hex: pin_hex };
     Ok(LoadedGateway {
         mount_params: MountParams {
             vps_host: rt.vps_host.clone(),

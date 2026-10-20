@@ -70,6 +70,15 @@ pub const LABEL_MOUNT: &str = "mount";
 pub const LABEL_GATEWAY_HOSTKEY: &str = "gateway-hostkey";
 pub const LABEL_CLIENT: &str = "client";
 
+/// 从口令派生 relay host key 的 pin 字段 (key_type, key_hex)——config::from_secret
+/// 与 run::loaded_from_secret 两处共用同一实现，锁定「落盘配置的自描述 pin ==
+/// 运行时派生 pin」（运行时仍以现派生为唯一权威，不依赖落盘值）。
+pub fn derive_relay_pin_fields(secret: &str) -> Result<(String, String), String> {
+    let (_, relay_pub) = derive_ed25519(secret, LABEL_RELAY_HOSTKEY)?;
+    let pk = parse_public_key_line(&relay_pub)?;
+    Ok((pk.algorithm().as_str().to_string(), public_key_hex(&pk)))
+}
+
 /// 从口令 + label 确定性派生一对 ed25519 密钥。
 /// 返回 (私钥 PEM, 公钥 authorized_keys 单行)。
 pub fn derive_ed25519(secret: &str, label: &str) -> Result<(String, String), String> {
@@ -77,6 +86,7 @@ pub fn derive_ed25519(secret: &str, label: &str) -> Result<(String, String), Str
     if secret.len() < 8 {
         return Err("口令至少 8 位（口令是网关全部身份的信任根，请用强随机口令）".to_string());
     }
+
     use argon2::Argon2;
     // label 作盐：同口令不同 label 派生不同钥匙（密钥隔离域）
     let salt = format!("myshelltool-gateway:{label}");

@@ -82,10 +82,12 @@
 **网关向导**（`gateway_cmd.rs`，v0.22；内核在 `crates/myshelltool-gateway`，见部署指南）
 - `gateway_wizard_start({ vpsHost, vpsPort, vpsUsername })` — 两段式第一步：生成挂载密钥对（私钥暂存 SecretStore `gateway-wizard-mount-key`，finish 时消费删除），返回 `{ mount_public_key, docker_template }`（已代入公钥的 relay docker run 模板）
 - `gateway_wizard_finish({ vpsHost, vpsPort, vpsUsername, remotePort, allowedTargets?, password, savePath })` — 第二步：probe 连 VPS 抓 host key pin（**认证前 KEX 阶段**，fail 即 Err 带部署指引）→ 生成网关 host key + 客户端钥 → **防静默轮换**（known_hosts 已有 `VPS:挂载口` 的不同公钥则阻止）→ 组 bundle 加密导出到 savePath → 返回 `{ bundle_path, client_private_key, known_host_port, known_key_type, known_key_hex, asset_host, asset_port }`。**凭据不经此命令落库**：客户端私钥由前端经常规 `saveAsset` 链保存（`<资产id>:private_key` 常规命名，同步/删除/Gist 备份零特判）
-- `gateway_pretrust_host_key({ hostPort, keyType, keyHex })` — 预写本机 known_hosts（幂等：相同 key 重复写 no-op；不同 key 拒绝防覆盖既有信任）
+- `gateway_pretrust_host_key({ hostPort, keyType, keyHex, confirmReplace? })` — 预写本机 known_hosts（幂等：相同 key 重复写 no-op；不同 key 默认拒绝防静默覆盖既有信任；**v0.21.2** `confirmReplace: true` 为 GUI 显式确认后的替换——bundle→口令模式等换网关身份的迁移场景，拒绝文案以「确认切换到新网关」标记供前端识别挂起确认流）
 - `gateway_import_bundle({ path, password })` — **v0.20.1 跳板机侧 GUI 导入**（装完 mst 点选 bundle 替代 CLI `--import`）：与 CLI 同一内核 `gw_run::import_bundle`，DPAPI 落位于本应用数据目录（两路互认）；返回 `{ vps_host, vps_port, mount_port, listen_port, schtasks_command }`（schtasks 已代入当前安装路径）
 - `gateway_launch()` — spawn 独立 `--gateway` 常驻进程（Windows `DETACHED_PROCESS`，关 GUI 不随父退出）
-- `gateway_setup_from_secret({ host, secret, port? })` — **v0.21「服务器+口令」两栏口径**（密钥从口令 Argon2id 派生，零文件）：口令存 SecretStore `gateway-secret`（DPAPI），运行配置 mode=secret（密钥各运行时现派生不落盘）；relay 侧须同口令 `docker run -e GATEWAY_SECRET=...`
+- `gateway_setup_from_secret({ host, secret, port?, mountPort?, allowedTargets? })` — **v0.21「服务器+口令」两栏口径**（密钥从口令 Argon2id 派生，零文件）：口令存 SecretStore `gateway-secret`（DPAPI），运行配置 mode=secret（密钥各运行时现派生不落盘；relay pin 亦随配置自描述落盘，运行时仍以派生为唯一权威）；relay 侧须同口令 `docker run -e GATEWAY_SECRET=...`。**v0.21.2** 挂载口/白名单参数化（默认 2222/空=允许全部；白名单执法在跳板机内嵌 server）
+- `gateway_generate_secret()` — **v0.21.2 本机口令模式**：生成 20 位强随机口令（复用 core 恢复密码生成器，去歧义字母数字——人工读给客户/手输跳板机无误读面），不落盘
+- `gateway_secret_derive({ host, secret, port?, mountPort? })` — **v0.21.2 本机口令模式一次性派生**（纯函数零状态）：口令含单引号拒绝（撕裂部署命令）；返回 `{ docker_command, client_private_key, known_host_port, known_key_type, known_key_hex, asset_host, asset_port }`——「复制 relay 部署命令」与「写入本机配置」两按钮同源消费，凭据照例经返回值交前端走常规 saveAsset 链，known_hosts 预写由前端调 pretrust（冲突以 `[pretrust:conflict]` 前缀标记，前端据此挂起显式确认流）
 - `gateway_status()` — 网关运行状态（跨进程只读）：独立网关进程写 `gateway-status.json`（状态迁移立即写 + 10s 心跳维持新鲜），GUI 读 + 25s 新鲜度判定；state ∈ mounted/mounting/reconnecting/stopped/not_configured
 - 同一 exe 的 `--gateway [--import <file>]` CLI 分支不经 IPC（main.rs 在 Tauri 之前分流，AttachConsole 回显 + gateway.log）
 

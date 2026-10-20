@@ -17,15 +17,11 @@ import {
   gatewayLaunch,
   gatewaySetupFromSecret,
   gatewayStatus,
+  type GatewayImportResult,
   type GatewayStatusView
 } from '@/services/backend';
 
 const store = useWorkbenchStore();
-
-interface ImportSummary {
-  vps_host: string; vps_port: number; mount_port: number;
-  listen_port: number; schtasks_command: string;
-}
 
 // ─── 实时状态（5s 轮询；状态文件 + 心跳，见 gateway run.rs 状态通道设计）───
 const gwStatus = ref<GatewayStatusView | null>(null);
@@ -52,9 +48,14 @@ onUnmounted(() => window.clearInterval(statusTimer));
 const setupHost = ref('');
 const setupSecret = ref('');
 const showSecret = ref(false);
+// 高级折叠（v0.21.2）：控制口/挂载口参数化（安全组受限的中转架构如 iptables
+// 80→18080 需要非默认值）+ 内网白名单（执法在本机内嵌 server，空 = 允许全部）
+const setupPort = ref(22222);
+const setupMountPort = ref(2222);
+const allowedTargetsText = ref('');
 const setupBusy = ref(false);
 const setupError = ref('');
-const importResult = ref<ImportSummary | null>(null);
+const importResult = ref<GatewayImportResult | null>(null);
 const launched = ref(false);
 
 async function runSetupAndLaunch() {
@@ -63,7 +64,17 @@ async function runSetupAndLaunch() {
   setupError.value = '';
   setupBusy.value = true;
   try {
-    importResult.value = await gatewaySetupFromSecret(setupHost.value.trim(), setupSecret.value.trim());
+    const allowed = allowedTargetsText.value
+      .split(/[\n,，;；]/)
+      .map(s => s.trim())
+      .filter(Boolean);
+    importResult.value = await gatewaySetupFromSecret(
+      setupHost.value.trim(),
+      setupSecret.value.trim(),
+      Number(setupPort.value),
+      Number(setupMountPort.value),
+      allowed
+    );
     await gatewayLaunch();
     launched.value = true;
     store.announce('网关已配置并启动', { level: 'success' });
@@ -84,8 +95,10 @@ const importError = ref('');
 
 async function chooseBundleFile() {
   const path = await invokeBackend<string | null>('plugin:dialog|open', {
-    title: '选择网关 bundle 文件',
-    filters: [{ name: 'Gateway Bundle', extensions: ['json'] }]
+    options: {
+      title: '选择网关 bundle 文件',
+      filters: [{ name: 'Gateway Bundle', extensions: ['json'] }]
+    }
   });
   if (path) importPath.value = path;
 }
@@ -146,6 +159,28 @@ function copyText(text: string, what: string) {
           </button>
         </span>
       </label>
+      <details class="advanced-fold">
+        <summary>高级：端口与内网白名单（标准部署保持默认即可）</summary>
+        <div class="port-row" style="margin-top: var(--space-2)">
+          <label class="stack"><span>SSH 控制口（默认 22222）</span>
+            <AppInput v-model.number="setupPort" type="number" data-gateway-field="setup-port" />
+          </label>
+          <label class="stack"><span>挂载口（默认 2222）</span>
+            <AppInput v-model.number="setupMountPort" type="number" data-gateway-field="setup-mount-port" />
+          </label>
+        </div>
+        <label class="stack" style="margin-top: var(--space-2)"><span>内网目标白名单（可选，空 = 允许全部；每行一条，如 10.0.0.0/8:22）</span>
+          <textarea
+            v-model="allowedTargetsText"
+            class="native-input"
+            rows="2"
+            spellcheck="false"
+            placeholder="172.16.1.0/24"
+            data-gateway-field="setup-allowed-targets"
+          ></textarea>
+        </label>
+      </details>
+
       <p v-if="setupError" class="form-error" style="white-space:pre-wrap">{{ setupError }}</p>
       <div class="wizard-actions">
         <AppButton variant="primary" :disabled="setupBusy" @click="runSetupAndLaunch">
@@ -229,7 +264,7 @@ function copyText(text: string, what: string) {
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
 
-  &[data-tone='ok'] { border-color: var(--ok, #3a9d5d); .gw-status-dot { background: var(--ok, #3a9d5d); } }
+  &[data-tone='ok'] { border-color: var(--success); .gw-status-dot { background: var(--success); } }
   &[data-tone='warn'] { border-color: var(--warn, #b8860b); .gw-status-dot { background: var(--warn, #b8860b); } }
   &[data-tone='err'] { border-color: var(--danger, #c53030); .gw-status-dot { background: var(--danger, #c53030); } }
   &[data-tone='busy'] .gw-status-dot { animation: gw-dot-pulse 1.2s ease-in-out infinite; }
@@ -242,6 +277,26 @@ function copyText(text: string, what: string) {
 @keyframes gw-dot-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
+}
+
+.port-row {
+  display: flex;
+  gap: var(--space-3);
+
+  > label {
+    flex: 1;
+  }
+}
+
+.native-input {
+  width: 100%;
+  padding: 6px 10px;
+  font-size: var(--text-sm);
+  font-family: var(--font-mono);
+  color: var(--app-text);
+  background: var(--app-control);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-sm);
 }
 
 .secret-row {
@@ -279,7 +334,7 @@ function copyText(text: string, what: string) {
   summary {
     cursor: pointer;
     color: var(--app-muted);
-    font-size: var(--font-size-sm);
+    font-size: var(--text-sm);
     user-select: none;
   }
 }
