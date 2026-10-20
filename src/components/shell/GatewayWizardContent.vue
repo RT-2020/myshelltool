@@ -97,9 +97,11 @@ async function runStep1() {
 
 async function chooseSavePath() {
   const path = await invokeBackend<string | null>('plugin:dialog|save', {
-    title: '保存网关 bundle（加密文件）',
-    defaultPath: 'gateway-bundle.json',
-    filters: [{ name: 'Gateway Bundle', extensions: ['json'] }]
+    options: {
+      title: '保存网关 bundle（加密文件）',
+      defaultPath: 'gateway-bundle.json',
+      filters: [{ name: 'Gateway Bundle', extensions: ['json'] }]
+    }
   });
   if (path) bundlePath.value = path;
 }
