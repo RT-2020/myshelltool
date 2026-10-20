@@ -21,7 +21,7 @@
 use serde::Serialize;
 use tauri::State;
 
-use myshelltool_core::SecretStore;
+use myshelltool_core::{recovery_code, SecretStore};
 use myshelltool_gateway::{config as gw_config, keys as gw_keys, run as gw_run};
 
 use crate::ssh::{load_known_hosts, save_known_hosts, KnownHostEntry};
@@ -138,11 +138,15 @@ pub async fn gateway_status(state: State<'_, AppState>) -> Result<GatewayStatusV
 /// v0.21「服务器+口令」跳板机配置（用户理想口径：只输 relay 地址与口令）。
 /// 落位：口令存 SecretStore（gateway-secret，DPAPI）；运行配置零秘密（mode=secret，
 /// 密钥各运行时现派生）。relay 侧须以同一口令 `docker run -e GATEWAY_SECRET=...` 部署。
+/// v0.21.2：挂载口/白名单参数化——安全组只放行特权口的中转架构（如 iptables
+/// 80→18080）需要非默认挂载口；白名单执法在本机内嵌 server（空 = 允许全部）。
 #[tauri::command]
 pub async fn gateway_setup_from_secret(
     state: State<'_, AppState>,
     host: String,
     port: Option<u16>,
+    mount_port: Option<u16>,
+    allowed_targets: Option<Vec<String>>,
     secret: String,
 ) -> Result<GatewayImportResult, String> {
     if host.trim().is_empty() {
@@ -151,19 +155,26 @@ pub async fn gateway_setup_from_secret(
     // 提前校验口令强度与派生可用性（fail-fast，不在启动期才炸）
     gw_keys::derive_ed25519(secret.trim(), gw_keys::LABEL_MOUNT)?;
 
-    let store = secret_store_of(&state);
-    store.save(gw_config::SECRET_GATEWAY_SECRET, secret.trim())?;
-
-    let rt = gw_config::GatewayRuntimeConfig::from_secret(host.trim(), port.unwrap_or(22222));
+    // 全量校验前置（v0.21.2 审查修订）：from_secret 含白名单 TargetRule 逐条校验，
+    // runtime_to_json 含序列化校验——两者都过了才落口令与配置，消除半写态
+    //（否则坏白名单时新口令已入 store 而旧配置仍在，secret 模式重配会装载
+    // 「旧 host/port + 新口令」的错配身份，陷入难归因的重连循环）。
+    let rt = gw_config::GatewayRuntimeConfig::from_secret(
+        host.trim(),
+        port.unwrap_or(22222),
+        mount_port.unwrap_or(2222),
+        secret.trim(),
+        allowed_targets.unwrap_or_default(),
+    )?;
+    let rt_json = gw_config::runtime_to_json(&rt)?;
     let data_dir = state
         .asset_store_path
         .parent()
         .ok_or("无法定位应用数据目录")?
         .to_path_buf();
-    myshelltool_core::write_atomic(
-        data_dir.join(gw_run::RUNTIME_CONFIG_FILE),
-        gw_config::runtime_to_json(&rt)?,
-    )?;
+    let store = secret_store_of(&state);
+    store.save(gw_config::SECRET_GATEWAY_SECRET, secret.trim())?;
+    myshelltool_core::write_atomic(data_dir.join(gw_run::RUNTIME_CONFIG_FILE), &rt_json)?;
     log::info!(
         "gateway: 口令模式配置完成（relay {}:{}，挂载口 {}）",
         rt.vps_host,
@@ -206,6 +217,72 @@ pub async fn gateway_launch() -> Result<(), String> {
             .map_err(|e| format!("启动网关进程失败：{e}"))?;
     }
     Ok(())
+}
+
+/// 生成本机侧「口令模式」用的强随机口令（v0.21.2）。
+/// 复用 core 恢复密码生成器（去歧义字母数字——口令要被人工读给客户/手输跳板机，
+/// 无引号/符号恰是正确属性），20 位 ≈ 119 bit 熵。不落盘：是否采用由用户决定。
+#[tauri::command]
+pub async fn gateway_generate_secret() -> Result<String, String> {
+    Ok(recovery_code::generate_recovery_password(20))
+}
+
+/// 本机侧口令模式的一次性派生结果（v0.21.2）——纯函数零状态，两个按钮同源消费：
+/// 「复制 relay 部署命令」用 docker_command，「写入本机配置」用其余字段。
+/// 落地链复用 bundle 向导既有约定：本命令不落资产/凭据，客户端私钥经返回值交
+/// 前端走常规 saveAsset 链，known_hosts 预写由前端调 gateway_pretrust_host_key。
+#[derive(Serialize)]
+pub struct SecretDeriveResult {
+    /// 已代入口令与控制口的 relay 部署命令（口令模式，GATEWAY_SECRET 派生身份）。
+    pub docker_command: String,
+    /// 客户端私钥 PEM（本机连挂载口的认证身份）。
+    pub client_private_key: String,
+    /// 本机 known_hosts 预写三件（键为「VPS:挂载口」——本机实际连的口）。
+    pub known_host_port: String,
+    pub known_key_type: String,
+    pub known_key_hex: String,
+    /// 网关资产字段（前端组装 ConnectionAsset：host=VPS、port=挂载口、tag gateway）。
+    pub asset_host: String,
+    pub asset_port: u16,
+}
+
+#[tauri::command]
+pub async fn gateway_secret_derive(
+    host: String,
+    port: Option<u16>,
+    mount_port: Option<u16>,
+    secret: String,
+) -> Result<SecretDeriveResult, String> {
+    let host = host.trim().to_string();
+    if host.is_empty() {
+        return Err("请输入 relay 服务器地址".to_string());
+    }
+    let secret = secret.trim().to_string();
+    // 手输口令守卫：部署命令以单引号嵌 GATEWAY_SECRET，含 ' 会撕裂命令
+    //（生成器字母表天然无此字符，此守卫只拦手输）。
+    if secret.contains('\'') {
+        return Err("口令不能包含单引号（会让 relay 部署命令失效）——请改用「生成口令」".to_string());
+    }
+    let port = port.unwrap_or(22222);
+    let mount_port = mount_port.unwrap_or(2222);
+    // from_secret 内含派生 fail-fast（口令强度）+ 全量字段校验（端口/白名单合法性）
+    gw_config::GatewayRuntimeConfig::from_secret(&host, port, mount_port, &secret, vec![])?
+        .validate()?;
+    let (client_pem, _) = gw_keys::derive_ed25519(&secret, gw_keys::LABEL_CLIENT)?;
+    let (_, gateway_pub) = gw_keys::derive_ed25519(&secret, gw_keys::LABEL_GATEWAY_HOSTKEY)?;
+    let gateway_pk = gw_keys::parse_public_key_line(&gateway_pub)?;
+    let docker_command = format!(
+        "docker run -d --name myshelltool-relay --network host --restart=always \\\n  -e GATEWAY_SECRET='{secret}' -e PORT={port} \\\n  ghcr.io/redtei/myshelltool-relay:latest"
+    );
+    Ok(SecretDeriveResult {
+        docker_command,
+        client_private_key: client_pem,
+        known_host_port: format!("{host}:{mount_port}"),
+        known_key_type: gateway_pk.algorithm().as_str().to_string(),
+        known_key_hex: gw_keys::public_key_hex(&gateway_pk),
+        asset_host: host,
+        asset_port: mount_port,
+    })
 }
 
 #[derive(Serialize)]
@@ -356,6 +433,10 @@ pub async fn gateway_pretrust_host_key(
     host_port: String,
     key_type: String,
     key_hex: String,
+    // 显式确认替换既有条目（v0.21.2）：默认 false 拒绝——同 host:port 换了新网关
+    // 身份的迁移场景（如 bundle→口令模式切换、外部入口口不变）由 GUI 确认弹窗
+    // 置 true 重调。禁的是静默轮换，用户显式确认后的替换不违反红线。
+    confirm_replace: Option<bool>,
 ) -> Result<(), String> {
     if host_port.trim().is_empty() || key_hex.trim().is_empty() {
         return Err("host_port 与 key_hex 不能为空".to_string());
@@ -369,9 +450,13 @@ pub async fn gateway_pretrust_host_key(
         if existing.key_hex.eq_ignore_ascii_case(key_hex.trim()) {
             return Ok(()); // 幂等：相同 key 重复预写无害
         }
-        return Err(format!(
-            "「{host_port}」已有不同公钥的记录：静默覆盖会让既有连接失配，请先人工确认后从 known_hosts 移除"
-        ));
+        if !confirm_replace.unwrap_or(false) {
+            return Err(format!(
+                "[pretrust:conflict] 「{host_port}」已有不同公钥的记录（可能是旧网关身份，如 bundle 时代的配置）：\
+                 如确认切换到新网关，请在确认后重试以替换该条目"
+            ));
+        }
+        // 显式确认后的替换：继续走 insert 覆盖
     }
     hosts.insert(
         host_port,

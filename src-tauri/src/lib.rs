@@ -549,6 +549,9 @@ pub fn run() {
             gateway_cmd::gateway_launch,
             // v0.21「服务器+口令」两栏口径（密钥派生，零文件）
             gateway_cmd::gateway_setup_from_secret,
+            // v0.21.2 口令模式本机侧配套：生成强口令 + 一次性派生（部署命令/预写三件/资产字段）
+            gateway_cmd::gateway_generate_secret,
+            gateway_cmd::gateway_secret_derive,
             // 网关运行状态（状态文件 + 心跳新鲜度，跨进程只读）
             gateway_cmd::gateway_status
         ])

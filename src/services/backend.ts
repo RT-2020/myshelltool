@@ -260,8 +260,8 @@ export function gatewayWizardFinish(input: {
   });
 }
 
-export function gatewayPretrustHostKey(hostPort: string, keyType: string, keyHex: string) {
-  return invokeBackend<null>('gateway_pretrust_host_key', { hostPort, keyType, keyHex });
+export function gatewayPretrustHostKey(hostPort: string, keyType: string, keyHex: string, confirmReplace?: boolean) {
+  return invokeBackend<null>('gateway_pretrust_host_key', { hostPort, keyType, keyHex, confirmReplace });
 }
 
 // ─── v0.20.1 跳板机侧 GUI 导入（装完 mst 点选 bundle，替代 CLI --import）───
@@ -283,8 +283,44 @@ export function gatewayLaunch() {
 }
 
 // v0.21「服务器+口令」跳板机配置（密钥从口令派生，零文件）
-export function gatewaySetupFromSecret(host: string, secret: string, port?: number) {
-  return invokeBackend<GatewayImportResult>('gateway_setup_from_secret', { host, secret, port });
+// v0.21.2 挂载口/白名单参数化：安全组只放行特权口的中转架构（iptables 80→18080）
+// 需要非默认挂载口；白名单执法在跳板机内嵌 server（空 = 允许全部）。
+export function gatewaySetupFromSecret(
+  host: string,
+  secret: string,
+  port?: number,
+  mountPort?: number,
+  allowedTargets?: string[]
+) {
+  return invokeBackend<GatewayImportResult>('gateway_setup_from_secret', {
+    host,
+    secret,
+    port,
+    mountPort,
+    allowedTargets
+  });
+}
+
+// v0.21.2 口令模式本机侧配套：生成 20 位强随机口令（去歧义字母数字，不落盘）
+export function gatewayGenerateSecret() {
+  return invokeBackend<string>('gateway_generate_secret');
+}
+
+// 口令模式一次性派生（纯函数零状态）：relay 部署命令 + 本机预写三件 + 网关资产字段。
+// 「复制部署命令」与「写入本机配置」两个按钮同源消费本结果，无顺序依赖
+//（本机预写是口令确定性派生，不依赖 relay 已部署）。
+export interface GatewaySecretDeriveResult {
+  docker_command: string;
+  client_private_key: string;
+  known_host_port: string;
+  known_key_type: string;
+  known_key_hex: string;
+  asset_host: string;
+  asset_port: number;
+}
+
+export function gatewaySecretDerive(host: string, secret: string, port?: number, mountPort?: number) {
+  return invokeBackend<GatewaySecretDeriveResult>('gateway_secret_derive', { host, secret, port, mountPort });
 }
 
 // 网关运行状态（状态文件 + 心跳新鲜度；state: mounted/mounting/reconnecting/stopped/not_configured）
