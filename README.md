@@ -66,7 +66,7 @@ myshelltool 有**两种身份**：
 - **文件传输队列** — 分块传输、实时进度、失败重试、上传后字节对账
 - **终端与文件面板联动** — 连接后自动加载远程目录；终端 `cd` 经 OSC 7 跟随切换文件面板目录
 - **SSH 隧道** — Local forwarding、Dynamic SOCKS5 代理
-- **跳板网关**（v0.22）— 客户内网穿透：跳板机装一个 myshelltool 以 `--gateway` 常驻，VPS 可为**任意一台公网服务器**（docker run 一条命令即成挂载点），本机即可直接访问内网（终端/文件/隧道全走网关链）。部署见 [docs/网关模式部署指南.md](./docs/网关模式部署指南.md)
+- **跳板网关**（v0.22）— 客户内网穿透：跳板机装一个 myshelltool 以 `--gateway` 常驻，VPS 可为**任意一台公网服务器**（docker run 一条命令即成挂载点），本机即可直接访问内网（终端/文件/隧道全走网关链）。两种交付：**bundle**（口令加密的配置文件）与**口令模式**（v0.21.1，零文件交付——两端各填一次同一口令，身份密钥确定性派生；本机向导内可生成强口令、复制 relay 部署命令、一键写入本机配置，known_hosts 旧 pin 冲突显式确认替换）。控制口/挂载口/内网白名单均可参。部署见 [docs/网关模式部署指南.md](./docs/网关模式部署指南.md)
 - **资源监控** — 远程 CPU/内存/网络/磁盘实时图表；远端无 `/proc`（非 Linux）时明确报错，不发假数据
 - **应用内自动更新** — 内置 updater，新版本自动检测
 
@@ -242,7 +242,7 @@ myshelltool 内嵌 MCP server（Streamable HTTP，随 GUI 启停，无独立 exe
 |---|---|---|
 | 桌面框架 | **Tauri 2** | `@tauri-apps/cli ^2.9.5` |
 | 后端 | **Rust** | `russh 0.49`、`russh-sftp 2.x`（vendored fork）、`tokio`、`reqwest 0.12` |
-| MCP | rmcp（官方 Rust SDK）+ axum + tokio-util（Streamable HTTP + elicitation） | `rmcp ~1.7` / `axum 0.8` |
+| MCP | rmcp（官方 Rust SDK）+ axum + tokio-util（Streamable HTTP + elicitation） | `rmcp ~3.5` / `axum 0.8` |
 | 前端框架 | **Vue 3**（`<script setup>` + Composition API） | `vue ^3.5.38` |
 | 语言 | **TypeScript strict 全量**（vue-tsc 类型门禁） | `typescript ^5.9.3` |
 | 状态管理 | **Pinia 3**（setup store） | `pinia ^3.0.4` |
@@ -289,7 +289,7 @@ npm run type-check       # vue-tsc strict 全量类型检查
 npm run build            # 事实门禁 → 类型检查 → Vite 构建
 npm run tauri:build      # 完整桌面安装包（NSIS，自动含上述门禁）
 
-npm run test:core        # Rust core 单元测试（191 项：安全判据/脱敏/原子写/proc 解析…）
+npm run test:core        # Rust core 单元测试（243 项：安全判据/脱敏/原子写/proc 解析…）
 npm run test:ui          # Playwright 四套（需先 npm run dev 起服务）
 cd src-tauri && cargo check   # Rust 类型检查
 ```
@@ -362,7 +362,8 @@ cd src-tauri && cargo check   # Rust 类型检查
 | v0.20.1 | 网关跳板机侧「只需装 mst 本体」：导入页签收敛为「服务器地址 + 口令」两栏（密钥从口令派生，零文件零 U 盘）；新增网关实时状态卡（连接中/已挂载/重连中/已停止，5s 刷新）；口令可见性切换 |
 | v0.20.2 | 修复 MCP 对 2026-07-28 新协议客户端（如 Zcode）完全不可用的问题——四类列表响应缺 SEP-2322 必填的 resultType 字段被严格校验拒绝；旧协议客户端不受影响 |
 | v0.21.0 | **资产分组可直输**：分组/移动资产的下拉可直接键入新分组路径（含多级，AppCombobox），侧栏右键「新建子分组」自动预填父路径；空分组持久化（资产移走后分组不再消失）；**粘贴防护加固**：危险命令识别改后端权威判定（`rm -fr` 逆序/分离写法不再漏拦）；**弹窗防误触**：点遮罩空白不再关闭弹窗（防丢表单）；标题栏全局搜索修复（v0.20 起因漏 import 静默失效）+ 新增 SFC 组件解析门禁；SFTP 模块拆分（性能与可维护性） |
-| v0.21.1 | 修复系统「另存为/保存位置」弹窗从不弹出的问题（双重缺陷）：capabilities 漏配 `dialog:allow-save` 权限（v0.18 起编辑器「本地另存为」同根因静默失败）；网关向导的 dialog save 调用参数形状不符插件要求（需 `{ options }` 包裹）——两处修复后网关部署向导与编辑器另存为恢复正常 |
+| v0.21.1 | **修复「选择位置…」弹窗从不弹出（双缺陷）**：capabilities 漏配 `dialog:allow-save`（v0.18 起编辑器「另存为」同根因静默失败，注释误记已补）；向导 save 调用参数平铺未按插件要求 `{ options }` 包裹——反序列化即拒且前端无 catch 静默 |
+| v0.21.2 | **网关口令模式补全（零文件交付）**：两端各填一次同一口令即通——本机侧向导新增第三 tab「口令模式」单页直配（生成 20 位强口令 / ① 复制 relay 部署命令 / ② 写入本机配置：派生客户端钥 + 预写 known_hosts + 建/幂等更新网关资产），跳板机侧「导入配置」页填同一口令一键启动；控制口/挂载口/内网白名单参数化（挂载口不再写死 2222，安全组受限的中转架构可用）；bundle→口令迁移的 known_hosts 旧 pin 冲突改为显式确认替换（不静默轮换）；修复导入面板「选择 bundle 文件」弹窗不弹出（第三处同源 dialog 传参缺陷） |
 
 ---
 
@@ -384,6 +385,7 @@ cd src-tauri && cargo check   # Rust 类型检查
 - 多窗口：已支持上次打开窗口恢复、资产增删改跨窗同步、主题跨窗实时同步；窗口几何（位置/大小）暂不恢复，Esc 取消的窗外拖拽仍可能误开窗
 - 终端 tab 迁移回放：serialize 可用时保留 alt 屏（vim/less 拖出后仍在 alt 屏，退出后正常切回 normal）与软换行；serialize 不可用或 scrollback 超预算截断时退回纯文本路径，仍有 alt/软换行限制
 - 上传与下载均已支持取消（上传 ≤1 MiB、下载 64 KiB 块边界检查），取消后的半截文件会尽力清理
+- **网关口令模式**：口令即全权（无 bundle 的双因子）；同一 `VPS:挂载口` 从 bundle 迁到口令模式时旧 known_hosts pin 会冲突，需在向导内显式确认替换；**挂载口不能 <1024**——sshd 处理转发时已降权到挂载用户，非 root 绑不了特权端口（安全组只放行 80/443 时，用 ≥1024 挂载口 + VPS 侧 `iptables REDIRECT` 对外暴露，见部署指南故障排查表）
 
 ---
 
