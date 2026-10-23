@@ -86,6 +86,15 @@ try {
       return Boolean(shell) && shell.getBoundingClientRect().width <= window.innerWidth + 0.5;
     });
     if (!noOverflow) throw new Error(`narrow ${vw.width}px: horizontal overflow (shell wider than viewport)`);
+    // 垂直溢出同口径断言（盒高而非 scrollHeight——overflow:hidden 假阴性同源）：
+    // 布局若有 min-height 地板回潮，小视口下 shell 盒高会顶出视口（横向断言
+    // 查不到）。窗口几何层的首开夹紧（useAdaptiveLayout maximize）是 Tauri
+    // runtime 行为，浏览器测试覆盖不到，此处只防 CSS 层地板。
+    const noVOverflow = await np.evaluate(() => {
+      const shell = document.querySelector('.workbench-shell');
+      return Boolean(shell) && shell.getBoundingClientRect().height <= window.innerHeight + 0.5;
+    });
+    if (!noVOverflow) throw new Error(`narrow ${vw.width}px: vertical overflow (shell taller than viewport)`);
     // 关键区域仍可见（右栏 <1024 自动折叠为 0 宽、侧栏 <860 收 44px rail，均不断言可见性）
     for (const region of ['titlebar', 'center-top', 'center-bottom', 'statusbar']) {
       const visible = await np.locator(`[data-region="${region}"]`).first().isVisible().catch(() => false);

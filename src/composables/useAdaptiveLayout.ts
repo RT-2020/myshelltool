@@ -75,11 +75,20 @@ export function useAdaptiveLayout() {
   mql2.addEventListener('change', onBp2Change);
   mql3.addEventListener('change', onBp3Change);
 
-  // 首开窗口比屏幕工作区还宽时（默认 1366 落在 1280 屏/高 DPI 小屏上）直接
-  // 最大化，避免「首开即越界」。平台假设：screen.availWidth 为主屏工作区
-  // （CSS px），窗口开在副屏可能误触发——代价只是一次最大化，可接受。
-  if (isTauriRuntime() && window.screen.availWidth > 0 && window.innerWidth > window.screen.availWidth) {
-    maximizeTauriWindow().catch(error => console.warn('[adaptiveLayout] maximize failed:', error));
+  // 首开窗口任一边超出屏幕工作区（默认 1366×800 落在 1280 屏 / 1366×768 屏 /
+  // 高 DPI 小屏上），或无头机探测不到屏幕尺寸（无显示器时 WebView2 的
+  // screen.avail* 可能返回 0——曾导致 1366×800 直接砸在 800×600 虚拟屏上，
+  // 2026-10 智能煤矿现场）时直接最大化，避免「首开即越界」。失败保守折叠：
+  // 探测不到屏幕 = 按最坏情况处理，不静默放行。平台假设：screen.avail* 为
+  // 主屏工作区（CSS px），窗口开在副屏可能误触发——代价只是一次最大化，可接受。
+  if (isTauriRuntime()) {
+    const availW = window.screen.availWidth;
+    const availH = window.screen.availHeight;
+    const screenUnknown = !(availW > 0 && availH > 0);
+    const overflows = !screenUnknown && (window.innerWidth > availW || window.innerHeight > availH);
+    if (screenUnknown || overflows) {
+      maximizeTauriWindow().catch(error => console.warn('[adaptiveLayout] maximize failed:', error));
+    }
   }
 
   // 初始评估（窗口一开就在断点内的场景：恢复的小窗、小屏最大化）
