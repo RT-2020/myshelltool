@@ -35,8 +35,7 @@ use rmcp::{
 };
 use tauri::Emitter;
 
-use super::approval::{self, ApprovalDecision, AutoApproveReason, ElicitationInfo, McpApprovalEvent};
-use super::config::McpInterceptLevel;
+use super::approval::{ElicitationInfo, McpApprovalEvent};
 use super::execution_log::{self, decision, outcome, LogScope};
 use super::tools::{self, McpToolContext};
 
@@ -105,112 +104,17 @@ fn log_scope_for(
     })
 }
 
-/// 对高危工具（ssh_exec / 文件写入删除类）做审批判定。
-///
-/// 返回 None 表示该工具不需要审批（只读工具），Some 表示需要审批决策。
-/// v2：读 ctx 共享配置的当前拦截等级（每次调用现读快照，改档即生效）。
-/// v2.3：文件工具（sftp_write_file / sftp_upload / sftp_download /
-/// sftp_remove）纳入拦截等级体系——Minimal 直接放行（AutoExecute →
-/// 执行日志 decision=minimal_allowed，由 call_tool 统一记日志），Strict
-/// 维持人工确认。恒定例外（不受等级影响，判定先于/独立于等级分支）：
-/// - sftp_remove 根级/核心目录删除（is_catastrophic_remote_removal）→
-///   HardBlock，两档恒拒；
-/// - sftp_download 本机系统受保护目录（is_protected_local_write_path）→
-///   HardBlock，两档恒拒；
-/// - sftp_read_file 敏感凭据路径读取（is_sensitive_remote_path）→ 恒审批
-///   （凭据红线，不纳入等级体系）。
-///
-/// v0.20（A2）：分支键从「工具名」改为「registry 声明的 Policy」——新增工具
-/// 只要在注册表里声明 Policy 即自动获得对应审批语义，不再需要改本函数；
-/// 各分支的恒定例外（HardBlock 先于等级）逐字保留。审批文案（intent 默认值/
-/// 命令行/后果）由 spec.approval_info(args) 从注册表声明生成。
-async fn check_approval_needed(
-    ctx: &McpToolContext,
-    tool_name: &str,
-    arguments: &Option<serde_json::Map<String, serde_json::Value>>,
-) -> Option<ApprovalDecision> {
-    let args = arguments.as_ref()?;
-    let spec = super::registry::find(tool_name)?;
-    match spec.policy {
-        super::registry::Policy::NoApproval => None,
-        // ssh_exec：catastrophic 硬拦 + 白名单 + 按等级（approval::evaluate 内部判定）
-        super::registry::Policy::ShellExec => {
-            let command = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
-            let intent = args.get("intent").and_then(|v| v.as_str()).unwrap_or("");
-            if command.is_empty() {
-                return None;
-            }
-            let level = ctx.config.read().await.level;
-            Some(approval::evaluate(
-                command,
-                intent,
-                super::approval::READONLY_WHITELIST,
-                &[],
-                level,
-            ))
-        }
-        // sftp_remove：根级/核心目录删除两档恒 HardBlock（先于等级判定）；
-        // 其余删除 v2.3 纳入等级体系——Minimal 放行记日志 / Strict 人工确认
-        super::registry::Policy::RemoteDelete => {
-            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            if super::file_policy::is_catastrophic_remote_removal(path) {
-                return Some(ApprovalDecision::HardBlock {
-                    reason: format!("拒绝执行：目标路径 '{path}' 属于系统根目录或顶级核心目录，禁止删除。"),
-                });
-            }
-            let level = ctx.config.read().await.level;
-            match level {
-                McpInterceptLevel::Minimal => {
-                    Some(ApprovalDecision::AutoExecute(AutoApproveReason::MinimalFallback))
-                }
-                McpInterceptLevel::Strict => {
-                    Some(ApprovalDecision::RequestElicitation(spec.approval_info(args)))
-                }
-            }
-        }
-        // sftp_read_file：敏感凭据路径恒审批（不入等级体系），其余白名单放行
-        super::registry::Policy::RemoteReadSensitive => {
-            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            if super::file_policy::is_sensitive_remote_path(path) {
-                Some(ApprovalDecision::RequestElicitation(spec.approval_info(args)))
-            } else {
-                Some(ApprovalDecision::AutoExecute(AutoApproveReason::Whitelist))
-            }
-        }
-        // sftp_write_file / sftp_upload：v2.3 纳入等级体系
-        super::registry::Policy::RemoteWrite => {
-            let level = ctx.config.read().await.level;
-            match level {
-                McpInterceptLevel::Minimal => {
-                    Some(ApprovalDecision::AutoExecute(AutoApproveReason::MinimalFallback))
-                }
-                McpInterceptLevel::Strict => {
-                    Some(ApprovalDecision::RequestElicitation(spec.approval_info(args)))
-                }
-            }
-        }
-        // sftp_download：本机系统受保护目录两档恒 HardBlock（先于等级判定）；
-        // 覆盖警告文案在 spec.approval_info 的 consequence fn 里现算（三态探测）
-        super::registry::Policy::LocalPathWrite => {
-            let local_str = args.get("local_path").and_then(|v| v.as_str()).unwrap_or("");
-            let local_path = std::path::Path::new(local_str);
-            if super::file_policy::is_protected_local_write_path(local_path) {
-                return Some(ApprovalDecision::HardBlock {
-                    reason: format!("拒绝执行：本机下载路径 '{local_str}' 属于系统受保护核心目录。"),
-                });
-            }
-            let level = ctx.config.read().await.level;
-            match level {
-                McpInterceptLevel::Minimal => {
-                    Some(ApprovalDecision::AutoExecute(AutoApproveReason::MinimalFallback))
-                }
-                McpInterceptLevel::Strict => {
-                    Some(ApprovalDecision::RequestElicitation(spec.approval_info(args)))
-                }
-            }
-        }
-    }
+/// 工具 schema 是否把 `intent` 声明为必填。唯一权威是 registry_schemas 的
+/// required 列表——此处只读取，不另建「哪些工具要 intent」的平行清单，
+/// 新增带 intent 的工具声明后自动纳入校验。
+fn schema_requires_intent(spec: &super::registry::ToolSpec) -> bool {
+    (spec.schema)()
+        .get("required")
+        .and_then(|v| v.as_array())
+        .map(|required| required.iter().any(|r| r.as_str() == Some("intent")))
+        .unwrap_or(false)
 }
+
 /// 资产元数据兜底：读库失败或 assetId 不存在时其余字段空串（port=0），
 /// 不丢日志条目（assetId 保留原值）。
 
@@ -473,6 +377,45 @@ impl ServerHandler for MyshellToolMcpServer {
             // 决策初值：范围内但无需审批的工具（disk_usage 等只读）→ not_required
             let mut log_decision: &'static str = decision::NOT_REQUIRED;
 
+            // ── intent 契约校验（fail-closed，先于 scope/审批判定）──
+            // schema 声明 intent 必填的执行类工具，调用缺 intent（缺失/非字符串/
+            // 空白串）一律拒绝执行：intent 是审批对照（识破伪装）与执行审计的
+            // 必需输入，静默放行会让审计降级为「（未声明）」、Strict 审批弹窗
+            // 只剩兜底文案。拒绝信息写明补救方式，调用方 AI 下轮补发即可自愈。
+            if let Some(spec) = spec {
+                if schema_requires_intent(spec) {
+                    let intent_blank = arguments
+                        .as_ref()
+                        .and_then(|a| a.get("intent"))
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .unwrap_or("")
+                        .is_empty();
+                    if intent_blank {
+                        log::warn!(
+                            "intent contract: rejecting call to {tool_name} (missing/blank intent)"
+                        );
+                        if let Some(scope) = &log_scope {
+                            execution_log::append_execution_log(
+                                &ctx,
+                                scope,
+                                level_str,
+                                decision::REJECTED,
+                                outcome::SKIPPED,
+                                "",
+                                &extras_base,
+                            )
+                            .await;
+                        }
+                        return Ok(error_result(
+                            "缺少必填参数 intent：该工具要求调用方声明真实意图（审批对照与执行审计必需），\
+                             本次调用未携带 intent 或为空白，已拒绝执行。请补充 intent 后重新调用。",
+                        )
+                        .into());
+                    }
+                }
+            }
+
             // ── v0.20（B1）scope 预判：范围外资产在审批与执行之前直接拒绝 ──
             // 判定内核在 core::mcp_scope；此处做「最早失败 + scopeResult 落日志」，
             // 收口点（exec_on_asset / sftp_ops::connect）再做兜底判定防旁路。
@@ -533,7 +476,7 @@ impl ServerHandler for MyshellToolMcpServer {
             }
 
             // ── v1.1 审批拦截：高危工具先做危险判定（v2 按当前等级）──
-            if let Some(approval_needed) = check_approval_needed(&ctx, &tool_name, &arguments).await
+            if let Some(approval_needed) = super::approval::check_approval_needed(&ctx, &tool_name, &arguments).await
             {
                 match approval_needed {
                     super::approval::ApprovalDecision::AutoExecute(reason) => {
@@ -771,5 +714,56 @@ impl ServerHandler for MyshellToolMcpServer {
                 Err(McpError::invalid_request(e, None))
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod intent_contract_tests {
+    //! intent 契约校验的注册表回归：锁定「哪些工具被校验门覆盖」由
+    //! registry schema 的 required 列表唯一决定——有人从 schema 的
+    //! required 里挪掉 intent（或新增执行类工具漏声明）时在此红出来，
+    //! 而不是等又一次「（未声明）」审计日志才发现。
+
+    use super::schema_requires_intent;
+
+    #[test]
+    fn exec_class_tools_declare_intent_required() {
+        for name in [
+            "ssh_exec",
+            "exec_many",
+            "ssh_exec_async",
+            "sftp_write_file",
+            "sftp_upload",
+            "sftp_download",
+            "sftp_remove",
+        ] {
+            let Some(spec) = super::super::registry::find(name) else {
+                panic!("{name} 未在 registry 登记");
+            };
+            assert!(
+                schema_requires_intent(spec),
+                "{name} 是执行类工具，schema 应声明 intent 必填"
+            );
+        }
+    }
+
+    #[test]
+    fn query_tools_are_not_gated() {
+        // 这些工具 schema 无 intent 参数（设计如此），校验门不得拦到它们
+        for name in [
+            "disk_usage",
+            "journal_query",
+            "process_list",
+            "sftp_read_file",
+            "list_assets",
+        ] {
+            let Some(spec) = super::super::registry::find(name) else {
+                panic!("{name} 未在 registry 登记");
+            };
+            assert!(
+                !schema_requires_intent(spec),
+                "{name} 无 intent 参数，不应被 intent 契约校验拦截"
+            );
+        }
     }
 }

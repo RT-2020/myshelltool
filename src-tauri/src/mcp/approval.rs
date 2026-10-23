@@ -34,7 +34,7 @@ use crate::dangerous_commands::{self, CommandRisk, DangerousMatch};
 
 use super::config::McpInterceptLevel;
 // ApprovalPending 在 tools.rs 定义（Arc<Mutex<HashMap<id, oneshot::Sender<bool>>>> 别名）。
-use super::tools::ApprovalPending;
+use super::tools::{ApprovalPending, McpToolContext};
 
 /// 审批决策结果。
 pub enum ApprovalDecision {
@@ -336,6 +336,113 @@ pub const READONLY_WHITELIST: &[&str] = &[
     "head",
     "tail",
 ];
+
+/// 对高危工具（ssh_exec / 文件写入删除类）做审批判定。
+///
+/// 返回 None 表示该工具不需要审批（只读工具），Some 表示需要审批决策。
+/// v2：读 ctx 共享配置的当前拦截等级（每次调用现读快照，改档即生效）。
+/// v2.3：文件工具（sftp_write_file / sftp_upload / sftp_download /
+/// sftp_remove）纳入拦截等级体系——Minimal 直接放行（AutoExecute →
+/// 执行日志 decision=minimal_allowed，由 call_tool 统一记日志），Strict
+/// 维持人工确认。恒定例外（不受等级影响，判定先于/独立于等级分支）：
+/// - sftp_remove 根级/核心目录删除（is_catastrophic_remote_removal）→
+///   HardBlock，两档恒拒；
+/// - sftp_download 本机系统受保护目录（is_protected_local_write_path）→
+///   HardBlock，两档恒拒；
+/// - sftp_read_file 敏感凭据路径读取（is_sensitive_remote_path）→ 恒审批
+///   （凭据红线，不纳入等级体系）。
+///
+/// v0.20（A2）：分支键从「工具名」改为「registry 声明的 Policy」——新增工具
+/// 只要在注册表里声明 Policy 即自动获得对应审批语义，不再需要改本函数；
+/// 各分支的恒定例外（HardBlock 先于等级）逐字保留。审批文案（intent 默认值/
+/// 命令行/后果）由 spec.approval_info(args) 从注册表声明生成。
+pub(crate) async fn check_approval_needed(
+    ctx: &McpToolContext,
+    tool_name: &str,
+    arguments: &Option<serde_json::Map<String, serde_json::Value>>,
+) -> Option<ApprovalDecision> {
+    let args = arguments.as_ref()?;
+    let spec = super::registry::find(tool_name)?;
+    match spec.policy {
+        super::registry::Policy::NoApproval => None,
+        // ssh_exec：catastrophic 硬拦 + 白名单 + 按等级（approval::evaluate 内部判定）
+        super::registry::Policy::ShellExec => {
+            let command = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            let intent = args.get("intent").and_then(|v| v.as_str()).unwrap_or("");
+            if command.is_empty() {
+                return None;
+            }
+            let level = ctx.config.read().await.level;
+            Some(evaluate(
+                command,
+                intent,
+                READONLY_WHITELIST,
+                &[],
+                level,
+            ))
+        }
+        // sftp_remove：根级/核心目录删除两档恒 HardBlock（先于等级判定）；
+        // 其余删除 v2.3 纳入等级体系——Minimal 放行记日志 / Strict 人工确认
+        super::registry::Policy::RemoteDelete => {
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if super::file_policy::is_catastrophic_remote_removal(path) {
+                return Some(ApprovalDecision::HardBlock {
+                    reason: format!("拒绝执行：目标路径 '{path}' 属于系统根目录或顶级核心目录，禁止删除。"),
+                });
+            }
+            let level = ctx.config.read().await.level;
+            match level {
+                McpInterceptLevel::Minimal => {
+                    Some(ApprovalDecision::AutoExecute(AutoApproveReason::MinimalFallback))
+                }
+                McpInterceptLevel::Strict => {
+                    Some(ApprovalDecision::RequestElicitation(spec.approval_info(args)))
+                }
+            }
+        }
+        // sftp_read_file：敏感凭据路径恒审批（不入等级体系），其余白名单放行
+        super::registry::Policy::RemoteReadSensitive => {
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if super::file_policy::is_sensitive_remote_path(path) {
+                Some(ApprovalDecision::RequestElicitation(spec.approval_info(args)))
+            } else {
+                Some(ApprovalDecision::AutoExecute(AutoApproveReason::Whitelist))
+            }
+        }
+        // sftp_write_file / sftp_upload：v2.3 纳入等级体系
+        super::registry::Policy::RemoteWrite => {
+            let level = ctx.config.read().await.level;
+            match level {
+                McpInterceptLevel::Minimal => {
+                    Some(ApprovalDecision::AutoExecute(AutoApproveReason::MinimalFallback))
+                }
+                McpInterceptLevel::Strict => {
+                    Some(ApprovalDecision::RequestElicitation(spec.approval_info(args)))
+                }
+            }
+        }
+        // sftp_download：本机系统受保护目录两档恒 HardBlock（先于等级判定）；
+        // 覆盖警告文案在 spec.approval_info 的 consequence fn 里现算（三态探测）
+        super::registry::Policy::LocalPathWrite => {
+            let local_str = args.get("local_path").and_then(|v| v.as_str()).unwrap_or("");
+            let local_path = std::path::Path::new(local_str);
+            if super::file_policy::is_protected_local_write_path(local_path) {
+                return Some(ApprovalDecision::HardBlock {
+                    reason: format!("拒绝执行：本机下载路径 '{local_str}' 属于系统受保护核心目录。"),
+                });
+            }
+            let level = ctx.config.read().await.level;
+            match level {
+                McpInterceptLevel::Minimal => {
+                    Some(ApprovalDecision::AutoExecute(AutoApproveReason::MinimalFallback))
+                }
+                McpInterceptLevel::Strict => {
+                    Some(ApprovalDecision::RequestElicitation(spec.approval_info(args)))
+                }
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
