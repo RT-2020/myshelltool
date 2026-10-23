@@ -213,6 +213,11 @@ pub struct GatewayStatus {
     pub detail: Option<String>,
     /// 毫秒时间戳（心跳维持新鲜度；GUI 据此判定进程活性）。
     pub updated_at: u64,
+    /// 网关进程自身 pid（v0.21.3）：gateway_launch 据此停旧进程再启动，
+    /// 修复「更新配置后点击启动，实际仍是旧进程旧配置」的假成功。
+    /// 旧版状态文件无此字段，读侧 default 0 = 无法定位（降级为人工指引）。
+    #[serde(default)]
+    pub pid: u32,
 }
 
 /// 共享当前态 + 立即写盘（mount loop 各迁移点调用）。

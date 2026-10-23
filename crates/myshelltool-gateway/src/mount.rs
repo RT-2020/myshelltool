@@ -232,6 +232,7 @@ pub async fn run_mount_loop(
             vps_port: params.vps_port,
             mount_port,
             detail,
+            pid: std::process::id(),
         };
         if let Some(dir) = status_dir {
             update_status(sink, dir, status(STATE_MOUNTING, params.mount.remote_port, None));
