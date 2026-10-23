@@ -1,7 +1,7 @@
 # AGENTS.md
 
 > 本文件是 **AI Coding Agent 的项目上下文单一信息源（Single Source of Truth）**，但只收录**每次协作都需要的常驻指令**。
-> 所有 AI 编码工具（Claude Code、Cursor、GitHub Copilot、ZCode 等）应首先读本文件。本文件是用户全局约定（`~/.zcode/AGENTS.md`，工程判据/协作纪律）的**项目层**：全局通用判据在本项目默认生效，本文件只收录项目专属事实与红线；两层冲突时以本文件为准。
+> 所有 AI 编码工具（Claude Code、Cursor、GitHub Copilot、ZCode 等）应首先读本文件。本文件是用户全局约定（`~/.dsh/AGENTS.md` 与 `~/.zcode/AGENTS.md`——两份当前内容一致，分别是 DSH 与 ZCode 的注入源；工程判据/协作纪律）的**项目层**：全局通用判据在本项目默认生效，本文件只收录项目专属事实与红线；两层冲突时以本文件为准。
 >
 > **分层原则（防膨胀，本文件自限 250 行以内）**：
 > - **本文件 = 常驻层**：协作方式、质量红线、约定、命令、安全红线——每次会话全量注入，必须短而硬。
@@ -14,11 +14,9 @@
 >   | 改某模块前查历史坑与回归防线 | [`docs/已知边界与修复史.md`](./docs/已知边界与修复史.md) |
 >   | 工程质量反模式完整实证 | [`docs/llm-engineering-guidelines.md`](./docs/llm-engineering-guidelines.md) |
 >   | 文件大小基线 / 架构漂移记忆 | [`docs/architecture-log.md`](./docs/architecture-log.md) |
-> - 工具派生文件（`CLAUDE.md`、`.github/copilot-instructions.md`）只引用本文件，不复制内容。Cursor / Copilot 等工具已原生读取 AGENTS.md，无需 `.cursor/rules` 式镜像目录（已删除）。
+> - **工具派生文件只引用本文件、不复制内容**：`.github/copilot-instructions.md` 如此；Cursor / Copilot 原生读 AGENTS.md，无需 `.cursor/rules` 式镜像目录（已删除）。**Claude Code 亦直接读本文件，故禁止新增 `CLAUDE.md`**——官方默认 `Project instructions = claude-md-or-agents-md`，仓库里存在 `CLAUDE.md` 时**只读它、不读 AGENTS.md**（原 `CLAUDE.md` 已按此删除，勿重建；Claude 专属红线见 §10）。
 >
 > 维护原则：**架构、命令、约定变化时，先改本文件（或对应 docs 文件），再同步指针**。不要把参考/历史内容塞进常驻层——它每次会话都在计费且稀释红线。
-
----
 
 ## 0. 你是什么 / 怎么协作
 
@@ -30,8 +28,6 @@
 - **遵循本文件**：命名、目录、状态管理、IPC 约定（见 §4 / §6 / §7）是硬约束，违反会破坏一致性。
 - **不造 ai-slop**：写代码前先搜现有实现；文件不过大；遵循工程质量红线（见下方「质量红线」）。
 - **发版走技能**：用户说「发版」「打 tag 发版」「bump 到 vX.Y.Z」等时，用项目内置技能 `release-myshelltool`（`.agents/skills/release-myshelltool/SKILL.md`），它沉淀了版本 bump → 打 tag → 触发 GitHub Actions → 验证产物的完整流程与本仓库真实踩过的坑（如 `createUpdaterArtifacts` 字段名、`.sig` 未生成、tag 重打）。不要临时拼凑发版步骤。
-
----
 
 ## 质量红线（硬约束，违反必须整改）
 
@@ -58,8 +54,6 @@
 - ❌ 靠形状猜测（形态 E）：用正则/前缀/子串去认结构化对象（命令串/路径/设备树/身份）必被等价写法绕过——命令按 shell 词法分段后**逐段**判定（`df -h; cat /etc/shadow` 不得因前缀 `df` 免审批）、路径先归一再按**组件**判定（`./.ssh/id_rsa`、`\\?\UNC\...`、`/home/x/.ssh/id_rsa` 同罪）、设备按**拓扑**判重（LVM/RAID 的 `dm-*`/`md*` 与物理盘记同一份 IO）。
 - ❌ 失败朝宽松方向折叠：涉及审批/凭据/拦截等级/数据覆盖的读盘或解析失败，**只允许回落到更严的一档**（fail-closed）+ 日志 + 损坏文件隔离改名；只有「文件不存在 = 用户无偏好」才可用产品默认档。「读不出来」永远不等于「空数据/不存在」——已两次导致静默丢数据（拦截等级降级为零审批放行、整份审计日志被 1 条覆盖）。
 
----
-
 ## 1. 项目概览
 
 **myshelltool** — Windows 桌面 SSH 运维客户端。Tauri 2 桌面框架：Rust 后端 + Vue 3 前端，通过 IPC（`invoke`）打通。
@@ -67,8 +61,6 @@
 - **目标用户**：运维 / 后端开发者，需要管理多台 SSH 主机的连接、终端、文件、隧道、资源监控。
 - **平台**：Windows 优先（NSIS 安装包）；Rust 跨平台但前端/构建按 Windows 校准。
 - **License**：MIT。
-
----
 
 ## 2. 技术栈（实际，以 package.json / Cargo.toml 为准）
 
@@ -87,8 +79,6 @@
 | 测试 | Playwright（UI smoke）+ `cargo test`（core 单元测试） | `playwright ^1.60` |
 
 > ⚠️ **历史不一致提醒**：旧文档（README 早期版本、已清理的 `.omc/` 工具状态）曾写"前端 Vanilla JS 无框架"——**这是过时信息**。项目在 Wave 1–5 重构后已全面 Vue 3 + Pinia 化。以本文件与 `package.json` 为准。
-
----
 
 ## 3. 目录结构（速览）
 
@@ -112,8 +102,6 @@ myshelltool/
 
 > 逐文件注释版目录树见 [`docs/目录结构详解.md`](./docs/目录结构详解.md)；新增文件前先查它确认归属。
 
----
-
 ## 4. 约定（硬约束，违反会破坏一致性）
 
 ### 4.1 前端
@@ -128,7 +116,7 @@ myshelltool/
 - **路径别名 `@`** → `src/`（vite.config.ts 配置）。import 用 `@/stores/...`、`@/components/...`。
 - **组件分层**：`ui/` 是无业务的基础组件（`App*` 命名，barrel 导出）；业务组件按域放 `shell/`、`terminal/`、`files/`、`resource-monitor/`。
 - **通用操作入口模式**：右键菜单用 `AppContextMenu`（`items: [{label, action, danger, separator, disabled}]`），参照 `FileSurface.vue` 用法。危险操作用 `danger: true`（红色）或 `AppButton variant="danger"`。
-- **弹窗**：既有业务弹窗走 `GlobalModals.vue`（`store.modal = { type, ...payload }`），按 `modal.type` 分支；新增 type 需同步改 `modalTitle` / `submitModal` / `watch`。**新弹窗双轨判据**：GlobalModals 已贴 500 行硬上限，自持复杂流程的新弹窗走 App 根级 overlay（`AppModal` + 独立 SFC，先例 `SshImportDialog.vue`，组件头注释须登记不走 GlobalModals 的理由）；简单确认类仍进 GlobalModals。保留 legacy 选择器（`#modalLayer`/`#modalBody`/`.modal-actions .btn.danger`）以兼容测试。
+- **弹窗**：既有业务弹窗走 `GlobalModals.vue`（`store.modal = { type, ...payload }`）；标题与提交分发已抽出，新增 type 需同步 `src/lib/modalTitles.ts`（`modalTitleFor`）与 `src/lib/modalSubmit.ts`（`dispatchModalSubmit` 的 switch）**两处**。**新弹窗双轨判据**：GlobalModals 已贴 500 行硬上限，自持复杂流程的新弹窗走 App 根级 overlay（`AppModal` + 独立 SFC，先例 `SshImportDialog.vue`，组件头注释须登记不走 GlobalModals 的理由）；简单确认类仍进 GlobalModals。保留 legacy 选择器（`#modalLayer`/`#modalBody`/`.modal-actions .btn.danger`）以兼容测试。
 
 ### 4.2 状态管理（跨 store 桥接）
 - **`workbench.ts` 是编排壳**：实例化 8 个子 store（sessions/files/tunnels/assets/ui/mcp/sync/editor，v0.18 起），`initialize()` 编排启动加载，用 plain-object 返回 + `computed()` 包裹子 store 的响应式 state（**不要直接暴露子 store 的 ref**，会丢响应性）。**注意 `resourceMonitor.ts` 不经 workbench 编排**——它由 `ResourceMonitorPanel.vue` 直接 `useResourceMonitorStore()` 使用（独立轮询生命周期，与全局初始化解耦）。
@@ -141,8 +129,6 @@ myshelltool/
 - **新增命令**：在 `src-tauri/src/lib.rs` 加 `#[tauri::command]`，并在 `tauri::generate_handler![...]` 注册（漏注册 = 前端调用报 "command not found"）。
 - **持久化逻辑放 `crates/myshelltool-core`**（无 Tauri 依赖，可独立单测）；`src-tauri` 只做命令封装 + State 读取。
 - **凭据（密码/passphrase）只走 `SecretStore`**，绝不写进资产 JSON / 日志 / 错误信息。
-
----
 
 ## 5. 构建与测试命令（执行环境）
 
@@ -184,8 +170,6 @@ cd src-tauri && cargo check       # 更快的类型检查
 - 改 core 持久化 → `npm run test:core`。
 - **如实报告结果**：贴 exit code / 关键输出，失败就说失败。
 
----
-
 ## 6. IPC 契约（索引）
 
 前端经 `src/services/backend.ts` 的 `invokeBackend(command, args)` / `listenBackendEvent(event, handler)` 调 Rust；**非 Tauri runtime 会抛错**（浏览器预览模式无 SSH 功能）。
@@ -193,14 +177,10 @@ cd src-tauri && cargo check       # 更快的类型检查
 - **完整命令清单**（资产/凭据/Gist 同步/Device Flow/SSH/SFTP/隧道/监控/本地文件/MCP）与**事件列表**见 [`docs/IPC契约与数据模型.md`](./docs/IPC契约与数据模型.md)——**增改命令/事件前必读**，其中固化了易踩坑（`sftp_list_dir` 空 path 语义、流式下载契约、OAuth poll 的 tag enum、后端 `Err(String)` 以字符串 reject 等）。
 - 常驻不变量：新命令必须在 `generate_handler!` 注册（§4.3）；参数 camelCase；`sftp_download_to_file` 流式落盘且**不可取消**（勿造假取消按钮）。
 
----
-
 ## 7. 数据模型（速览）
 
 - **持久化分层一句话版**：资产元数据 → `connection-assets.json`；凭据 → `credentials/<id>.cred`（只走 SecretStore，见 §8）；同步状态/会话密钥 → `sync-state.json` + DPAPI 保护的 `.cred`；known_hosts、MCP 配置、MCP 执行日志各一文件；**活跃会话/隧道/SFTP 缓存纯内存**（重启丢失）。
 - ConnectionAsset 字段表、分组约定（`asset.group` 字符串、`/` 分隔、「未分组」保留）、Gist 载荷格式（`blob.salt` 必须非空）、McpStatus 结构 → [`docs/IPC契约与数据模型.md`](./docs/IPC契约与数据模型.md#数据模型)。
-
----
 
 ## 8. 安全设计红线
 
@@ -214,48 +194,46 @@ cd src-tauri && cargo check       # 更快的类型检查
   - **用户手输的密码一律不保存**（可能是他别处复用的口令）：`sync_reveal_recovery_password` 在那种情况下返回 None，界面如实说"应用没有保存它，请自行记牢"。
   - 一致性：保存值与实际使用的主密码不符时必须**删除**（否则「查看恢复密码」给出打不开备份的错值，用户抄走后换机报"密码错误"且无从归因）。
 
----
-
 ## 9. 当前已知边界（行动清单）
 
-> 本节只保留**现在仍影响决策**的一行式边界。各版本修复史的完整来龙去脉与回归防线（改对应模块前先 grep 相关小节）见 [`docs/已知边界与修复史.md`](./docs/已知边界与修复史.md)。
+> 本节只保留**现在仍影响决策**的短句；每条附一个「改之前必读」的锚点。完整来龙去脉、故障表现与回归防线见 [`docs/已知边界与修复史.md`](./docs/已知边界与修复史.md)（改对应模块前先 grep 该文相关小节）。
 
-- **【v0.20/S9】上传与下载都可取消**（`transfer_cancels` 共用旗标通道，块边界 ≤1MiB/64KiB）：`sftp_upload_cancel` / `sftp_download_cancel` 置旗标，循环在块边界中止并清理半截文件；下载取消后端返回 `[download:cancelled]` 前缀，前端收敛为 cancelled 态（非 error）。TransferDrawer 传输行（上传+下载）均有取消按钮。
-- **【2026-09-21】源头自适应布局（低分辨率适配）**：窗口 ≥800×600 全宽自适应，**无整体缩放**（字号不变，信息密度按断点降级）。断点（视口 CSS px）：≥1280 现状；<1280 纯 CSS 降档（`workbench-shell.narrow.scss`：标题栏搜索框/状态栏收紧）；<1024 自动折右栏、<860 侧栏收 44px rail（`useAdaptiveLayout.ts` 经 store `setRightCollapsed/setAssetsCollapsed`，persist=false 不污染用户偏好、只恢复自动折的、用户手势优先）；折叠 rail **悬停弹出资产 flyout**（`ConnectionSidebar` 的 `.sb-flyout`，fixed 定位逃 overflow:hidden 祖先、z-index `calc(var(--z-popover) - 1)` 保右键菜单盖住面板）。`--terminal-h` 写入前按当前视口夹紧（`applyCssVars`，文件区保底 120px）。窗口最小 800×600（tauri.conf），首开超屏自动最大化。**改断点值/折叠机制/面板尺寸契约前必读 useAdaptiveLayout.ts 与 usePanelResize.applyCssVars 注释**（纯 CSS 断点会与 store/dataset/内联变量脱节破版，折叠必须走 store action；断点值在 narrow.scss 与 composable 两处保持一致）。回归红线：ui-smoke 窄视口断言（溢出量 `.workbench-shell` 盒宽——body overflow:hidden 使 documentElement.scrollWidth 恒等于 clientWidth，是假阴性；终端夹紧断言量内联 `--terminal-h`）。
-- **【v2.9】上传已服务端流式化**：`sftp_upload_from_file`（本机路径直读，字节不经 IPC）；上传入口因此全部是路径型——本地面板条目、原生文件对话框（`plugin:dialog|open`）、OS 拖入（Tauri 窗口级 `onDragDropEvent`，**拖入窗口任意区域都会触发上传**，含终端区；HTML5 drop 在 Windows 上本就不触发）。旧分块三件套（`sftp_upload_start/chunk/finalize`）与 `fs_local_read_chunk/write_chunk` 已删。
-- **资产 id 消歧只改 `id`**、不动 `credential_id` 引用，凭据共用面未完全消除（暂不做）。
-- **【v2.9】远程转发已实现但走专用连接**（russh 0.49 `tcpip_forward` 要 `&mut Handle`，共享 `Arc<Handle>` 给不出）：每条 remote 隧道一条独立 SSH 连接（OpenSSH 的 MaxStartups/连接数配额视角下与 local/dynamic 不同）；host key 必须已被 GUI 信任过（known_hosts 精确匹配，后台连接不弹窗）；凭据必须已存库（`asset_id` 解析，私钥内容托管 `private_key_credential_id` 形态暂不支持——与 MCP headless 同边界）；`tunnel-traffic-*`/`tunnel-error-*` 事件前端无监听（与 local/dynamic 一致的存量缺口，异步失败靠 `tunnel_list` 的 active/error 字段呈现）。
-- **【v0.21/B3】ProxyJump 链式已实现（上限 4 跳）**：链由资产嵌套表达（目标 `jump_host`=跳板 A，A 资产再配 `jump_host`=B……）；链解析判据（环含指回目标/超深/缺资产，fail-closed）在 `core::jump_chain` 真跑单测，逐跳建连在 `ssh/jump.rs` 循环展开（每跳 connect/connect_stream+认证纳入该跳资产 `connect_timeout_secs` 超时）；每跳复用该资产凭据与 known_hosts 信任，GUI/headless/MCP/SFTP/隧道全路径生效（`open_direct_stream` 签名未变，调用方零改动）；跳板 Handle 开完通道即 drop（保活假设——**多跳下任一中间跳断则下游全断，2026-10-14 已真机验收**）；`user@host`/IPv6 字面量/逗号链不支持（config 导入遇逗号链/user@ 跳过该字段并警示）；调用方目标握手（headless.rs/session.rs 的 `connect_stream`）无超时为延续的已知边界。
-- `sanitize_credential_id` 是删除式清洗、不同 id 可碰撞（暂不改；改规则需迁移既有凭据文件）。
-- **Windows 工具链坑**：`cargo build` 偶被 windres build script 阻断 → `cargo check` 兜底；src-tauri 测试二进制缺 Tauri runtime DLL 跑不起来 → `cargo check --tests` 验编译，**安全判据测试必须放 core 真跑**。
-- **改前端后必须先 `npm run build` 再编译 Rust**：`frontendDist` 在 Rust build script 阶段打进二进制；调试期用 `npm run tauri:dev`（前端走 devUrl，刷新即生效）。
-- **多窗口（v0.21 B1 起）**：上次打开的资产窗口可恢复（localStorage 列表 + asset-window-opened/closed 事件）；资产增删改与主题跨窗口实时同步（crossWindowSyncRuntime，事件带 source 防回环）；终端迁移在 serialize 可用时保持 alt 屏与软换行。仍有限制：窗口几何不恢复、Esc 取消的窗外拖拽可能误开窗；MERGE_ACK 宽限期后到达不自动移交（文案已诚实，维持现状）。
-- **【v0.21/B2】上传/下载冲突三选（覆盖/跳过/重命名）+ 目录整传 + 并发传输**：上传与下载共用确认队列（`lib/fileOverwrite.ts`，重命名 = 改目标路径直接传、探测失败 fail-closed 保持弹窗）；下载从此**有**本地冲突门（此前静默覆盖）。目录递归**前端编排**（`lib/dirTransfer.ts`，Rust 零新命令）：深度 ≤16、文件 ≤2000 超限整批中止；symlink 跳过不下钻；mkdir 失败 → stat 复核为目录则复用，是文件/无法确认/明确不存在中止。`sftp_stat` 与 `fs_local_stat` 同款三态契约：`Ok(null)` = 明确不存在（后端结构化判 NoSuchFile，**不是**前端正则匹配错误串），Err = 无法确认（**新 mock 测试必须给它配 spec**，未配会误弹冲突窗挂死）。整批取消：UploadProgressStrip「取消整批」+ TransferDrawer「取消批次」（收集阶段也可取消；并发下已在途文件一并收敛 cancelled）。**并发（1~5 可配，默认 3）**：同目标互斥链 `serializeOnTarget`（`lib/transferConcurrency.ts`）——同会话同目标路径的「探测→决策→写入」串行化，防两条传输交错写坏文件（SFTP create 即 O_TRUNC）；并发池单项失败不炸批，批次摘要区分完成/失败/跳过；后端 `sftp_cache` Mutex 只盖 create/open 句柄、数据循环锁外跑，`get_or_create_sftp` insert 前二次检查防并发重复建链。
-- **MCP 端口**：release 恒 41235 / debug 默认 41500（`MYSHELLTOOL_MCP_PORT` 可覆盖）；dev 与正式版仍共享 `app_data_dir`。**【v0.20/A1】入口已加 token 鉴权**（URL 内嵌 `/mcp/<token>` + Bearer 兼容；判定在 `core::mcp_auth`；重置走 `mcp_reset_token` 或面板按钮）。**【v0.21】token 跨重启复用**（启动时从 mcp-endpoint.json 恢复旧值）——只有手动「重置 token」才需在 MCP 面板重新「复制配置」；v0.20 每次重启轮换 token 导致 host URL 401 的行为已废止（那是 MCP 会话跨重启不稳定的第一道坎）。
-- **【v0.18】内置编辑器**（CodeMirror 6 覆盖面板，双击文本类文件进入）：单文件上限 2 MiB；编码白名单严格转码（GBK 等，绝不 lossy）；写回带 expected 守护（冲突三选）+ temp/rename 原子写（与 MCP 共享 rename 兜底）+ 可选写前备份（app-data 滚动 3 份）；草稿存 app-data（重开较新时引导恢复）。下载完成 toast 的「打开」= ShellExecute 系统默认程序（下载的 .exe 会执行，与浏览器下载条一致）。
-- **【v0.20/S8】CSP 已启用**（tauri.conf.json `app.security.csp`）：default-src 'self'；script-src 'self'（**禁 eval**——新增依赖若用 new Function/eval 会被 CSP 静默拦截）；style-src 含 'unsafe-inline'（Vue SFC 运行时注入样式所需）+ Google Fonts；connect-src 含 `ipc:` 与 `http://ipc.localhost`（**Tauri 2 WebView2 IPC 通道形态，缺这条 invoke 全挂——改动 CSP 前必读**）。新增外联资源（字体/图床/API）须同步登记进 CSP 对应指令；无消费面的授权不写（blob: 曾被写后删）。真实 CSP 只在 Tauri shell 生效（tauri:dev/build），浏览器 dev 页面不受影响。
-- **russh-sftp 是 vendored fork**（`third-party/russh-sftp`，把非 UTF-8 文件名可逆编码为 PUA-A）：升级 russh-sftp 需重放补丁（buf.rs/ser.rs 两处 + v0.20 set_metadata 透传 + 往返单测）。
-- **【v0.22】网关模式**（跳板机内网穿透，内核 `crates/myshelltool-gateway` 无 Tauri 可独立 test；方案与判据见 `docs/计划/网关模式-实施计划.md`、部署见 `docs/网关模式部署指南.md`）：同一 exe 经 `--gateway [--import <file>]` 在 main.rs 于 Tauri 之前分流（AttachConsole 回显；**改启动链前必读 gateway_cli.rs**）。内嵌 SSH server 仅公钥+仅 direct-tcpip（无 shell/sftp）；挂载器 host key 用**配置内 pin**（非 known_hosts）；挂载数据泵与 `bind_addr_matches` 在 tunnel.rs 与 gateway mount.rs **两处各自维护**（改判据两边同步）；网关凭据命名走常规 `credentialIdFor`（同步/清理自动复用，勿发明 gateway: 前缀）；relay 镜像（docker/relay）必须 `--network host` 且挂 hostkeys volume（口令模式 GATEWAY_SECRET 除外：身份口令派生免 volume）；**DPAPI 账号一致性**：导入与服务运行须同一 Windows 用户。**【v0.21.2】口令模式补全**：两口/白名单可参（`from_secret`）、本机侧第三 tab（generate_secret/secret_derive 两命令 + pretrust `confirmReplace` 显式确认替换）、挂载口 <1024 被降权拒绑（选 ≥1024 + iptables REDIRECT，见部署指南）——迁移清理三件在部署指南口令模式节。
-- **MCP 会话复用已做（GUI → 池 → 新建三层）**：`tools.rs::exec_on_asset` 命中 GUI 同主机会话时优先复用（`sessionSource=gui`），否则走 `mcp/session_pool.rs`，凭据快照变化/会话断开自动重建。对外文档同步由 fact-guards 的 docs 规则守护（工具数/带 token URL/过期 Follow-up）。
-- **【v0.21】MCP transport 会话跨重启恢复（rmcp ~1.7 → ~3.5）**：动机——旧版 `LocalSessionManager` 纯内存，GUI 重启后 host 持有的旧 `Mcp-Session-Id` 全部 404，host 收 404 重新 initialize 是 SHOULD 非 MUST（ZCode 实测不自愈）。三层配合：① token 跨重启复用（见上条）；② `mcp/session_store.rs` 的 `FileSessionStore`（`mcp-sessions.json`，最近 16 条，损坏读作空名单=等价旧行为）挂进 `StreamableHttpServerConfig.session_store`——rmcp tower 层自动编排 initialize 落盘 / DELETE 摘除 / 内存 miss 时 load → `restore_session`（同 id 重建 worker）→ 重放握手，host 无感知；③ `mcp_reset_token` 连带清名单。3.x 适配要点：`Content`→`ContentBlock`、`PromptMessageContent`→`ContentBlock`+`Role`、`RawResource`→`Resource` builder、ServerHandler 三个方法（call_tool/get_prompt/read_resource）返回 `*Response` 枚举（`From` 转换加 `.into()`）、List*Result 补 `result_type/ttl_ms/cache_scope`（None=线上不携带，旧协议行为不变）、**协议 tasks 声明已摘除**（`ToolExecution/TaskSupport` 删除，SEP-2663 扩展待接线；host 走自建 job_* 轮询不受影响，`long_running` 字段保留待接）、session 模块 feature 单列 `transport-streamable-http-server-session`、MSRV 1.88。
-
----
+- **上传/下载均可取消**（`transfer_cancels` 共用旗标通道）：`sftp_upload_cancel` / `sftp_download_cancel`；取消态是 cancelled 不是 error（后端前缀 `[download:cancelled]`）。
+- **上传是服务端流式**：`sftp_upload_from_file` 直读本机路径，字节不经 IPC；入口全为路径型（本地面板 / 原生对话框 / OS 拖入）。**拖入窗口任意区域都会触发上传**（含终端区）。
+- **自适应布局**：≥800×600 全宽自适应、无整体缩放；断点 <1280 / <1024 / <860。**改断点或折叠机制前必读** `useAdaptiveLayout.ts` 与 `usePanelResize.applyCssVars` 注释（折叠必须走 store action，断点值在 `narrow.scss` 与 composable 两处保持一致）。
+- **冲突三选 + 目录整传 + 并发传输**：确认队列 `lib/fileOverwrite.ts`；目录递归**前端编排** `lib/dirTransfer.ts`（深度 ≤16、文件 ≤2000）；同目标互斥 `lib/transferConcurrency.ts`（并发 1~5，默认 3）。`sftp_stat`/`fs_local_stat` 三态契约 `Ok(null)`=明确不存在、`Err`=无法确认，**新 mock 必须配 spec**否则误弹冲突窗挂死。
+- **远程转发走专用连接**：每条 remote 隧道一条独立 SSH 连接；host key 必须已被 GUI 信任（known_hosts 精确匹配，后台不弹窗）；凭据必须已存库（`private_key_credential_id` 托管私钥形态不支持）；`tunnel-traffic-*`/`tunnel-error-*` 前端无监听（存量缺口）。
+- **ProxyJump 链式（上限 4 跳）**：链由资产 `jump_host` 嵌套表达；每跳用自己的 `connect_timeout_secs`；**中间任一跳断则下游全断**；不支持 `user@host`/IPv6 字面量/逗号链；握手无超时为延续边界。详见 docs「ProxyJump」节。
+- **MCP 端口与 token**：release 恒 41235 / debug 默认 41500（`MYSHELLTOOL_MCP_PORT` 可覆盖）；入口有 token 鉴权（`core::mcp_auth`）；**token 跨重启复用**，只有手动「重置 token」才需在 MCP 面板重新复制配置。dev 与正式版共享 `app_data_dir`。
+- **MCP 会话复用**（GUI → 池 → 新建三层）：`tools.rs::exec_on_asset` 优先复用 GUI 同主机会话（`sessionSource=gui`），否则走 `mcp/session_pool.rs`。
+- **MCP transport 会话跨重启恢复**：`FileSessionStore`（`mcp-sessions.json`，最近 16 条）挂在 `StreamableHttpServerConfig.session_store`，rmcp 自动 restore。**升级 rmcp 3.x 前必读** docs 同节的适配要点清单。
+- **CSP 已启用**：`script-src 'self'`（**禁 eval**，新依赖用 `new Function` 会被静默拦截）；`connect-src` 必须含 `ipc:` 与 `http://ipc.localhost`（**缺则 invoke 全挂**）。**CSP 只在 Tauri shell 生效，浏览器 dev 页复现不了**；新增外联资源须同步登记，无消费面的授权不写。
+- **内置编辑器**：单文件 ≤2 MiB；编码白名单严格转码（绝不 lossy）；写回带 expected 守护 + temp/rename 原子写 + 可选备份；草稿存 app-data。下载完成 toast 的「打开」= ShellExecute 系统默认程序（**下载的 .exe 会执行**）。
+- **多窗口**：窗口列表可恢复；资产/主题跨窗实时同步（事件带 source 防回环）。限制：窗口几何不恢复、Esc 取消的窗外拖拽可能误开窗。
+- **russh-sftp 是 vendored fork**（`third-party/russh-sftp`，非 UTF-8 文件名可逆编码为 PUA-A）：升级需重放补丁（`buf.rs`/`ser.rs` + `set_metadata` 透传 + 往返单测）。
+- **网关模式**：同一 exe 经 `--gateway` 在 Tauri 之前分流（**改启动链前必读 `gateway_cli.rs`**）。挂载数据泵与 `bind_addr_matches` 在 `tunnel.rs` 与 `gateway mount.rs` **两处各自维护**（改判据两边同步）；relay 必须 `--network host`；**DPAPI 账号一致性**（导入与服务须同一 Windows 用户）。方案见 [`docs/计划/网关模式-实施计划.md`](./docs/计划/网关模式-实施计划.md)、部署见 [`docs/网关模式部署指南.md`](./docs/网关模式部署指南.md)。
+- **资产 id 消歧只改 `id`**、不动 `credential_id` 引用（凭据共用面未消除，暂不做）。
+- **`sanitize_credential_id` 是删除式清洗**、不同 id 可碰撞（改规则需迁移既有凭据文件）。
+- **Windows 工具链坑**：`cargo build` 偶被 windres 阻断 → `cargo check` 兜底；src-tauri 测试二进制缺 Tauri runtime DLL → 用 `cargo check --tests` 验编译，**安全判据测试必须放 core 真跑**。
+- **改前端后必须先 `npm run build` 再编译 Rust**（`frontendDist` 在 Rust build script 阶段打进二进制）；调试期用 `npm run tauri:dev`。
 
 ## 10. Git / 提交
 
 - 默认分支 `master`。提交前确认在正确分支；用户没要求时**不要自动 commit/push**。
 - 改动尽量聚焦，提交信息描述清楚"做了什么 + 为什么"。
-
----
+- **禁止 AI 署名 trailer（项目所有者硬要求）**：commit message 里**禁止** `Co-Authored-By: Claude`、`Generated-by: Claude` 等会被 GitHub 解析为贡献者元数据的 trailer 语法，也不要用 AI 邮箱（如 `noreply@anthropic.com`）做 `git commit --author=`。**本仓库的 GitHub Contributors 列表不得出现 Claude / AI**。Claude Code 默认会追加 `Co-Authored-By: Claude`，**必须显式停用该行为**；「实现由 Claude 协助」的事实可用自然语言写在正文，但不得使用上述 trailer 语法。
+- **不为「风格统一」重写已工作的代码**——先确认有真实收益。
 
 ## 11. 给 Agent 的快速决策清单
 
 收到任务时按此顺序判断：
 1. **是读/研究类**？→ 用 Explore 子 agent 并行搜索，给出结论而非文件堆。
 2. **涉及多文件/架构决策**？→ 先进 Plan 模式，产出计划并经确认。
-3. **有现成实现**？→ 按全局判据 4 判等价（契约 + 变更驱动）后再定复用/新建；高频复用点查 `ui/index.ts`、`workbench.ts` re-export、`backend.ts` normalize*。
-4. **要改 Rust 命令**？→ 别忘了在 `generate_handler!` 注册。
-5. **要加跨 store 逻辑**？→ 加子 store action + `workbench.ts` re-export，用 lazy bridge。
-6. **涉及外部环境**（远端路径/命令输出解析/locale/时钟/身份键/就绪信号）？→ 先按指南 §7 逐项想清求证方式：能协议求证（SFTP canonicalize/stat/read_dir、pty 模式）就不猜；确需 exec 解析必须 `LC_ALL=C` + POSIX 选项 + 注释平台假设。新硬编码写进代码前自问「换个合理环境还成立吗」。
-7. **要找目录归属 / IPC 细节 / 数据模型 / 某模块历史坑**？→ 按顶部指针表读对应 docs 文件；不要把细节复制回本文件。
-8. **改完**？→ 跑 §5 的验证（build 首步即含 lint:facts 门禁），如实报告 exit code。
+3. **需求不确定**？→ 先问清楚再动手（AskUserQuestion / 对话澄清），不要替用户做关键假设；宁可多问一句，不要按猜测铺开实现。
+4. **有现成实现**？→ 按全局判据 4 判等价（契约 + 变更驱动）后再定复用/新建；高频复用点查 `ui/index.ts`、`workbench.ts` re-export、`backend.ts` normalize*。
+5. **要改 Rust 命令**？→ 别忘了在 `generate_handler!` 注册。
+6. **要加跨 store 逻辑**？→ 加子 store action + `workbench.ts` re-export，用 lazy bridge。
+7. **要加分发分支**（modal type / 命令路由 / 事件分支等）？→ 优先注册表，**不要 switch 链**：新增一处分支不该漏改其他几处（本项目已把 modal 分发从 `GlobalModals.vue` 抽到 `lib/modalSubmit.ts` + `lib/modalTitles.ts`，新增 modal type 时两处都要动——这是「一处逻辑散在多个 switch」的历史教训，新代码别再复制该形态）。
+8. **涉及外部环境**（远端路径/命令输出解析/locale/时钟/身份键/就绪信号）？→ 先按指南 §7 逐项想清求证方式：能协议求证（SFTP canonicalize/stat/read_dir、pty 模式）就不猜；确需 exec 解析必须 `LC_ALL=C` + POSIX 选项 + 注释平台假设。新硬编码写进代码前自问「换个合理环境还成立吗」。
+9. **要找目录归属 / IPC 细节 / 数据模型 / 某模块历史坑**？→ 按顶部指针表读对应 docs 文件；不要把细节复制回本文件。
+10. **改完**？→ 跑 §5 的验证（build 首步即含 lint:facts 门禁），如实报告 exit code。
