@@ -448,7 +448,9 @@
 .sb-asset-indicator.success { background: var(--success); }
 .sb-asset-indicator.warn { background: var(--warn); }
 .sb-asset-indicator.idle { background: var(--app-subtle); }
-.sb-asset-title { font-size: 12.5px; font-weight: 500; line-height: 1.2; }
+// 字号收敛到 .asset-name 的 var(--text-xs)（侧栏密集档）——此处曾硬编码 12.5px
+// 与 scoped 规则打架，按 token 纪律只保留非字号属性
+.sb-asset-title { font-weight: 500; line-height: 1.2; }
 
 .sb-empty {
   margin: 32px 12px;

@@ -8,6 +8,14 @@ import './styles/main.scss';
 // 导致浏览器拿到 HTML 当 CSS 加载 → 类型不匹配 → xterm 样式完全不生效 → 终端元素层级错乱、
 // canvas 渲染了内容但视觉不可见。这是"终端空白"的真正根因。
 import '@xterm/xterm/css/xterm.css';
+import { detectWindowRoundness } from './lib/platformCaps';
+
+// Win10 直角降级：mount 前挂类，避免首帧圆角→直角闪变。探测走本地 UA-CH API
+// （带 150ms 超时），失败/超时不挂类保持圆角现状——判据与失败方向见
+// lib/platformCaps.ts 注释。
+if ((await detectWindowRoundness()) === false) {
+  document.documentElement.dataset.osRound = 'false';
+}
 
 createApp(App).use(createPinia()).mount('#app');
 

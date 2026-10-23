@@ -196,5 +196,8 @@ function toggleRight() {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
+  /* Win10 直角降级的自绘描边（inset 阴影 = 纯绘制属性零盒模型影响）；
+     默认 none，仅 :root[data-os-round='false'] 时由 _tokens.scss 定义该变量 */
+  box-shadow: var(--window-edge, none);
 }
 </style>

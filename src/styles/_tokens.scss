@@ -297,3 +297,15 @@ $z-indexes: (base: 1, dropdown: 100, sticky: 200, popover: 250, drawer: 300, mod
     color-scheme: dark;
   }
 }
+
+// ── Win10 视觉降级（探测见 lib/platformCaps.ts，挂载点 main.ts）──
+// Win10 DWM 无窗口圆角能力（Win11 独有），无边框窗口（decorations:false）亦无
+// 系统投影：内部全圆角风格与直角无影外壳形成「内圆外直」反差。降级 = radius
+// 三档清零（pill 保留：胶囊按钮/状态点直角化更怪）+ 经 --window-edge 给窗口
+// 自绘 1px 描边，补偿无投影下的边界辨识度（App.vue 的 .window 消费该变量）。
+:root[data-os-round='false'] {
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
+  --window-edge: inset 0 0 0 1px var(--app-border);
+}

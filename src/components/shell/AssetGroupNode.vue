@@ -153,7 +153,7 @@ function assetIndicatorClasses(asset: NormalizedConnectionAsset) {
           @dragend="sidebar.onAssetDragEnd($event)"
         >
           <span class="sb-asset-indicator dot" :class="assetIndicatorClasses(asset)" aria-hidden="true"></span>
-          <div class="sb-asset-title asset-name">
+          <div class="sb-asset-title asset-name" :title="asset.name">
             {{ asset.name }}
             <!-- v0.22 网关资产徽标（tag=gateway：被 jump_host 引用的跳板网关，无终端） -->
             <span
@@ -377,7 +377,9 @@ function assetIndicatorClasses(asset: NormalizedConnectionAsset) {
 
 .asset-name {
   min-width: 0;
-  font-size: var(--text-sm);
+  // 侧栏密集列表档（text-xs）：text-sm 会把 16 字符以上的资产名挤出可视区
+  // （260px 侧栏下名称列约 130px，text-sm 需 148px / text-xs 约 127px）
+  font-size: var(--text-xs);
   color: var(--app-strong);
   font-weight: 500;
   overflow: hidden;
