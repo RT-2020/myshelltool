@@ -4,6 +4,21 @@
 > Read at session start to detect accumulated drift; append one row per session that touched code.
 > Maintained by: `vibe-guard-pure` skill.
 
+## 导航（本文件已 294 行、单行最长 ~6.8 KB，不要整篇读）
+
+按用途挑节，定位到行号后再读：
+
+| 你要做的事 | 去哪读 | 位置 |
+|---|---|---|
+| 判断某文件是否已接近/超过硬上限 | **Drift log** 最近几行的 `Files touched` 列 | L21 起（**只读表尾 5~10 行即可**，越靠上越旧） |
+| 查某文件的历史峰值与拆分去向 | **Drift log** 全表按文件名 grep | L27~L81 |
+| 看当前基线快照（2026-06-23 RESET） | **Baseline snapshot** | L82 起 |
+| 查某次具体改造的完整决策记录 | 文末按日期的 `## 2026-XX-XX — 主题` 段 | L220 起（MCP v2.2 / 多窗口 / tab 迁移 / B3 ProxyJump） |
+| 看软警告区观察名单 | **Soft-warn zone** 小节 | L168 |
+| 了解下一步该拆谁 | **Next architecture session (proposed)** | L197 |
+
+**⚠️ 编码警告**：L23 起 2026-06-20 ~ 2026-07-02 区间与 Baseline snapshot 段存在 mojibake（历史保存时 UTF-8 被按 GBK 误解），**乱码行是原样保留的有意选择**（GBK 逆变换有不可逆字节丢失，不臆造）。表格结构、日期、文件名、数字仍可读，不要试图"修好"这些乱码。
+
 ## How to use
 
 - **At session start (when working on code)**: skim this log. If any file has grown by 鈮?.5脳 of its limit since the last reset row, that's a downstream trigger 鈥?propose a pure architecture session.
