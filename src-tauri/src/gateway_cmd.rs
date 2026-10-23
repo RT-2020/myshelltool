@@ -195,8 +195,87 @@ pub async fn gateway_setup_from_secret(
     })
 }
 
+/// 读状态文件的 (pid, 心跳年龄 ms)。无文件/损坏/无 pid 字段 → (None, u64::MAX)。
+fn read_status_pid(data_dir: &std::path::Path) -> (Option<u32>, u64) {
+    let Ok(raw) = std::fs::read_to_string(data_dir.join(gw_run::STATUS_FILE)) else {
+        return (None, u64::MAX);
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return (None, u64::MAX);
+    };
+    let pid = v.get("pid").and_then(|p| p.as_u64()).map(|p| p as u32);
+    let updated = v.get("updated_at").and_then(|t| t.as_u64()).unwrap_or(0);
+    (pid, gw_run::now_ms().saturating_sub(updated))
+}
+
+/// 停掉仍在运行的旧网关进程，返回其 pid（供接管校验比对）。
+/// 安全判据：**仅当心跳新鲜（≤25s）才停**——新鲜 pid 必属活网关（10s 心跳）；
+/// 陈旧 pid 可能已被系统复用，杀之会误伤无辜进程，宁可走接管校验兜底。
+/// v0.21.3 修复「更新配置后点击启动，实际仍是旧进程旧配置」：
+/// 旧实现 spawn 完就报成功，新进程被旧进程占着的 22222 顶掉后静默退出。
+async fn stop_stale_gateway(data_dir: &std::path::Path) -> Result<Option<u32>, String> {
+    let (pid, age_ms) = read_status_pid(data_dir);
+    let Some(pid) = pid else { return Ok(None) };
+    if pid == 0 || pid == std::process::id() || age_ms > 25_000 {
+        return Ok(None);
+    }
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .output();
+        match out {
+            Ok(o) if o.status.success() => {
+                // 等心跳停跳（进程死透、端口释放），最多 5s
+                for _ in 0..25 {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    let (_, age) = read_status_pid(data_dir);
+                    if age > 26_000 {
+                        break;
+                    }
+                }
+                Ok(Some(pid))
+            }
+            _ => Err(format!(
+                "旧网关进程（pid {pid}）停止失败：请在任务管理器结束 myshelltool 后重试"
+            )),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = pid;
+        Ok(None)
+    }
+}
+
+/// spawn 后校验新进程真的接管了（写出自己的 pid）——不再让 spawn 成功冒充
+/// 启动成功。超时 Err：典型原因是旧进程（含无 pid 字段的存量旧版）仍占着
+/// 回环 22222，把新进程顶掉后静默退出。
+async fn verify_takeover(data_dir: &std::path::Path, old_pid: Option<u32>) -> Result<(), String> {
+    for _ in 0..40 {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let (pid, age) = read_status_pid(data_dir);
+        if let Some(p) = pid {
+            if p != 0 && Some(p) != old_pid && age < 5_000 {
+                return Ok(());
+            }
+        }
+    }
+    Err(
+        "网关进程未能接管（回环 22222 可能仍被占用）：请查看 logs/gateway.log，\
+         或在任务管理器结束所有 myshelltool 后重试"
+            .into(),
+    )
+}
+
 #[tauri::command]
-pub async fn gateway_launch() -> Result<(), String> {
+pub async fn gateway_launch(state: State<'_, AppState>) -> Result<(), String> {
+    let data_dir = state
+        .asset_store_path
+        .parent()
+        .ok_or("无法定位应用数据目录")?
+        .to_path_buf();
+    let old_pid = stop_stale_gateway(&data_dir).await?;
     let exe = std::env::current_exe().map_err(|e| format!("定位自身路径失败：{e}"))?;
     #[cfg(windows)]
     {
@@ -216,7 +295,7 @@ pub async fn gateway_launch() -> Result<(), String> {
             .spawn()
             .map_err(|e| format!("启动网关进程失败：{e}"))?;
     }
-    Ok(())
+    verify_takeover(&data_dir, old_pid).await
 }
 
 /// 生成本机侧「口令模式」用的强随机口令（v0.21.2）。
