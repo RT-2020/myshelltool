@@ -28,7 +28,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # gen-changelog 需要 git log 全历史 + 全部 tags（git describe --tags 依赖），
           # 默认 fetch-depth 1 拿不到上个 tag，发布说明会生成失败。
