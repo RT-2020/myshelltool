@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           # Vite 7 engines 要求 ^20.19.0 || >=22.12.0，且 Node 20 已 EOL；
           # 用 22 与本地 24 同处兼容区间，避免浮动 20.x 恰好命中过旧小版本。
@@ -74,7 +74,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
