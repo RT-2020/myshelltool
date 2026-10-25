@@ -163,7 +163,7 @@ jobs:
           '
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: ${{ github.ref_name }}
           # Release body 与 latest.json notes 同源（gen-changelog 产物）——
