@@ -12,7 +12,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # v1.3 Gist 同步加密内核：主密码 Argon2 派生密钥 + AES-256-GCM 认证加密
 aes-gcm = "0.10"
-argon2 = "0.5"
+argon2 = "0.6"
 # 加密所需的 CSPRNG（生成 salt / AES-GCM nonce）
 rand = "0.8"
 # v2.6 危险命令分类 + shell 分段（纯逻辑，从 src-tauri 迁入以便独立 cargo test ——
