@@ -228,7 +228,7 @@ async fn stop_stale_gateway(data_dir: &std::path::Path) -> Result<Option<u32>, S
             Ok(o) if o.status.success() => {
                 // 等心跳停跳（进程死透、端口释放），最多 5s
                 for _ in 0..25 {
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await; // fact-guard:allow no-blocking-sleep 轮询节流间隔非就绪信号——每轮读状态文件真实年龄判停跳，跨进程无事件机制
                     let (_, age) = read_status_pid(data_dir);
                     if age > 26_000 {
                         break;
@@ -253,7 +253,7 @@ async fn stop_stale_gateway(data_dir: &std::path::Path) -> Result<Option<u32>, S
 /// 回环 22222，把新进程顶掉后静默退出。
 async fn verify_takeover(data_dir: &std::path::Path, old_pid: Option<u32>) -> Result<(), String> {
     for _ in 0..40 {
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await; // fact-guard:allow no-blocking-sleep 轮询节流间隔非就绪信号——每轮读状态文件真实 pid 判接管，跨进程无事件机制
         let (pid, age) = read_status_pid(data_dir);
         if let Some(p) = pid {
             if p != 0 && Some(p) != old_pid && age < 5_000 {
