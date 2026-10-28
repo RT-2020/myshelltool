@@ -32,7 +32,7 @@ log = { version = "0.4", features = ["std"] }
 # v1.1：加 elicitation feature（高危命令客户端内确认）+ schemars（elicit<T> 泛型版需要）
 # v1.4：加 transport-streamable-http-server（MCP 内嵌 GUI，Streamable HTTP transport）
 # v0.21：3.x 把 session 模块拆成独立 feature，自定义 SessionStore（会话跨重启恢复）需要它
-rmcp = { version = "~3.5", features = ["server", "transport-io", "transport-streamable-http-server", "transport-streamable-http-server-session", "elicitation", "schemars"] }
+rmcp = { version = "~3.7", features = ["server", "transport-io", "transport-streamable-http-server", "transport-streamable-http-server-session", "elicitation", "schemars"] }
 # 危险命令检测（D5：翻译 dangerousCommands.js，GUI 与 MCP 共享）
 regex = "1"
 # MCP v1.1 elicitation：elicit::<T>() 需要 schemars 直接依赖（生成 JSON Schema）
