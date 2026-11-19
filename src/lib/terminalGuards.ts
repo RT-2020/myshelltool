@@ -30,12 +30,17 @@ export interface NativePasteGuardOptions {
 
 export function createNativePasteGuard({ getSessionId, requestDangerousPaste, announce }: NativePasteGuardOptions) {
   return (event: KeyboardEvent): boolean => {
+    // 只在 keydown 拦截：xterm 对 keydown/keyup 都会调 customKeyEventHandler
+    // （_keyDown/_keyUp 两处），keyup 时 Ctrl 尚未松开、key='v' 依旧成立——不过滤
+    // 会让同一次 Ctrl+V 触发两遍粘贴（psw → pswpsw，v2.8 实测矩阵只覆盖 keydown
+    // 语义故漏网）。keyup 放行无副作用：不产生 VT 数据，焦点本就在终端。
+    if (event.type !== 'keydown') return true;
     const mod = event.ctrlKey || event.metaKey;
     if (!mod || event.shiftKey || (event.key !== 'v' && event.key !== 'V')) return true;
 
     // clipboard API 不可用（非安全上下文 / 旧 webview / 未授权）：放行默认粘贴。
     // 注意：promise 拒绝发生在 handler 返回之后，无法再"返回 true"，
-    // 此时事件已拦截，只能提示用户改用工具栏粘贴（含 fallback 链）。
+    // 此时事件已拦截，只能提示用户改用右键菜单粘贴（含 fallback 链）。
     if (typeof navigator === 'undefined' || !navigator.clipboard || typeof navigator.clipboard.readText !== 'function') {
       return true;
     }
@@ -45,7 +50,7 @@ export function createNativePasteGuard({ getSessionId, requestDangerousPaste, an
         if (text) requestDangerousPaste(getSessionId(), text);
       })
       .catch(() => {
-        announce('剪贴板读取失败，请使用工具栏粘贴', { level: 'warn' });
+        announce('剪贴板读取失败，请使用右键菜单粘贴', { level: 'warn' });
       });
     return false;
   };

@@ -229,6 +229,34 @@ console.error('[step] scenario-1');
   });
   if (statusAfterClose !== 'connected') throw new Error('auto-reconnect did not reconnect: ' + statusAfterClose);
 
+console.error('[step] scenario-1b');
+  // ════ 场景 1b：原生 Ctrl+V 粘贴只写一遍（keydown+keyup 双触发回归）════
+  // 回归（2026-11-10 用户实测 psw→pswpsw）：xterm 对 keydown/keyup 都会调
+  // customKeyEventHandler（CoreBrowserTerminal._keyDown/_keyUp 两处，且 _keyUp
+  // 无前置短路），nativePasteGuard 未过滤 event.type 时一次 Ctrl+V 触发两遍
+  // term.paste。链路：mock navigator.clipboard.readText → 向 .xterm-helper-textarea
+  // 派发 keydown+keyup（keyup 时 ctrlKey 仍 true = 先松 V 后松 Ctrl 的人手顺序）
+  // → 危险判定（后端 mock 判安全）→ term.paste → onData → ssh_write 恰好一份。
+  await fixtureBackend(page, {
+    'dangerous_paste_check': spec(null), // 安全文本：不弹确认直接写入
+  });
+  const writeCountBeforePaste = await page.evaluate(() => window.__tauriMock.calls.filter(c => c.command === 'ssh_write').length);
+  await page.evaluate(() => {
+    navigator.clipboard.readText = async () => 'psw123';
+    const ta = document.querySelector('.xterm-helper-textarea');
+    if (!ta) throw new Error('xterm helper textarea not found');
+    ta.focus();
+    ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', code: 'KeyV', ctrlKey: true, cancelable: true, bubbles: true }));
+    ta.dispatchEvent(new KeyboardEvent('keyup', { key: 'v', code: 'KeyV', ctrlKey: true, cancelable: true, bubbles: true }));
+  });
+  await page.waitForFunction(count => window.__tauriMock.calls.filter(c => c.command === 'ssh_write').length > count, writeCountBeforePaste, { timeout: 5000 });
+  const pastedText = await page.evaluate(count => window.__tauriMock.calls
+    .filter(c => c.command === 'ssh_write').slice(count)
+    .map(c => new TextDecoder().decode(new Uint8Array(c.args.data))).join(''), writeCountBeforePaste);
+  if (pastedText !== 'psw123') {
+    throw new Error('paste written more than once (keydown+keyup double-fire regression): ' + JSON.stringify(pastedText));
+  }
+
 console.error('[step] scenario-2');
   // ════ 场景 2：流式上传全链路（stat → 单条 sftp_upload_from_file → done）════
   await fixtureBackend(page, {
