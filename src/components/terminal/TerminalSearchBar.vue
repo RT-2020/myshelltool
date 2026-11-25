@@ -54,7 +54,7 @@ const matchText = computed(() => {
       ref="inputRef"
       :value="query"
       type="search"
-      placeholder="查找"
+      placeholder="查找终端内容"
       spellcheck="false"
       aria-label="搜索终端内容"
       @input="emit('update:query', ($event.target as HTMLInputElement).value)"
@@ -81,8 +81,8 @@ const matchText = computed(() => {
   top: var(--space-2);
   right: var(--space-2);
   z-index: var(--z-popover);
-  // 百分比按终端画布算；输入框放不下时，整组工具换到下一行。
-  inline-size: clamp(19rem, 44%, 26rem);
+  // 窄画布下随终端容器同步收窄；主桌面宽/中画布保留足够输入宽度，极端窄宽时工具组整组换行。
+  inline-size: clamp(390px, 56%, 480px);
   max-inline-size: calc(100% - 2 * var(--space-2));
   display: flex;
   flex-wrap: wrap;
@@ -97,18 +97,26 @@ const matchText = computed(() => {
 }
 
 .terminal-searchbar input {
-  flex: 1 1 var(--space-12);
+  flex: 1 1 var(--space-20);
   min-inline-size: 0;
   inline-size: 0;
+  min-block-size: 26px;
   border: 1px solid var(--app-border);
   border-radius: var(--radius-sm);
   background: var(--app-panel);
-  padding: var(--space-1) var(--space-2);
-  font-size: var(--text-sm);
+  padding: 3px var(--space-2);
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  line-height: 1.4;
   color: var(--app-strong);
   outline: none;
   transition: border-color var(--dur-fast) var(--ease-standard),
     box-shadow var(--dur-fast) var(--ease-standard);
+}
+
+.terminal-searchbar input::-webkit-search-cancel-button {
+  display: none;
+  appearance: none;
 }
 
 .terminal-searchbar input:focus {
@@ -160,7 +168,8 @@ const matchText = computed(() => {
 
 .search-count {
   flex: none;
-  inline-size: 7ch;
+  padding: 0 var(--space-1);
+  max-inline-size: 8ch;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--app-muted);
@@ -170,6 +179,8 @@ const matchText = computed(() => {
   text-align: end;
   font-variant-numeric: tabular-nums;
 }
+
+.search-count:empty { display: none; }
 
 .search-count.miss { color: var(--danger); }
 </style>
