@@ -28,6 +28,8 @@ export interface SidebarContextMenuHandlers {
   onDeleteAsset: (asset: NormalizedConnectionAsset) => void;
   onRenameGroup: (path: string) => void;
   onDissolveGroup: (path: string) => void;
+  /** 在该分组内快捷新增资产 */
+  onAddAssetToGroup: (path: string) => void;
   /** 在该分组下新建子分组（打开预填父路径的新建分组弹窗） */
   onCreateSubgroup: (path: string) => void;
   /** 在独立窗口打开（组件侧 openAssetWindow + 失败 toast） */
@@ -87,10 +89,11 @@ export function useSidebarContextMenu(handlers: SidebarContextMenuHandlers) {
     if (!path) return [];
     const make = (label: string, fn: () => void, opts: { danger?: boolean } = {}) => ({ label, action: fn, ...opts });
     return [
+      make('在该组新增连接…', () => handlers.onAddAssetToGroup(path)),
       make('新建子分组…', () => handlers.onCreateSubgroup(path)),
       make('重命名…', () => handlers.onRenameGroup(path)),
       { separator: true },
-      make('解散分组', () => handlers.onDissolveGroup(path), { danger: true })
+      make('解散分组', () => handlers.onDissolveGroup(path))
     ];
   });
 

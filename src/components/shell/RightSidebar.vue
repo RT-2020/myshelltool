@@ -17,6 +17,7 @@ const clipboard = useClipboard();
 
 const pauseBtnTitle = computed(() => {
   if (!sessions.activeSessionId) return '连接后可用';
+  if (rm.paused) return '恢复采样';
   return rm.enabled ? '暂停采样' : '继续采样';
 });
 
@@ -27,14 +28,32 @@ const exportBtnAria = computed(() =>
 
 async function onPauseToggle() {
   if (rm.enabled) {
-    await rm.stop().catch(() => {});
-    workbench.announce('已暂停资源采样');
+    try {
+      await rm.pause();
+      workbench.announce('已暂停资源采样');
+    } catch (error) {
+      workbench.announce(`暂停资源采样失败：${error instanceof Error ? error.message : String(error)}`, { level: 'error' });
+    }
+    return;
+  }
+
+  if (rm.paused) {
+    try {
+      await rm.resume(sessions.activeSessionId ?? undefined);
+      workbench.announce('已恢复资源采样');
+    } catch (error) {
+      workbench.announce(`恢复资源采样失败：${error instanceof Error ? error.message : String(error)}`, { level: 'error' });
+    }
     return;
   }
 
   if (sessions.activeSessionId) {
-    await rm.start(sessions.activeSessionId).catch(() => {});
-    workbench.announce('已恢复资源采样');
+    try {
+      await rm.start(sessions.activeSessionId);
+      workbench.announce('已恢复资源采样');
+    } catch (error) {
+      workbench.announce(`恢复资源采样失败：${error instanceof Error ? error.message : String(error)}`, { level: 'error' });
+    }
   }
 }
 

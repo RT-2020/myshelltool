@@ -84,7 +84,7 @@ const dashOffset = computed(() => circumference - (clamped.value / 100) * circum
 .app-progress-fill {
   height: 100%;
   border-radius: var(--radius-pill);
-  transition: width 0.2s ease, background var(--dur-fast) var(--ease-standard);
+  transition: width var(--dur-base) var(--ease-standard), background var(--dur-fast) var(--ease-standard);
 }
 
 .app-progress-circular-bg {
@@ -92,6 +92,6 @@ const dashOffset = computed(() => circumference - (clamped.value / 100) * circum
 }
 
 .app-progress-circular-fg {
-  transition: stroke-dashoffset 0.2s ease, stroke var(--dur-fast) var(--ease-standard);
+  transition: stroke-dashoffset var(--dur-base) var(--ease-standard), stroke var(--dur-fast) var(--ease-standard);
 }
 </style>

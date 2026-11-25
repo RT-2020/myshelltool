@@ -23,10 +23,12 @@
  *  - 主窗口关闭后本窗口存活，属 Tauri 多窗口正常生命周期。
  */
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { ArrowUpDown, Minus, Moon, PanelRight, Square, Sun, Undo2, X } from 'lucide-vue-next';
+import { ArrowUpDown, PanelRight, Undo2 } from 'lucide-vue-next';
 import TerminalSurface from '@/components/terminal/TerminalSurface.vue';
 import FileSurface from '@/components/files/FileSurface.vue';
 import RightSidebar from '@/components/shell/RightSidebar.vue';
+import ThemeToggleButton from '@/components/workbench/ThemeToggleButton.vue';
+import WindowControls from '@/components/workbench/WindowControls.vue';
 import { AppBrandLogo } from '@/components/ui';
 import { useSessionsStore } from '@/stores/sessions';
 import { useUiStore } from '@/stores/ui';
@@ -266,10 +268,11 @@ onBeforeUnmount(() => {
         >
           <Undo2 />
         </button>
-        <button class="icon-btn" type="button" aria-label="切换主题" title="切换主题" @click="props.store.toggleTheme()">
-          <Sun v-if="props.store.effectiveTheme === 'light'" />
-          <Moon v-else />
-        </button>
+        <ThemeToggleButton
+          :theme="props.store.theme"
+          :theme-label="props.store.themeLabel"
+          @toggle="props.store.toggleTheme()"
+        />
         <button
           class="icon-btn"
           type="button"
@@ -280,23 +283,13 @@ onBeforeUnmount(() => {
         >
           <PanelRight />
         </button>
-        <div v-if="desktopWindowControlsVisible" class="window-controls" data-no-drag="true" aria-label="窗口控制">
-          <button class="window-btn" type="button" aria-label="最小化" title="最小化" @click="minimizeWindow">
-            <Minus :size="14" />
-          </button>
-          <button
-            class="window-btn"
-            type="button"
-            :aria-label="isMaximized ? '还原窗口' : '最大化'"
-            :title="isMaximized ? '还原窗口' : '最大化'"
-            @click="toggleWindowMaximize"
-          >
-            <Square :size="12" />
-          </button>
-          <button class="window-btn danger" type="button" aria-label="关闭" title="关闭" @click="requestClose">
-            <X :size="14" />
-          </button>
-        </div>
+        <WindowControls
+          :visible="desktopWindowControlsVisible"
+          :is-maximized="isMaximized"
+          @minimize="minimizeWindow"
+          @toggle-maximize="toggleWindowMaximize"
+          @close="requestClose"
+        />
       </div>
     </header>
 
@@ -343,13 +336,13 @@ onBeforeUnmount(() => {
         <button
           class="sb-item transfer-pill"
           type="button"
-          aria-label="打开传输队列"
+          :aria-label="activeTransferCount > 0 ? `打开传输队列（${activeTransferCount} 个进行中）` : '打开传输队列'"
           @click="props.store.toggleTransferDrawer()"
         >
           <ArrowUpDown :size="12" aria-hidden="true" />
           <span class="mono">{{ activeTransferCount }}</span>
         </button>
-        <span class="sb-sep">·</span>
+        <span class="sb-sep" aria-hidden="true">·</span>
         <span class="badge" :class="SESSION_BADGE_CLASS[sessionStatus]">
           {{ SESSION_STATUS_LABELS[sessionStatus] }}<template v-if="connectedCount"> · {{ connectedCount }}</template>
         </span>
@@ -450,9 +443,17 @@ onBeforeUnmount(() => {
 .asset-shell.right-collapsed .resize[data-target='right'] { display: none; }
 
 // 会话状态徽标（不渲染 sync/MCP badge：asset 模式未初始化对应 store）。
-// success/muted 复用全局 .badge.*；connecting/error 补齐（含 ::before 圆点对齐）
-.badge.connecting { color: var(--accent); }
+// success/muted 复用全局 .badge.*；connecting/error 对齐 01 A2 双编码公式（soft 底 + ::before 色点 + --app-muted 文字达标对比度）
+.badge.connecting {
+  color: var(--app-muted);
+  border-color: var(--accent-soft-strong);
+  background: var(--accent-soft);
+}
 .badge.connecting::before { background: var(--accent); }
-.badge.error { color: var(--danger); }
+.badge.error {
+  color: var(--app-muted);
+  border-color: color-mix(in oklab, var(--danger), transparent 70%);
+  background: color-mix(in oklab, var(--danger), transparent 88%);
+}
 .badge.error::before { background: var(--danger); }
 </style>

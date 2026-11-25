@@ -143,7 +143,8 @@ async function onEnable() {
   font-size: var(--text-xs);
   cursor: pointer;
 }
-.link-btn:hover { color: var(--danger); }
+.link-btn:hover:not(:disabled) { color: var(--danger); }
+.link-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .link-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--radius-sm); }
 .link-btn :deep(svg) { flex-shrink: 0; }
 </style>

@@ -17,16 +17,14 @@
  */
 import { computed } from 'vue';
 import { storeToRefs } from 'pinia';
-import { ArrowRight, Cloud, HardDrive, Lock, TriangleAlert } from 'lucide-vue-next';
+import { ArrowLeft, ArrowRight, Cloud, HardDrive, Lock, TriangleAlert } from 'lucide-vue-next';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useSyncStore } from '@/stores/sync';
 
 const store = useWorkbenchStore();
 const { syncConfigured, syncLoading, syncCredentialsEnabled } = storeToRefs(store);
-// 直接 use 子 store（先例：resourceMonitor panel / useGithubDeviceLogin）——
-// 避免为多一个字段就去动 517 行、已超硬上限的 workbench 编排壳。
 const syncStore = useSyncStore();
-const { localHasChanges, autoSyncEnabled, remoteHasUpdates, lastSyncedAt, gistIdMasked, status } =
+const { localHasChanges, remoteHasUpdates, lastSyncedAt, gistIdMasked, status } =
   storeToRefs(syncStore);
 
 /** 资产台数（读数用；拿不到就只显示"本机"）。 */
@@ -98,7 +96,12 @@ const movingDirection = computed<'out' | 'in' | null>(() => {
 
       <span class="link" aria-hidden="true">
         <span class="link-line" />
-        <ArrowRight :size="12" class="link-arrow" :class="{ moving: movingDirection === 'out' }" />
+        <component
+          :is="movingDirection === 'in' ? ArrowLeft : ArrowRight"
+          :size="12"
+          class="link-arrow"
+          :class="{ 'moving-out': movingDirection === 'out', 'moving-in': movingDirection === 'in' }"
+        />
       </span>
 
       <span class="node">
@@ -109,7 +112,12 @@ const movingDirection = computed<'out' | 'in' | null>(() => {
 
       <span class="link" aria-hidden="true">
         <span class="link-line" />
-        <ArrowRight :size="12" class="link-arrow" :class="{ moving: movingDirection === 'in' }" />
+        <component
+          :is="movingDirection === 'in' ? ArrowLeft : ArrowRight"
+          :size="12"
+          class="link-arrow"
+          :class="{ 'moving-out': movingDirection === 'out', 'moving-in': movingDirection === 'in' }"
+        />
       </span>
 
       <span class="node" :class="{ 'is-hot': remoteHasUpdates }">
@@ -198,12 +206,18 @@ const movingDirection = computed<'out' | 'in' | null>(() => {
   background: currentColor;
 }
 .link-arrow { flex-shrink: 0; }
-// 唯一动效：数据正在走（推送=向外，拉取=向内）
-.link-arrow.moving { animation: travel 900ms var(--ease-standard) infinite; }
-@keyframes travel {
+// 唯一动效：方向数据流指示（推送=向右，拉取=向左，08 #3）
+.link-arrow.moving-out { animation: travel-out 900ms var(--ease-standard) infinite; }
+.link-arrow.moving-in { animation: travel-in 900ms var(--ease-standard) infinite; }
+@keyframes travel-out {
   0% { transform: translateX(-3px); opacity: 0.35; }
   50% { transform: translateX(1px); opacity: 1; }
   100% { transform: translateX(3px); opacity: 0.35; }
+}
+@keyframes travel-in {
+  0% { transform: translateX(3px); opacity: 0.35; }
+  50% { transform: translateX(-1px); opacity: 1; }
+  100% { transform: translateX(-3px); opacity: 0.35; }
 }
 
 // ─── 状态读数 ───
@@ -256,6 +270,7 @@ const movingDirection = computed<'out' | 'in' | null>(() => {
 
 // 无障碍：尊重系统减弱动效设置（此时动画不做，状态词本身已说明进行中）
 @media (prefers-reduced-motion: reduce) {
-  .link-arrow.moving { animation: none; }
+  .link-arrow.moving-out,
+  .link-arrow.moving-in { animation: none; }
 }
 </style>

@@ -42,13 +42,6 @@ export function inferFileEntryType(entry: FileColumnEntry): string {
   return ext.length > 5 ? ext.slice(0, 5) : ext;
 }
 
-export function formatFileEntrySize(bytes: number | null | undefined): string {
-  const size = Number(bytes) || 0;
-  if (size >= 1024 * 1024) return Math.round(size / 1024 / 1024) + ' MB';
-  if (size >= 1024) return Math.round(size / 1024) + ' KB';
-  return size + ' B';
-}
-
 export function formatFileEntryTime(entry: FileColumnEntry): string {
   if (!entry.modified) return '—';
   // entry.modified 全部由自家后端产出（恒为 epoch 秒串或空串，自身契约）：

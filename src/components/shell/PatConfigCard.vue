@@ -37,6 +37,13 @@ const tokenInput = ref('');
 
 // 手动 PAT 表单折叠开关：OAuth 登录是主路径，手动粘贴降级为高级选项
 const showManualPat = ref(false);
+// 清除已保存 token 的两步内联确认（08 #6，防误删导致同步与备份全停摆）
+const confirmDeleteToken = ref(false);
+
+function onConfirmDeleteToken() {
+  confirmDeleteToken.value = false;
+  store.deleteToken();
+}
 
 function saveToken() {
   store.saveToken(tokenInput.value).then(saved => {
@@ -152,7 +159,16 @@ async function copyUserCode() {
       <p class="muted" data-token-storage-status>本地安全存储：{{ githubPatConfigured ? '已配置' : '未配置' }}</p>
       <div class="pat-actions">
         <AppButton variant="primary" size="sm" :disabled="!tokenInput" @click="saveToken">保存 token</AppButton>
-        <AppButton variant="danger" size="sm" data-delete-credential @click="store.deleteToken">清除已保存的 token</AppButton>
+        <template v-if="!confirmDeleteToken">
+          <AppButton variant="danger" size="sm" @click="confirmDeleteToken = true">清除已保存的 token</AppButton>
+        </template>
+      </div>
+      <div v-if="confirmDeleteToken" class="confirm-delete-token">
+        <p class="muted danger-copy">清除后同步与云端备份将立即停摆，需重新登录才可恢复。</p>
+        <div class="pat-actions">
+          <AppButton variant="danger" size="sm" data-delete-credential @click="onConfirmDeleteToken">确认清除</AppButton>
+          <AppButton variant="ghost" size="sm" @click="confirmDeleteToken = false">取消</AppButton>
+        </div>
       </div>
     </div>
   </div>
@@ -187,6 +203,19 @@ async function copyUserCode() {
   gap: 4px;
 }
 .link-btn:hover { color: var(--app-strong); }
+.link-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--radius-sm); }
+.confirm-delete-token {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid color-mix(in oklab, var(--danger), transparent 55%);
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklab, var(--danger), transparent 90%);
+}
+.danger-copy {
+  color: var(--danger);
+}
 .manual-pat {
   display: flex;
   flex-direction: column;

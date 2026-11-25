@@ -68,12 +68,12 @@ export interface BuildTransferItemArgs {
 }
 
 /**
- * 格式化字节数（B → "12 KB" / "3 MB"）。
- * 从 TransferDrawer 的私有实现上移至此（下载完成 toast 也要展示大小，
- * 避免第三份拷贝）；0/非法值返回 "0 B"。
+ * 格式化字节数（B → "12 KB" / "3 MB" / "1.5 GB"）。
+ * 统一服务于传输队列、下载完成 toast 与文件列表大小列（04 A6）；0/非法值返回 "0 B"。
  */
 export function formatBytes(bytes: number | null | undefined): string {
   const size = Number(bytes) || 0;
+  if (size >= 1024 * 1024 * 1024) return (size / (1024 * 1024 * 1024)).toFixed(1).replace(/\.0$/, '') + ' GB';
   if (size >= 1024 * 1024) return Math.round(size / 1024 / 1024) + ' MB';
   if (size >= 1024) return Math.round(size / 1024) + ' KB';
   return size + ' B';

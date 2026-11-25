@@ -55,6 +55,11 @@ async function onPull() {
   if (!result) return;
   opPassword.value = '';
 }
+
+function onPasswordEnter() {
+  if (primaryAction.value === 'push') void onPush();
+  else if (primaryAction.value === 'pull') void onPull();
+}
 </script>
 
 <template>
@@ -66,7 +71,7 @@ async function onPull() {
         type="password"
         placeholder="输入主密码"
         data-sync-op-password
-        @keyup.enter="primaryAction === 'push' ? onPush() : onPull()"
+        @keyup.enter="onPasswordEnter"
       />
     </label>
     <p v-if="needsPassword" class="pw-hint">
@@ -128,8 +133,6 @@ async function onPull() {
   color: var(--app-muted);
 }
 .pw-hint strong { color: var(--app-strong); }
-// 已免密时这句是纯确认，压低存在感
-.pw-hint.is-quiet { color: var(--app-subtle); }
 
 .row {
   display: flex;

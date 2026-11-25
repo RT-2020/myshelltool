@@ -363,16 +363,16 @@ export const useSyncStore = defineStore('sync', () => {
 
   /**
    * 启动时探测远端是否有更新（轻量，只读 rev，不解密）。
-   * 有更新时写 remoteHasUpdates=true 供 UI 显示徽章，并 announce 提示。
+   * 有更新时写 remoteHasUpdates=true 供 UI 显示徽章；面板内刷新时传 announce:false 静默。
    */
-  async function checkRemoteUpdates() {
+  async function checkRemoteUpdates(opts?: { announce?: boolean }) {
     if (!isTauriRuntime() || !configured.value) return;
     try {
       const result = await invokeBackend<RemoteUpdateStatus>('sync_check_remote_updates');
       remoteHasUpdates.value = Boolean(result.has_updates);
-      if (result.has_updates) {
+      if (result.has_updates && opts?.announce !== false) {
         // 经 workbench bridge announce（若已注入）
-        workbenchBridge?.announce?.('远端 Gist 有更新，点击同步面板拉取最新', { level: 'info' });
+        workbenchBridge?.announce?.('远端 Gist 有更新，点击状态栏同步徽章或打开「设置 → 同步」拉取最新', { level: 'info' });
       }
     } catch (error) {
       // 探测失败不阻塞启动，静默

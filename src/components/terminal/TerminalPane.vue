@@ -14,10 +14,12 @@ interface TerminalContextMenuPayload {
 const props = withDefaults(defineProps<{
   store: ReturnType<typeof useSessionsStore>;
   hasActiveSession?: boolean;
+  hasConnectedOnce?: boolean;
   isTauriCore?: boolean;
   selectedAsset?: NormalizedConnectionAsset | null;
 }>(), {
   hasActiveSession: false,
+  hasConnectedOnce: false,
   isTauriCore: false,
   selectedAsset: null
 });
@@ -60,16 +62,17 @@ function onContextMenu(event: MouseEvent) {
     <div id="terminalContainer" ref="mountRef" aria-label="终端区域"></div>
 
     <div v-if="!hasActiveSession" class="term-empty">
-      <div class="term-empty-icon" aria-hidden="true">
+      <div v-if="!hasConnectedOnce" class="term-empty-icon" aria-hidden="true">
         <TerminalSquare :size="42" />
       </div>
-      <div class="term-empty-title">暂无活跃会话</div>
+      <div class="term-empty-title">{{ hasConnectedOnce ? '会话已全部关闭' : '暂无活跃会话' }}</div>
       <div class="term-empty-desc">
-        从左侧选择连接资产，或在底部输入 <kbd>ssh user@host</kbd> 快速打开会话。
+        {{ hasConnectedOnce ? '从左侧重新选择一台主机，' : '从左侧选择连接资产，' }}或在底部输入 <kbd>ssh user@host</kbd> 快速打开会话。
+        <span v-if="!isTauriCore" class="term-empty-runtime">SSH 连接需要桌面客户端，浏览器预览下不可用。</span>
       </div>
       <div class="term-empty-actions">
         <button v-if="isTauriCore && selectedAsset" class="btn-primary" type="button" @click="emit('connect-selected')">
-          <PlugZap :size="14" />连接 {{ selectedAsset.name }}
+          <PlugZap :size="14" aria-hidden="true" />连接 {{ selectedAsset.name }}
         </button>
         <button v-if="isTauriCore" class="btn-primary secondary" type="button" @click="emit('open-asset-editor')">新增连接</button>
         <button v-else class="btn-primary" type="button" @click="emit('open-asset-editor')">打开新会话</button>
@@ -112,7 +115,7 @@ function onContextMenu(event: MouseEvent) {
 
 #terminalContainer {
   position: relative;
-  z-index: 0;
+  z-index: var(--z-base);
   height: 100%;
   background: var(--terminal-bg);
   overflow: hidden;
@@ -121,7 +124,7 @@ function onContextMenu(event: MouseEvent) {
 .term-empty {
   position: absolute;
   inset: 0;
-  z-index: 2;
+  z-index: var(--z-base);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -138,7 +141,7 @@ function onContextMenu(event: MouseEvent) {
   height: 44px;
   display: grid;
   place-items: center;
-  color: var(--term-muted, rgba(255, 255, 255, 0.45));
+  color: var(--term-muted);
 }
 .term-empty-icon svg {
   width: 100%;
@@ -154,15 +157,14 @@ function onContextMenu(event: MouseEvent) {
 
 .term-empty-desc {
   max-width: 340px;
-  font-size: 12px;
-  color: var(--term-muted, rgba(255, 255, 255, 0.45));
+  font-size: var(--text-xs);
+  color: var(--term-muted);
   line-height: 1.6;
 }
 
-.term-empty-desc kbd {
-  color: var(--terminal-text, var(--term-text));
-  border-color: var(--term-border);
-  background: rgba(255, 255, 255, 0.06);
+.term-empty-runtime {
+  display: block;
+  margin-top: var(--space-1);
 }
 
 .term-empty-actions {
@@ -175,6 +177,7 @@ function onContextMenu(event: MouseEvent) {
   pointer-events: auto;
 }
 
+/* 恒深色画布内局部空态 CTA（03 A4）：与全局 .btn-primary 变更驱动不同，仅保留于本组件 scoped 并对齐 token */
 .btn-primary {
   display: inline-flex;
   align-items: center;
@@ -182,25 +185,44 @@ function onContextMenu(event: MouseEvent) {
   height: 30px;
   padding: 0 14px;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: var(--accent);
   color: var(--accent-on);
-  font-size: 12.5px;
+  font-size: var(--text-xs);
   font-weight: 500;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
+}
+.btn-primary:hover {
+  background: var(--accent-hover);
+}
+.btn-primary:active {
+  background: var(--accent-active);
 }
 .btn-primary.secondary {
   background: transparent;
   color: var(--terminal-text, var(--term-text));
   border: 1px solid var(--term-border);
 }
+.btn-primary.secondary:hover {
+  background: color-mix(in oklab, var(--term-text) 10%, transparent);
+  border-color: var(--app-border-strong);
+}
+.btn-primary.secondary:active {
+  background: color-mix(in oklab, var(--term-text) 16%, transparent);
+}
 
 .hint-keys {
-  color: var(--term-muted, rgba(255, 255, 255, 0.45));
+  color: var(--term-muted);
   font-size: 11px;
 }
+
+.term-empty-desc kbd,
 .hint-keys kbd {
   color: var(--terminal-text, var(--term-text));
   border-color: var(--term-border);
-  background: rgba(255, 255, 255, 0.06);
+  background: color-mix(in oklab, var(--term-text) 6%, transparent);
 }
 </style>

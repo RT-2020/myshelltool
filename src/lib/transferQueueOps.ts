@@ -90,9 +90,17 @@ export function updateTransferProgress(transferId: string, transferred: number, 
 export function pruneFinishedTransfers() {
   const cutoff = Date.now() - 60_000;
   tc().transferQueue.value = tc().transferQueue.value.filter(item => {
-    if (item.status === 'running' || item.status === 'pending') return true;
+    // 04 A7：running / pending 以及 error / cancelled 终态豁免 60s 自动裁剪，保留至用户处理
+    if (item.status !== 'done') return true;
     return (item.finishedAt || 0) > cutoff;
   });
+}
+
+/** 清空已完成（done + cancelled）传输记录（04 A7；失败项保留以供查看与重试）。 */
+export function clearCompletedTransfers() {
+  tc().transferQueue.value = tc().transferQueue.value.filter(
+    item => item.status !== 'done' && item.status !== 'cancelled'
+  );
 }
 
 export function markTransferError(transferId: string, message: string) {
@@ -103,8 +111,6 @@ export function markTransferError(transferId: string, message: string) {
   item.finishedAt = Date.now();
   item.speed = 0;
   item.eta = null;
-  // 与完成路径一致：错误项同样在 60s 后从队列清理（避免残留堆积）
-  pruneFinishedTransfers();
 }
 
 export async function withTransfer<T>(itemId: string, task: () => Promise<T>) {

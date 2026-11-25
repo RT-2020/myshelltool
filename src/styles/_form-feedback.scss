@@ -1,0 +1,97 @@
+// Shared form feedback & input recipes (docs/设计/10 A6).
+// Consumed via @use '@/styles/_form-feedback' as *; in GlobalModals / Gateway panels.
+
+@mixin form-error-box {
+  margin: 0;
+  padding: var(--space-2) 10px;
+  border: 1px solid color-mix(in oklab, var(--danger), transparent 50%);
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklab, var(--danger), transparent 88%);
+  color: var(--danger);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+}
+
+@mixin danger-note-box {
+  margin: 0;
+  padding: var(--space-2) 10px;
+  border: 1px solid color-mix(in oklab, var(--danger), transparent 50%);
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklab, var(--danger), transparent 88%);
+  color: var(--danger);
+  font-size: var(--text-xs);
+  font-weight: 500;
+}
+
+@mixin native-input-control {
+  width: 100%;
+  padding: 6px 10px;
+  background: var(--app-control);
+  color: var(--app-text);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-family: var(--font-body);
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
+
+  &:focus {
+    border-color: var(--accent);
+    box-shadow: var(--focus-ring);
+  }
+}
+
+@mixin code-block-box {
+  position: relative;
+  background: var(--app-panel-2);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  margin: var(--space-1) 0;
+
+  pre {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: var(--app-text);
+  }
+
+  .link-btn {
+    position: absolute;
+    top: var(--space-1);
+    right: var(--space-1);
+  }
+}
+
+@mixin secret-row-control {
+  display: flex;
+  gap: var(--space-1);
+  align-items: center;
+
+  .secret-toggle {
+    flex: 0 0 auto;
+    font-size: var(--text-xs);
+    padding: 0 var(--space-2);
+    height: 28px;
+    border: 1px solid var(--app-border);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--app-muted);
+    cursor: pointer;
+    transition: border-color var(--dur-fast) var(--ease-standard),
+      color var(--dur-fast) var(--ease-standard),
+      background var(--dur-fast) var(--ease-standard);
+
+    &:hover {
+      border-color: var(--accent);
+      color: var(--app-text);
+      background: var(--app-hover);
+    }
+    &:active {
+      background: var(--app-active);
+    }
+  }
+}

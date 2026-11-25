@@ -1,26 +1,36 @@
 <script setup lang="ts">
 import { computed } from 'vue';
+import { Server } from 'lucide-vue-next';
+import { useClipboard } from '@/composables/useClipboard';
 import { useAssetsStore } from '@/stores/assets';
 import { useTunnelsStore } from '@/stores/tunnels';
 import { useSessionsStore } from '@/stores/sessions';
+import { useWorkbenchStore } from '@/stores/workbench';
 
 const assets = useAssetsStore();
 const tunnels = useTunnelsStore();
 const sessions = useSessionsStore();
 
-/** 摘要行（模板 dt/dd 渲染，muted 可选弱化，title 可选悬浮说明）。 */
+/** 摘要行（模板 dt/dd 渲染，muted 可选弱化，copyValue 可点复制，title 可选悬浮说明）。 */
 interface SummaryRow {
   label: string;
   value: string;
   muted?: boolean;
+  copyValue?: string;
   title?: string;
 }
 
-/** 系统功能行（badge tone 语义色类名）。 */
-interface SystemRow {
-  label: string;
-  value: string;
-  tone: string;
+const workbench = useWorkbenchStore();
+const { copy } = useClipboard();
+
+async function onCopySessionId(id: string) {
+  if (!id) return;
+  const ok = await copy(id);
+  if (ok) {
+    workbench.announce('已复制完整会话 ID');
+  } else {
+    workbench.announce('复制会话 ID 失败', { level: 'error' });
+  }
 }
 
 const selected = computed(() => assets.selectedAsset || null);
@@ -45,7 +55,8 @@ const tunnelsActive = computed(() => tunnels.tunnels.filter(tunnel => tunnel.act
 const tunnelsTotal = computed(() => tunnels.tunnels.length);
 const summaryState = computed(() => {
   if (!selected.value) return '未选择';
-  return activeSession.value ? '已连接' : '空闲';
+  if (!activeSession.value) return '空闲';
+  return activeSession.value.status === 'connected' ? '已连接' : '连接中';
 });
 
 const summaryRows = computed<SummaryRow[]>(() => {
@@ -56,7 +67,13 @@ const summaryRows = computed<SummaryRow[]>(() => {
   const sessionId = activeSession.value?.sessionId || (activeSession.value as { id?: string } | null)?.id || '';
 
   return [
-    { label: '会话', value: activeSession.value ? `${sessionId.slice(0, 8)} · ${connected ? '已连接' : '连接中'}` : '未连接', muted: !activeSession.value },
+    {
+      label: '会话',
+      value: activeSession.value ? `${sessionId.slice(0, 8)} · ${connected ? '已连接' : '连接中'}` : '未连接',
+      muted: !activeSession.value,
+      copyValue: activeSession.value && sessionId ? sessionId : undefined,
+      title: activeSession.value && sessionId ? `点击复制完整会话 ID：${sessionId}` : ''
+    },
     { label: '主机', value: `${selected.value.username || '—'}@${selected.value.host || '—'}:${selected.value.port || 22}` },
     { label: '隧道', value: `${tunnelsActive.value} / ${tunnelsTotal.value}`, muted: tunnelsTotal.value === 0, title: `活动 ${tunnelsActive.value} / 共 ${tunnelsTotal.value} 条` }
   ];
@@ -70,10 +87,8 @@ const credentialBadge = computed(() => {
 });
 
 // MCP/同步状态不在本面板重复展示（L0 信息唯一性）：与底部状态栏 badge 重复，
-// 且状态栏版可点击打开对应设置面板。此处仅保留凭据绑定状态。
-const systemRows = computed<SystemRow[]>(() => [
-  { label: '凭据', value: credentialBadge.value, tone: selected.value ? 'muted' : 'warn' }
-]);
+// 且状态栏版可点击打开对应设置面板。凭据状态并入上方摘要清单。
+const credentialTone = computed(() => (credentialBadge.value === '未绑定' ? 'warn' : 'muted'));
 </script>
 
 <template>
@@ -84,11 +99,7 @@ const systemRows = computed<SystemRow[]>(() => [
     </div>
 
     <div v-if="!selected" class="rs-empty-banner">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
-        <rect x="3" y="4" width="18" height="6" rx="1.5" />
-        <rect x="3" y="14" width="18" height="6" rx="1.5" />
-        <path d="M7 7h.01M7 17h.01" stroke-linecap="round" />
-      </svg>
+      <Server :size="14" aria-hidden="true" />
       <span>未选择主机 · 点击左侧资产树选择一个连接</span>
     </div>
 
@@ -105,26 +116,28 @@ const systemRows = computed<SystemRow[]>(() => [
       <dl class="summary-list">
         <div v-for="row in summaryRows" :key="row.label" class="summary-row">
           <dt>{{ row.label }}</dt>
-          <dd class="val" :class="{ muted: row.muted }" :title="row.title || ''">{{ row.value }}</dd>
-        </div>
-      </dl>
-    </template>
-
-    <div class="system-block">
-      <div class="rs-section-head compact">
-        <span class="rs-section-title">系统功能</span>
-        <span class="rs-section-meta">状态</span>
-      </div>
-
-      <dl class="summary-list">
-        <div v-for="row in systemRows" :key="row.label" class="summary-row">
-          <dt>{{ row.label }}</dt>
           <dd>
-            <span class="badge" :class="row.tone">{{ row.value }}</span>
+            <button
+              v-if="row.copyValue"
+              type="button"
+              class="val summary-copy-btn"
+              :title="row.title || ''"
+              :aria-label="row.title || row.value"
+              @click="onCopySessionId(row.copyValue)"
+            >
+              {{ row.value }}
+            </button>
+            <span v-else class="val" :class="{ muted: row.muted }" :title="row.title || ''">{{ row.value }}</span>
+          </dd>
+        </div>
+        <div class="summary-row">
+          <dt>凭据</dt>
+          <dd>
+            <span class="badge" :class="credentialTone">{{ credentialBadge }}</span>
           </dd>
         </div>
       </dl>
-    </div>
+    </template>
   </section>
 </template>
 
@@ -143,39 +156,17 @@ const systemRows = computed<SystemRow[]>(() => [
   margin-bottom: var(--space-3);
 }
 
-.rs-section-head.compact {
-  margin: var(--space-4) 0 var(--space-2);
-}
-
+/* P0 对比度（docs/设计/06 P0-1）：信息性小字 subtle 2.61-2.79:1 → muted 达标 */
 .rs-section-title {
-  color: var(--app-subtle);
+  color: var(--app-muted);
   font: 500 10px var(--font-mono);
   letter-spacing: 0.08em;
 }
 
 .rs-section-meta {
-  color: var(--app-subtle);
+  color: var(--app-muted);
   font: 10px var(--font-mono);
   letter-spacing: 0.04em;
-}
-
-.rs-empty-banner {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 8px 10px;
-  border: 1px dashed var(--app-border-strong);
-  border-radius: var(--radius-sm);
-  background: var(--app-panel-2);
-  color: var(--app-subtle);
-  font: 11px var(--font-display);
-}
-
-.rs-empty-banner svg {
-  width: 14px;
-  height: 14px;
-  stroke-width: 1.6;
-  flex-shrink: 0;
 }
 
 .ops-host {
@@ -237,7 +228,7 @@ const systemRows = computed<SystemRow[]>(() => [
 }
 
 .summary-row dt {
-  color: var(--app-subtle);
+  color: var(--app-muted);
   font: 10.5px var(--font-mono);
   letter-spacing: 0.04em;
   white-space: nowrap;
@@ -252,54 +243,40 @@ const systemRows = computed<SystemRow[]>(() => [
 .summary-row .val {
   display: block;
   overflow: hidden;
-  color: var(--app-muted);
+  color: var(--app-text);
   font: 11.5px var(--font-mono);
   letter-spacing: 0.01em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-// muted 行（占位/未连接）比普通值更弱一档，形成视觉层级
-.summary-row .val.muted { color: var(--app-subtle); }
+// muted 行（占位/未连接）比普通值更弱一档，形成视觉层级（docs/设计/06 P0-1：
+// 数据=text、占位=muted，两档均达 4.5:1）
+.summary-row .val.muted { color: var(--app-muted); }
 
-.system-block {
-  margin-top: var(--space-1);
-}
-
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
+.summary-row .summary-copy-btn {
+  display: inline-block;
   max-width: 100%;
-  padding: 2px 7px;
-  border-radius: var(--radius-pill);
-  background: var(--app-panel-2);
-  color: var(--app-muted);
-  font: 10.5px/1.4 var(--font-display);
-  white-space: nowrap;
+  border: 0;
+  padding: 0 4px;
+  margin: 0 -4px 0 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  text-align: right;
+  cursor: pointer;
 }
 
-.badge::before {
-  content: '';
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: currentColor;
-  flex-shrink: 0;
+.summary-row .summary-copy-btn:hover {
+  background: var(--app-hover);
+  color: var(--app-strong);
 }
 
-.badge.success {
-  background: var(--success-soft);
-  color: var(--success);
+.summary-row .summary-copy-btn:active {
+  background: var(--app-active);
 }
 
-.badge.warn {
-  background: var(--warn-soft);
-  color: var(--warn);
-}
-
-.badge.muted {
-  background: var(--app-panel-2);
-  color: var(--app-muted);
+.summary-row .summary-copy-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 </style>

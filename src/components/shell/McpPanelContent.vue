@@ -148,7 +148,15 @@ onMounted(() => {
 
 <template>
   <div class="mcp-panel">
-    <div v-if="!hasStatus" class="loading muted">正在探测 MCP…</div>
+    <div v-if="!hasStatus && mcpStore.probeError" class="probe-error" role="alert">
+      <p class="probe-error-text">
+        MCP 服务探测失败（原因：{{ mcpStore.probeError }}）；客户端其余功能不受影响，可点击「刷新」重试。
+      </p>
+      <AppButton variant="subtle" size="sm" :loading="mcpLoading" @click="onRefresh">
+        <RefreshCw v-if="!mcpLoading" :size="12" />刷新
+      </AppButton>
+    </div>
+    <div v-else-if="!hasStatus" class="loading muted">正在探测 MCP…</div>
 
     <template v-else>
       <!-- ① 控制面：状态 / 接入 / 拦截，一块面板 hairline 分隔 -->
@@ -191,13 +199,14 @@ onMounted(() => {
               type="button"
               class="icon-act"
               title="复制 Endpoint"
+              aria-label="复制 Endpoint"
               @click="onCopyEndpoint"
             ><Copy :size="12" /></button>
             <AppButton variant="primary" size="sm" @click="onCopyConfig">
               <Copy :size="12" />复制配置
             </AppButton>
             <AppButton
-              variant="ghost"
+              :variant="resetArmed ? 'danger' : 'ghost'"
               size="sm"
               :loading="resetBusy"
               :title="resetArmed ? '再次点击确认重置：旧 token 立即失效，所有 MCP host 需重新配置' : '重置入口 token（怀疑泄露时使用）'"
@@ -206,6 +215,9 @@ onMounted(() => {
               {{ resetArmed ? '确认重置？' : '重置 token' }}
             </AppButton>
           </div>
+          <p v-if="resetArmed" class="reset-arm-warn">
+            再次点击「确认重置？」将立即作废旧 token；所有已配置 MCP host 必须重新复制配置（3 秒内未确认自动取消）。
+          </p>
           <div v-if="configOpen" class="config-detail">
             <pre class="code-block"><code>{{ configJson }}</code></pre>
             <p class="muted detail-note">
@@ -223,6 +235,7 @@ onMounted(() => {
                 type="button"
                 class="icon-act"
                 title="复制数据目录路径"
+                aria-label="复制数据目录路径"
                 @click="onCopyDataDir"
               ><Copy :size="12" /></button>
             </div>
@@ -278,6 +291,22 @@ onMounted(() => {
   text-align: center;
   font-size: var(--text-xs);
 }
+.probe-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in oklab, var(--danger), transparent 55%);
+  border-radius: var(--radius-md);
+  background: var(--app-panel);
+}
+.probe-error-text {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--app-text);
+}
 
 // ─── ① 控制面 surface：一个外框，内部 hairline 分隔（照 .sync-surface 手法）───
 .mcp-surface {
@@ -298,6 +327,7 @@ onMounted(() => {
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
+  flex-wrap: wrap;
 }
 .s-status {
   padding: var(--space-3);
@@ -364,7 +394,7 @@ onMounted(() => {
   gap: var(--space-2);
   flex: 1 1 auto;
   min-width: 0;
-  padding: 4px 6px;
+  padding: var(--space-1) var(--space-2);
   border: none;
   border-radius: var(--radius-sm);
   background: none;
@@ -374,6 +404,7 @@ onMounted(() => {
   cursor: pointer;
 }
 .config-toggle:hover { background: var(--app-hover); }
+.config-toggle:active { background: var(--app-active); }
 .config-toggle:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .endpoint {
   flex: 0 1 auto;
@@ -382,7 +413,7 @@ onMounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--app-muted);
 }
 .icon-act {
@@ -399,6 +430,25 @@ onMounted(() => {
   cursor: pointer;
 }
 .icon-act:hover { color: var(--app-strong); background: var(--app-hover); }
+.icon-act:active { background: var(--app-active); }
+
+.reset-arm-warn {
+  margin: 0;
+  padding: 0 var(--space-3) var(--space-2);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--app-muted);
+}
+.reset-arm-warn::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--warn);
+  margin-right: 6px;
+  vertical-align: 1px;
+}
 
 // 行内详情：灰底 inset，与外框 hairline 区分层级
 .config-detail {
@@ -422,7 +472,7 @@ onMounted(() => {
 }
 .code-block code {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--terminal-text);
   white-space: pre;
   line-height: 1.5;
@@ -434,7 +484,7 @@ onMounted(() => {
 }
 .detail-note code {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--text-xs);
   background: var(--app-hover);
   padding: 0 4px;
   border-radius: 4px;
@@ -456,6 +506,17 @@ onMounted(() => {
   font-size: var(--text-xs);
   line-height: 1.5;
 }
-.level-note.is-warn { color: var(--warn); }
-.muted { color: var(--app-muted); }
+/* P0 对比度（docs/设计/09 R1）：warn 作 12px 文字浅色 3.42:1 → 文字 muted +
+   色点承担 warn 语义 */
+.level-note.is-warn { color: var(--app-muted); }
+.level-note.is-warn::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--warn);
+  margin-right: 6px;
+  vertical-align: 1px;
+}
 </style>

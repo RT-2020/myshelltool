@@ -189,6 +189,11 @@ function idTail(id: string): string {
   border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: var(--text-xs);
+
+  input:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
 }
 .candidate:hover { background: var(--app-hover); }
 .candidate.is-active {

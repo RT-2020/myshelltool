@@ -204,7 +204,7 @@ export const useUiStore = defineStore('ui', () => {
   // Actions — toast 通知（v0.20 拆至 lib/toastQueue.ts，语义原样迁移；
   // statusMessage 注入——状态栏一行字仍归本 store）
   // ============================================================
-  const { toasts, notify, dismissToast } = createToastQueue(statusMessage);
+  const { toasts, notify, pauseToast, resumeToast, dismissToast } = createToastQueue(statusMessage);
 
   // ============================================================
   // Actions — 主题
@@ -477,6 +477,8 @@ export const useUiStore = defineStore('ui', () => {
     activateSuggestion,
     // toast actions
     notify,
+    pauseToast,
+    resumeToast,
     dismissToast
   };
 });

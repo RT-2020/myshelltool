@@ -48,8 +48,27 @@ export function useAssetDnd(options: UseAssetDndOptions) {
   // 内部 drop 消费标记：分组移动 / 分组排序 drop 命中（onGroupDrop 的回调处）置 true，
   // dragend 据此跳过「拖出主窗口开独立窗口」判定；每次 dragend 结束时复位，不残留
   let internalDropHandled = false;
+  // Esc 取消拖拽守卫（02 #12）：Esc 中止拖拽时浏览器仍可能触发 dragend，标记后禁止误开独立窗
+  let dragCancelledByEsc = false;
+  let unlistenDragKeydown: (() => void) | null = null;
   // 拖拽期间指针是否离开过 webview 视口（窗外释放判定，见文件头注释）
   const dragOutside = useDragOutsideViewport();
+
+  function onDragEsc(event: KeyboardEvent) {
+    if (event.key === 'Escape') dragCancelledByEsc = true;
+  }
+  function attachEscGuard() {
+    unlistenDragKeydown?.();
+    dragCancelledByEsc = false;
+    window.addEventListener('keydown', onDragEsc, true);
+    unlistenDragKeydown = () => {
+      window.removeEventListener('keydown', onDragEsc, true);
+      unlistenDragKeydown = null;
+    };
+  }
+  function detachEscGuard() {
+    unlistenDragKeydown?.();
+  }
 
   function readDragData(event: DragEvent): DragPayload | null {
     const raw = event.dataTransfer?.getData(DRAG_MIME);
@@ -68,19 +87,23 @@ export function useAssetDnd(options: UseAssetDndOptions) {
   function onAssetDragStart(event: DragEvent, asset: NormalizedConnectionAsset) {
     dragSource.value = { kind: 'asset', id: asset.id };
     writeDragData(event, { kind: 'asset', id: asset.id });
-    // 挂 document 级视口跟踪（仅资产拖拽需要，分组拖拽不开独立窗口）
+    // 挂 document 级视口跟踪与 Esc 取消守卫（仅资产拖拽需要，分组拖拽不开独立窗口）
+    attachEscGuard();
     dragOutside.attach();
   }
   function onAssetDragEnd(event: DragEvent) {
     const src = dragSource.value; // 内部 drop 路径（onGroupDrop）会先清 dragSource，故判定前快照语义等价
     const openDetached =
       !internalDropHandled &&
+      !dragCancelledByEsc &&
       src?.kind === 'asset' &&
       isTauriRuntime() &&
       dragOutside.isOutside(event);
     dragSource.value = null;
     dropTarget.value = null;
     internalDropHandled = false;
+    dragCancelledByEsc = false;
+    detachEscGuard();
     dragOutside.detach();
     if (!openDetached) return;
     // 类型断言：openDetached 为 true 蕴含 src 非 null 且 kind === 'asset'（上方判定式）

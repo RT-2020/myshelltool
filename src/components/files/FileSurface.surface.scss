@@ -66,6 +66,9 @@
 .view-pill:hover {
   color: var(--app-text);
 }
+.view-pill:active:not(.active) {
+  background: var(--app-active);
+}
 .view-pill.active {
   background: var(--app-panel);
   color: var(--accent);
@@ -124,6 +127,10 @@
   border: 2px dashed var(--accent);
   pointer-events: none;
 }
+.drag-overlay.is-blocked {
+  background: var(--warn-soft);
+  border-color: var(--warn);
+}
 .drag-overlay-inner {
   display: flex;
   flex-direction: column;
@@ -134,6 +141,9 @@
   background: var(--app-panel);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-pop);
+}
+.drag-overlay.is-blocked .drag-overlay-inner {
+  color: var(--warn);
 }
 .drag-overlay-inner strong {
   font-size: var(--text-sm);

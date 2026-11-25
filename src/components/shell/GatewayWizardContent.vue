@@ -286,7 +286,7 @@ async function runStep2() {
           <AppButton :disabled="busy" @click="chooseSavePath">选择位置…</AppButton>
         </div>
       </label>
-      <p v-if="error" class="form-error" style="white-space:pre-wrap">{{ error }}</p>
+      <p v-if="error" class="form-error">{{ error }}</p>
       <div class="wizard-actions">
         <AppButton :disabled="busy" @click="step = 1">上一步</AppButton>
         <AppButton variant="primary" :disabled="busy" @click="runStep2">

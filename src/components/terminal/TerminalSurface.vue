@@ -8,7 +8,7 @@
  * overlay state (cheatsheet / command palette / dangerous paste), paste
  * guard, tab context-menu helpers.
  */
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { AlertTriangle, RotateCw } from 'lucide-vue-next';
 import { useSessionsStore } from '@/stores/sessions';
@@ -152,17 +152,35 @@ function handleTabSelect(id: string) {
   uiStore.setTab('terminal');
 }
 
+const errorExpanded = ref(false);
+watch(() => [activeSession.value?.sessionId, activeSession.value?.connectError], () => {
+  errorExpanded.value = false;
+});
+
+function confirmBatchClose(targets: readonly { sessionId: string }[], scopeLabel: string) {
+  if (!targets.length) return;
+  const ids = targets.map(s => s.sessionId);
+  uiStore.modal = {
+    type: 'confirmBatchCloseTabs',
+    asset: null,
+    payload: { count: ids.length, scopeLabel },
+    onConfirm: () => {
+      for (const id of ids) {
+        sessionsStore.disconnectSession(id);
+      }
+    }
+  };
+}
+
 function handleCloseOthers(keepSessionId: string) {
-  sessions.value
-    .filter(s => s.sessionId !== keepSessionId)
-    .forEach(s => sessionsStore.disconnectSession(s.sessionId));
+  confirmBatchClose(sessions.value.filter(s => s.sessionId !== keepSessionId), '其他标签');
 }
 
 function handleCloseRight(fromSessionId: string) {
   const list = sessions.value;
   const idx = list.findIndex(s => s.sessionId === fromSessionId);
   if (idx < 0) return;
-  for (let i = list.length - 1; i > idx; i--) sessionsStore.disconnectSession(list[i].sessionId);
+  confirmBatchClose(list.slice(idx + 1), '右侧标签');
 }
 
 async function handleCopyHost(sessionId: string) {
@@ -238,12 +256,23 @@ function isAuthFailure(connectError: string | null) {
       <!-- 连接失败错误卡片：active session status==='error' 时显示在 xterm 上方 -->
       <div v-if="activeSession && activeSession.status === 'error'" class="term-error-banner" role="alert">
         <AlertTriangle :size="16" class="term-error-icon" aria-hidden="true" />
-        <span class="term-error-text">{{ activeSession.connectError || '连接失败' }}</span>
+        <span
+          class="term-error-text"
+          :class="{ 'is-expanded': errorExpanded }"
+          :title="activeSession.connectError || '连接失败'"
+        >{{ activeSession.connectError || '连接失败' }}</span>
+        <button
+          v-if="(activeSession.connectError || '').length > 48"
+          type="button"
+          class="term-error-btn"
+          :aria-expanded="errorExpanded"
+          @click="errorExpanded = !errorExpanded"
+        >{{ errorExpanded ? '收起' : '展开' }}</button>
         <template v-if="isAuthFailure(activeSession.connectError)">
           <button class="term-error-btn" type="button" @click="uiStore.modal = { type: 'reauthPassword', asset: activeSession.asset, payload: { sessionId: activeSession.sessionId } }">重新输入密码</button>
           <button class="term-error-btn" type="button" @click="uiStore.modal = { type: 'assetEditor', asset: { ...activeSession.asset, auth_method: 'PrivateKey' } }">更换密钥</button>
         </template>
-        <button class="term-error-btn" type="button" @click="sessionsStore.reconnectSession(activeSession.sessionId)"><RotateCw :size="13" /> 重试</button>
+        <button class="term-error-btn" type="button" @click="sessionsStore.reconnectSession(activeSession.sessionId)"><RotateCw :size="13" aria-hidden="true" /> 重试</button>
         <button class="term-error-btn" type="button" @click="uiStore.modal = { type: 'assetEditor', asset: activeSession.asset }">编辑连接</button>
         <button class="term-error-btn" type="button" @click="sessionsStore.dismissSessionError(activeSession.sessionId)">关闭</button>
       </div>
@@ -255,6 +284,7 @@ function isAuthFailure(connectError: string | null) {
       <TerminalPane
         :store="sessionsStore"
         :has-active-session="!!activeSession"
+        :has-connected-once="sessionsStore.hasConnectedOnce"
         :is-tauri-core="isTauriCore"
         :selected-asset="selectedAsset"
         @connect-selected="handleTerminalPaneConnect"
@@ -343,7 +373,7 @@ function isAuthFailure(connectError: string | null) {
   flex: 1 1 auto;
   min-height: 0;
   position: relative;
-  z-index: 1;
+  z-index: var(--z-base);
 }
 
 // ============================================================
@@ -355,7 +385,7 @@ function isAuthFailure(connectError: string | null) {
   top: 8px;
   left: 8px;
   right: 8px;
-  z-index: 3;
+  z-index: var(--z-popover);
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -381,6 +411,11 @@ function isAuthFailure(connectError: string | null) {
   font-family: var(--font-mono);
   color: var(--danger);
 }
+.term-error-text.is-expanded {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+}
 
 .term-error-btn {
   display: inline-flex;
@@ -403,6 +438,9 @@ function isAuthFailure(connectError: string | null) {
   border-color: var(--danger);
   color: var(--danger);
 }
+.term-error-btn:active {
+  background: var(--app-active);
+}
 
 // ============================================================
 // term-watermark（app.css L625-632）：网格水印背景
@@ -412,11 +450,10 @@ function isAuthFailure(connectError: string | null) {
   position: absolute;
   inset: 0;
   background-image:
-    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+    linear-gradient(var(--terminal-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--terminal-grid) 1px, transparent 1px);
   background-size: 24px 24px;
   pointer-events: none;
-  z-index: 0;
 }
 
 // ============================================================
@@ -434,12 +471,12 @@ function isAuthFailure(connectError: string | null) {
   font-size: 11px;
   color: var(--term-muted);
   pointer-events: none;
-  z-index: 2;
+  z-index: var(--z-base);
 }
 .ready-bar {
   width: 8px;
   height: 16px;
-  background: rgba(255, 255, 255, 0.75);
+  background: var(--term-cursor);
   animation: term-blink 1.1s steps(1) infinite;
 }
 @keyframes term-blink {

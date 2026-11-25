@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick } from 'vue';
-import { Search, ChevronUp, ChevronDown, X, CaseSensitive, Regex, WholeWord } from 'lucide-vue-next';
+import { ChevronUp, ChevronDown, X, CaseSensitive, Regex, WholeWord } from 'lucide-vue-next';
 
 const props = withDefaults(defineProps<{
   open?: boolean;
@@ -50,25 +50,26 @@ const matchText = computed(() => {
 
 <template>
   <div v-if="open" class="terminal-searchbar" role="search">
-    <Search :size="14" class="search-icon" aria-hidden="true" />
     <input
       ref="inputRef"
       :value="query"
       type="search"
-      placeholder="搜索终端内容 (Enter 下一个 / Shift+Enter 上一个 / Esc 关闭)"
+      placeholder="查找"
       spellcheck="false"
       aria-label="搜索终端内容"
       @input="emit('update:query', ($event.target as HTMLInputElement).value)"
       @keydown.enter.prevent="$event.shiftKey ? emit('prev') : emit('next')"
       @keydown.escape.prevent="emit('close')"
     />
-    <button class="search-toggle" :class="{ active: caseSensitive }" title="区分大小写" :aria-pressed="caseSensitive" @click="emit('update:caseSensitive', !caseSensitive)"><CaseSensitive :size="14" /></button>
-    <button class="search-toggle" :class="{ active: wholeWord }" title="全字匹配" :aria-pressed="wholeWord" @click="emit('update:wholeWord', !wholeWord)"><WholeWord :size="14" /></button>
-    <button class="search-toggle" :class="{ active: regex }" title="正则表达式" :aria-pressed="regex" @click="emit('update:regex', !regex)"><Regex :size="14" /></button>
-    <span v-if="matchText" class="search-count" :class="{ miss: result === 'miss' }" aria-live="polite">{{ matchText }}</span>
-    <button class="btn mini" title="上一个 (Shift+Enter)" aria-label="上一个匹配" @click="emit('prev')"><ChevronUp :size="14" /></button>
-    <button class="btn mini" title="下一个 (Enter)" aria-label="下一个匹配" @click="emit('next')"><ChevronDown :size="14" /></button>
-    <button class="btn mini" title="关闭 (Esc)" aria-label="关闭搜索" @click="emit('close')"><X :size="14" /></button>
+    <div class="search-actions">
+      <button type="button" class="search-toggle" :class="{ active: caseSensitive }" title="区分大小写" :aria-pressed="caseSensitive" @click="emit('update:caseSensitive', !caseSensitive)"><CaseSensitive :size="14" /></button>
+      <button type="button" class="search-toggle" :class="{ active: wholeWord }" title="全字匹配" :aria-pressed="wholeWord" @click="emit('update:wholeWord', !wholeWord)"><WholeWord :size="14" /></button>
+      <button type="button" class="search-toggle" :class="{ active: regex }" title="正则表达式" :aria-pressed="regex" @click="emit('update:regex', !regex)"><Regex :size="14" /></button>
+      <span class="search-count" :class="{ miss: result === 'miss' }" :title="matchText || undefined" aria-live="polite">{{ matchText }}</span>
+      <button type="button" class="search-nav-btn" title="上一个 (Shift+Enter)" aria-label="上一个匹配" @click="emit('prev')"><ChevronUp :size="14" /></button>
+      <button type="button" class="search-nav-btn" title="下一个 (Enter)" aria-label="下一个匹配" @click="emit('next')"><ChevronDown :size="14" /></button>
+      <button type="button" class="search-nav-btn" title="关闭 (Esc)" aria-label="关闭搜索" @click="emit('close')"><X :size="14" /></button>
+    </div>
   </div>
 </template>
 
@@ -78,30 +79,31 @@ const matchText = computed(() => {
 .terminal-searchbar {
   position: absolute;
   top: var(--space-2);
-  right: var(--space-3);
-  z-index: 5;
+  right: var(--space-2);
+  z-index: var(--z-popover);
+  // 百分比按终端画布算；输入框放不下时，整组工具换到下一行。
+  inline-size: clamp(19rem, 44%, 26rem);
+  max-inline-size: calc(100% - 2 * var(--space-2));
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  justify-content: flex-end;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
   background: var(--app-panel-2);
   border: 1px solid var(--app-border);
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow-md);
 }
 
-.search-icon {
-  color: var(--app-muted);
-  flex: 0 0 auto;
-}
-
 .terminal-searchbar input {
-  flex: 0 1 220px;
-  width: 220px;
+  flex: 1 1 var(--space-12);
+  min-inline-size: 0;
+  inline-size: 0;
   border: 1px solid var(--app-border);
   border-radius: var(--radius-sm);
   background: var(--app-panel);
-  padding: 4px 8px;
+  padding: var(--space-1) var(--space-2);
   font-size: var(--text-sm);
   color: var(--app-strong);
   outline: none;
@@ -114,12 +116,22 @@ const matchText = computed(() => {
   box-shadow: var(--focus-ring);
 }
 
-.search-toggle {
+.search-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  max-inline-size: 100%;
+}
+
+.search-actions > button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  flex: none;
+  inline-size: 26px;
+  block-size: 26px;
   border: 1px solid var(--app-border);
   border-radius: var(--radius-sm);
   background: var(--app-panel);
@@ -130,9 +142,14 @@ const matchText = computed(() => {
     color var(--dur-fast) var(--ease-standard);
 }
 
-.search-toggle:hover {
+.search-actions > button:hover {
+  border-color: var(--app-border-strong);
   background: var(--app-hover);
   color: var(--app-strong);
+}
+
+.search-actions > button:active {
+  background: var(--app-active);
 }
 
 .search-toggle.active {
@@ -142,12 +159,15 @@ const matchText = computed(() => {
 }
 
 .search-count {
+  flex: none;
+  inline-size: 7ch;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--app-muted);
-  padding: 0 var(--space-2);
-  min-width: 50px;
-  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: end;
   font-variant-numeric: tabular-nums;
 }
 

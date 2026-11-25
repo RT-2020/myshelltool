@@ -55,6 +55,9 @@
 .overflow-item:hover,
 .tab-context-menu button:hover { background: var(--app-hover); }
 
+.overflow-item:active,
+.tab-context-menu button:active { background: var(--app-active); }
+
 .overflow-item.active {
   background: color-mix(in oklab, var(--accent) 15%, transparent);
   color: var(--accent);
@@ -90,9 +93,16 @@
   background: color-mix(in oklab, var(--danger) 18%, transparent);
   color: var(--danger);
 }
+.overflow-close:active {
+  background: color-mix(in oklab, var(--danger) 28%, transparent);
+}
 
 .tab-context-menu button.danger:hover {
   background: color-mix(in oklab, var(--danger) 18%, transparent);
+  color: var(--danger);
+}
+.tab-context-menu button.danger:active {
+  background: color-mix(in oklab, var(--danger) 28%, transparent);
   color: var(--danger);
 }
 

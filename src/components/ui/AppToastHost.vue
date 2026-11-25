@@ -41,6 +41,10 @@ function dismiss(id: number) {
           class="toast-item"
           :class="[toast.level, { 'has-multi-actions': (toast.actions?.length || 0) > 1 }]"
           :role="toast.level === 'error' ? 'alert' : undefined"
+          @mouseenter="ui.pauseToast(toast.id)"
+          @mouseleave="ui.resumeToast(toast.id)"
+          @focusin="ui.pauseToast(toast.id)"
+          @focusout="ui.resumeToast(toast.id)"
         >
           <component :is="iconFor(toast.level)" :size="16" class="toast-icon" aria-hidden="true" />
           <span class="toast-message">{{ toast.message }}</span>
@@ -135,25 +139,33 @@ function dismiss(id: number) {
   color: var(--accent);
   background: var(--accent-soft);
   cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-standard);
 }
 .toast-action:hover {
   background: var(--accent-soft-strong);
+}
+.toast-action:active {
+  background: color-mix(in oklab, var(--accent-soft-strong), var(--app-active));
 }
 
 .toast-close {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   border-radius: var(--radius-sm);
   color: var(--app-muted);
   cursor: pointer;
   flex-shrink: 0;
+  transition: background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
 }
 .toast-close:hover {
   background: var(--app-hover);
   color: var(--app-strong);
+}
+.toast-close:active {
+  background: var(--app-active);
 }
 
 // 进入/退出过渡：200ms translateY + fade（--motion-base）

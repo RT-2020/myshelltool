@@ -16,6 +16,7 @@ import GlobalModals from './components/shell/GlobalModals.vue';
 import TransferDrawer from './components/files/TransferDrawer.vue';
 import SshImportDialog from './components/shell/SshImportDialog.vue';
 import AppToastHost from './components/ui/AppToastHost.vue';
+import { AlertTriangle } from 'lucide-vue-next';
 import type { ModalState } from './types/domain';
 
 // 独立资产窗口（WebviewWindow url 带 ?win=asset&assetId=...）：模块加载即定
@@ -132,9 +133,10 @@ function toggleRight() {
 <template>
   <div class="window">
     <div v-if="!desktopRuntimeAvailable" class="desktop-only-banner">
-      <strong>桌面客户端模式未启动。</strong>
-      SSH/SFTP/隧道功能需要 Tauri 桌面运行时。请运行
-      <code>npm run tauri:dev</code> 或 <code>npm run tauri:build</code>。
+      <AlertTriangle :size="14" aria-hidden="true" />
+      <span><strong>桌面客户端模式未启动。</strong>
+        SSH/SFTP/隧道功能需要 Tauri 桌面运行时。请运行
+        <code>npm run tauri:dev</code> 或 <code>npm run tauri:build</code>。</span>
     </div>
 
     <AssetWindowShell
@@ -177,17 +179,28 @@ function toggleRight() {
   left: 0;
   right: 0;
   z-index: var(--z-toast, 9999);
-  padding: 10px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-6);
   background: var(--warn-soft);
-  color: var(--warn);
+  /* P0 对比度（docs/设计/01 A3）：warn on warn-soft 2.97:1 → app-text 16.38:1；
+     warn 语义由 soft 底 + 下边条 + 图标（非文本 3.2:1 ≥3:1）承载 */
+  color: var(--app-text);
   border-bottom: 1px solid var(--warn);
-  font-size: 13px;
+  font-size: var(--text-sm);
   text-align: center;
+}
+
+.desktop-only-banner svg {
+  color: var(--warn);
+  flex-shrink: 0;
 }
 
 .desktop-only-banner code {
   padding: 2px 6px;
-  border-radius: 3px;
+  border-radius: 4px; /* 内联代码芯片专用 4px（radius token 从 8px 起步） */
   background: var(--app-hover);
   font-family: var(--font-mono);
 }

@@ -161,7 +161,7 @@ function copyText(text: string, what: string) {
       </label>
       <details class="advanced-fold">
         <summary>高级：端口与内网白名单（标准部署保持默认即可）</summary>
-        <div class="port-row" style="margin-top: var(--space-2)">
+        <div class="port-row mt-2">
           <label class="stack"><span>SSH 控制口（默认 22222）</span>
             <AppInput v-model.number="setupPort" type="number" data-gateway-field="setup-port" />
           </label>
@@ -169,7 +169,7 @@ function copyText(text: string, what: string) {
             <AppInput v-model.number="setupMountPort" type="number" data-gateway-field="setup-mount-port" />
           </label>
         </div>
-        <label class="stack" style="margin-top: var(--space-2)"><span>内网目标白名单（可选，空 = 允许全部；每行一条，如 10.0.0.0/8:22）</span>
+        <label class="stack mt-2"><span>内网目标白名单（可选，空 = 允许全部；每行一条，如 10.0.0.0/8:22）</span>
           <textarea
             v-model="allowedTargetsText"
             class="native-input"
@@ -181,7 +181,7 @@ function copyText(text: string, what: string) {
         </label>
       </details>
 
-      <p v-if="setupError" class="form-error" style="white-space:pre-wrap">{{ setupError }}</p>
+      <p v-if="setupError" class="form-error">{{ setupError }}</p>
       <div class="wizard-actions">
         <AppButton variant="primary" :disabled="setupBusy" @click="runSetupAndLaunch">
           {{ setupBusy ? '正在配置…' : '连接并启动网关' }}
@@ -190,13 +190,13 @@ function copyText(text: string, what: string) {
 
       <details class="advanced-fold">
         <summary>高级：从 bundle 文件导入（旧版交付物）</summary>
-        <div class="stack" style="margin-top: var(--space-2)">
+        <div class="stack mt-2">
           <div class="path-row">
             <span class="path-value">{{ importPath || '未选择文件' }}</span>
             <AppButton :disabled="importBusy" @click="chooseBundleFile">选择文件…</AppButton>
           </div>
           <AppInput v-model="importPassword" type="password" placeholder="bundle 加密口令" data-gateway-field="import-password" />
-          <p v-if="importError" class="form-error" style="white-space:pre-wrap">{{ importError }}</p>
+          <p v-if="importError" class="form-error">{{ importError }}</p>
           <div class="wizard-actions">
             <AppButton :disabled="importBusy" @click="runImportAndLaunch">
               {{ importBusy ? '正在导入…' : '导入并启动' }}
@@ -208,7 +208,7 @@ function copyText(text: string, what: string) {
 
     <template v-else>
       <p class="muted">
-        {{ launched ? '✅ 网关已启动，实时状态见上方状态卡' : '✅ 网关配置已导入' }}（relay {{ importResult.vps_host }}:{{ importResult.vps_port }}，
+        {{ launched ? '网关已启动，实时状态见上方状态卡' : '网关配置已导入' }}（relay {{ importResult.vps_host }}:{{ importResult.vps_port }}，
         挂载口 {{ importResult.mount_port }}）。关闭本窗口不影响运行；
         日志在 <code>%APPDATA%\com.redtei.myshelltool\logs\gateway.log</code>。
       </p>
@@ -223,17 +223,10 @@ function copyText(text: string, what: string) {
 
 <style scoped lang="scss">
 @use '@/styles/_tokens' as *;
+@use '@/styles/_form-feedback' as *;
 
-// .form-error 原定义在 GlobalModals.modal.scss（scoped），子组件内部元素够不着
-// ——本组件自 GlobalModals 模板抽出后该类一直未被命中，就地补齐（对齐其视觉）。
 .form-error {
-  margin: 0;
-  padding: 8px 10px;
-  border: 1px solid color-mix(in oklab, var(--danger), transparent 50%);
-  border-radius: var(--radius-sm);
-  background: color-mix(in oklab, var(--danger), transparent 88%);
-  color: var(--danger);
-  font-size: var(--text-xs);
+  @include form-error-box;
 }
 
 .gw-status-card {
@@ -289,33 +282,16 @@ function copyText(text: string, what: string) {
 }
 
 .native-input {
-  width: 100%;
-  padding: 6px 10px;
-  font-size: var(--text-sm);
+  @include native-input-control;
   font-family: var(--font-mono);
-  color: var(--app-text);
-  background: var(--app-control);
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-sm);
 }
 
 .secret-row {
-  display: flex;
-  gap: var(--space-1);
-  align-items: center;
+  @include secret-row-control;
 
-  .secret-toggle {
-    flex: 0 0 auto;
-    font-size: var(--text-xs);
-    padding: 0 var(--space-2);
-    height: 28px;
-    border: 1px solid var(--app-border);
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--app-muted);
-    cursor: pointer;
-
-    &:hover { border-color: var(--accent, currentColor); color: var(--app-text); }
+  :deep(.app-input) {
+    flex: 1 1 0;
+    min-width: 0;
   }
 }
 
@@ -354,22 +330,6 @@ function copyText(text: string, what: string) {
 }
 
 .code-block {
-  position: relative;
-  background: var(--app-panel-2);
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-3);
-  margin: var(--space-1) 0;
-
-  pre {
-    margin: 0;
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    white-space: pre-wrap;
-    word-break: break-all;
-    color: var(--app-text);
-  }
-
-  .link-btn { position: absolute; top: var(--space-1); right: var(--space-1); }
+  @include code-block-box;
 }
 </style>

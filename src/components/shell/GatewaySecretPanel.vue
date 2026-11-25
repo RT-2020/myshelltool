@@ -137,7 +137,7 @@ async function writeLocal(confirmReplace = false) {
 
     <details class="advanced-fold">
       <summary>高级：端口（默认 22222 / 2222；安全组受限的中转架构按实际填）</summary>
-      <div class="port-row" style="margin-top: var(--space-2)">
+      <div class="port-row mt-2">
         <label class="stack"><span>SSH 控制口（relay 默认 22222）</span>
           <AppInput v-model.number="vpsPort" type="number" data-gateway-field="secret-vps-port" />
         </label>
@@ -159,7 +159,7 @@ async function writeLocal(confirmReplace = false) {
       </span>
     </label>
 
-    <p v-if="error" class="form-error" style="white-space:pre-wrap">{{ error }}</p>
+    <p v-if="error" class="form-error">{{ error }}</p>
 
     <!-- 冲突确认：错误上下文就在眼前，内联呈现（非全局弹窗）——显式点击才替换 -->
     <div v-if="pinConflict" class="conflict-box">
@@ -193,6 +193,11 @@ async function writeLocal(confirmReplace = false) {
 
 <style scoped lang="scss">
 @use '@/styles/_tokens' as *;
+@use '@/styles/_form-feedback' as *;
+
+.form-error {
+  @include form-error-box;
+}
 
 /* 面板骨架类（port-row / secret-row+secret-toggle / advanced-fold / wizard-actions）
    对齐同弹窗 GatewayImportPanel 的既有视觉规格——同容器内两 tab 的控件形态必须
@@ -208,22 +213,11 @@ async function writeLocal(confirmReplace = false) {
 }
 
 .secret-row {
-  display: flex;
-  gap: var(--space-1);
-  align-items: center;
+  @include secret-row-control;
 
-  .secret-toggle {
-    flex: 0 0 auto;
-    font-size: var(--text-xs);
-    padding: 0 var(--space-2);
-    height: 28px;
-    border: 1px solid var(--app-border);
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--app-muted);
-    cursor: pointer;
-
-    &:hover { border-color: var(--accent, currentColor); color: var(--app-text); }
+  :deep(.app-input) {
+    flex: 1 1 0;
+    min-width: 0;
   }
 }
 

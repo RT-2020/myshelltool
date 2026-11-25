@@ -4,10 +4,10 @@
  * 保存链路按钮直连 editor store；跳转行经 emit 交给持有 CodeMirrorHost ref
  * 的 EditorSurface。只读/保存中禁用并给出原因（title）。
  */
-import { computed, ref } from 'vue';
+import { computed, nextTick, ref } from 'vue';
 import {
   Save, FilePlus, FileClock, RefreshCw, Upload, FolderOpen, Globe,
-  Braces, Minimize2, ArrowDownToLine, History, ScanSearch
+  Braces, Minimize2, ArrowDownToLine, History, ScanSearch, Loader2
 } from 'lucide-vue-next';
 import { useEditorStore } from '@/stores/editor';
 import { useWorkbenchStore } from '@/stores/workbench';
@@ -27,6 +27,15 @@ const store = useEditorStore();
 const workbench = useWorkbenchStore();
 const jumpInput = ref('');
 const jumpOpen = ref(false);
+const jumpInputRef = ref<HTMLInputElement | null>(null);
+
+function openJumpBox() {
+  jumpOpen.value = true;
+  nextTick(() => {
+    jumpInputRef.value?.focus();
+    jumpInputRef.value?.select();
+  });
+}
 
 const language = computed(() => languageIdForName(props.tab.name));
 const isJson = computed(() => language.value === 'json');
@@ -74,49 +83,51 @@ function submitJump() {
       <button type="button" class="tool-btn" :disabled="saving || tab.readOnly || tab.status !== 'ready'"
         :title="tab.readOnly ? (tab.readOnlyReason || '只读') : '保存到原位置（Ctrl+S）'"
         @click="store.saveTab(tab.id)">
-        <Save :size="14" /><span>保存</span>
+        <Loader2 v-if="saving" :size="14" class="spin" aria-hidden="true" />
+        <Save v-else :size="14" aria-hidden="true" />
+        <span>保存</span>
       </button>
       <button type="button" class="tool-btn" :disabled="tab.status !== 'ready'" title="另存为（远端输入路径 / 本地系统对话框）"
         @click="store.openSaveAsDialog(tab)">
-        <FilePlus :size="14" /><span>另存为</span>
+        <FilePlus :size="14" aria-hidden="true" /><span>另存为</span>
       </button>
       <button type="button" class="tool-btn" :disabled="tab.status !== 'ready'" title="保存草稿到本机（不写目标文件，重开时可恢复）"
         @click="store.saveDraftAction(tab.id)">
-        <FileClock :size="14" /><span>草稿</span>
+        <FileClock :size="14" aria-hidden="true" /><span>草稿</span>
       </button>
       <button type="button" class="tool-btn" :disabled="tab.status !== 'ready'" title="丢弃本地修改，重新加载文件"
         @click="store.reloadTab(tab.id)">
-        <RefreshCw :size="14" /><span>重载</span>
+        <RefreshCw :size="14" aria-hidden="true" /><span>重载</span>
       </button>
       <button v-if="tab.target.kind === 'local'" type="button" class="tool-btn" :disabled="tab.status !== 'ready'"
         title="把当前内容写入远端路径（当前选中资产的会话）"
         @click="store.uploadToRemote(tab.id)">
-        <Upload :size="14" /><span>上传到远端</span>
+        <Upload :size="14" aria-hidden="true" /><span>上传到远端</span>
       </button>
       <button type="button" class="tool-btn" title="查看保存前自动备份（最近 3 份）"
         @click="store.listBackupsAction(tab.id)">
-        <History :size="14" /><span>备份</span>
+        <History :size="14" aria-hidden="true" /><span>备份</span>
       </button>
     </div>
 
     <div class="group">
       <div v-if="jumpOpen" class="jump-box">
-        <input v-model="jumpInput" class="jump-input" type="text" placeholder="行号" autofocus
+        <input ref="jumpInputRef" v-model="jumpInput" class="jump-input" type="text" placeholder="行号" aria-label="跳转到行"
           @keyup.enter="submitJump" @keyup.esc="jumpOpen = false" @blur="jumpOpen = false" />
         <button type="button" class="tool-btn" @mousedown.prevent="submitJump">跳转</button>
       </div>
-      <button v-else type="button" class="tool-btn" title="跳转到行（编辑器内也可 Ctrl+G）" @click="jumpOpen = true">
-        <ArrowDownToLine :size="14" /><span>跳行</span>
+      <button v-else type="button" class="tool-btn" title="跳转到行（编辑器内也可 Ctrl+G）" @click="openJumpBox">
+        <ArrowDownToLine :size="14" aria-hidden="true" /><span>跳行</span>
       </button>
       <button v-if="validatable" type="button" class="tool-btn" title="语法校验（json/yaml/toml/xml）" @click="runValidate">
-        <ScanSearch :size="14" /><span>校验</span>
+        <ScanSearch :size="14" aria-hidden="true" /><span>校验</span>
       </button>
       <template v-if="isJson">
         <button type="button" class="tool-btn" title="格式化 JSON（2 空格缩进）" @click="runJsonTransform('format')">
-          <Braces :size="14" /><span>格式化</span>
+          <Braces :size="14" aria-hidden="true" /><span>格式化</span>
         </button>
         <button type="button" class="tool-btn" title="压缩 JSON（去除空白）" @click="runJsonTransform('minify')">
-          <Minimize2 :size="14" /><span>压缩</span>
+          <Minimize2 :size="14" aria-hidden="true" /><span>压缩</span>
         </button>
       </template>
     </div>
@@ -147,7 +158,7 @@ function submitJump() {
 .tool-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 3px var(--space-2);
   border: none;
   border-radius: var(--radius-sm);
@@ -161,9 +172,24 @@ function submitJump() {
     color: var(--app-text);
   }
 
+  &:active:not(:disabled) {
+    background: var(--app-active);
+  }
+
   &:disabled {
     opacity: 0.45;
     cursor: not-allowed;
+  }
+}
+
+.spin {
+  flex: 0 0 auto;
+  animation: toolbar-spin 0.9s linear infinite;
+}
+
+@keyframes toolbar-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 

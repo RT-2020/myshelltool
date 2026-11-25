@@ -21,14 +21,14 @@ defineProps<{
 
 <template>
   <div v-if="kind === 'mkdir' || kind === 'localMkdir'" class="stack">
-    <label class="stack"><span>目录名</span>
+    <label class="stack"><span class="muted">目录名</span>
       <AppInput :model-value="fileForm.mkdirName" placeholder="new-folder"
         @update:model-value="v => fileForm.mkdirName = v" />
     </label>
     <p class="muted">将在当前{{ kind === 'mkdir' ? '远程' : '本地' }}路径下创建：{{ basePath }}</p>
   </div>
   <div v-else class="stack">
-    <label class="stack"><span>新名称</span>
+    <label class="stack"><span class="muted">新名称</span>
       <AppInput :model-value="renameTarget.next"
         @update:model-value="v => renameTarget.next = v" />
     </label>

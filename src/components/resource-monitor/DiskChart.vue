@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { CHART_H, CHART_W, buildAreaPath, buildLinePath, formatBytes, formatRate } from './chart-utils';
+import { CHART_H, CHART_W, SAMPLE_WINDOW_LABEL, buildAreaPath, buildLinePath, formatBytes, formatRate } from './chart-utils';
 import type { DiskMountInfo } from '@/types/domain';
 
 const props = withDefaults(defineProps<{
@@ -35,6 +35,11 @@ const writePath = computed(() => buildLinePath(props.writePoints, yMax.value));
 const readText = computed(() => (props.hasData ? formatRate(props.readRate) : '—'));
 const writeText = computed(() => (props.hasData ? formatRate(props.writeRate) : '—'));
 const detailText = computed(() => (props.hasData ? `读取 ${formatRate(props.readRate)} · 写入 ${formatRate(props.writeRate)}` : '暂无数据'));
+const cardTitle = computed(() =>
+  props.hasData && (props.readPoints.length || props.writePoints.length)
+    ? `${SAMPLE_WINDOW_LABEL} · 峰值 读 ${formatRate(Math.max(0, ...props.readPoints))} / 写 ${formatRate(Math.max(0, ...props.writePoints))}`
+    : SAMPLE_WINDOW_LABEL
+);
 const hasCapacity = computed(() => props.diskTotal > 0);
 // 多挂载点明细（后端已过滤伪文件系统，上限 12 行）；空则回退根分区单行
 // （diskTotal/diskUsed——df 段降级或旧后端快照的场景）。
@@ -58,7 +63,7 @@ function thresholdClass(pct: number): string {
 </script>
 
 <template>
-  <article class="metric-card">
+  <article class="metric-card" :title="cardTitle">
     <!-- 读数行兼任图例：读（info 实线+面积）/ 写（warn 虚线），与曲线色一一对应 -->
     <div class="metric-head">
       <span class="metric-name">磁盘</span>
@@ -212,7 +217,7 @@ function thresholdClass(pct: number): string {
   align-items: baseline;
   gap: 2px 8px;
   margin-top: 4px;
-  color: var(--app-subtle);
+  color: var(--app-muted);
   font: 10px var(--font-mono);
 }
 
@@ -249,4 +254,11 @@ function thresholdClass(pct: number): string {
 
 .disk-bar-fill.is-warn { background: var(--warn); }
 .disk-bar-fill.is-high { background: var(--danger); }
+.grid-line,
+.baseline,
+.line-empty,
+.line-rd-data,
+.line-wr-data {
+  vector-effect: non-scaling-stroke;
+}
 </style>

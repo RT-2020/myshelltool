@@ -29,6 +29,8 @@ $colors: (
   warn: #c8780c,
   danger: #d43a3a,
   info: #0a7b9c,
+  // terminal cursor (03 A6)
+  term-cursor: rgba(255, 255, 255, 0.75),
 );
 
 $spacing: (
@@ -114,6 +116,7 @@ $z-indexes: (base: 1, dropdown: 100, sticky: 200, popover: 250, drawer: 300, mod
   --term-border:  rgba(255, 255, 255, 0.08);
   --term-text:    #e4e7ee;
   --term-muted:   rgba(255, 255, 255, 0.45);
+  --term-cursor:  rgba(255, 255, 255, 0.75);
   // 旧终端名（terminalThemes.js 等消费，保留兼容，与 --term-* 同值）
   --terminal-bg:        var(--term-bg);
   --terminal-bg-2:      #0a0d13;
@@ -173,8 +176,10 @@ $z-indexes: (base: 1, dropdown: 100, sticky: 200, popover: 250, drawer: 300, mod
   --z-base: 1; --z-dropdown: 100; --z-sticky: 200; --z-popover: 250;
   --z-drawer: 300; --z-modal: 400; --z-toast: 500; --z-tooltip: 600;
 
-  // 聚焦环 / elevation（兼容旧引用）
-  --focus-ring:  0 0 0 3px var(--accent-soft-strong);
+  // 聚焦环 / elevation（兼容旧引用）。聚焦环双层化（docs/设计/00 §3.3、README §5 A5）：
+  //   1px accent 内环保对比 ≥3:1（浅色实算 5.42:1），4px soft-strong 外环保视觉量级；
+  //   单用 soft-strong 曾实测 1.39:1 不可辨。暗色无覆盖定义，var 惰性求值自动适配主题。
+  --focus-ring:  0 0 0 1px var(--accent), 0 0 0 4px var(--accent-soft-strong);
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.03);
   --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.06);
@@ -237,6 +242,7 @@ $z-indexes: (base: 1, dropdown: 100, sticky: 200, popover: 250, drawer: 300, mod
   --term-border:  rgba(255, 255, 255, 0.08);
   --term-text:    #e4e7ee;
   --term-muted:   rgba(255, 255, 255, 0.45);
+  --term-cursor:  rgba(255, 255, 255, 0.75);
   --terminal-bg:        var(--term-bg);
   --terminal-bg-2:      #05070c;
   --terminal-grid:      rgba(255, 255, 255, 0.025);

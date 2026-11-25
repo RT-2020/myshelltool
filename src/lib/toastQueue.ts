@@ -16,15 +16,21 @@ import type { NotifyOptions, ToastItem } from '@/types/domain';
 const TOAST_LEVELS: readonly string[] = ['info', 'success', 'warn', 'error'];
 const MAX_TOASTS = 5;
 
+interface ToastTimerState {
+  timer: ReturnType<typeof setTimeout> | null;
+  startedAt: number;
+  remaining: number;
+}
+
 export function createToastQueue(statusMessage: Ref<string>) {
   const toasts = ref<ToastItem[]>([]);
   let toastSeq = 0;
-  const toastTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  const toastTimers = new Map<number, ToastTimerState>();
 
   function clearToastTimer(id: number) {
-    const timer = toastTimers.get(id);
-    if (timer !== undefined) {
-      clearTimeout(timer);
+    const state = toastTimers.get(id);
+    if (state) {
+      if (state.timer !== null) clearTimeout(state.timer);
       toastTimers.delete(id);
     }
   }
@@ -63,7 +69,25 @@ export function createToastQueue(statusMessage: Ref<string>) {
         : (opts.level === 'warn' || opts.level === 'error' ? 6000 : 3500);
     }
     clearToastTimer(id);
-    toastTimers.set(id, setTimeout(() => dismissToast(id), duration));
+    const timer = setTimeout(() => dismissToast(id), duration);
+    toastTimers.set(id, { timer, startedAt: Date.now(), remaining: duration });
+  }
+
+  /** 鼠标悬停或焦点进入时暂停倒计时（docs/设计/10 A10）。 */
+  function pauseToast(id: number) {
+    const state = toastTimers.get(id);
+    if (!state || state.timer === null) return;
+    clearTimeout(state.timer);
+    state.timer = null;
+    state.remaining = Math.max(0, state.remaining - (Date.now() - state.startedAt));
+  }
+
+  /** 指针或焦点离开时按剩余时长续约计时。 */
+  function resumeToast(id: number) {
+    const state = toastTimers.get(id);
+    if (!state || state.timer !== null) return;
+    state.startedAt = Date.now();
+    state.timer = setTimeout(() => dismissToast(id), state.remaining);
   }
 
   function dismissToast(id: number) {
@@ -72,5 +96,5 @@ export function createToastQueue(statusMessage: Ref<string>) {
     if (idx !== -1) toasts.value.splice(idx, 1);
   }
 
-  return { toasts, notify, dismissToast };
+  return { toasts, notify, pauseToast, resumeToast, dismissToast };
 }

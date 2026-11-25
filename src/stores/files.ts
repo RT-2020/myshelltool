@@ -74,6 +74,7 @@ import {
   updateTransferProgress,
   markTransferError,
   pruneFinishedTransfers,
+  clearCompletedTransfers,
   withTransfer,
   type FileTransfersContext
 } from '@/lib/fileTransfers';
@@ -417,6 +418,7 @@ export const useFilesStore = defineStore('files', () => {
     // transfer ops
     updateTransferProgress,
     pruneFinishedTransfers,
+    clearCompletedTransfers,
     markTransferError,
     cancelTransfer,
     retryTransfer,

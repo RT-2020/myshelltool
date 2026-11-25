@@ -7,7 +7,7 @@
  * （只出现数据中出现过的值）。过滤执行在父组件的 filtered computed 中。
  */
 import { computed } from 'vue';
-import { Search } from 'lucide-vue-next';
+import { Search, X } from 'lucide-vue-next';
 import AppInput from '@/components/ui/AppInput.vue';
 import AppSelect from '@/components/ui/AppSelect.vue';
 import { TOOL_LABELS, OUTCOME_LABELS } from '@/lib/mcpLogLabels';
@@ -75,8 +75,10 @@ const hasAnyFilter = computed(() =>
 <template>
   <div class="log-filters">
     <div class="filter-search">
-      <Search :size="12" />
+      <label for="mcp-log-search" class="sr-only">搜索执行日志</label>
+      <Search :size="12" aria-hidden="true" />
       <AppInput
+        id="mcp-log-search"
         :model-value="search"
         placeholder="搜索命令 / 主机 / 资产 / 意图"
         @update:model-value="v => emit('update:search', v)"
@@ -85,10 +87,11 @@ const hasAnyFilter = computed(() =>
         v-if="hasAnyFilter"
         type="button"
         class="filter-clear"
+        aria-label="清除全部筛选"
         title="清除全部筛选"
         @click="emit('update:search', ''); emit('update:tool', ''); emit('update:asset', ''); emit('update:outcome', '')"
       >
-        ×
+        <X :size="12" />
       </button>
     </div>
     <div class="filter-row">
@@ -131,7 +134,7 @@ const hasAnyFilter = computed(() =>
   :deep(svg) {
     position: absolute;
     left: 8px;
-    color: var(--app-subtle);
+    color: var(--app-muted); /* P0 对比度（docs/设计/09 R1）：subtle → muted */
     pointer-events: none;
   }
 
@@ -160,6 +163,9 @@ const hasAnyFilter = computed(() =>
   &:hover {
     color: var(--danger);
     background: var(--app-hover);
+  }
+  &:active {
+    background: var(--app-active);
   }
 }
 

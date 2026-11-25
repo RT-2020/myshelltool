@@ -29,20 +29,21 @@ const emit = defineEmits<{
         role="tab"
         class="tab"
         :class="{ active: tab.id === activeTabId }"
+        :aria-label="tab.dirty ? `${tab.name}（有未保存修改）` : tab.name"
         :title="tab.target.path"
         @click="emit('select', tab.id)"
       >
         <span class="tab-kind" :class="tab.target.kind">{{ tab.target.kind === 'remote' ? '远' : '本' }}</span>
         <span class="tab-label">{{ tab.name }}</span>
         <span class="tab-dirty" :class="{ on: tab.dirty }" aria-hidden="true"></span>
-        <span
+        <button
+          type="button"
           class="tab-close"
-          role="button"
-          aria-label="关闭"
+          :aria-label="`关闭 ${tab.name}`"
           @click.stop="emit('close', tab.id)"
         >
-          <X :size="12" />
-        </span>
+          <X :size="12" aria-hidden="true" />
+        </button>
       </button>
     </div>
     <button type="button" class="hide-btn" title="收起编辑器（tab 保留）" @click="emit('hide')">收起</button>
@@ -90,6 +91,10 @@ const emit = defineEmits<{
     color: var(--app-text);
   }
 
+  &:active {
+    background: var(--app-active);
+  }
+
   &.active {
     background: var(--app-hover);
     border-color: var(--app-border);
@@ -133,22 +138,30 @@ const emit = defineEmits<{
   }
 }
 
-// 关闭按钮常驻占位，hover 只改颜色
+// 关闭按钮常驻占位，hover 只改颜色（05 A2：原生 button + 20×20 热区）
 .tab-close {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
   border-radius: var(--radius-sm);
   color: var(--app-muted);
-  opacity: 0.6;
+  cursor: pointer;
+  opacity: 0.65;
   transition: opacity var(--dur-fast) var(--ease-standard), background-color var(--dur-fast) var(--ease-standard);
 
   &:hover {
     opacity: 1;
     background: var(--app-hover);
     color: var(--app-strong);
+  }
+
+  &:active {
+    background: var(--app-active);
   }
 }
 
@@ -165,6 +178,10 @@ const emit = defineEmits<{
   &:hover {
     background: var(--app-hover);
     color: var(--app-text);
+  }
+
+  &:active {
+    background: var(--app-active);
   }
 }
 </style>

@@ -375,14 +375,40 @@ export interface SyncConflictStash {
 // UI（ui store）
 // ============================================================
 
+/** GlobalModals 注册的弹窗类型字面量联合（10 A7）。 */
+export type ModalType =
+  | 'assetEditor'
+  | 'reauthPassword'
+  | 'tunnelCreate'
+  | 'gatewayWizard'
+  | 'tokenConfig'
+  | 'hostKeyVerify'
+  | 'keyboardInteractive'
+  | 'mcpApproval'
+  | 'mcpPanel'
+  | 'settings'
+  | 'mkdir'
+  | 'rename'
+  | 'localMkdir'
+  | 'localRename'
+  | 'confirmDelete'
+  | 'confirmFileDelete'
+  | 'confirmFileOverwrite'
+  | 'renameGroup'
+  | 'createGroup'
+  | 'moveAsset'
+  | 'confirmCloseAssetWindow'
+  | 'confirmBatchCloseTabs'
+  | 'editorDialog';
+
 /**
- * ui.modal 的 payload。type 按字符串分支（GlobalModals 的 modalTitle/submitModal），
- * Phase 2A 不枚举全部类型字面量，宽松为 string | null。
+ * ui.modal 的 payload。type 约束为已知 ModalType 联合或 null，避免拼错静默落入兜底分支。
  */
 export interface ModalState {
-  type: string | null;
+  type: ModalType | null;
   asset?: NormalizedConnectionAsset | null;
   payload?: Record<string, unknown> | null;
+  onConfirm?: (() => void) | null;
 }
 
 export type ToastLevel = 'info' | 'success' | 'warn' | 'error';

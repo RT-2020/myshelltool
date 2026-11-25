@@ -33,7 +33,7 @@ const { syncConfigured, syncConflict, githubPatConfigured } = storeToRefs(store)
 // 而不是启动那一刻的快照（上次同步时间、是否待推送、云端有没有新版本）。
 onMounted(() => {
   store.syncRefreshStatus();
-  store.syncCheckRemoteUpdates();
+  store.syncCheckRemoteUpdates({ announce: false });
 });
 </script>
 

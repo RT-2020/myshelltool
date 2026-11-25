@@ -5,9 +5,8 @@
  * - watch(modal.type) 做预填/清零（assetEditor 预填、renameGroup 取末段、
  *   分组快捷新增 presetGroup、editorDialog 输入预填等）。
  *
- * ctx 注入（组件组装一次）：modal（Ref）、keyboardPrompt（Ref）、
- * closeTerminalSearchInline（store action）。EditorDialogViewPayload 类型
- * 随迁导出（GlobalModals 与 modalSubmit 均消费）。
+ * ctx 注入（组件组装一次）：modal（Ref）、keyboardPrompt（Ref）。
+ * EditorDialogViewPayload 类型随迁导出（GlobalModals 与 modalSubmit 均消费）。
  */
 import { computed, reactive, ref, watch, type Ref } from 'vue';
 import type { ModalState } from '@/types/domain';
@@ -34,7 +33,6 @@ export interface ModalExtras extends Omit<ModalState, 'asset'> {
 export interface ModalFormSyncCtx {
   modal: Ref<ModalState | { type: string | null; asset: unknown; path?: string; payload?: unknown }>;
   keyboardPrompt: Ref<unknown>;
-  closeTerminalSearchInline(): void;
 }
 
 export function useModalFormSync(ctx: ModalFormSyncCtx) {
@@ -120,9 +118,6 @@ export function useModalFormSync(ctx: ModalFormSyncCtx) {
         current: entry?.name || '',
         next: entry?.name || ''
       });
-    }
-    if (type === 'terminalSearch') {
-      ctx.closeTerminalSearchInline();
     }
     if (type === 'keyboardInteractive') {
       Object.keys(keyboardResponses).forEach(key => delete keyboardResponses[key]);

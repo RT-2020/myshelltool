@@ -15,7 +15,7 @@ import type { OverwriteDecision, PendingOverwrite } from '@/lib/fileTypes';
 // v0.20（S2 刀）：队列管理域拆至 lib/transferQueueOps.ts（进度/状态机/取消/重试）
 import {
   bindTransferQueueOps, setupEventListeners, disposeEventListeners, updateTransferProgress,
-  pruneFinishedTransfers, markTransferError, withTransfer, cancelTransfer, retryTransfer
+  pruneFinishedTransfers, clearCompletedTransfers, markTransferError, withTransfer, cancelTransfer, retryTransfer
 } from '@/lib/transferQueueOps';
 import {
   getTransferConcurrency, runWithConcurrencyPool, serializeOnTarget, transferTargetLockKey
@@ -25,7 +25,7 @@ import {
 // B2：renameFileOverwrite（三选之重命名）随迁；PendingOverwrite 权威定义在
 // lib/fileTypes.ts（原先的双份同形定义已收敛）。
 export { handleFileOverwrite, confirmFileOverwrite, cancelFileOverwrite, renameFileOverwrite } from './fileOverwrite';
-export { setupEventListeners, disposeEventListeners, cancelTransfer, retryTransfer, pruneFinishedTransfers } from './transferQueueOps';
+export { setupEventListeners, disposeEventListeners, cancelTransfer, retryTransfer, pruneFinishedTransfers, clearCompletedTransfers } from './transferQueueOps';
 // files store 直接 import 的队列域符号（值 import 供 runPathUpload/runDownload 消费，转发保导出）
 export { updateTransferProgress, markTransferError, withTransfer };
 export { probeRemoteTarget, askFileOverwrite };

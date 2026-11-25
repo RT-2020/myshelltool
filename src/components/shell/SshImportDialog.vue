@@ -235,7 +235,7 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: var(--text-xs);
 }
 .error-text {
   margin: 0;
@@ -293,7 +293,7 @@ onMounted(() => {
 .conflict-badge {
   flex-shrink: 0;
   margin-left: auto;
-  font-size: 10px;
+  font-size: var(--text-xs);
   padding: 1px 6px;
   border-radius: var(--radius-pill);
   background: var(--app-hover);

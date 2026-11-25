@@ -130,7 +130,35 @@ try {
   }
   await clampPage.close();
 
-  console.log('UI smoke test passed (Tauri-runtime-gated smoke + 5-region + resource-monitor placeholder + narrow-viewport adaptive)');
+  // —— SshImportDialog footer 按钮渲染（P0 回归锚点，2026-11-11 设计方案 10 域 A1）——
+  // 「取消/导入」写在 AppModal 的 #footer 具名插槽，而 AppModal 模板曾只有默认
+  // 插槽出口——footer 从不渲染、导入主操作不可达（测试此前零覆盖故漏网）。
+  // AppModal 已补 v-if="$slots.footer" 出口；此处走真实 UI 链路断言按钮可见可点。
+  const importPage = await browser.newPage();
+  await importPage.goto(baseUrl, { waitUntil: 'networkidle' });
+  // 预览模式的 desktop-only 警示横幅（fixed 置顶、z-toast）覆盖标题栏、拦截指针
+  // 事件——它不是被测对象，移除后走真实点击链路。
+  await importPage.evaluate(() => document.querySelector('.desktop-only-banner')?.remove());
+  await importPage.click('button[aria-label="打开设置"]');
+  await importPage.waitForSelector('#modalLayer', { timeout: 5000 });
+  await importPage.locator('#modalLayer .settings-nav .nav-item', { hasText: '资产' }).click();
+  await importPage.locator('button', { hasText: '打开导入向导' }).click();
+  await importPage.waitForSelector('.app-modal[role="dialog"]', { timeout: 5000 });
+  const importDlg = importPage.locator('.app-modal');
+  const cancelBtn = importDlg.locator('.app-modal-footer button', { hasText: '取消' });
+  const doImportBtn = importDlg.locator('.app-modal-footer button', { hasText: '导入' });
+  if (!await cancelBtn.isVisible() || !await doImportBtn.isVisible()) {
+    throw new Error('SshImportDialog footer buttons not rendered — AppModal footer outlet regressed?');
+  }
+  // 浏览器预览模式无 Tauri runtime，预览必失败且无勾选项——导入按钮应 disabled
+  if (!await doImportBtn.isDisabled()) {
+    throw new Error('import button should be disabled with no selection (preview mode)');
+  }
+  await cancelBtn.click();
+  await importPage.waitForSelector('.app-modal[role="dialog"]', { state: 'detached', timeout: 5000 });
+  await importPage.close();
+
+  console.log('UI smoke test passed (Tauri-runtime-gated smoke + 5-region + resource-monitor placeholder + narrow-viewport adaptive + ssh-import footer buttons)');
 } finally {
   await browser.close();
 }

@@ -40,9 +40,12 @@ const generating = ref(false);
 
 const mismatch = computed(() => Boolean(password.value && passwordConfirm.value && password.value !== passwordConfirm.value));
 const canSubmit = computed(() => {
-  if (password.value.length < 6 || mismatch.value) return false;
   if (!githubPatConfigured.value) return false;
-  return restoring.value ? gistId.value.trim().length > 0 : true;
+  // 恢复模式：历史备份主密码长度不作前端截断假设（08 #12），仅要求非空 + 已选备份
+  if (restoring.value) {
+    return password.value.length > 0 && gistId.value.trim().length > 0;
+  }
+  return password.value.length >= 6 && !mismatch.value;
 });
 
 function toggleRestoring() {
@@ -121,7 +124,7 @@ async function onSubmit() {
 
     <label class="field">
       <span class="field-label">
-        {{ restoring ? '原主密码' : '主密码' }} <em class="req">至少 6 位</em>
+        {{ restoring ? '原主密码' : '主密码' }} <em v-if="!restoring" class="req">至少 6 位</em>
       </span>
       <AppInput v-model="password" type="password" placeholder="主密码" @keyup.enter="onSubmit" />
     </label>

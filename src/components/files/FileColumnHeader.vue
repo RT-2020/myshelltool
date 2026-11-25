@@ -66,6 +66,21 @@ const filterOpen = ref(false);
 const filterPopoverRef = ref<HTMLElement | null>(null);
 const filterBtnRef = ref<HTMLButtonElement | null>(null);
 const filterInputRef = ref<HTMLInputElement | null>(null);
+const breadcrumbRef = ref<HTMLElement | null>(null);
+
+function scrollBreadcrumbsToEnd() {
+  const el = breadcrumbRef.value;
+  if (!el) return;
+  el.scrollLeft = el.scrollWidth;
+}
+
+watch(
+  () => [props.crumbs, props.pathEditing] as const,
+  ([, editing]) => {
+    if (!editing) nextTick(scrollBreadcrumbsToEnd);
+  },
+  { flush: 'post', immediate: true }
+);
 
 function toggleFilter(event: MouseEvent) {
   event.stopPropagation();
@@ -73,6 +88,12 @@ function toggleFilter(event: MouseEvent) {
   if (filterOpen.value) {
     requestAnimationFrame(() => filterInputRef.value?.focus());
   }
+}
+
+function closeFilterAndRestoreFocus() {
+  if (!filterOpen.value) return;
+  filterOpen.value = false;
+  nextTick(() => filterBtnRef.value?.focus());
 }
 
 function onWindowClick(event: MouseEvent) {
@@ -85,8 +106,19 @@ function onWindowClick(event: MouseEvent) {
   }
 }
 
-onMounted(() => window.addEventListener('click', onWindowClick));
-onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
+let crumbResizeObserver: ResizeObserver | null = null;
+onMounted(() => {
+  window.addEventListener('click', onWindowClick);
+  if (typeof ResizeObserver !== 'undefined') {
+    crumbResizeObserver = new ResizeObserver(() => scrollBreadcrumbsToEnd());
+    if (breadcrumbRef.value) crumbResizeObserver.observe(breadcrumbRef.value);
+  }
+});
+onBeforeUnmount(() => {
+  window.removeEventListener('click', onWindowClick);
+  crumbResizeObserver?.disconnect();
+  crumbResizeObserver = null;
+});
 </script>
 
 <template>
@@ -101,7 +133,9 @@ onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
     <div class="file-column-path">
       <nav
         v-if="!pathEditing"
+        ref="breadcrumbRef"
         class="breadcrumb file-column-breadcrumb"
+        aria-label="当前路径"
         @dblclick="emit('enter-path-editing')"
       >
         <template v-if="crumbs.length">
@@ -115,24 +149,32 @@ onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
             @click="emit('crumb-click', seg)"
           >
             <span class="crumb-label">{{ seg.label }}</span>
-            <ChevronRight v-if="idx < crumbs.length - 1" :size="11" class="crumb-sep" />
+            <ChevronRight v-if="idx < crumbs.length - 1" :size="11" class="crumb-sep" aria-hidden="true" />
           </button>
           <button
             type="button"
             class="crumb-edit"
             title="编辑路径"
+            aria-label="编辑路径"
             @click.stop="emit('enter-path-editing')"
           >
-            <Pencil :size="11" />
+            <Pencil :size="11" aria-hidden="true" />
           </button>
         </template>
-        <span v-else class="crumb-empty" @click="emit('enter-path-editing')">点此输入路径...</span>
+        <button
+          v-else
+          type="button"
+          class="crumb-empty"
+          aria-label="输入路径"
+          @click="emit('enter-path-editing')"
+        >点此输入路径...</button>
       </nav>
 
       <input
         v-else
         ref="pathInputRef"
         class="file-column-manual-path"
+        aria-label="编辑目录路径"
         :value="manualPathInput"
         placeholder="路径（回车跳转，Esc 取消）"
         spellcheck="false"
@@ -152,15 +194,25 @@ onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
           :class="{ active: filterValue !== '' || filterOpen }"
           type="button"
           title="过滤当前目录"
+          aria-label="过滤当前目录"
+          aria-haspopup="dialog"
+          :aria-expanded="filterOpen"
           @click="toggleFilter"
         >
-          <FilterIcon :size="14" />
+          <FilterIcon :size="14" aria-hidden="true" />
         </button>
-        <div v-if="filterOpen" ref="filterPopoverRef" class="filter-popover" @click.stop>
-          <span class="filter-popover-icon"><FilterIcon :size="12" /></span>
+        <div
+          v-if="filterOpen"
+          ref="filterPopoverRef"
+          class="filter-popover"
+          @click.stop
+          @keydown.escape.stop.prevent="closeFilterAndRestoreFocus"
+        >
+          <span class="filter-popover-icon" aria-hidden="true"><FilterIcon :size="12" /></span>
           <input
             ref="filterInputRef"
             class="filter-popover-input"
+            aria-label="过滤当前目录"
             :value="filterValue"
             placeholder="过滤当前目录..."
             spellcheck="false"
@@ -170,10 +222,11 @@ onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
             v-if="showFilterClear"
             class="filter-popover-clear"
             type="button"
-            title="清空"
+            title="清空过滤"
+            aria-label="清空过滤"
             @click="emit('clear-filter')"
           >
-            <X :size="12" />
+            <X :size="12" aria-hidden="true" />
           </button>
         </div>
       </div>
@@ -182,20 +235,22 @@ onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
         class="icon-btn"
         type="button"
         title="上级目录"
+        aria-label="上级目录"
         :disabled="disableUp"
         @click="emit('go-up')"
       >
-        <ArrowUp :size="14" />
+        <ArrowUp :size="14" aria-hidden="true" />
       </button>
       <button
         class="icon-btn"
         type="button"
         title="刷新"
+        aria-label="刷新目录"
         :disabled="disableRefresh"
         @click="emit('refresh')"
       >
-        <Loader2 v-if="isBusy" class="spin" :size="14" />
-        <RefreshCw v-else :size="14" />
+        <Loader2 v-if="isBusy" class="spin" :size="14" aria-hidden="true" />
+        <RefreshCw v-else :size="14" aria-hidden="true" />
       </button>
     </div>
   </header>
@@ -240,11 +295,17 @@ onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
 }
 
 .file-column-head-meta {
-  display: none;
+  display: inline-flex;
   align-items: baseline;
   gap: var(--space-2);
   flex: 0 0 auto;
   min-width: 0;
+}
+
+@container (max-width: 660px) {
+  .file-column-head-meta {
+    display: none;
+  }
 }
 
 .file-column-title {
@@ -257,6 +318,8 @@ onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
 .file-column-count {
   font-size: var(--text-xs);
   color: var(--app-muted);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
@@ -313,6 +376,10 @@ onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
   color: var(--app-strong);
 }
 
+.crumb:active {
+  background: var(--app-active);
+}
+
 .crumb.active {
   color: var(--app-strong);
   font-weight: 600;
@@ -324,6 +391,7 @@ onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
 }
 
 .crumb-edit {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -341,16 +409,46 @@ onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
     color var(--dur-fast) var(--ease-standard);
 }
 
+.crumb-edit::after {
+  content: '';
+  position: absolute;
+  inset: -5px;
+}
+
 .crumb-edit:hover {
   background: var(--app-hover);
   color: var(--app-strong);
 }
 
+.crumb-edit:active {
+  background: var(--app-active);
+}
+
 .crumb-empty {
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
   color: var(--app-subtle);
+  font: inherit;
   font-size: var(--text-xs);
-  cursor: text;
+  cursor: pointer;
   padding: 2px 4px;
+  text-align: left;
+  transition: background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
+}
+
+.crumb-empty:hover {
+  background: var(--app-hover);
+  color: var(--app-text);
+}
+
+.crumb-empty:active {
+  background: var(--app-active);
+}
+
+.crumb-empty:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 // 通用 icon-btn（含 .active 激活态）已收敛为全局类（_utilities.scss 单一权威实现）
@@ -435,6 +533,7 @@ onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
 }
 
 .filter-popover-clear {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -448,9 +547,19 @@ onBeforeUnmount(() => window.removeEventListener('click', onWindowClick));
   flex-shrink: 0;
 }
 
+.filter-popover-clear::after {
+  content: '';
+  position: absolute;
+  inset: -5px;
+}
+
 .filter-popover-clear:hover {
   background: var(--app-hover);
   color: var(--app-strong);
+}
+
+.filter-popover-clear:active {
+  background: var(--app-active);
 }
 
 .spin {

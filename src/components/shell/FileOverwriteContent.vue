@@ -51,7 +51,7 @@ withDefaults(defineProps<{
   align-items: center;
   gap: 6px;
   font-size: var(--text-xs);
-  color: var(--app-text-muted);
+  color: var(--app-muted);
 
   input {
     accent-color: var(--accent);

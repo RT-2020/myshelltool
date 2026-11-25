@@ -13,15 +13,12 @@ interface MonitorErrorPayload {
   reason: string;
 }
 
-// 供 UI（ResourceMonitorPanel 头部 meta）派生展示，避免硬编码「2秒 · 60点」
-export const RESOURCE_MONITOR_INTERVAL_MS = INTERVAL_MS;
-export const RESOURCE_MONITOR_MAX_HISTORY = MAX_HISTORY;
-
 export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
   const activeSessionId = ref<string | null>(null);
   const snapshot = ref<ResourceSnapshot | null>(null);
   const history = ref<ResourceSnapshot[]>([]);
   const enabled = ref(false);
+  const paused = ref(false);
   const error = ref<string | null>(null);
   // 后端推送的采样失败（resource-monitor-error 事件）：与 error（前端调用
   // 失败）区分，非空时面板展示错误态而非全 0 曲线
@@ -137,8 +134,9 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
     lastSessionId = sessionId;
     if (activeSessionId.value === sessionId && enabled.value) return;
     if (activeSessionId.value && activeSessionId.value !== sessionId) {
-      await stop().catch(() => {});
+      await stop().catch(() => { /* 切换会话前清理上一个监控会话 */ });
     }
+    paused.value = false;
     activeSessionId.value = sessionId;
     enabled.value = true;
     error.value = null;
@@ -223,27 +221,57 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
     }
   }
 
-  async function stop() {
-    if (!activeSessionId.value) return;
-    const id = activeSessionId.value;
-    try { await invokeBackend('resource_monitor_stop', { sessionId: id }); }
-    catch { /* session may already be gone */ }
+  function detachListeners() {
     if (unlisten) {
-      try { unlisten(); } catch { /* noop */ }
+      try { unlisten(); } catch { /* 卸载阶段移除 snapshot 监听可能抛错，可安全忽略 */ }
       unlisten = null;
     }
     if (errorUnlisten) {
-      try { errorUnlisten(); } catch { /* noop */ }
+      try { errorUnlisten(); } catch { /* 卸载阶段移除 error 监听可能抛错，可安全忽略 */ }
       errorUnlisten = null;
     }
     if (statusUnlisten) {
-      try { statusUnlisten(); } catch { /* noop */ }
+      try { statusUnlisten(); } catch { /* 卸载阶段移除 status 监听可能抛错，可安全忽略 */ }
       statusUnlisten = null;
     }
+  }
+
+  async function pause() {
+    if (!activeSessionId.value) return;
+    const id = activeSessionId.value;
+    try { await invokeBackend('resource_monitor_stop', { sessionId: id }); }
+    catch { /* 后端采集任务可能已先行结束，继续暂停并保留最后快照 */ }
+    detachListeners();
+    enabled.value = false;
+    paused.value = true;
+  }
+
+  async function resume(sessionId?: string) {
+    const targetId = sessionId || activeSessionId.value || lastSessionId;
+    paused.value = false;
+    snapshot.value = null;
+    history.value = [];
+    await stop().catch(() => { /* 恢复前清理残留监听与状态，失败不阻断重启 */ });
+    if (targetId) {
+      await start(targetId);
+    }
+  }
+
+  async function stop() {
+    if (!activeSessionId.value) {
+      paused.value = false;
+      detachListeners();
+      return;
+    }
+    const id = activeSessionId.value;
+    try { await invokeBackend('resource_monitor_stop', { sessionId: id }); }
+    catch { /* session may already be gone */ }
+    detachListeners();
     activeSessionId.value = null;
     snapshot.value = null;
     history.value = [];
     enabled.value = false;
+    paused.value = false;
     monitorError.value = null;
     degradedNotice.value = null;
   }
@@ -256,7 +284,7 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
   // 重试最近一次采样：先干净停掉（含 unlisten/历史清零），再按 lastSessionId 重启。
   async function retry() {
     if (!lastSessionId) return;
-    await stop().catch(() => {});
+    await stop().catch(() => { /* retry 前清理旧监控通道，失败仍继续尝试重启 */ });
     await start(lastSessionId);
   }
 
@@ -272,6 +300,7 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
     snapshot,
     history,
     enabled,
+    paused,
     error,
     monitorError,
     degradedNotice,
@@ -288,6 +317,8 @@ export const useResourceMonitorStore = defineStore('resourceMonitor', () => {
     diskReadHistoryPoints,
     diskWriteHistoryPoints,
     start,
+    pause,
+    resume,
     stop,
     retry,
     snapshotOnce,

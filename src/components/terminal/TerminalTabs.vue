@@ -2,6 +2,7 @@
 import { ref, onMounted, onBeforeUnmount, watch, nextTick, computed } from 'vue';
 import { Plus, MoreHorizontal, X, Copy, FolderX, SquareX } from 'lucide-vue-next';
 import { useDragOutsideViewport } from '@/composables/useDragOutsideViewport';
+import { normalizeSessionStatus } from '@/lib/sessionStatus';
 import type { useSessionsStore } from '@/stores/sessions';
 
 /** 会话 tab 数据项：sessions store 的数组元素（store 未导出 SessionEntry，按 store 类型推断）。 */
@@ -26,8 +27,11 @@ const emit = defineEmits<{
 
 const barRef = ref<HTMLElement | null>(null);
 const overflowTriggerRef = ref<HTMLElement | null>(null);
+const overflowMenuRef = ref<HTMLElement | null>(null);
+const contextMenuRef = ref<HTMLElement | null>(null);
 const overflowed = ref<string[]>([]);
 const overflowMenuOpen = ref(false);
+const overflowActiveIdx = ref(0);
 const overflowMenuStyle = ref<{ left: number | string; top: number | string }>({ left: 0, top: 0 });
 const contextMenu = ref({ open: false, x: 0, y: 0, sessionId: '' });
 
@@ -105,11 +109,26 @@ function onTabClose(e: MouseEvent, sessionId: string) {
 }
 function onContextMenu(e: MouseEvent, sessionId: string) {
   e.preventDefault();
+  overflowMenuOpen.value = false;
+  lastContextTriggerRef.value = (e.currentTarget as HTMLElement | null) || null;
   contextMenu.value = { open: true, x: e.clientX, y: e.clientY, sessionId };
+  nextTick(() => {
+    contextMenuRef.value?.querySelector<HTMLButtonElement>('button')?.focus();
+  });
 }
-function closeAllMenus() {
+const lastContextTriggerRef = ref<HTMLElement | null>(null);
+
+function closeAllMenus(restoreFocus = false) {
+  const wasOverflow = overflowMenuOpen.value;
+  const wasContext = contextMenu.value.open;
   contextMenu.value.open = false;
   overflowMenuOpen.value = false;
+  if (restoreFocus && wasOverflow) {
+    nextTick(() => overflowTriggerRef.value?.focus());
+  } else if (restoreFocus && wasContext && lastContextTriggerRef.value?.isConnected) {
+    const target = lastContextTriggerRef.value;
+    nextTick(() => target.focus());
+  }
 }
 
 // Esc 关闭与失焦关闭。TerminalSurface 的统一 Esc 解散链只管 search/cheatsheet/
@@ -119,10 +138,10 @@ function onDocKeydown(e: KeyboardEvent) {
   if (e.key !== 'Escape') return;
   if (!contextMenu.value.open && !overflowMenuOpen.value) return;
   e.preventDefault();
-  closeAllMenus();
+  closeAllMenus(true);
 }
 function onWindowBlur() {
-  closeAllMenus();
+  closeAllMenus(false);
 }
 
 // tablist roving tabindex：方向键在可见 tab 间移动焦点，Enter/Space 触发选择
@@ -155,11 +174,81 @@ function onTabFocus(sessionId: string) {
 function toggleOverflowMenu() {
   overflowMenuOpen.value = !overflowMenuOpen.value;
   if (overflowMenuOpen.value) {
+    contextMenu.value.open = false;
     const rect = overflowTriggerRef.value?.getBoundingClientRect();
     if (rect) {
       const { left, top } = clampMenu(rect.right - 200, rect.bottom + 4, 200, 220);
       overflowMenuStyle.value = { left: left + 'px', top: top + 'px' };
     }
+    overflowActiveIdx.value = 0;
+    nextTick(() => {
+      overflowMenuRef.value?.querySelector<HTMLElement>('[data-overflow-idx="0"]')?.focus();
+    });
+  }
+}
+
+function focusOverflowItem(idx: number) {
+  const len = hiddenSessions.value.length;
+  if (!len) return;
+  const wrapped = (idx + len) % len;
+  overflowActiveIdx.value = wrapped;
+  nextTick(() => {
+    overflowMenuRef.value?.querySelector<HTMLElement>(`[data-overflow-idx="${wrapped}"]`)?.focus();
+  });
+}
+
+function onOverflowItemKeydown(e: KeyboardEvent, idx: number, sessionId: string) {
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    focusOverflowItem(idx + 1);
+    return;
+  }
+  if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    focusOverflowItem(idx - 1);
+    return;
+  }
+  if (e.key === 'Home') {
+    e.preventDefault();
+    focusOverflowItem(0);
+    return;
+  }
+  if (e.key === 'End') {
+    e.preventDefault();
+    focusOverflowItem(hiddenSessions.value.length - 1);
+    return;
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    closeAllMenus(true);
+    return;
+  }
+  if ((e.key === 'Enter' || e.key === ' ') && !(e.target as HTMLElement | null)?.closest('.overflow-close')) {
+    e.preventDefault();
+    onTabClick(sessionId);
+    closeAllMenus(false);
+  }
+}
+
+function onContextMenuKeydown(e: KeyboardEvent) {
+  const buttons = Array.from(contextMenuRef.value?.querySelectorAll<HTMLButtonElement>('button') || []);
+  if (!buttons.length) return;
+  const idx = buttons.indexOf(document.activeElement as HTMLButtonElement);
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    buttons[(idx + 1 + buttons.length) % buttons.length]?.focus();
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    buttons[(idx - 1 + buttons.length) % buttons.length]?.focus();
+  } else if (e.key === 'Home') {
+    e.preventDefault();
+    buttons[0]?.focus();
+  } else if (e.key === 'End') {
+    e.preventDefault();
+    buttons[buttons.length - 1]?.focus();
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    closeAllMenus(true);
   }
 }
 
@@ -167,14 +256,10 @@ const visibleSessions = computed(() => props.sessions.filter(s => !overflowed.va
 const hiddenSessions = computed(() => props.sessions.filter(s => overflowed.value.includes(s.sessionId)));
 
 function statusFor(s: SessionTabItem) {
-  if (s.status === 'connected') return 'connected';
-  if (s.status === 'connecting') return 'connecting';
-  if (s.status === 'disconnected') return 'disconnected';
-  if (s.status === 'error') return 'error';
-  return 'idle';
+  return normalizeSessionStatus(s.status).dotClass;
 }
 function tooltipFor(s: SessionTabItem) {
-  const parts = [s.asset?.name || '', s.asset?.host || ''];
+  const parts = [s.asset?.name || '', s.asset?.host || '', normalizeSessionStatus(s.status).label];
   if (s.oscTitle) parts.push(s.oscTitle);
   return parts.filter(Boolean).join(' · ');
 }
@@ -199,8 +284,8 @@ function dupSuffixFor(session: SessionTabItem) {
       role="tablist"
       aria-label="SSH 会话标签"
     >
-      <button class="tab workspace-tab terminal-tab-new" role="tab" @click="emit('new-terminal')" title="新建会话" aria-label="新建会话">
-        <Plus :size="14" />
+      <button type="button" class="tab workspace-tab terminal-tab-new" role="tab" @click="emit('new-terminal')" title="新建会话" aria-label="新建会话">
+        <Plus :size="14" aria-hidden="true" />
       </button>
       <!-- 已知限制：溢出折叠进菜单的 tab 不可拖 -->
       <div
@@ -224,50 +309,73 @@ function dupSuffixFor(session: SessionTabItem) {
       >
         <span :class="['dot', statusFor(session)]"></span>
         <span class="tab-name session-tab-name">{{ session.asset?.name }}{{ dupSuffixFor(session) }}</span>
-        <button class="tab-close" aria-label="关闭会话" @click="onTabClose($event, session.sessionId)" @mousedown.stop><X :size="12" /></button>
+        <button type="button" class="tab-close" aria-label="关闭会话" @click="onTabClose($event, session.sessionId)" @mousedown.stop><X :size="12" /></button>
       </div>
       <div class="term-tabs-spacer"></div>
       <button
         v-if="hiddenSessions.length"
         ref="overflowTriggerRef"
+        type="button"
         class="tab workspace-tab overflow-trigger"
         :class="{ active: overflowMenuOpen }"
         aria-haspopup="menu"
         :aria-expanded="overflowMenuOpen"
         @click="toggleOverflowMenu"
         title="更多会话"
+        aria-label="更多会话"
       >
-        <MoreHorizontal :size="14" />
+        <MoreHorizontal :size="14" aria-hidden="true" />
       </button>
     </div>
 
     <Teleport to="body">
       <Transition name="tab-menu">
-        <div v-if="overflowMenuOpen && hiddenSessions.length" class="overflow-menu" :style="overflowMenuStyle" @click.stop role="menu" aria-label="更多会话">
+        <div
+          v-if="overflowMenuOpen && hiddenSessions.length"
+          ref="overflowMenuRef"
+          class="overflow-menu"
+          :style="overflowMenuStyle"
+          @click.stop
+          role="menu"
+          aria-label="更多会话"
+        >
           <div
-            v-for="session in hiddenSessions"
+            v-for="(session, idx) in hiddenSessions"
             :key="session.sessionId"
             :class="['overflow-item', { active: session.sessionId === activeSessionId }]"
+            :data-overflow-idx="idx"
             role="menuitem"
-            @click="() => { onTabClick(session.sessionId); overflowMenuOpen = false; }"
+            :tabindex="idx === overflowActiveIdx ? 0 : -1"
+            @focus="overflowActiveIdx = idx"
+            @keydown="onOverflowItemKeydown($event, idx, session.sessionId)"
+            @click="() => { onTabClick(session.sessionId); closeAllMenus(false); }"
           >
             <span :class="['dot', statusFor(session)]"></span>
             <span class="overflow-name">{{ session.asset?.name }}{{ dupSuffixFor(session) }}</span>
             <span class="overflow-host muted">{{ session.asset?.host }}</span>
-            <button class="overflow-close" aria-label="关闭会话" @click.stop="emit('close', session.sessionId)"><X :size="12" /></button>
+            <button type="button" class="overflow-close" aria-label="关闭会话" @click.stop="emit('close', session.sessionId)"><X :size="12" /></button>
           </div>
         </div>
       </Transition>
       <Transition name="tab-menu">
-        <div v-if="contextMenu.open" class="tab-context-menu" :style="contextMenuStyle" @click.stop>
-          <button @click="emit('copy-host', contextMenu.sessionId); closeAllMenus()"><Copy :size="14" /> 复制主机地址</button>
-          <button @click="emit('close-others', contextMenu.sessionId); closeAllMenus()"><FolderX :size="14" /> 关闭其他</button>
-          <button @click="emit('close-right', contextMenu.sessionId); closeAllMenus()"><SquareX :size="14" /> 关闭右侧</button>
-          <button class="danger" @click="emit('close', contextMenu.sessionId); closeAllMenus()"><X :size="14" /> 关闭此标签</button>
+        <div
+          v-if="contextMenu.open"
+          ref="contextMenuRef"
+          class="tab-context-menu"
+          role="menu"
+          aria-label="标签操作"
+          :style="contextMenuStyle"
+          @click.stop
+          @keydown="onContextMenuKeydown"
+        >
+          <button type="button" role="menuitem" @click="emit('copy-host', contextMenu.sessionId); closeAllMenus()"><Copy :size="14" aria-hidden="true" /> 复制主机地址</button>
+          <button type="button" role="menuitem" @click="emit('close-others', contextMenu.sessionId); closeAllMenus()"><FolderX :size="14" aria-hidden="true" /> 关闭其他</button>
+          <button type="button" role="menuitem" @click="emit('close-right', contextMenu.sessionId); closeAllMenus()"><SquareX :size="14" aria-hidden="true" /> 关闭右侧</button>
+          <button type="button" role="menuitem" class="danger" @click="emit('close', contextMenu.sessionId); closeAllMenus()"><X :size="14" aria-hidden="true" /> 关闭此标签</button>
         </div>
       </Transition>
       <Transition name="tab-fade">
-        <div v-if="overflowMenuOpen || contextMenu.open" class="tab-overlay" @click="closeAllMenus" @contextmenu.prevent="closeAllMenus"></div>
+        <div v-if="overflowMenuOpen || contextMenu.open" class="tab-overlay" @click="closeAllMenus(false)" @contextmenu.prevent="closeAllMenus(false)"></div>
       </Transition>
     </Teleport>
   </div>
@@ -323,6 +431,10 @@ function dupSuffixFor(session: SessionTabItem) {
     color: var(--accent);
     background: var(--app-hover);
   }
+
+  &:active {
+    background: var(--app-active);
+  }
 }
 
 .session-tab {
@@ -346,6 +458,10 @@ function dupSuffixFor(session: SessionTabItem) {
   &:hover {
     background: var(--app-hover);
     color: var(--app-strong);
+  }
+
+  &:active {
+    background: var(--app-active);
   }
 
   // 激活下划线贴住标签底边（= 条底边），与下方内容无缝衔接
@@ -401,6 +517,11 @@ function dupSuffixFor(session: SessionTabItem) {
   color: var(--danger);
 }
 
+.tab-close:active {
+  background: color-mix(in oklab, var(--danger) 30%, transparent);
+  color: var(--danger);
+}
+
 .overflow-trigger {
   flex: 0 0 auto;
   padding: 0 10px;
@@ -415,6 +536,10 @@ function dupSuffixFor(session: SessionTabItem) {
 .overflow-trigger.active {
   color: var(--accent);
   background: var(--app-hover);
+}
+
+.overflow-trigger:active {
+  background: var(--app-active);
 }
 </style>
 

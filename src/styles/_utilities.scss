@@ -67,6 +67,17 @@
 // ---- Display helpers ----
 .hidden { display: none !important; }
 .invisible { visibility: hidden; }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 .text-center { text-align: center; }
 .text-right { text-align: right; }
 .w-full { width: 100%; }
@@ -165,16 +176,24 @@
   color: var(--accent-hover);
 }
 .icon-btn.warn { color: var(--warn); }
+// 禁用态保留指针事件使 title 悬停提示可达（06 #12），并用透明 hover 中和反馈避免误导可点
 .icon-btn[aria-disabled='true'],
 .icon-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
-  pointer-events: none;
+}
+.icon-btn[aria-disabled='true']:hover,
+.icon-btn:disabled:hover,
+.icon-btn[aria-disabled='true']:active,
+.icon-btn:disabled:active {
+  background: transparent;
+  color: var(--app-muted);
 }
 
 // ---- Badge base（同步/MCP 状态标签，迁移自 AppStatusBar.vue .badge 系列）----
-// 全局工具类：WorkbenchShell 状态栏 / OpsSummaryPanel 等直接获得样式，
-// 原组件内 scoped 副本保留至死代码清理阶段统一删除。
+// 全局工具类：WorkbenchShell 状态栏 / OpsSummaryPanel 等直接获得样式；
+// 不可点徽章（如 OpsSummaryPanel 凭据徽章）保持默认箭头光标（06 #6），
+// 可点徽章（如状态栏按钮）由各自消费方声明 hover/active/cursor。
 .badge {
   display: inline-flex;
   align-items: center;
@@ -185,7 +204,6 @@
   border: 1px solid transparent;
   background: transparent;
   font-family: var(--font-mono);
-  cursor: pointer;
   transition: background var(--motion-fast), border-color var(--motion-fast);
 }
 .badge::before {
@@ -201,18 +219,96 @@
   background: var(--app-panel-2);
 }
 .badge.muted::before { background: var(--app-subtle); }
+// P0 对比度（docs/设计/01 A2）：状态实色当 12px 文字在浅色 soft 底上仅 2.92-2.97:1，
+// 改「soft 底 + ::before 状态色点 + 文字 --app-muted」（muted on soft 4.60-4.69:1 达标，
+// 状态语义由色点+底色双通道保留）。
 .badge.success {
-  color: var(--success);
+  color: var(--app-muted);
   border-color: var(--success-soft);
   background: var(--success-soft);
 }
 .badge.success::before { background: var(--success); }
 .badge.warn {
-  color: var(--warn);
+  color: var(--app-muted);
   border-color: var(--warn-soft);
   background: var(--warn-soft);
 }
 .badge.warn::before { background: var(--warn); }
-.badge:hover {
-  background: var(--app-hover);
+
+// ---- Settings / Section card utilities（07 A2/A8 上收）----
+.page-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--app-strong);
+}
+.page-title svg {
+  color: var(--app-muted);
+  flex-shrink: 0;
+}
+.block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-md);
+  background: var(--app-panel);
+}
+.block-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--app-muted);
+}
+.update-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.link-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+
+  &:hover {
+    color: var(--accent-hover);
+    text-decoration: underline;
+  }
+  &:active {
+    color: var(--accent-active);
+  }
+}
+
+// ---- Empty banner in side panels（06 #6 上收）----
+.rs-empty-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  padding: var(--space-2) 10px;
+  border: 1px dashed var(--app-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--app-panel-2);
+  color: var(--app-muted);
+  font: 11px var(--font-display);
+}
+.rs-empty-banner svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.6;
+  flex-shrink: 0;
 }

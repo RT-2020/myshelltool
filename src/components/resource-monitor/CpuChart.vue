@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { CHART_H, CHART_W, buildAreaPath, buildLinePath } from './chart-utils';
+import { CHART_H, CHART_W, SAMPLE_WINDOW_LABEL, buildAreaPath, buildLinePath } from './chart-utils';
 
 const props = withDefaults(defineProps<{
   points?: number[];
@@ -16,13 +16,20 @@ const GRAD_ID = 'rm-cpu-grad';
 const path = computed(() => buildLinePath(props.points, 100));
 const areaPath = computed(() => buildAreaPath(path.value));
 const valueText = computed(() => (props.hasData ? props.current.toFixed(1) : '—'));
+const peakText = computed(() => (props.hasData && props.points.length ? `${Math.max(...props.points).toFixed(1)}%` : '暂无'));
+const readoutLabel = computed(() => (props.hasData ? `CPU 使用率 ${valueText.value}%` : '暂无采样数据'));
+const cardTitle = computed(() =>
+  props.hasData && props.points.length
+    ? `${SAMPLE_WINDOW_LABEL} · 窗口峰值 ${peakText.value}`
+    : SAMPLE_WINDOW_LABEL
+);
 </script>
 
 <template>
-  <article class="metric-card">
+  <article class="metric-card" :title="cardTitle">
     <div class="metric-head">
       <span class="metric-name">CPU</span>
-      <span class="metric-readout">
+      <span class="metric-readout" :title="readoutLabel" :aria-label="readoutLabel">
         <span class="num">{{ valueText }}</span>
         <span v-if="hasData" class="unit">%</span>
       </span>
@@ -79,7 +86,7 @@ const valueText = computed(() => (props.hasData ? props.current.toFixed(1) : '�
 }
 
 .metric-readout .unit {
-  color: var(--app-subtle);
+  color: var(--app-muted);
   font-size: 10.5px;
 }
 
@@ -113,5 +120,11 @@ const valueText = computed(() => (props.hasData ? props.current.toFixed(1) : '�
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.2;
+}
+.grid-line,
+.baseline,
+.line-empty,
+.line-data {
+  vector-effect: non-scaling-stroke;
 }
 </style>

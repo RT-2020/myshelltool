@@ -1,12 +1,22 @@
 <script setup lang="ts">
+import { ref } from 'vue';
 import { X } from 'lucide-vue-next';
+import { useModalFocus } from '@/composables/useModalFocus';
 
-withDefaults(defineProps<{
+const props = withDefaults(defineProps<{
   open?: boolean;
 }>(), {
   open: false
 });
 const emit = defineEmits<{ close: [] }>();
+const modalRef = ref<HTMLElement | null>(null);
+
+useModalFocus({
+  open: () => props.open,
+  containerRef: modalRef,
+  autofocusSelector: '.shortcut-modal',
+  onEscape: () => emit('close')
+});
 
 const groups = [
   {
@@ -15,7 +25,8 @@ const groups = [
       { keys: ['Ctrl', 'Shift', 'T'], label: '连接所选主机' },
       { keys: ['Ctrl', 'Tab'], label: '切换到下一个会话' },
       { keys: ['Ctrl', 'Shift', 'Tab'], label: '切换到上一个会话' },
-      { keys: ['Ctrl', 'W'], label: '关闭当前会话' }
+      { keys: ['Ctrl', 'W'], label: '关闭当前会话' },
+      { keys: ['Ctrl', 'K'], label: '全局搜索主机' }
     ]
   },
   {
@@ -39,9 +50,8 @@ const groups = [
   {
     title: '视图',
     items: [
-      { keys: ['Alt', 'Enter'], label: '切换全屏' },
       { keys: ['Ctrl', 'Shift', 'P'], label: '命令面板' },
-      { keys: ['?'], label: '本速查表' },
+      { keys: ['?'], label: '本速查表（终端焦点外生效；终端内 ? 属 shell 输入）' },
       { keys: ['Esc'], label: '关闭浮层' }
     ]
   }
@@ -52,10 +62,10 @@ const groups = [
   <Teleport to="body">
     <Transition name="shortcut">
       <div v-if="open" class="shortcut-overlay" @click.self="emit('close')" role="dialog" aria-modal="true" aria-label="快捷键速查">
-      <div class="shortcut-modal">
+      <div ref="modalRef" class="shortcut-modal" tabindex="-1">
         <header class="shortcut-header">
           <h2>快捷键速查</h2>
-          <button class="icon-btn" aria-label="关闭" @click="emit('close')"><X :size="18" /></button>
+          <button type="button" class="icon-btn" data-modal-close aria-label="关闭" @click="emit('close')"><X :size="18" /></button>
         </header>
         <div class="shortcut-grid">
           <section v-for="group in groups" :key="group.title" class="shortcut-group">

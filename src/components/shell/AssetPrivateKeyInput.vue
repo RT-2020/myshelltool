@@ -251,7 +251,7 @@ async function browsePath() {
 }
 
 .rec-badge {
-  font-size: 11px;
+  font-size: var(--text-xs);
   padding: 1px 6px;
   border-radius: var(--radius-pill);
   background: var(--accent-soft);
@@ -383,7 +383,7 @@ async function browsePath() {
 
 .path-hint {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--app-muted);
   line-height: 1.4;
 }

@@ -216,6 +216,68 @@ console.error('[step] scenario-1');
   if (!termText || !termText.includes('hello ')) throw new Error('output not written to terminal: ' + JSON.stringify(termText));
   if (!termText.includes('世界')) throw new Error('UTF-8 chunk split decoded wrong: ' + JSON.stringify(termText));
 
+  // 搜索条随终端画布而不是窗口宽度收窄，窄到需要换行时按钮仍可点击。
+  await page.locator('.xterm-helper-textarea').press('Control+f');
+  const terminalSearch = page.getByRole('searchbox', { name: '搜索终端内容' });
+  await terminalSearch.waitFor({ state: 'visible' });
+  if (!await terminalSearch.evaluate(el => el === document.activeElement)) throw new Error('terminal search did not receive focus');
+  const searchBar = page.locator('.terminal-searchbar');
+  const searchGeometry = () => searchBar.evaluate(bar => {
+    const bounds = bar.getBoundingClientRect();
+    const canvas = bar.parentElement.getBoundingClientRect();
+    const fits = (inner, outer) => inner.left >= outer.left - 0.5 && inner.right <= outer.right + 0.5
+      && inner.top >= outer.top - 0.5 && inner.bottom <= outer.bottom + 0.5;
+    return {
+      width: bounds.width,
+      height: bounds.height,
+      barFits: fits(bounds, canvas),
+      controlsFit: [...bar.querySelectorAll('input, button')].every(el => fits(el.getBoundingClientRect(), bounds)),
+      fontSize: getComputedStyle(bar.querySelector('input')).fontSize,
+    };
+  });
+  const wide = await searchGeometry();
+  try {
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    for (const [width, height, panels] of [[1024, 768, 'expanded'], [800, 600, 'collapsed']]) {
+      await page.setViewportSize({ width, height });
+      await page.waitForFunction(state => {
+        const root = document.documentElement;
+        if (root.dataset.right !== state || root.dataset.assets !== state) return false;
+        const shell = document.querySelector('.workbench-shell');
+        if (!shell) return false;
+        const cols = getComputedStyle(shell).gridTemplateColumns.trim().split(/\s+/).map(parseFloat);
+        if (cols.length < 3 || cols.some(Number.isNaN)) return false;
+        return state === 'collapsed'
+          ? (cols[0] <= 48 && cols[cols.length - 1] <= 1)
+          : (cols[0] >= 180 && cols[cols.length - 1] >= 200);
+      }, panels);
+      const narrow = await searchGeometry();
+      if (!narrow.barFits || !narrow.controlsFit || narrow.width >= wide.width || narrow.fontSize !== wide.fontSize || narrow.height > wide.height + 1) {
+        throw new Error(`terminal search did not stay compact at ${width}px: ${JSON.stringify({ wide, narrow })}`);
+      }
+    }
+    const narrow = await searchGeometry();
+    await page.locator('.term-canvas-wrap').evaluate(el => { el.style.inlineSize = '260px'; });
+    const compact = await searchGeometry();
+    if (!compact.barFits || !compact.controlsFit || compact.width >= narrow.width || compact.fontSize !== wide.fontSize) {
+      throw new Error(`terminal search escaped its canvas or clipped controls: ${JSON.stringify(compact)}`);
+    }
+
+    await terminalSearch.fill('hello');
+    await terminalSearch.press('Enter');
+    await searchBar.locator('.search-count').getByText(/^[01]\/1$/).waitFor({ state: 'visible' });
+    const wholeWord = searchBar.getByRole('button', { name: '全字匹配' });
+    await wholeWord.click();
+    if (await wholeWord.getAttribute('aria-pressed') !== 'true') throw new Error('compact terminal search toggle did not respond');
+    await wholeWord.click();
+    await terminalSearch.press('Escape');
+    await searchBar.waitFor({ state: 'hidden' });
+  } finally {
+    await page.locator('.term-canvas-wrap').evaluate(el => el.style.removeProperty('inline-size'));
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.emulateMedia({ reducedMotion: null });
+  }
+
   // 断开事件（非用户断开）→ 自动重连（退避后二次 ssh_connect）
   await emitEvent(page, 'ssh-closed-' + sessionId, 'connection reset');
   await page.waitForFunction(

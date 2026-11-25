@@ -88,7 +88,17 @@ function onKeydown(e: KeyboardEvent) {
     moveHighlight(e.key === 'ArrowDown' ? 1 : -1);
     return;
   }
-  if (e.key === 'Enter') {
+  if (e.key === 'Home') {
+    e.preventDefault();
+    if (selectable.value.length) activeIndex.value = 0;
+    return;
+  }
+  if (e.key === 'End') {
+    e.preventDefault();
+    if (selectable.value.length) activeIndex.value = selectable.value.length - 1;
+    return;
+  }
+  if (e.key === 'Enter' || e.key === ' ') {
     e.preventDefault();
     const cur = selectable.value[activeIndex.value];
     if (cur) onItemClick(cur.item);
@@ -228,6 +238,7 @@ onBeforeUnmount(() => {
   cursor: pointer;
   border-radius: var(--radius-sm);
   user-select: none;
+  transition: background var(--motion-fast);
 }
 .app-context-menu-item.is-active {
   background: var(--app-hover);
@@ -235,11 +246,17 @@ onBeforeUnmount(() => {
 .app-context-menu-item:hover:not(.disabled) {
   background: var(--app-hover);
 }
+.app-context-menu-item:active:not(.disabled) {
+  background: var(--app-active);
+}
 .app-context-menu-item.danger {
   color: var(--danger);
 }
 .app-context-menu-item.danger:hover:not(.disabled) {
   background: color-mix(in oklab, var(--danger), transparent 85%);
+}
+.app-context-menu-item.danger:active:not(.disabled) {
+  background: color-mix(in oklab, var(--danger), transparent 75%);
 }
 .app-context-menu-item.disabled {
   opacity: 0.5;

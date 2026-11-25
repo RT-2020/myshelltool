@@ -31,7 +31,7 @@ import type { McpExecutionLogEntry } from '@/types/domain';
 
 const mcpStore = useMcpStore();
 // setup store 解构必须走 storeToRefs（直接解构丢响应性，AGENTS.md Pinia 约定）
-const { execLogs, execLogsLoading } = storeToRefs(mcpStore);
+const { execLogs, execLogsLoading, execLogsError } = storeToRefs(mcpStore);
 
 const rows = computed(() => execLogs.value ?? []);
 
@@ -125,8 +125,8 @@ function hostTitle(row: McpExecutionLogEntry) {
 </script>
 
 <template>
-  <section class="block">
-    <header class="block-head">
+  <section class="log-section">
+    <header class="log-head">
       <ScrollText :size="12" />执行日志
       <span class="head-note muted">真实远程执行留痕 · 保留 30 天</span>
       <span class="head-actions">
@@ -144,6 +144,11 @@ function hostTitle(row: McpExecutionLogEntry) {
         </template>
       </span>
     </header>
+
+    <div v-if="execLogsError" class="exec-logs-error" role="alert">
+      <span>执行日志加载失败（原因：{{ execLogsError }}）；审计记录未能核验，请点击「重试」。</span>
+      <AppButton variant="subtle" size="sm" :disabled="execLogsLoading" @click="mcpStore.loadExecLogs()">重试</AppButton>
+    </div>
 
     <div v-if="execLogsLoading && !rows.length" class="loading muted">正在加载执行记录…</div>
     <template v-else-if="rows.length">
@@ -210,35 +215,48 @@ function hostTitle(row: McpExecutionLogEntry) {
 
       <p v-if="!filteredCount" class="muted empty">没有匹配的记录，试试调整搜索或筛选条件</p>
     </template>
-    <p v-else class="muted empty">暂无执行记录</p>
+    <p v-else-if="!execLogsError" class="muted empty">暂无执行记录</p>
   </section>
 </template>
 
 <style scoped lang="scss">
 @use '@/styles/_tokens' as *;
 
-.block {
+.log-section {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
 }
-.block-head {
+.log-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   font-size: var(--text-xs);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--app-muted);
-  padding-bottom: 4px;
+  padding-bottom: var(--space-1);
   border-bottom: 1px solid var(--app-border);
   flex-wrap: wrap;
 }
-.block-head :deep(svg) { flex-shrink: 0; }
+.log-head :deep(svg) { flex-shrink: 0; }
+.exec-logs-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in oklab, var(--danger), transparent 55%);
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklab, var(--danger), transparent 90%);
+  color: var(--danger);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
 .head-note {
   text-transform: none;
   letter-spacing: 0;
-  font-size: 11px;
+  font-size: var(--text-xs);
 }
 .head-actions {
   margin-left: auto;
@@ -304,13 +322,16 @@ function hostTitle(row: McpExecutionLogEntry) {
   &:hover {
     background: var(--app-hover);
   }
+  &:active {
+    background: var(--app-active);
+  }
 }
 .line1 {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
-  font-size: 11px;
+  font-size: var(--text-xs);
 }
 .spacer { flex: 1 1 0; min-width: var(--space-1); }
 
@@ -328,7 +349,11 @@ function hostTitle(row: McpExecutionLogEntry) {
   border-radius: var(--radius-pill);
   background: currentColor;
 }
-.tone-ok { color: var(--success); }
+/* P0 对比度（docs/设计/09 R1）：状态语义由色点承担、文字用中性色——success 作
+   文字浅色仅 3.30:1；.outcome-dot 原 currentColor 需显式解耦（danger 例外保留：
+   双主题 4.70/5.27 达标） */
+.tone-ok { color: var(--app-muted); }
+.tone-ok .outcome-dot { background: var(--success); }
 .tone-err { color: var(--danger); }
 .tone-muted { color: var(--app-muted); }
 
@@ -367,12 +392,35 @@ function hostTitle(row: McpExecutionLogEntry) {
 .decision-not-required {
   color: var(--app-muted);
 }
+/* P0 对比度（docs/设计/09 R1）：warn/success 文字浅色 3.30-3.42:1 → 文字 muted +
+   6px 色点承担状态语义（danger 系保留原色文字，双主题达标） */
 .decision-minimal_allowed {
-  color: var(--warn);
+  color: var(--app-muted);
+}
+.decision-minimal_allowed::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--warn);
+  margin-right: 4px;
+  vertical-align: 1px;
 }
 .decision-elicitation_accepted,
 .decision-gui_accepted {
-  color: var(--success);
+  color: var(--app-muted);
+}
+.decision-elicitation_accepted::before,
+.decision-gui_accepted::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--success);
+  margin-right: 4px;
+  vertical-align: 1px;
 }
 .decision-elicitation_declined,
 .decision-gui_declined,
@@ -384,8 +432,9 @@ function hostTitle(row: McpExecutionLogEntry) {
 
 .time {
   flex: 0 0 auto;
-  color: var(--app-subtle);
-  font-size: 11px;
+  color: var(--app-muted);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
@@ -396,13 +445,13 @@ function hostTitle(row: McpExecutionLogEntry) {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--app-strong);
 }
 
 .mono {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--text-xs);
 }
 
 // —— 分页脚注 ——
@@ -426,11 +475,14 @@ function hostTitle(row: McpExecutionLogEntry) {
     color: var(--accent);
     border-color: var(--accent);
   }
+  &:active {
+    background: var(--app-active);
+  }
 }
 .list-end {
   margin: 0;
   text-align: center;
-  font-size: 11px;
+  font-size: var(--text-xs);
 }
 
 // —— 展开的详情块（输出摘要）——
@@ -459,7 +511,7 @@ function hostTitle(row: McpExecutionLogEntry) {
 }
 .detail-output code {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--terminal-text);
   white-space: pre-wrap;
   word-break: break-all;

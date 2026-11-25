@@ -252,7 +252,7 @@ async function onClearSync() {
 .adv-note {
   margin-left: auto;
   font-weight: 400;
-  color: var(--app-subtle);
+  color: var(--app-muted); /* P0 对比度（docs/设计/08 调整1）：subtle 2.61:1 → muted 4.94:1 */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

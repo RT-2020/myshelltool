@@ -9,13 +9,12 @@ import { storeToRefs } from 'pinia';
 import { Monitor, Moon, Palette, Sun, TerminalSquare, Mouse } from 'lucide-vue-next';
 import { useWorkbenchStore } from '@/stores/workbench';
 import AppSelect from '@/components/ui/AppSelect.vue';
+import { THEME_ORDER, THEME_LABELS } from '@/composables/useTheme';
 
 const store = useWorkbenchStore();
 const { theme, middleClickAutoscroll } = storeToRefs(store);
 
-// —— 主题选择：读 uiStore.theme（原始三态 system/light/dark）+ 调 setTheme ——
-const THEME_ORDER = ['system', 'light', 'dark'] as const;
-const THEME_LABELS: Record<string, string> = { system: '跟随系统', light: '浅色', dark: '深色' };
+// —— 主题选择：读 uiStore.theme（原始三态 system/light/dark，权威常量自 useTheme 导入） ——
 const themeIcons: Record<string, Component> = { system: Monitor, light: Sun, dark: Moon };
 const themeDescription = computed(() => {
   if (theme.value === 'light') return '「浅色」始终保持明亮清爽的界面风格，切换即时生效并持久化。';
@@ -37,7 +36,8 @@ function setTerminalFontSizeTo(value: string | number) {
 </script>
 
 <template>
-  <div class="stack">
+  <div class="stack tab-pane">
+    <header class="page-title"><Palette :size="15" />外观</header>
     <header class="block-head"><Palette :size="12" />主题</header>
     <div class="theme-grid">
       <button
@@ -46,6 +46,7 @@ function setTerminalFontSizeTo(value: string | number) {
         type="button"
         class="theme-card"
         :class="{ active: theme === t }"
+        :aria-pressed="theme === t ? 'true' : 'false'"
         @click="selectTheme(t)"
       >
         <component :is="themeIcons[t]" :size="22" />
@@ -122,15 +123,25 @@ function setTerminalFontSizeTo(value: string | number) {
     box-shadow var(--dur-fast) var(--ease-standard);
 
   &:hover {
-    border-color: var(--accent);
+    border-color: var(--app-border-strong);
     color: var(--app-strong);
     background: var(--app-hover);
+  }
+  &:active {
+    background: var(--app-active);
+  }
+  &:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
   }
   &.active {
     border-color: var(--accent);
     color: var(--accent);
     background: var(--accent-soft);
     box-shadow: 0 0 0 1px var(--accent) inset;
+  }
+  &.active:focus-visible {
+    box-shadow: 0 0 0 1px var(--accent) inset, var(--focus-ring);
   }
 }
 .theme-hint { margin: 0; }
@@ -161,26 +172,15 @@ function setTerminalFontSizeTo(value: string | number) {
   color: var(--app-text);
   cursor: pointer;
   user-select: none;
-}
 
-// —— 通用 section（对齐设置面板视觉语言）——
-.block {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-md, 8px);
-  background: var(--bg-elevated, var(--app-surface));
-}
-.block-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-secondary, var(--app-muted));
+  input[type='checkbox'] {
+    accent-color: var(--accent);
+
+    &:focus-visible {
+      outline: none;
+      box-shadow: var(--focus-ring);
+      border-radius: 2px;
+    }
+  }
 }
 </style>

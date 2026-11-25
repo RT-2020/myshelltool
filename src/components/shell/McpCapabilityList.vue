@@ -70,26 +70,30 @@ const readonlyTools = computed(() => props.tools.filter(t => t.tag !== 'dangerou
             </li>
           </ul>
         </div>
+
+        <p v-if="!dangerousTools.length && !readonlyTools.length" class="muted cap-empty">暂未发现可暴露的 MCP 工具</p>
       </div>
 
       <div class="two-col">
         <div class="sub-block">
           <span class="sub-label muted">Resources · {{ resources.length }}</span>
-          <ul class="simple-list">
+          <ul v-if="resources.length" class="simple-list">
             <li v-for="r in resources" :key="r.uri">
               <code>{{ r.uri }}</code>
-              <span v-if="r.is_template" class="tag">模板</span>
+              <span v-if="r.is_template || r.isTemplate" class="tag">模板</span>
             </li>
           </ul>
+          <p v-else class="muted cap-empty">暂无声明的资源模板</p>
         </div>
         <div class="sub-block">
           <span class="sub-label muted">Prompts · {{ prompts.length }}</span>
-          <ul class="simple-list">
+          <ul v-if="prompts.length" class="simple-list">
             <li v-for="p in prompts" :key="p.name">
               <code>{{ p.name }}</code>
               <span v-if="p.arguments?.length" class="muted args">({{ p.arguments.join(', ') }})</span>
             </li>
           </ul>
+          <p v-else class="muted cap-empty">暂无声明的诊断 Prompts</p>
         </div>
       </div>
     </div>
@@ -130,7 +134,7 @@ const readonlyTools = computed(() => props.tools.filter(t => t.tag !== 'dangerou
 .cap-note {
   margin-left: auto;
   font-weight: 400;
-  color: var(--app-subtle);
+  color: var(--app-muted); /* P0 对比度（docs/设计/09 R1）：subtle → muted */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -192,7 +196,7 @@ const readonlyTools = computed(() => props.tools.filter(t => t.tag !== 'dangerou
 }
 .tool-desc {
   margin: 2px 0 0;
-  font-size: 11px;
+  font-size: var(--text-xs);
   line-height: 1.45;
 }
 
@@ -209,7 +213,7 @@ const readonlyTools = computed(() => props.tools.filter(t => t.tag !== 'dangerou
   gap: var(--space-1);
 }
 .sub-label {
-  font-size: 10px;
+  font-size: var(--text-xs);
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
@@ -229,13 +233,17 @@ const readonlyTools = computed(() => props.tools.filter(t => t.tag !== 'dangerou
 }
 .simple-list code {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--text-xs);
   word-break: break-all;
   color: var(--app-text);
 }
-.args { font-size: 11px; }
+.args { font-size: var(--text-xs); }
+.cap-empty {
+  margin: 0;
+  font-size: var(--text-xs);
+}
 .tag {
-  font-size: 10px;
+  font-size: var(--text-xs);
   padding: 1px 6px;
   background: var(--app-subtle);
   color: var(--app-muted);

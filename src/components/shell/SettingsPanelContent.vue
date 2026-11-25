@@ -2,23 +2,20 @@
 /**
  * SettingsPanelContent — v1.8 统一设置中心。
  *
- * 收敛此前散落的入口（同步 syncPanel / MCP mcpPanel / 主题 titlebar 按钮 / 更新）
- * 进一个 AppTabGroup 分页容器。齿轮按钮（AppTitleBar.vue）与状态栏 MCP 指示灯、
- * 标题栏同步按钮点击后，通过 uiStore.modal.tab 跳转到对应 tab。
+ * 收敛此前散落的入口（同步 / MCP / 主题 / 传输 / 资产 / 更新）进左侧竖导航 +
+ * 右侧内容区。状态栏同步、MCP 与齿轮按钮点击后通过 modal.tab 直达对应分类。
  *
  * 信息架构（ui-ux-pro-max §9 nav-state-active / §4 primary-action）：
- *   - 横向 tab + lucide icon + label，当前 tab 视觉高亮
- *   - 「关于与更新」为默认 tab（用户最常找的更新入口），单一主操作 = 检查更新
+ *   - 左侧竖导航（固定 6 项）+ lucide icon + label，当前项 aria-current="page" 高亮
+ *   - 「关于与更新」为默认分类，单一主操作 = 检查更新
  *
  * 复用策略（vibe-guard reuse check 通过）：
  *   - McpPanelContent / SyncPanelContent 是零 props/emit 自包含子组件，原样嵌入 tab，不复制不重写
  *   - 主题数据走 uiStore（theme/setTheme）+ useTheme 常量（THEME_ORDER/THEME_LABELS），不重复定义
  *   - 更新链路复用 useAutoUpdate（已在 App.vue 实例化），这里直接注入后透传给
- *     UpdateSection.vue（应用更新区块）→ ReleaseNotesBlock.vue（更新日志行级渲染），
- *     两级子组件为守 500 行 SFC 硬上限自本文件拆出
+ *     UpdateSection.vue（应用更新区块）→ ReleaseNotesBlock.vue（更新日志行级渲染）
  *
- * 由 GlobalModals.vue 的 modal.type === 'settings' 分支渲染。抽成独立组件是为
- * 避免 GlobalModals.vue 超 500 行 SFC 硬上限（AGENTS.md 质量红线）。
+ * 由 GlobalModals.vue 的 modal.type === 'settings' 分支渲染。
  */
 import { ref, computed, onMounted, watch } from 'vue';
 import { storeToRefs } from 'pinia';
@@ -61,8 +58,7 @@ const autoUpdate = computed(() => modalExtras.value.autoUpdate || null);
 // 补偿入口）。无回调时不渲染「恢复默认布局」按钮。
 const resetLayout = computed(() => modalExtras.value.resetLayout || null);
 
-// —— Tab 导航 ——
-// tab 列表固定 4 项；icon 用 lucide 组件，AppTabGroup 透传给 AppTab。
+// —— 左侧竖导航分类（6 项顶级设置） ——
 const TABS = [
   { id: 'about', label: '关于与更新', icon: Info },
   { id: 'appearance', label: '外观', icon: Palette },
@@ -160,7 +156,7 @@ async function copyDiagnostics() {
       <section v-if="visitedTabs.includes('about')" v-show="activeTab === 'about'" class="stack tab-pane">
         <header class="page-title"><Info :size="15" />关于与更新</header>
         <div class="about-hero">
-          <AppBrandLogo :size="36" class="about-logo" />
+          <AppBrandLogo :size="40" class="about-logo" />
           <div class="about-text">
             <span class="about-name">myshelltool</span>
             <span class="about-ver num">v{{ appVersion }}</span>
@@ -219,25 +215,25 @@ async function copyDiagnostics() {
         </section>
       </section>
 
-      <!-- ② 外观（v0.20 拆至 AppearanceTab.vue，S2 第一刀：主题/排版/鼠标整体迁移） -->
+      <!-- ② 外观（v0.20 拆至 AppearanceTab.vue） -->
       <AppearanceTab v-if="visitedTabs.includes('appearance')" v-show="activeTab === 'appearance'" />
 
       <!-- ③ 传输（文件并发与传输偏好） -->
       <TransferSettingsTab v-if="visitedTabs.includes('transfer')" v-show="activeTab === 'transfer'" />
 
-      <!-- ③ 同步（复用 SyncPanelContent + PatConfigCard，零 props 自包含） -->
+      <!-- ④ 同步（复用 SyncPanelContent + PatConfigCard，零 props 自包含） -->
       <section v-if="visitedTabs.includes('sync')" v-show="activeTab === 'sync'" class="stack tab-pane">
         <header class="page-title"><RefreshCw :size="15" />同步</header>
         <SyncPanelContent />
       </section>
 
-      <!-- ④ MCP（复用 McpPanelContent，零 props 自包含） -->
+      <!-- ⑤ MCP（复用 McpPanelContent，零 props 自包含） -->
       <section v-if="visitedTabs.includes('mcp')" v-show="activeTab === 'mcp'" class="stack tab-pane">
         <header class="page-title"><Plug :size="15" />MCP</header>
         <McpPanelContent />
       </section>
 
-      <!-- ⑤ 资产（v0.20，SSH P0-1：config 导入等资产域入口） -->
+      <!-- ⑥ 资产（v0.20，SSH P0-1：config 导入等资产域入口） -->
       <section v-if="visitedTabs.includes('assets')" v-show="activeTab === 'assets'" class="stack tab-pane">
         <header class="page-title"><Server :size="15" />资产</header>
         <AssetsTabContent />
@@ -320,16 +316,6 @@ async function copyDiagnostics() {
   overflow-y: auto;
   padding: var(--space-5) var(--space-6);
 }
-// 页面标题：当前分类名，与左导航选中项呼应（用户点「同步」→ 右侧立刻确认「你在同步」）
-.page-title {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-base);
-  font-weight: 600;
-  color: var(--app-strong);
-}
-.page-title :deep(svg) { color: var(--app-muted); flex-shrink: 0; }
 
 .tab-body {
   display: flex;
@@ -337,26 +323,7 @@ async function copyDiagnostics() {
   gap: 16px;
 }
 
-// —— 通用 section header（对齐 McpPanelContent/OpsSummaryPanel 视觉语言）——
-.block {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-md, 8px);
-  background: var(--bg-elevated, var(--app-surface));
-}
-.block-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-secondary, var(--app-muted));
-}
+// .page-title / .block / .block-head / .update-row / .link-action 已上收 _utilities.scss（07 A2/A8）
 .detail-grid {
   display: grid;
   grid-template-columns: auto 1fr;
@@ -366,7 +333,7 @@ async function copyDiagnostics() {
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: var(--text-secondary, var(--app-muted));
+    color: var(--app-muted);
   }
   dd {
     margin: 0;
@@ -381,10 +348,10 @@ async function copyDiagnostics() {
   gap: 12px;
 }
 .about-logo {
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
   flex-shrink: 0;
-  filter: drop-shadow(0 2px 8px rgba(44, 95, 229, 0.25));
+  filter: drop-shadow(0 2px 8px color-mix(in srgb, var(--accent) 25%, transparent));
 }
 .about-text {
   display: flex;
@@ -397,7 +364,7 @@ async function copyDiagnostics() {
 }
 .about-ver {
   font-size: 12px;
-  color: var(--text-secondary, var(--app-muted));
+  color: var(--app-muted);
 }
 
 .setting-label {
@@ -405,33 +372,9 @@ async function copyDiagnostics() {
   color: var(--app-muted);
 }
 
-// —— 更新/布局共用的操作行（更新区本体已拆至 UpdateSection.vue）——
-.update-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
 .update-hint {
   font-size: 12px;
   line-height: 1.5;
-}
-
-.link-action {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: none;
-  border: none;
-  padding: 0;
-  color: var(--accent);
-  cursor: pointer;
-  font: inherit;
-
-  &:hover {
-    color: var(--accent-hover);
-    text-decoration: underline;
-  }
 }
 
 // .spin 已随更新按钮迁至 UpdateSection.vue。

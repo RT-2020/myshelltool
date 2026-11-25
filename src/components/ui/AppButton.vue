@@ -86,6 +86,10 @@ withDefaults(
   background: var(--accent-hover);
   border-color: var(--accent-hover);
 }
+.app-btn--primary:active:not(.is-disabled) {
+  background: var(--accent-active);
+  border-color: var(--accent-active);
+}
 
 .app-btn--ghost {
   border-color: var(--app-border);
@@ -94,6 +98,9 @@ withDefaults(
 .app-btn--ghost:hover:not(.is-disabled) {
   background: var(--app-hover);
 }
+.app-btn--ghost:active:not(.is-disabled) {
+  background: var(--app-active);
+}
 
 .app-btn--subtle {
   color: var(--app-muted);
@@ -101,6 +108,9 @@ withDefaults(
 .app-btn--subtle:hover:not(.is-disabled) {
   background: var(--app-hover);
   color: var(--app-strong);
+}
+.app-btn--subtle:active:not(.is-disabled) {
+  background: var(--app-active);
 }
 
 .app-btn--danger {
@@ -111,6 +121,10 @@ withDefaults(
 .app-btn--danger:hover:not(.is-disabled) {
   background: color-mix(in oklab, var(--danger), black 10%);
   border-color: color-mix(in oklab, var(--danger), black 10%);
+}
+.app-btn--danger:active:not(.is-disabled) {
+  background: color-mix(in oklab, var(--danger), black 18%);
+  border-color: color-mix(in oklab, var(--danger), black 18%);
 }
 
 .app-btn.is-disabled {

@@ -13,11 +13,13 @@ const props = withDefaults(
     modelValue?: string | number;
     options?: SelectOption[];
     placeholder?: string;
+    disabled?: boolean;
   }>(),
   {
     modelValue: '',
     options: () => [],
-    placeholder: ''
+    placeholder: '',
+    disabled: false
   }
 );
 const emit = defineEmits<{ 'update:modelValue': [value: string | number] }>();
@@ -48,6 +50,7 @@ function closeMenu() {
 }
 
 function toggle() {
+  if (props.disabled) return;
   if (open.value) closeMenu();
   else {
     open.value = true;
@@ -174,7 +177,8 @@ onBeforeUnmount(() => {
     <button
       type="button"
       class="app-select-trigger"
-      :class="{ 'is-open': open }"
+      :class="{ 'is-open': open, 'is-disabled': disabled }"
+      :disabled="disabled"
       aria-haspopup="listbox"
       :aria-expanded="open"
       :aria-activedescendant="activeDescendant"
@@ -191,6 +195,7 @@ onBeforeUnmount(() => {
          stopPropagation 拦不住、必须 preventDefault；.stop 一并拦掉向上冒泡。 -->
     <Transition name="app-select-menu">
       <ul v-if="open" ref="menuRef" class="app-select-menu" role="listbox" @click.prevent.stop>
+        <li v-if="!options.length" class="app-select-empty" role="presentation">暂无可选项</li>
         <li
           v-for="opt in options"
           :key="opt.value"
@@ -233,8 +238,19 @@ onBeforeUnmount(() => {
   font-family: var(--font-body);
   cursor: pointer;
   text-align: left;
-  transition: border-color var(--dur-fast) var(--ease-standard),
+  transition: background var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
     box-shadow var(--dur-fast) var(--ease-standard);
+}
+.app-select-trigger:hover:not(:disabled) {
+  border-color: var(--app-border-strong);
+}
+.app-select-trigger:active:not(:disabled) {
+  background: var(--app-active);
+}
+.app-select-trigger.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .app-select-trigger.is-open {
   border-color: var(--accent);
@@ -295,6 +311,15 @@ onBeforeUnmount(() => {
 }
 .app-select-option:hover {
   background: var(--app-hover);
+}
+.app-select-option:active {
+  background: var(--app-active);
+}
+.app-select-empty {
+  padding: 6px 10px;
+  font-size: var(--text-xs);
+  color: var(--app-muted);
+  text-align: center;
 }
 .app-select-option.is-active {
   background: var(--app-hover);

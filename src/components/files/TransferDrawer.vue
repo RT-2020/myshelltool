@@ -11,10 +11,11 @@
  * Store-bound: 订阅 useFilesStore.transferQueue。每行显示方向 / 名称 / 大小比 /
  * 状态药丸 + 细线性进度。
  */
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import type { Component } from 'vue';
 import { storeToRefs } from 'pinia';
 import { Upload, Download, ChevronDown, AlertCircle, CheckCircle2, Loader2, XCircle, X, RotateCcw, ArrowUpDown } from 'lucide-vue-next';
+import { useModalFocus } from '@/composables/useModalFocus';
 import { useFilesStore } from '@/stores/files';
 import { formatBytes, formatSpeed, formatEta } from '@/lib/transferUtils';
 import type { TransferQueueItem } from '@/lib/transferUtils';
@@ -77,20 +78,22 @@ function cancelActiveDirBatch() {
   if (id) filesStore.cancelDirBatch(id);
 }
 
-// 抽屉打开时注册 Escape 关闭，关闭/卸载时移除；打开瞬间做一次智能默认 tab
-// （有传输看传输，无传输看队列，否则看完成——只定初始值，不抢用户后续切换）
-function onDrawerKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape') emit('toggle');
-}
+const sheetRef = ref<HTMLElement | null>(null);
+
+// 04 A10：抽屉焦点链（打开聚焦 sheet 容器，Tab 圈闭，Esc 关闭并还原状态栏胶囊焦点）；
+// 打开瞬间做一次智能默认 tab（有传输看传输，无传输看队列，否则看完成）
+useModalFocus({
+  open: () => props.open,
+  containerRef: sheetRef,
+  autofocusSelector: '.transfer-sheet',
+  onEscape: () => emit('toggle')
+});
+
 watch(() => props.open, open => {
   if (open) {
-    window.addEventListener('keydown', onDrawerKeydown);
     activeTab.value = runningCount.value > 0 ? 'running' : pendingCount.value > 0 ? 'pending' : 'done';
-  } else {
-    window.removeEventListener('keydown', onDrawerKeydown);
   }
 });
-onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
 </script>
 
 <template>
@@ -104,7 +107,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
       ></div>
     </Transition>
     <Transition name="transfer-sheet">
-      <div v-if="open" class="transfer-sheet" role="dialog" aria-label="传输队列">
+      <div
+        v-if="open"
+        ref="sheetRef"
+        tabindex="-1"
+        class="transfer-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label="传输队列"
+      >
         <div class="transfer-sheet-head">
           <div class="transfer-sheet-title">
             <strong>传输队列</strong>
@@ -116,14 +127,22 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
               title="取消整批（剩余文件不再传输，进行中的文件中止并清理半截）"
               @click="cancelActiveDirBatch"
             >取消批次</button>
+            <button
+              v-if="activeTab === 'done' && completedTransfers.length"
+              type="button"
+              class="transfer-clear-done"
+              aria-label="清空已完成"
+              @click="filesStore.clearCompletedTransfers()"
+            >清空已完成</button>
           </div>
           <button
             class="transfer-sheet-close"
             type="button"
             title="收起"
+            aria-label="收起传输队列"
             @click="emit('toggle')"
           >
-            <ChevronDown :size="16" />
+            <ChevronDown :size="16" aria-hidden="true" />
           </button>
         </div>
 
@@ -248,6 +267,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
   border-block-start: 1px solid var(--app-border);
   border-radius: var(--radius-md) var(--radius-md) 0 0;
   box-shadow: var(--shadow-sheet);
+  outline: none;
 }
 
 .transfer-sheet-head {
@@ -284,7 +304,29 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
 .transfer-batch-cancel:hover {
   background: color-mix(in oklab, var(--warn), transparent 88%);
 }
+.transfer-batch-cancel:active {
+  background: color-mix(in oklab, var(--warn), transparent 78%);
+}
+.transfer-clear-done {
+  padding: 2px 8px;
+  font-size: var(--text-xs);
+  color: var(--app-muted);
+  background: transparent;
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
+}
+.transfer-clear-done:hover {
+  background: var(--app-hover);
+  border-color: var(--app-border-strong);
+  color: var(--app-strong);
+}
+.transfer-clear-done:active {
+  background: var(--app-active);
+}
 .transfer-sheet-close {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -297,9 +339,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
   border-radius: var(--radius-sm);
   transition: background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
 }
+.transfer-sheet-close::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+}
 .transfer-sheet-close:hover {
   background: var(--app-hover);
   color: var(--app-strong);
+}
+.transfer-sheet-close:active {
+  background: var(--app-active);
 }
 
 .transfer-sheet-body {
@@ -426,6 +476,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
   flex: 0 0 auto;
 }
 .transfer-row-action {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -438,9 +489,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKeydown));
   cursor: pointer;
   transition: background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
 }
+.transfer-row-action::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+}
 .transfer-row-action:hover {
   background: var(--app-hover);
   color: var(--app-strong);
+}
+.transfer-row-action:active {
+  background: var(--app-active);
 }
 .transfer-row.is-error .transfer-row-action:hover {
   color: var(--accent);

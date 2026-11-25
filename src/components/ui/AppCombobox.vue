@@ -28,11 +28,13 @@ const props = withDefaults(
     modelValue?: string;
     options?: ComboboxOption[];
     placeholder?: string;
+    disabled?: boolean;
   }>(),
   {
     modelValue: '',
     options: () => [],
-    placeholder: ''
+    placeholder: '',
+    disabled: false
   }
 );
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>();
@@ -76,6 +78,7 @@ watch(
 );
 
 function openMenu() {
+  if (props.disabled) return;
   open.value = true;
   activeIndex.value = -1;
 }
@@ -192,6 +195,7 @@ onBeforeUnmount(() => {
       role="combobox"
       :value="text"
       :placeholder="placeholder"
+      :disabled="disabled"
       :aria-expanded="open"
       aria-autocomplete="list"
       :aria-controls="menuId"
@@ -217,6 +221,7 @@ onBeforeUnmount(() => {
         role="listbox"
         @click.prevent.stop
       >
+        <li v-if="!filtered.length && !showCreateRow" class="app-combobox-empty" role="presentation">暂无可选项</li>
         <li
           v-for="(opt, i) in filtered"
           :key="opt.value"
@@ -280,6 +285,10 @@ onBeforeUnmount(() => {
   border-color: var(--accent);
   box-shadow: var(--focus-ring);
 }
+.app-combobox-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
 .app-combobox-caret {
   position: absolute;
@@ -324,6 +333,15 @@ onBeforeUnmount(() => {
 .app-combobox-option:hover,
 .app-combobox-option.is-active {
   background: var(--app-hover);
+}
+.app-combobox-option:active {
+  background: var(--app-active);
+}
+.app-combobox-empty {
+  padding: 6px 10px;
+  font-size: var(--text-xs);
+  color: var(--app-muted);
+  text-align: center;
 }
 .app-combobox-option.is-selected {
   color: var(--accent);

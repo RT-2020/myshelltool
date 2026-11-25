@@ -12,7 +12,7 @@
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { storeToRefs } from 'pinia';
-import { PanelLeft, FolderOpen } from 'lucide-vue-next';
+import { AlertCircle, PanelLeft, FolderOpen, FolderPlus, Upload, RefreshCw } from 'lucide-vue-next';
 import { useFilesStore } from '@/stores/files';
 import { useUiStore } from '@/stores/ui';
 import { useEditorStore } from '@/stores/editor';
@@ -112,6 +112,7 @@ async function triggerDirectoryUpload() {
 // onDragDropEvent，而不是元素上的 @drop）。事件是窗口级的：拖入任意区域
 // （含终端）都会走上传，与旧「整面 dropzone」语义略有扩大但符合拖入意图。
 const dragging = ref(false);
+const draggingBlocked = ref(false);
 let unlistenOsDrag: (() => void) | null = null;
 
 onMounted(async () => {
@@ -122,12 +123,23 @@ onMounted(async () => {
   unlistenOsDrag = await win.onDragDropEvent(event => {
     const payload = event.payload as { type: string; paths?: string[] };
     if (payload.type === 'enter') {
-      if (!remoteBusy.value) dragging.value = true;
+      if (remoteBusy.value) {
+        dragging.value = false;
+        draggingBlocked.value = true;
+      } else {
+        draggingBlocked.value = false;
+        dragging.value = true;
+      }
     } else if (payload.type === 'leave') {
       dragging.value = false;
+      draggingBlocked.value = false;
     } else if (payload.type === 'drop') {
       dragging.value = false;
-      if (remoteBusy.value) return;
+      draggingBlocked.value = false;
+      if (remoteBusy.value) {
+        uiStore.notify('传输进行中，请在完成后再拖入上传', { level: 'warn' });
+        return;
+      }
       // 目录过滤（含跳过提示）在 store 侧经 fs_local_stat 统一完成
       const paths = (payload.paths || []).filter(Boolean);
       if (paths.length) filesStore.uploadLocalPaths(paths);
@@ -385,13 +397,13 @@ const contextMenuItems = computed<FileMenuItem[]>(() => {
       </div>
       <div class="file-actions">
         <button class="icon-btn" type="button" title="新建目录" aria-label="新建目录" :disabled="remoteBusy" @click="uiStore.modal = ({ type: 'mkdir', entry: null } as ModalState)">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M3 7a2 2 0 012-2h3l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/><path d="M12 11v5M9.5 13.5h5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <FolderPlus :size="15" aria-hidden="true" />
         </button>
         <button class="icon-btn" type="button" title="上传文件" aria-label="上传文件到当前远程目录" :disabled="remoteBusy" @click="triggerFileUpload">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 9l5-5 5 5M12 4v12" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <Upload :size="15" aria-hidden="true" />
         </button>
         <button class="icon-btn" type="button" title="刷新" aria-label="刷新远程目录" :disabled="remoteBusy" @click="filesStore.refreshRemoteFiles()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M21 12a9 9 0 11-3-6.7M21 4v5h-5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <RefreshCw :size="15" aria-hidden="true" />
         </button>
       </div>
     </header>
@@ -432,12 +444,13 @@ const contextMenuItems = computed<FileMenuItem[]>(() => {
     <UploadProgressStrip />
 
     <!-- ============ 拖拽上传视觉提示（app.css L770-785）============ -->
-    <!-- dragging 时整面 accent 虚线 + 浮层提示目标路径；无拖拽时不渲染常驻提示 -->
-    <div v-if="dragging" class="drag-overlay">
+    <!-- dragging 时整面 accent 虚线 + 浮层提示目标路径；remoteBusy 拖入点亮 warn 禁态（04 A8）-->
+    <div v-if="dragging || draggingBlocked" class="drag-overlay" :class="{ 'is-blocked': draggingBlocked }">
       <div class="drag-overlay-inner">
-        <FolderOpen :size="28" />
-        <strong>松开以上传到当前远程目录</strong>
-        <span class="drag-overlay-sub">{{ filesStore.remotePath || '/' }}</span>
+        <AlertCircle v-if="draggingBlocked" :size="28" aria-hidden="true" />
+        <FolderOpen v-else :size="28" aria-hidden="true" />
+        <strong>{{ draggingBlocked ? '传输进行中，完成后再拖入' : '松开以上传到当前远程目录' }}</strong>
+        <span class="drag-overlay-sub">{{ draggingBlocked ? (filesStore.remoteBusyMessage || '请等待当前传输结束') : (filesStore.remotePath || '/') }}</span>
       </div>
     </div>
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, watch } from 'vue';
-import { AlertTriangle, MonitorOff } from 'lucide-vue-next';
+import { AlertTriangle, MonitorOff, Pause } from 'lucide-vue-next';
 import { useResourceMonitorStore } from '@/stores/resourceMonitor';
 import { useSessionsStore } from '@/stores/sessions';
 import CpuChart from './CpuChart.vue';
@@ -15,24 +15,25 @@ watch(
   () => sessions.activeSessionId,
   async (newId, oldId) => {
     if (oldId && oldId !== newId) {
-      await rm.stop().catch(() => {});
+      await rm.stop().catch(() => { /* 切换会话前停止旧采样，面板通过 rm.error 展示异常 */ });
     }
     if (newId) {
-      await rm.start(newId).catch(() => {});
+      await rm.start(newId).catch(() => { /* 启动失败由 rm.error 写入面板状态 */ });
     } else {
-      await rm.stop().catch(() => {});
+      await rm.stop().catch(() => { /* 无活跃会话时停止残留采样 */ });
     }
   },
   { immediate: false }
 );
 
 onBeforeUnmount(() => {
-  rm.stop().catch(() => {});
+  rm.stop().catch(() => { /* 组件卸载阶段停采无需打断用户 */ });
 });
 
 const placeholder = computed(() => {
   if (!rm.isDesktopRuntime) return 'desktop-required';
   if (!sessions.activeSessionId) return 'no-session';
+  if (rm.paused) return 'paused';
   // 后端推送的采样失败（resource-monitor-error）：比前端调用失败更具体，优先展示
   if (rm.monitorError) return 'monitor-error';
   if (rm.error && !rm.snapshot) return 'error';
@@ -53,36 +54,42 @@ const hasData = computed(() => Boolean(rm.snapshot));
 // 例外：monitor-error 时若已有快照，保留最后一份真实数据供参照（横幅解释原因）。
 const showGrid = computed(() => {
   if (!placeholder.value) return true;
+  if (placeholder.value === 'paused' && hasData.value) return true;
   return placeholder.value === 'monitor-error' && hasData.value;
 });
 
 async function onRetry() {
-  await rm.retry().catch(() => {});
+  await rm.retry().catch(() => { /* 重试失败已由 rm.error / rm.monitorError 在横幅呈示 */ });
 }
 </script>
 
 <template>
   <section class="rs-section rm-section" data-region="resource-monitor">
-    <div v-if="placeholder === 'monitor-error'" class="rm-error-banner" role="alert">
-      <AlertTriangle :size="14" />
+    <div v-if="placeholder === 'paused'" class="rm-paused-banner" role="status">
+      <Pause :size="14" aria-hidden="true" />
+      <span>{{ hasData ? '采样已暂停 · 保留最后采样快照' : '采样已暂停' }}</span>
+    </div>
+
+    <div v-else-if="placeholder === 'monitor-error'" class="rm-error-banner" role="alert">
+      <AlertTriangle :size="14" aria-hidden="true" />
       <div class="rm-error-body">
         <span class="rm-error-title">资源监控不可用</span>
-        <span class="rm-error-msg">{{ rm.monitorError }}</span>
+        <span class="rm-error-msg" :title="rm.monitorError || ''">{{ rm.monitorError }}</span>
       </div>
       <button type="button" class="rm-retry-btn" @click="onRetry">重试</button>
     </div>
 
     <div v-else-if="placeholder === 'error'" class="rm-error-banner" role="alert">
-      <AlertTriangle :size="14" />
+      <AlertTriangle :size="14" aria-hidden="true" />
       <div class="rm-error-body">
         <span class="rm-error-title">监控异常</span>
-        <span class="rm-error-msg">{{ rm.error }}</span>
+        <span class="rm-error-msg" :title="rm.error || ''">{{ rm.error }}</span>
       </div>
       <button type="button" class="rm-retry-btn" @click="onRetry">重试</button>
     </div>
 
     <div v-else-if="placeholder" class="rs-empty-banner">
-      <MonitorOff />
+      <MonitorOff aria-hidden="true" />
       <span>{{ emptyText }}</span>
     </div>
 
@@ -131,18 +138,17 @@ async function onRetry() {
   border-bottom: 1px solid var(--app-border-soft);
 }
 
-.rs-section-head {
+.rm-paused-banner {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--space-2);
   margin-bottom: var(--space-3);
-}
-
-.rs-section-title {
-  color: var(--app-subtle);
-  font: 500 10px var(--font-mono);
-  letter-spacing: 0.08em;
+  padding: 8px 10px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-sm);
+  background: var(--app-panel-2);
+  color: var(--app-muted);
+  font: 11px/1.4 var(--font-display);
 }
 
 .rm-error-banner {
@@ -179,11 +185,13 @@ async function onRetry() {
 }
 
 .rm-error-msg {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--app-muted);
-  font: 10.5px var(--font-mono);
+  font: 10.5px/1.4 var(--font-mono);
+  overflow-wrap: anywhere;
 }
 
 .rm-retry-btn {
@@ -203,22 +211,13 @@ async function onRetry() {
   color: var(--app-strong);
 }
 
+.rm-retry-btn:active {
+  background: var(--app-active);
+}
+
 .rm-retry-btn:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
-}
-
-.rs-empty-banner {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin-bottom: var(--space-3);
-  padding: 8px 10px;
-  border: 1px dashed var(--app-border-strong);
-  border-radius: var(--radius-sm);
-  background: var(--app-panel-2);
-  color: var(--app-subtle);
-  font: 11px var(--font-display);
 }
 
 // 降级轻提示（快照 degraded，如磁盘数据不可用）：非错误，指标继续展示
@@ -232,16 +231,9 @@ async function onRetry() {
   font: 10.5px var(--font-display);
 }
 
-.rs-empty-banner svg {
-  width: 14px;
-  height: 14px;
-  stroke-width: 1.6;
-  flex-shrink: 0;
-}
-
 // 纵排单列仪表带（参考 FinalShell 信息层级 × 本项目 token 纪律）：
 // 右栏窄（~280px），2×2 网格把曲线压到 ~120px 宽；单列让每张图全宽。
-// 区块不再各自带卡框——直接坐在右栏 panel 底上，hairline 分隔（见 .metric-row）。
+// 区块不再各自带卡框——直接坐在右栏 panel 底上，hairline 分隔（见下方 :deep(.metric-card)）。
 // head/读数/图高的样式回归各 Chart 组件自治，这里只管布局与分隔。
 .metric-grid {
   display: flex;
@@ -261,13 +253,5 @@ async function onRetry() {
 :deep(.metric-card:last-child) {
   border-bottom: none;
   padding-bottom: 2px;
-}
-
-:deep(.spark) {
-  height: 44px;
-}
-
-:deep(.spark.network) {
-  height: 48px;
 }
 </style>

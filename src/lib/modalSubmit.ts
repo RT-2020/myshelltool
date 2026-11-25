@@ -62,12 +62,10 @@ export interface ModalSubmitStore {
   resolveMcpApproval(requestId: string, accepted: boolean): void;
   resolveKeyboardPrompt(requestId: string, answers: string[]): void;
   reconnectSession(sessionId: string): Promise<unknown>;
-  closeTerminalSearchInline(): void;
   /** 绕过 closeModal 的 deny 路由直关弹窗（accept/确认后的三处直关共用）。 */
   closeDirect(): void;
   announce(message: string, opts: { level: string }): void;
   assets: readonly { id: string }[] | undefined;
-  terminalSearch: { query: string };
 }
 
 export interface ModalSubmitContext {
@@ -227,6 +225,10 @@ export async function dispatchModalSubmit(ctx: ModalSubmitContext, type: ModalSt
       modal.onConfirm?.();
       store.closeDirect();
       return;
+    case 'confirmBatchCloseTabs':
+      modal.onConfirm?.();
+      store.closeDirect();
+      return;
     case 'mcpApproval':
       store.resolveMcpApproval(ctx.mcpApprovalPrompt.value!.request_id, true);
       // 同 hostKeyVerify：closeModal 会路由 denyMcpApproval 补发 accepted:false
@@ -236,17 +238,6 @@ export async function dispatchModalSubmit(ctx: ModalSubmitContext, type: ModalSt
       store.resolveKeyboardPrompt(ctx.keyboardPrompt.value!.request_id, Object.values(ctx.keyboardResponses));
       ctx.closeModal();
       return;
-    case 'terminalSearch': {
-      // 事实备注：workbench store 未导出 executeTerminalSearch（迁移前即如此，运行时
-      // 该调用抛 TypeError 未捕获；该分支为兼容入口，正常运行流程不会进入）。按
-      // 「行为零变化」保留原调用语义（无条件调用，非可选链）。
-      const sessionId = modal.payload?.sessionId as string | undefined;
-      if (sessionId) {
-        (store as unknown as { executeTerminalSearch: (sessionId: string, query: string) => void })
-          .executeTerminalSearch(sessionId, store.terminalSearch.query);
-      }
-      return;
-    }
     case 'reauthPassword': {
       if (!ctx.reauthForm.password) {
         ctx.reauthForm.error = '请输入密码';

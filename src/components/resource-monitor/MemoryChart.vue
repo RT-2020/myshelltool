@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { CHART_H, CHART_W, buildAreaPath, buildLinePath, formatBytes } from './chart-utils';
+import { CHART_H, CHART_W, SAMPLE_WINDOW_LABEL, buildAreaPath, buildLinePath, formatBytes } from './chart-utils';
 
 const props = withDefaults(defineProps<{
   points?: number[];
@@ -27,10 +27,15 @@ const valueText = computed(() => {
   return usedPct.value.toFixed(1);
 });
 const capacityText = computed(() => (props.hasData ? `${formatBytes(props.memUsed)} / ${formatBytes(props.memTotal)}` : '暂无数据'));
+const cardTitle = computed(() =>
+  props.hasData && props.points.length
+    ? `${SAMPLE_WINDOW_LABEL} · 窗口峰值 ${Math.max(...props.points).toFixed(1)}%`
+    : SAMPLE_WINDOW_LABEL
+);
 </script>
 
 <template>
-  <article class="metric-card">
+  <article class="metric-card" :title="cardTitle">
     <div class="metric-head">
       <span class="metric-name">内存</span>
       <span class="metric-readout" :title="capacityText" :aria-label="capacityText">
@@ -91,7 +96,7 @@ const capacityText = computed(() => (props.hasData ? `${formatBytes(props.memUse
 }
 
 .metric-readout .unit {
-  color: var(--app-subtle);
+  color: var(--app-muted);
   font-size: 10.5px;
 }
 
@@ -129,5 +134,11 @@ const capacityText = computed(() => (props.hasData ? `${formatBytes(props.memUse
   font: 10px var(--font-mono);
   font-variant-numeric: tabular-nums;
   text-align: right;
+}
+.grid-line,
+.baseline,
+.line-empty,
+.line-data {
+  vector-effect: non-scaling-stroke;
 }
 </style>

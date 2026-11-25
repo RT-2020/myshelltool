@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue';
 import { Search, CornerDownLeft, ArrowUp, ArrowDown } from 'lucide-vue-next';
+import { useModalFocus } from '@/composables/useModalFocus';
+import { normalizeSessionStatus } from '@/lib/sessionStatus';
 import type { useSessionsStore } from '@/stores/sessions';
 
 /** 会话条目（sessions store 数组元素，按 store 类型推断）。 */
@@ -31,9 +33,17 @@ const emit = defineEmits<{
 }>();
 
 const query = ref('');
+const modalRef = ref<HTMLElement | null>(null);
 const inputRef = ref<HTMLInputElement | null>(null);
 const listRef = ref<HTMLUListElement | null>(null);
 const activeIdx = ref(0);
+
+useModalFocus({
+  open: () => props.open,
+  containerRef: modalRef,
+  autofocusSelector: '[data-modal-autofocus]',
+  onEscape: () => emit('close')
+});
 
 const ACTIONS = [
   { id: 'action:search', label: '搜索终端内容', hint: 'Ctrl+F', keywords: 'search find' },
@@ -64,11 +74,19 @@ function fuzzyMatch(text: string, q: string): number {
 const results = computed<PaletteItem[]>(() => {
   const items: PaletteItem[] = [];
   const q = query.value.trim();
-  // sessions
+  // sessions（状态词复用 sessionStatus 权威中文表，03 A13）
   for (const s of props.sessions) {
     const label = `会话: ${s.asset?.name || ''} (${s.asset?.host || ''})`;
     const score = fuzzyMatch((label + ' ' + (s.asset?.host || '')).trim(), q);
-    if (score > 0) items.push({ id: 'session:' + s.sessionId, label, hint: s.status, kind: 'session', _score: score });
+    if (score > 0) {
+      items.push({
+        id: 'session:' + s.sessionId,
+        label,
+        hint: normalizeSessionStatus(s.status).label,
+        kind: 'session',
+        _score: score
+      });
+    }
   }
   // actions
   for (const a of ACTIONS) {
@@ -79,11 +97,16 @@ const results = computed<PaletteItem[]>(() => {
   return items;
 });
 
+const activeOptionId = computed(() =>
+  results.value.length > 0 && activeIdx.value >= 0 && activeIdx.value < results.value.length
+    ? `palette-opt-${activeIdx.value}`
+    : undefined
+);
+
 watch(() => props.open, (v) => {
   if (v) {
     query.value = '';
     activeIdx.value = 0;
-    nextTick(() => inputRef.value?.focus());
   }
 });
 
@@ -130,37 +153,49 @@ function pick(item?: PaletteItem) {
   <Teleport to="body">
     <Transition name="palette">
       <div v-if="open" class="palette-overlay" @click.self="emit('close')">
-      <div class="palette-modal" role="dialog" aria-modal="true" aria-label="命令面板">
+      <div ref="modalRef" class="palette-modal" role="dialog" aria-modal="true" aria-label="命令面板">
         <div class="palette-input-wrap">
-          <Search :size="18" class="palette-search-icon" />
+          <Search :size="18" class="palette-search-icon" aria-hidden="true" />
           <input
             ref="inputRef"
             v-model="query"
             class="palette-input"
             type="text"
             placeholder="搜索会话或动作…"
+            aria-label="搜索会话或动作"
+            role="combobox"
+            aria-autocomplete="list"
+            :aria-expanded="results.length > 0"
+            :aria-controls="results.length ? 'palette-listbox' : undefined"
+            :aria-activedescendant="activeOptionId"
+            data-modal-autofocus
             spellcheck="false"
             @keydown="onKeydown"
           />
         </div>
-        <ul ref="listRef" class="palette-list" v-if="results.length">
+        <ul id="palette-listbox" ref="listRef" class="palette-list" role="listbox" aria-label="结果" v-if="results.length">
           <li
             v-for="(item, idx) in results"
             :key="item.id"
+            :id="`palette-opt-${idx}`"
+            role="option"
+            :aria-selected="idx === activeIdx"
             :class="['palette-item', { active: idx === activeIdx }]"
             @mouseenter="activeIdx = idx"
             @click="pick(item)"
           >
             <span class="palette-item-kind" :data-kind="item.kind">{{ item.kind === 'session' ? '会话' : '动作' }}</span>
             <span class="palette-item-label">{{ item.label }}</span>
-            <span v-if="item.hint" class="palette-item-hint">{{ item.hint }}</span>
-            <CornerDownLeft v-if="idx === activeIdx" :size="14" class="palette-item-enter" />
+            <span v-if="item.hint" :class="['palette-item-hint', { 'is-status': item.kind === 'session' }]">{{ item.hint }}</span>
+            <CornerDownLeft v-if="idx === activeIdx" :size="14" class="palette-item-enter" aria-hidden="true" />
           </li>
         </ul>
-        <div v-else class="palette-empty">无匹配项</div>
+        <div v-else class="palette-empty">
+          {{ query.trim() ? `没有匹配「${query.trim()}」——试试更短的关键词` : '暂无可用会话或动作' }}
+        </div>
         <footer class="palette-footer">
-          <span class="palette-hint"><ArrowUp :size="12" /><ArrowDown :size="12" /> 选择</span>
-          <span class="palette-hint"><CornerDownLeft :size="12" /> 执行</span>
+          <span class="palette-hint"><ArrowUp :size="12" aria-hidden="true" /><ArrowDown :size="12" aria-hidden="true" /> 选择</span>
+          <span class="palette-hint"><CornerDownLeft :size="12" aria-hidden="true" /> 执行</span>
           <span class="palette-hint">Esc 关闭</span>
         </footer>
       </div>
@@ -268,6 +303,10 @@ function pick(item?: PaletteItem) {
   background: color-mix(in oklab, var(--accent) 18%, transparent);
 }
 
+.palette-item:active {
+  background: color-mix(in oklab, var(--accent) 26%, transparent);
+}
+
 .palette-item-kind {
   font-size: 10px;
   padding: 2px 6px;
@@ -291,6 +330,10 @@ function pick(item?: PaletteItem) {
   font-size: var(--text-xs);
   color: var(--app-muted);
   font-family: var(--font-mono);
+}
+
+.palette-item-hint.is-status {
+  font-family: var(--font-body);
 }
 
 .palette-item-enter {

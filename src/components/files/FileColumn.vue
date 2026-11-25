@@ -65,10 +65,10 @@ const {
   manualRemotePathInput,
   manualLocalPathInput,
   selectedRemotePaths,
+  selectedRemoteEntries,
   // local-side refs
   localPath,
   localEntries,
-  localViewMode,
   selectedLocalPaths,
   remoteBusy,
   localBusy,
@@ -82,16 +82,6 @@ const columnTitle = computed(() => props.title || (props.kind === 'local' ? '本
 // Per-kind computed bindings
 // ============================================================
 const isLocal = computed(() => props.kind === 'local');
-
-const entries = computed(() => {
-  if (isLocal.value) {
-    // Local entries: respect current filter (apply same logic as remote sort/filter for parity)
-    const q = (localFilterQuery.value || '').trim().toLowerCase();
-    if (!q) return localEntries.value;
-    return localEntries.value.filter(e => e.name.toLowerCase().includes(q));
-  }
-  return sortedRemoteEntries.value;
-});
 
 const currentPath = computed(() => (isLocal.value ? localPath.value : remotePath.value));
 
@@ -282,9 +272,19 @@ let activeHover = false;
 function onColumnMouseEnter() { activeHover = true; }
 function onColumnMouseLeave() { activeHover = false; }
 function isColumnActive() {
-  // Active when hovered OR contains document.activeElement OR no other column has been hovered.
-  // Simple heuristic: hovered column wins.
-  return activeHover || columnRef.value?.contains(document.activeElement) || false;
+  // 04 A4：键盘焦点在列内时焦点列优先（避免悬停在邻列误抢 F2/Delete/Ctrl+A）
+  const activeCol = document.activeElement?.closest('.file-column');
+  if (activeCol) return activeCol === columnRef.value;
+  return activeHover;
+}
+
+function onRowSelectKey(entry: RemoteFileEntry, opts: { additive?: boolean; range?: boolean }) {
+  if (isBusy.value) return;
+  if (isLocal.value) {
+    filesStore.toggleLocalSelection(entry.path, opts);
+  } else {
+    filesStore.toggleRemoteSelection(entry.path, opts);
+  }
 }
 
 function triggerRename() {
@@ -313,11 +313,6 @@ function triggerDelete() {
     filesStore.removeRemote(selectedRemoteEntries.value[0]);
   }
 }
-
-// Importing the computed here would create a duplicate; rely on store helper.
-const selectedRemoteEntries = computed(() =>
-  remoteEntries.value.filter(e => selectedRemotePaths.value.has(e.path))
-);
 
 onMounted(() => {
   window.addEventListener('keydown', onKeydown);
@@ -430,6 +425,7 @@ function crumbClick(seg: { path: string }) {
       :disabled-hint="disabledHint"
       :current-path="currentPath"
       :remote-entries-length="remoteEntries.length"
+      :filter-text="filterValue"
       :remote-filter="remoteFilter"
       :remote-error="remoteError"
       :remote-loaded="remoteLoaded"
@@ -439,6 +435,8 @@ function crumbClick(seg: { path: string }) {
       @row-click="onRowClick"
       @row-double-click="onRowDblClick"
       @row-context-menu="onContextMenu"
+      @row-select-key="onRowSelectKey"
+      @clear-filter="clearFilter"
       @retry="filesStore.refreshRemoteFiles()"
       @drag-start="(count) => emit('drag-start', count)"
     />

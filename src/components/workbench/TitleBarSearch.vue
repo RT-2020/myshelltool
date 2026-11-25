@@ -18,7 +18,11 @@ const activeSearchIndex = ref(0);
 
 const searchState = computed(() => store.searchState || { open: false, query: '', suggestions: [] });
 const searchSuggestions = computed(() => searchState.value.suggestions || []);
-const searchOpen = computed(() => Boolean(searchState.value.open && searchSuggestions.value.length));
+const trimmedQuery = computed(() => String(searchState.value.query || '').trim());
+const searchOpen = computed(() => Boolean(searchState.value.open && (searchSuggestions.value.length > 0 || trimmedQuery.value.length > 0)));
+const activeOptionId = computed(() =>
+  searchOpen.value && searchSuggestions.value.length > 0 ? `tb-suggest-opt-${activeSearchIndex.value}` : undefined
+);
 
 watch(
   () => searchState.value.open,
@@ -81,6 +85,8 @@ function onSearchKeydown(event: KeyboardEvent) {
     data-no-drag="true"
     role="combobox"
     :aria-expanded="searchOpen ? 'true' : 'false'"
+    :aria-controls="searchOpen ? 'tb-search-listbox' : undefined"
+    :aria-activedescendant="activeOptionId"
     aria-label="全局搜索"
     @click="openSearch"
   >
@@ -109,9 +115,13 @@ function onSearchKeydown(event: KeyboardEvent) {
     </button>
     <kbd>Ctrl K</kbd>
     <Transition name="tb-suggest">
-      <ul v-if="searchOpen" class="tb-suggestions" role="listbox">
+      <ul v-if="searchOpen" id="tb-search-listbox" class="tb-suggestions" role="listbox">
+        <li v-if="searchSuggestions.length === 0" class="tb-suggest-empty" role="status">
+          未找到与「{{ trimmedQuery }}」匹配的结果，请尝试主机名、标签或用户名@地址快速连接
+        </li>
         <li
           v-for="(item, idx) in searchSuggestions"
+          :id="`tb-suggest-opt-${idx}`"
           :key="item.kind === 'asset' ? item.asset.id : `${item.kind}-${item.host}-${idx}`"
           :class="{ active: idx === activeSearchIndex }"
           role="option"

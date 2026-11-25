@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, onBeforeUnmount } from 'vue';
+import { ref } from 'vue';
 import { X } from 'lucide-vue-next';
+import { useModalFocus } from '@/composables/useModalFocus';
 
 const props = withDefaults(
   defineProps<{
@@ -18,70 +19,17 @@ const props = withDefaults(
 const emit = defineEmits<{ close: [] }>();
 
 const panelRef = ref<HTMLElement | null>(null);
-const lastFocus = ref<HTMLElement | null>(null);
 
 function close() {
   emit('close');
 }
 
-function onKeydown(e: KeyboardEvent) {
-  if (!props.open) return;
-  if (e.key === 'Escape') {
-    e.preventDefault();
-    close();
-    return;
-  }
-  if (e.key === 'Tab' && panelRef.value) {
-    const focusable = panelRef.value.querySelectorAll<HTMLElement>(
-      'a[href], area[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])'
-    );
-    if (focusable.length === 0) return;
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    const active = document.activeElement;
-    if (e.shiftKey) {
-      if (active === first || !panelRef.value.contains(active)) {
-        e.preventDefault();
-        last.focus();
-      }
-    } else {
-      if (active === last || !panelRef.value.contains(active)) {
-        e.preventDefault();
-        first.focus();
-      }
-    }
-  }
-}
-
 // 遮罩空白点击不关闭弹窗（防误触丢表单，与 GlobalModals 语义一致）：
 // 关闭只走右上角 × / 确认 / 取消按钮 + Esc。
-
-watch(
-  () => props.open,
-  (v) => {
-    if (v) {
-      // 打开时记住触发元素，关闭后还原焦点
-      lastFocus.value = document.activeElement as HTMLElement | null;
-      document.addEventListener('keydown', onKeydown);
-      nextTick(() => {
-        if (panelRef.value) {
-          const focusable = panelRef.value.querySelector<HTMLElement>(
-            'a[href], area[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])'
-          );
-          if (focusable) focusable.focus();
-        }
-      });
-    } else {
-      document.removeEventListener('keydown', onKeydown);
-      if (lastFocus.value && lastFocus.value.isConnected) {
-        lastFocus.value.focus();
-      }
-    }
-  }
-);
-
-onBeforeUnmount(() => {
-  document.removeEventListener('keydown', onKeydown);
+useModalFocus({
+  open: () => props.open,
+  containerRef: panelRef,
+  onEscape: close
 });
 </script>
 
@@ -92,6 +40,7 @@ onBeforeUnmount(() => {
         <div
           ref="panelRef"
           class="app-modal"
+          tabindex="-1"
           role="dialog"
           aria-modal="true"
           aria-labelledby="app-modal-title"
@@ -100,12 +49,18 @@ onBeforeUnmount(() => {
         >
           <div class="app-modal-header">
             <div class="app-modal-title" id="app-modal-title">{{ title }}</div>
-            <button class="app-modal-close" title="关闭 (Esc)" @click="close">
+            <button class="app-modal-close" type="button" data-modal-close title="关闭 (Esc)" aria-label="关闭 (Esc)" @click="close">
               <X :size="16" />
             </button>
           </div>
-          <div class="app-modal-body">
+          <div class="app-modal-body" data-modal-body>
             <slot />
+          </div>
+          <!-- footer 具名插槽出口（P0 修复，docs/设计/10 A1）：曾只有默认插槽，
+               SshImportDialog 写在 #footer 的「取消/导入」按钮从不渲染（导入主
+               操作不可达）。无 footer 传入时零 DOM 影响，既有消费方渲染不变。 -->
+          <div v-if="$slots.footer" class="app-modal-footer">
+            <slot name="footer" />
           </div>
         </div>
       </div>
@@ -135,7 +90,7 @@ onBeforeUnmount(() => {
   box-shadow: var(--app-shadow);
   display: flex;
   flex-direction: column;
-  max-height: calc(100vh - 80px);
+  max-height: calc(100vh - var(--space-20));
   overflow: hidden;
 }
 
@@ -169,10 +124,22 @@ onBeforeUnmount(() => {
   background: var(--app-hover);
   color: var(--app-strong);
 }
+.app-modal-close:active {
+  background: var(--app-active);
+}
 
 .app-modal-body {
   padding: var(--space-4);
   overflow: auto;
+}
+
+.app-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--app-border);
 }
 
 // —— 开合动效：backdrop fade + panel scale/fade（enter 200ms，leave 略快）——

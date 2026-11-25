@@ -21,13 +21,11 @@ export function modalTitleFor(
     case 'keyboardInteractive': return '键盘交互认证';
     case 'mcpApproval': return 'MCP 高危操作审批';
     case 'mcpPanel': return 'MCP 服务管理';
-    case 'syncPanel': return '资产同步（Gist）';
     case 'settings': return '设置';
     case 'mkdir': return '新建远程目录';
     case 'rename': return '重命名远程条目';
     case 'localMkdir': return '新建本地目录';
     case 'localRename': return '重命名本地条目';
-    case 'terminalSearch': return '终端搜索';
     case 'confirmDelete': return '删除连接资产';
     case 'confirmFileDelete': return '删除文件确认';
     case 'confirmFileOverwrite': return '同名文件已存在';
@@ -35,6 +33,7 @@ export function modalTitleFor(
     case 'createGroup': return '新建分组';
     case 'moveAsset': return '移动到分组';
     case 'confirmCloseAssetWindow': return '关闭独立窗口';
+    case 'confirmBatchCloseTabs': return '关闭多个终端会话';
     default: return '提示';
   }
 }

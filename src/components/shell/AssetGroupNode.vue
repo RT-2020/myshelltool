@@ -21,13 +21,13 @@
  *
  * 这样避免了递归 emit 层层透传，组件树更简洁。
  */
-import { inject } from 'vue';
+import { computed, inject } from 'vue';
 import { ChevronDown, ChevronRight, Pencil, Plus, Trash2 } from 'lucide-vue-next';
 import type { GroupTreeNode, NormalizedConnectionAsset } from '@/types/domain';
 
 defineOptions({ name: 'AssetGroupNode' });
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     /** 分组树节点（assets store buildGroupTree 的产物）。 */
     node: GroupTreeNode;
@@ -35,6 +35,9 @@ withDefaults(
   }>(),
   { depth: 0 }
 );
+
+// 缩进显式深度封顶（02 #8）：防止深嵌套分组把资产名称区挤至不可读
+const clampedDepth = computed(() => Math.min(props.depth, 6));
 
 /**
  * 父级 ConnectionSidebar provide('connectionSidebar', ...) 的注入契约。
@@ -44,6 +47,7 @@ interface SidebarContext {
   isCollapsed(path: string): boolean;
   toggleGroup(path: string): void;
   statusClass(asset: NormalizedConnectionAsset): string;
+  statusLabel(asset: NormalizedConnectionAsset): string;
   isActiveAsset(asset: NormalizedConnectionAsset): boolean;
   isUngrouped(path: string): boolean;
   isDraggingAsset(id: string): boolean;
@@ -59,6 +63,7 @@ interface SidebarContext {
   onSelectAsset(id: string): void;
   onConnectAsset(id: string): void;
   onAssetKeydown(event: KeyboardEvent, asset: NormalizedConnectionAsset): void;
+  onGroupKeydown(event: KeyboardEvent, node: GroupTreeNode): void;
   onAssetContextMenu(event: MouseEvent, asset: NormalizedConnectionAsset): void;
   onGroupContextMenu(event: MouseEvent, path: string): void;
   onEditAsset(asset: NormalizedConnectionAsset): void;
@@ -66,18 +71,14 @@ interface SidebarContext {
   onDuplicateAsset(asset: NormalizedConnectionAsset): void;
   /** 分组头悬停「+」：在该分组内快捷新增资产（打开预填分组的资产编辑器）。 */
   onAddAssetToGroup(path: string): void;
-  registerAssetEl(id: string, el: unknown): void;
+  registerTreeEl(key: string, el: unknown): void;
 }
 
 // 父级注入的 handler / state（见上方注释清单）；递归渲染必在 ConnectionSidebar 内，必已 provide
 const sidebar = inject<SidebarContext>('connectionSidebar')!;
 
-function assetIndicatorClasses(asset: NormalizedConnectionAsset) {
-  // 返回全局 .dot 修饰符集（_utilities.scss）：connected / warn / idle
-  const status = sidebar.statusClass(asset);
-  if (status === 'running') return ['connected'];
-  if (status === 'warn') return ['warn'];
-  return ['idle'];
+function rowSummary(asset: NormalizedConnectionAsset): string {
+  return `${sidebar.statusLabel(asset)} · ${asset.name} · ${asset.host} · ${asset.username}`;
 }
 </script>
 
@@ -85,13 +86,17 @@ function assetIndicatorClasses(asset: NormalizedConnectionAsset) {
   <div class="sb-group group-node">
     <div class="sb-group-head-row group-head-row">
       <button
+        :ref="el => sidebar.registerTreeEl('group:' + node.path, el)"
         type="button"
         class="sb-group-head group-header"
         :class="sidebar.groupHeaderClass(node.path)"
-        :style="{ 'padding-inline-start': 8 + depth * 12 + 'px' }"
+        :style="{ 'padding-inline-start': 8 + clampedDepth * 12 + 'px' }"
+        role="treeitem"
         :aria-expanded="!sidebar.isCollapsed(node.path) ? 'true' : 'false'"
+        :aria-label="`${node.name}（${node.items.length + node.children.length} 项）`"
         :draggable="!sidebar.isUngrouped(node.path) ? 'true' : 'false'"
         @click="sidebar.toggleGroup(node.path)"
+        @keydown="sidebar.onGroupKeydown($event, node)"
         @contextmenu.prevent="sidebar.onGroupContextMenu($event, node.path)"
         @dragstart="sidebar.onGroupDragStart($event, node.path, node.parent)"
         @dragend="sidebar.onGroupDragEnd($event)"
@@ -136,15 +141,16 @@ function assetIndicatorClasses(asset: NormalizedConnectionAsset) {
         <li
           v-for="asset in node.items"
           :key="asset.id"
-          :ref="el => sidebar.registerAssetEl(asset.id, el)"
+          :ref="el => sidebar.registerTreeEl('asset:' + asset.id, el)"
           class="sb-asset asset-node"
           :class="{ active: sidebar.isActiveAsset(asset), 'is-active': sidebar.isActiveAsset(asset), 'is-dragging': sidebar.isDraggingAsset(asset.id) }"
           role="treeitem"
           tabindex="0"
           draggable="true"
           :aria-selected="sidebar.isActiveAsset(asset) ? 'true' : 'false'"
-          :title="`${asset.name} · ${asset.host} · ${asset.username}`"
-          :style="{ 'padding-inline-start': 8 + depth * 12 + 'px' }"
+          :aria-label="rowSummary(asset)"
+          :title="rowSummary(asset)"
+          :style="{ 'padding-inline-start': 8 + clampedDepth * 12 + 'px' }"
           @click="sidebar.onSelectAsset(asset.id)"
           @dblclick="sidebar.onConnectAsset(asset.id)"
           @keydown="sidebar.onAssetKeydown($event, asset)"
@@ -152,8 +158,8 @@ function assetIndicatorClasses(asset: NormalizedConnectionAsset) {
           @dragstart="sidebar.onAssetDragStart($event, asset)"
           @dragend="sidebar.onAssetDragEnd($event)"
         >
-          <span class="sb-asset-indicator dot" :class="assetIndicatorClasses(asset)" aria-hidden="true"></span>
-          <div class="sb-asset-title asset-name" :title="asset.name">
+          <span class="sb-asset-indicator dot" :class="sidebar.statusClass(asset)" aria-hidden="true"></span>
+          <div class="sb-asset-title asset-name">
             {{ asset.name }}
             <!-- v0.22 网关资产徽标（tag=gateway：被 jump_host 引用的跳板网关，无终端） -->
             <span
@@ -387,17 +393,17 @@ function assetIndicatorClasses(asset: NormalizedConnectionAsset) {
   white-space: nowrap;
 }
 
-// v0.22 网关资产徽标：常驻占位（不参与 hover 显隐），纯绘制属性着色
+// v0.22 网关资产徽标：消费既有 token（02 #2，不再使用未定义的 --radius-xs / --app-faint）
 .asset-gateway-badge {
   display: inline-block;
-  margin-left: 4px;
-  padding: 0 4px;
-  border-radius: var(--radius-xs, 3px);
+  margin-left: var(--space-1);
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
   font-size: 10px;
   line-height: 14px;
-  color: var(--app-strong);
-  background: var(--app-faint, rgba(127, 127, 127, 0.15));
-  border: 1px solid var(--app-border, rgba(127, 127, 127, 0.35));
+  color: var(--app-muted);
+  background: var(--app-panel-2);
+  border: 1px solid var(--app-border);
 }
 
 .asset-trail {

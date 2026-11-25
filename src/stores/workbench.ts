@@ -487,10 +487,9 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   };
 });
 
+import { normalizeSessionStatus } from '@/lib/sessionStatus';
+
+/** @deprecated 优先直接从 `@/lib/sessionStatus` 导入 normalizeSessionStatus（02 #1）。 */
 export function normalizeStatus(status: string | null | undefined): { label: string; dotClass: string } {
-  // dotClass 不带前导空格（Vue class 绑定会自动处理空格），与
-  // ConnectionSidebar.vue 本地副本统一，避免两份实现漂移。
-  if (status === 'Connected' || status === 'connected') return { label: 'connected', dotClass: 'running' };
-  if (status === 'Warning' || status === 'warning') return { label: 'warning', dotClass: 'warn' };
-  return { label: 'idle', dotClass: '' };
+  return normalizeSessionStatus(status);
 }

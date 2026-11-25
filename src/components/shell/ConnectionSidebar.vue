@@ -23,25 +23,27 @@ import {
   PanelLeftOpen,
   Plus,
   Search,
-  Server,
   Zap
 } from 'lucide-vue-next';
 import AppContextMenu from '../ui/AppContextMenu.vue';
 import AssetGroupNode from './AssetGroupNode.vue';
+import AssetSidebarEmpty from './AssetSidebarEmpty.vue';
 import { useSessionsStore } from '@/stores/sessions';
-import { useWorkbenchStore, normalizeStatus } from '@/stores/workbench';
+import { useWorkbenchStore } from '@/stores/workbench';
+import { normalizeSessionStatus, pickDominantSessionStatus } from '@/lib/sessionStatus';
 import { openAssetWindow } from '@/lib/assetWindows';
 import { useAssetDnd } from '@/composables/useAssetDnd';
 import { useSidebarContextMenu } from '@/composables/useSidebarContextMenu';
 import { parseSshTarget } from '@/lib/parseSshTarget';
 import { errorMessage } from '@/lib/errorMessage';
-import type { GroupTreeNode, NormalizedConnectionAsset } from '@/types/domain';
+import type { AssetListResult, GroupTreeNode, NormalizedConnectionAsset } from '@/types/domain';
 
 const props = withDefaults(
   defineProps<{
     assets?: NormalizedConnectionAsset[];
     /** 分组树根（assets store buildGroupTree 的产物）。 */
     groupedAssets?: GroupTreeNode;
+    assetSource?: AssetListResult;
     selectedAssetId?: string;
     assetsCollapsed?: boolean;
     searchQuery?: string;
@@ -50,6 +52,7 @@ const props = withDefaults(
   {
     assets: () => [],
     groupedAssets: () => ({ name: '', path: '', parent: '', children: [], items: [] }),
+    assetSource: () => ({ source: 'loading', count: 0 }),
     selectedAssetId: '',
     assetsCollapsed: false,
     searchQuery: '',
@@ -91,31 +94,57 @@ const emit = defineEmits<{
 
 // ============================================================
 // 运行时连接态派生：session.status 是唯一权威源（sessions store 维护）。
-// 侧栏圆点不读 asset.status（连接流程中从不更新），而是查该 asset 是否有
-// connected/connecting 会话。无会话时回退 asset.status（编辑器初始值，通常 Idle → 灰点）。
+// 按资产 id 取最具代表性的真实会话状态（connecting/reconnecting/error/disconnected 均如实反映）；
+// 无会话时回退 asset.status（通常 Idle）。
 // ============================================================
 const sessionsStore = useSessionsStore();
 const workbench = useWorkbenchStore();
-const connectedAssetIds = computed(() => {
-  const set = new Set<string | undefined>();
+const runtimeStatusByAssetId = computed(() => {
+  const buckets = new Map<string, string[]>();
   for (const session of sessionsStore.sessions) {
-    if (session.status === 'connected' || session.status === 'connecting') {
-      set.add(session.asset?.id);
-    }
+    const id = session.asset?.id;
+    if (!id) continue;
+    const list = buckets.get(id) || [];
+    list.push(session.status);
+    buckets.set(id, list);
   }
-  return set;
+  const map = new Map<string, string>();
+  for (const [id, list] of buckets) {
+    const dom = pickDominantSessionStatus(list);
+    if (dom) map.set(id, dom);
+  }
+  return map;
 });
 
 // ============================================================
-// 折叠态：按完整 path 存储（嵌套下同名子分组需区分）。
+// 折叠态：按完整 path 存储并持久化至 localStorage（02 OQ6）。
 // ============================================================
-const collapsedGroups = ref(new Set<string>());
+const COLLAPSED_STORAGE_KEY = 'myshelltool:sidebar-collapsed-groups:v1';
+function loadCollapsedGroups(): Set<string> {
+  try {
+    if (typeof localStorage === 'undefined') return new Set();
+    const raw = localStorage.getItem(COLLAPSED_STORAGE_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed.filter(v => typeof v === 'string')) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+const collapsedGroups = ref<Set<string>>(loadCollapsedGroups());
 
 function toggleGroup(path: string) {
   const next = new Set(collapsedGroups.value);
   if (next.has(path)) next.delete(path);
   else next.add(path);
   collapsedGroups.value = next;
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify([...next]));
+    }
+  } catch {
+    // localStorage 写入失败不影响当次内存折叠切换
+  }
 }
 
 function isCollapsed(path: string) {
@@ -167,31 +196,47 @@ const hasResults = computed(() => {
   return (root.items?.length || 0) + (root.children?.length || 0) > 0;
 });
 const hasQuery = computed(() => (props.searchQuery || '').trim().length > 0);
+const emptyMode = computed<'unavailable' | 'empty' | 'no-match' | null>(() => {
+  if (!hasAssets.value) {
+    return props.assetSource?.source === 'unavailable' ? 'unavailable' : 'empty';
+  }
+  if (!hasResults.value && hasQuery.value) return 'no-match';
+  return null;
+});
 
-// 扁平化可见资产（跳过折叠分组），用于箭头键导航
-const flatAssets = computed(() => {
-  const out: NormalizedConnectionAsset[] = [];
-  walkTree(visibleTree.value, false, out);
+// 扁平化可见树节点键（含分组头与展开的资产项），供 ArrowUp/ArrowDown 遍历（02 #11c）
+const flatTreeKeys = computed(() => {
+  const out: string[] = [];
+  for (const child of (visibleTree.value.children || [])) {
+    collectTreeKeys(child, out);
+  }
   return out;
 });
 
-function walkTree(node: GroupTreeNode, parentCollapsed: boolean, out: NormalizedConnectionAsset[]) {
-  // 有搜索词时忽略折叠态（过滤树已剔除无关项，全部展开便于浏览）
-  const collapsed = hasQuery.value ? false : (parentCollapsed || collapsedGroups.value.has(node.path));
-  if (!collapsed) {
-    for (const item of (node.items || [])) out.push(item);
-  }
+function collectTreeKeys(node: GroupTreeNode, out: string[]) {
+  out.push(`group:${node.path}`);
+  const expanded = hasQuery.value || !collapsedGroups.value.has(node.path);
+  if (!expanded) return;
   for (const child of (node.children || [])) {
-    walkTree(child, collapsed, out);
+    collectTreeKeys(child, out);
+  }
+  for (const item of (node.items || [])) {
+    out.push(`asset:${item.id}`);
   }
 }
 
 // ============================================================
-// Status normalization — 复用 workbench 导出的 normalizeStatus。
+// Status normalization — 统一走 lib/sessionStatus 权威映射（02 #1）。
 // ============================================================
+function resolveAssetStatus(asset: NormalizedConnectionAsset) {
+  const runtime = runtimeStatusByAssetId.value.get(asset.id) ?? (asset.status || 'Idle');
+  return normalizeSessionStatus(runtime);
+}
 function statusClass(asset: NormalizedConnectionAsset) {
-  const runtimeStatus = connectedAssetIds.value.has(asset.id) ? 'connected' : (asset.status || 'Idle');
-  return normalizeStatus(runtimeStatus).dotClass;
+  return resolveAssetStatus(asset).dotClass;
+}
+function statusLabel(asset: NormalizedConnectionAsset) {
+  return resolveAssetStatus(asset).label;
 }
 
 function isActiveAsset(asset: NormalizedConnectionAsset) {
@@ -259,8 +304,24 @@ function onQuickConnectEnter() {
 }
 
 // ============================================================
-// Keyboard navigation — Up/Down 移动焦点，Enter 连接
+// Keyboard navigation — ArrowUp/Down 跨分组与资产移动，Enter 连接，ArrowLeft/Right 折叠（02 #11c）
 // ============================================================
+const treeElMap = ref(new Map<string, HTMLElement>());
+function registerTreeEl(key: string, el: unknown) {
+  if (el) treeElMap.value.set(key, el as HTMLElement);
+  else treeElMap.value.delete(key);
+}
+function focusTreeKey(key: string) {
+  const el = treeElMap.value.get(key);
+  if (el && typeof el.focus === 'function') el.focus();
+}
+function moveTreeFocus(currentKey: string, delta: 1 | -1) {
+  const idx = flatTreeKeys.value.indexOf(currentKey);
+  if (idx === -1) return;
+  const next = flatTreeKeys.value[idx + delta];
+  if (next) focusTreeKey(next);
+}
+
 function onAssetKeydown(event: KeyboardEvent, asset: NormalizedConnectionAsset) {
   if (event.key === 'Enter') {
     event.preventDefault();
@@ -269,22 +330,43 @@ function onAssetKeydown(event: KeyboardEvent, asset: NormalizedConnectionAsset) 
   }
   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
     event.preventDefault();
-    const idx = flatAssets.value.findIndex(item => item.id === asset.id);
-    if (idx === -1) return;
-    const delta = event.key === 'ArrowDown' ? 1 : -1;
-    const next = flatAssets.value[idx + delta];
-    if (next) {
-      const el = assetElMap.value.get(next.id);
-      if (el && typeof el.focus === 'function') el.focus();
-    }
+    moveTreeFocus(`asset:${asset.id}`, event.key === 'ArrowDown' ? 1 : -1);
+    return;
+  }
+  if (event.key === 'ArrowLeft' && asset.group) {
+    event.preventDefault();
+    focusTreeKey(`group:${asset.group}`);
   }
 }
 
-// DOM ref 映射（AssetGroupNode 通过 inject 调用 registerAssetEl）
-const assetElMap = ref(new Map<string, HTMLElement>());
-function registerAssetEl(id: string, el: unknown) {
-  if (el) assetElMap.value.set(id, el as HTMLElement);
-  else assetElMap.value.delete(id);
+function onGroupKeydown(event: KeyboardEvent, node: GroupTreeNode) {
+  const key = `group:${node.path}`;
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    moveTreeFocus(key, event.key === 'ArrowDown' ? 1 : -1);
+    return;
+  }
+  if (event.key === 'ArrowRight') {
+    event.preventDefault();
+    if (isCollapsed(node.path)) toggleGroup(node.path);
+    else moveTreeFocus(key, 1);
+    return;
+  }
+  if (event.key === 'ArrowLeft') {
+    event.preventDefault();
+    if (!isCollapsed(node.path)) toggleGroup(node.path);
+    else if (node.parent) focusTreeKey(`group:${node.parent}`);
+  }
+}
+
+// 折叠态 flyout 触发通告态（02 #11a：同步 aria-expanded 与 Esc 收起）
+const flyoutOpen = ref(false);
+function closeFlyoutOnEsc() {
+  flyoutOpen.value = false;
+  const active = document.activeElement as HTMLElement | null;
+  if (active && active.closest('.sb-flyout, .sb-rail-trigger')) {
+    active.blur();
+  }
 }
 
 // —— 右键菜单（useSidebarContextMenu，动作经回调接线 emit / openAssetWindow）——
@@ -298,6 +380,7 @@ const {
   onDeleteAsset: a => emit('delete-asset', a),
   onRenameGroup: path => emit('rename-group', path),
   onDissolveGroup: path => emit('dissolve-group', path),
+  onAddAssetToGroup: path => emit('create-asset-in-group', path),
   onCreateSubgroup: path => emit('create-group', path),
   openDetached: openAssetDetached
 });
@@ -311,6 +394,7 @@ provide('connectionSidebar', {
   isCollapsed,
   toggleGroup,
   statusClass,
+  statusLabel,
   isActiveAsset,
   isUngrouped: (path: string) => path === '未分组',
   // 拖拽态
@@ -327,13 +411,14 @@ provide('connectionSidebar', {
   onSelectAsset: (id: string) => emit('select-asset', id),
   onConnectAsset: (id: string) => emit('connect-asset', id),
   onAssetKeydown,
+  onGroupKeydown,
   onAssetContextMenu,
   onGroupContextMenu,
   onEditAsset: (asset: NormalizedConnectionAsset) => emit('edit-asset', asset),
   onDeleteAsset: (asset: NormalizedConnectionAsset) => emit('delete-asset', asset),
   onDuplicateAsset: (asset: NormalizedConnectionAsset) => emit('duplicate-asset', asset),
   onAddAssetToGroup: (path: string) => emit('create-asset-in-group', path),
-  registerAssetEl
+  registerTreeEl
 });
 </script>
 
@@ -343,7 +428,7 @@ provide('connectionSidebar', {
     <header class="sb-header">
       <div class="sb-title">
         <span class="chrome-label">连接资产</span>
-        <span class="sb-count" aria-label="已配置连接数">{{ assetsCount }}</span>
+        <span class="sb-count">{{ assetsCount }}<span class="sr-only"> 个已配置连接</span></span>
       </div>
       <div class="sb-actions">
         <button
@@ -388,8 +473,14 @@ provide('connectionSidebar', {
         type="button"
         class="icon-btn sb-rail-trigger"
         aria-haspopup="true"
+        :aria-expanded="flyoutOpen ? 'true' : 'false'"
         aria-label="资产菜单"
         title="资产菜单（悬停展开）"
+        @mouseenter="flyoutOpen = true"
+        @mouseleave="flyoutOpen = false"
+        @focus="flyoutOpen = true"
+        @blur="flyoutOpen = false"
+        @keydown.escape="closeFlyoutOnEsc"
       >
         <ListTree :size="16" />
       </button>
@@ -414,7 +505,12 @@ provide('connectionSidebar', {
     </div>
 
     <!-- 折叠态为 fixed 弹出面板（trigger hover/focus 弹出），展开态是普通布局行 -->
-    <div class="sb-flyout">
+    <div
+      class="sb-flyout"
+      @mouseenter="flyoutOpen = true"
+      @mouseleave="flyoutOpen = false"
+      @keydown.escape="closeFlyoutOnEsc"
+    >
     <!-- Search（app.html sb-search-wrap + sb-search-input） -->
     <div class="sb-search-wrap">
       <Search :size="13" class="sb-search-icon" aria-hidden="true" />
@@ -430,20 +526,13 @@ provide('connectionSidebar', {
 
     <!-- Tree（app.html sb-tree，滚动中段，递归分组树） -->
     <div class="sb-tree" role="tree" aria-label="连接资产列表">
-      <!-- Empty state: no assets at all（app.html sb-empty 虚线边框容器）-->
-      <div v-if="!hasAssets" class="sb-empty">
-        <div class="sb-empty-icon" aria-hidden="true">
-          <Server :size="22" />
-        </div>
-        <div class="sb-empty-title">尚未添加连接资产</div>
-        <div class="sb-empty-desc">新增连接后会按分组聚合到此处。按 <kbd>+</kbd> 快速添加。</div>
-        <button type="button" class="btn-primary" @click="emit('create-asset')">添加第一个连接</button>
-      </div>
-
-      <!-- No filter result state -->
-      <div v-else-if="!hasResults && hasQuery" class="sb-empty">
-        <div class="sb-empty-title">无匹配「{{ searchQuery }}」的连接</div>
-      </div>
+      <AssetSidebarEmpty
+        v-if="emptyMode"
+        :mode="emptyMode"
+        :search-query="searchQuery"
+        @create-asset="emit('create-asset')"
+        @clear-search="emit('update:searchQuery', '')"
+      />
 
       <!-- Asset tree：顶层每个子节点递归渲染 -->
       <template v-else>

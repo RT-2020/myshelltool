@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import { File as FileIcon, Folder, Link2, Loader2, AlertCircle, RefreshCw } from 'lucide-vue-next';
+import { formatBytes } from '@/lib/transferUtils';
+import { FILE_DRAG_MIME } from '@/lib/fileTypes';
 import {
   formatFileEntryOwner,
   formatFileEntryPermissions,
-  formatFileEntrySize,
   formatFileEntryTime,
   inferFileEntryType,
   FILE_COLUMN_GRID_ROW,
@@ -21,6 +22,7 @@ const props = withDefaults(defineProps<{
   disabledHint?: string;
   currentPath?: string;
   remoteEntriesLength?: number;
+  filterText?: string;
   remoteFilter?: string;
   remoteError?: string | null;
   remoteLoaded?: boolean;
@@ -33,6 +35,7 @@ const props = withDefaults(defineProps<{
   disabledHint: '',
   currentPath: '',
   remoteEntriesLength: 0,
+  filterText: '',
   remoteFilter: '',
   remoteError: '',
   remoteLoaded: false,
@@ -45,16 +48,76 @@ const emit = defineEmits<{
   'row-click': [event: MouseEvent, entry: RemoteFileEntry];
   'row-double-click': [entry: RemoteFileEntry];
   'row-context-menu': [event: MouseEvent, entry: RemoteFileEntry];
+  'row-select-key': [entry: RemoteFileEntry, opts: { additive?: boolean; range?: boolean }];
+  'clear-filter': [];
   retry: [];
   'drag-start': [count: number];
 }>();
+
+const listRef = ref<HTMLElement | null>(null);
+const focusedIndex = ref(0);
+
+watch(
+  () => props.entries.length,
+  (len) => {
+    if (len <= 0) focusedIndex.value = 0;
+    else if (focusedIndex.value >= len) focusedIndex.value = len - 1;
+  }
+);
+
+function focusRow(idx: number, entry: RemoteFileEntry, opts: { additive?: boolean; range?: boolean; select?: boolean } = {}) {
+  focusedIndex.value = idx;
+  if (opts.select) {
+    emit('row-select-key', entry, { additive: opts.additive, range: opts.range });
+  }
+  nextTick(() => {
+    const el = listRef.value?.querySelector<HTMLElement>(`[data-row-idx="${idx}"]`);
+    el?.focus();
+    el?.scrollIntoView({ block: 'nearest' });
+  });
+}
+
+function onRowKeydown(e: KeyboardEvent, idx: number, entry: RemoteFileEntry) {
+  if (props.isBusy || !props.entries.length) return;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    const nextIdx = Math.min(idx + 1, props.entries.length - 1);
+    focusRow(nextIdx, props.entries[nextIdx]!, { range: e.shiftKey, select: true });
+    return;
+  }
+  if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    const prevIdx = Math.max(idx - 1, 0);
+    focusRow(prevIdx, props.entries[prevIdx]!, { range: e.shiftKey, select: true });
+    return;
+  }
+  if (e.key === 'Home') {
+    e.preventDefault();
+    focusRow(0, props.entries[0]!, { range: e.shiftKey, select: true });
+    return;
+  }
+  if (e.key === 'End') {
+    e.preventDefault();
+    const lastIdx = props.entries.length - 1;
+    focusRow(lastIdx, props.entries[lastIdx]!, { range: e.shiftKey, select: true });
+    return;
+  }
+  if (e.key === ' ') {
+    e.preventDefault();
+    emit('row-select-key', entry, { additive: true });
+    return;
+  }
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    emit('row-double-click', entry);
+  }
+}
 
 // ============================================================
 // 栏间拖拽上传（本地 → 远程）：仅本地行可拖，dragstart 写自定义 MIME。
 // 与 ConnectionSidebar 的 DRAG_MIME 同模式；drop 侧判定在 FileSurface。
 // v0.18：常量上移 lib/fileTypes（单一事实源，EditorSurface 拖拽打开共用）。
 // ============================================================
-import { FILE_DRAG_MIME } from '@/lib/fileTypes';
 
 function onRowDragStart(event: DragEvent, entry: RemoteFileEntry) {
   if (!props.isLocal || !event.dataTransfer) return;
@@ -69,41 +132,46 @@ function onRowDragStart(event: DragEvent, entry: RemoteFileEntry) {
   emit('drag-start', payloadEntries.length);
 }
 
+const activeFilterText = computed(() => (props.filterText || props.remoteFilter || '').trim());
+
 // ============================================================
 // 空态四分支（远程侧，S2）：error → 加载失败+重试；未加载 → 尚未加载远程目录；
-// 加载过且空 → 该目录为空；有过滤词 → 无匹配。本地侧保留原逻辑。
+// 加载过且空 → 该目录为空；有过滤词 → 无匹配。本地侧同构支持过滤无匹配。
 // ============================================================
 const emptyTitle = computed(() => {
-  if (props.isLocal) return '尚未选择本地目录';
+  if (activeFilterText.value) return '无匹配';
+  if (props.isLocal) return props.currentPath ? '该目录为空' : '尚未选择本地目录';
   if (props.remoteError) return '加载失败';
   if (!props.remoteEntriesLength && !props.remoteLoaded) return '尚未加载远程目录';
-  if (!props.remoteEntriesLength) return '该目录为空';
-  if (props.remoteFilter) return '无匹配';
   return '该目录为空';
 });
 
 const emptyDesc = computed(() => {
+  if (activeFilterText.value) return `无匹配「${activeFilterText.value}」的条目`;
   if (props.isLocal) {
-    return props.disabledHint || (props.currentPath ? '该目录为空' : '点击刷新加载本地目录');
+    return props.disabledHint || (props.currentPath ? '' : '点击刷新加载本地目录');
   }
   if (props.remoteError) return props.remoteError;
   // 从未加载：空态不能是死胡同——说明「接下来会发生什么 / 该点哪里」
   if (!props.remoteEntriesLength && !props.remoteLoaded) {
     return props.currentPath ? '点击右上角刷新加载' : '连接会话后自动加载远程目录';
   }
-  if (props.remoteFilter) return '无匹配「' + props.remoteFilter + '」的条目';
   return '';
 });
 </script>
 
 <template>
   <div
+    ref="listRef"
     class="file-list file-column-list"
     :class="{ compact: listMode === 'compact' }"
+    role="listbox"
+    aria-multiselectable="true"
+    :aria-label="isLocal ? '本地文件列表' : '远程文件列表'"
     @click.self="emit('list-click')"
   >
     <div
-      v-for="entry in entries"
+      v-for="(entry, idx) in entries"
       :key="entry.path"
       class="file-row"
       :class="{
@@ -112,18 +180,24 @@ const emptyDesc = computed(() => {
         dir: entry.kind === 'directory',
         symlink: entry.kind === 'symlink'
       }"
+      role="option"
+      :aria-selected="selectionSet.has(entry.path) ? 'true' : 'false'"
+      :tabindex="idx === focusedIndex ? 0 : -1"
+      :data-row-idx="idx"
       :data-path="entry.path"
       :data-kind="entry.kind"
       :draggable="isLocal ? 'true' : 'false'"
+      @focus="focusedIndex = idx"
+      @keydown="onRowKeydown($event, idx, entry)"
       @dragstart="onRowDragStart($event, entry)"
-      @click="emit('row-click', $event, entry)"
+      @click="focusedIndex = idx; emit('row-click', $event, entry)"
       @dblclick="emit('row-double-click', entry)"
-      @contextmenu="emit('row-context-menu', $event, entry)"
+      @contextmenu="focusedIndex = idx; emit('row-context-menu', $event, entry)"
     >
       <span class="file-row-icon">
-        <Folder v-if="entry.kind === 'directory'" :size="14" />
-        <Link2 v-else-if="entry.kind === 'symlink'" :size="14" />
-        <FileIcon v-else :size="14" />
+        <Folder v-if="entry.kind === 'directory'" :size="14" aria-hidden="true" />
+        <Link2 v-else-if="entry.kind === 'symlink'" :size="14" aria-hidden="true" />
+        <FileIcon v-else :size="14" aria-hidden="true" />
       </span>
       <span class="col-name file-row-name" :title="entry.name">{{ entry.name }}</span>
       <template v-if="listMode === 'detailed'">
@@ -135,7 +209,7 @@ const emptyDesc = computed(() => {
           class="col-owner file-row-owner"
           :title="formatFileEntryOwner(entry)"
         >{{ formatFileEntryOwner(entry) }}</span>
-        <span class="col-size file-row-size">{{ formatFileEntrySize(entry.size) }}</span>
+        <span class="col-size file-row-size">{{ formatBytes(entry.size) }}</span>
         <span class="col-type file-row-type" :title="inferFileEntryType(entry)">
           {{ inferFileEntryType(entry) }}
         </span>
@@ -145,7 +219,7 @@ const emptyDesc = computed(() => {
 
     <div v-if="!entries.length" class="col-empty file-column-empty">
       <div class="col-empty-icon" aria-hidden="true">
-        <Folder v-if="isLocal" :size="22" />
+        <Folder v-if="isLocal && !activeFilterText" :size="22" />
         <AlertCircle v-else-if="remoteError" :size="22" />
         <FileIcon v-else :size="22" />
       </div>
@@ -157,8 +231,16 @@ const emptyDesc = computed(() => {
         type="button"
         @click="emit('retry')"
       >
-        <RefreshCw :size="12" />
+        <RefreshCw :size="12" aria-hidden="true" />
         <span>重试</span>
+      </button>
+      <button
+        v-else-if="activeFilterText"
+        class="empty-retry"
+        type="button"
+        @click="emit('clear-filter')"
+      >
+        <span>清除过滤</span>
       </button>
     </div>
 
@@ -251,6 +333,15 @@ const emptyDesc = computed(() => {
   background: var(--app-hover);
 }
 
+.file-row:active:not(.selected) {
+  background: var(--app-active);
+}
+
+.file-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .file-row.selected {
   background: var(--app-selected);
 }
@@ -311,6 +402,7 @@ const emptyDesc = computed(() => {
   font-size: var(--text-xs);
   color: var(--app-muted);
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   text-align: center;
 }
 
@@ -429,5 +521,8 @@ const emptyDesc = computed(() => {
   background: var(--app-hover);
   border-color: var(--accent);
   color: var(--accent);
+}
+.empty-retry:active {
+  background: var(--app-active);
 }
 </style>

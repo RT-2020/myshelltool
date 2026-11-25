@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { computed, reactive, ref } from 'vue';
+import { computed, reactive, ref, watch } from 'vue';
 import type {
   HostKeyVerifyPayload,
   KeyboardInteractivePayload,
@@ -127,7 +127,15 @@ export const useSessionsStore = defineStore('sessions', () => {
   // 行高（xterm lineHeight）：1.0 紧凑 ~ 2.0 宽松，默认 1.0；设置面板可调。
   const terminalLineHeight = ref(initTerminalLineHeight());
   const terminalSearch = ref<TerminalSearchState>({ open: false, query: '', direction: 'next', result: null });
-
+  // 是否曾在本应用生命周期内建过任意会话（03 A14：区分「首次打开」与「全部关闭后清空」）
+  const hasConnectedOnce = ref(false);
+  watch(
+    () => sessions.value.length,
+    (len) => {
+      if (len > 0) hasConnectedOnce.value = true;
+    },
+    { immediate: true }
+  );
   // 用于驱动终端主题更新（原 workbench.js:24，仅保留与终端主题相关的部分）
   const systemPrefersDark = ref(false);
 
@@ -418,6 +426,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     terminalFontSize,
     terminalLineHeight,
     terminalSearch,
+    hasConnectedOnce,
     dangerousPastePrompt,
     systemPrefersDark,
     // computed

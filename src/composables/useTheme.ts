@@ -63,20 +63,3 @@ export function startSystemThemeListener(onChange: (prefersDark: boolean) => voi
   }
   return () => {};
 }
-
-/**
- * Composable 形式（可选；Wave 2 useUiStore 会用）。
- * 返回响应式 theme ref + setTheme/applyTheme 方法。
- * 当前 workbench.js 不使用此 composable，保持 own state；此处仅为未来复用预置。
- */
-export function useTheme() {
-  // 占位：Wave 2 useUiStore 会用 pinia + ref + watch 实现；此处不引入 vue 依赖
-  // 避免 workbench.js 重复实例化导致的副作用。
-  return {
-    applyTheme,
-    readSystemPrefersDark,
-    startSystemThemeListener,
-    THEME_ORDER,
-    THEME_LABELS,
-  };
-}

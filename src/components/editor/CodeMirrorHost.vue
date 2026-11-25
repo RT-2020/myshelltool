@@ -40,7 +40,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'cursor', pos: { line: number; column: number; lines: number }): void;
   (e: 'save'): void;
-  (e: 'change', text: string): void;
+  (e: 'change', tabId: string, text: string): void;
 }>();
 
 const store = useEditorStore();
@@ -59,7 +59,7 @@ function themeExtension(dark: boolean): Extension {
   return [
     EditorView.theme(
       {
-        '&': { color: 'var(--app-text)', backgroundColor: 'var(--app-panel)', height: '100%', fontSize: '13px' },
+        '&': { color: 'var(--app-text)', backgroundColor: 'var(--app-panel)', height: '100%', fontSize: 'var(--text-sm)' },
         '.cm-scroller': {
           fontFamily: 'var(--font-mono, monospace)',
           lineHeight: '1.6'
@@ -116,11 +116,12 @@ function reportCursor(v: EditorView) {
 }
 
 function emitDebouncedChange(v: EditorView) {
-  // 300ms 去抖把全文快照交给上层（Markdown 分屏预览用；纯 UI 去抖）
+  // 300ms 去抖把全文快照交给上层（Markdown 分屏预览用；纯 UI 去抖；携带 tabId 防切 tab 串扰，05 A1）
   if (changeDebounceTimer) clearTimeout(changeDebounceTimer);
+  const tabId = props.tabId;
   changeDebounceTimer = setTimeout(() => {
     changeDebounceTimer = null;
-    if (view.value) emit('change', view.value.state.doc.toString());
+    if (view.value) emit('change', tabId, view.value.state.doc.toString());
   }, 300);
 }
 
@@ -267,6 +268,11 @@ defineExpose({ focus, gotoLine });
   height: 100%;
   min-height: 0;
   overflow: hidden;
+  transition: box-shadow var(--dur-fast) var(--ease-standard);
+
+  &:focus-within {
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 45%, transparent);
+  }
 
   :global(.cm-editor) {
     height: 100%;

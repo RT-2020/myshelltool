@@ -33,15 +33,19 @@ const { assets, declaredGroups } = storeToRefs(assetsStore);
 
 const editing = ref(false);
 const saving = ref(false);
+const confirmingClear = ref(false);
 const form = ref<ScopeForm>({ allowedGroups: [], allowedTags: '', deniedAssetIds: [], allowLocalFs: false });
 
 /** 后端权威 scope（loadMcpConfig 拉取；scope 为空对象 = 旧配置/未配置）。 */
-const scope = computed(() => mcpStore.config?.scope ?? null);
+const { config: mcpConfig, configLoadError } = storeToRefs(mcpStore);
+const scope = computed(() => mcpConfig.value?.scope ?? null);
+const scopeReadFailed = computed(() => Boolean(configLoadError.value && !scope.value));
 const restricted = computed(() =>
   Boolean(scope.value && (scope.value.allowedGroups?.length || scope.value.allowedTags?.length || scope.value.deniedAssetIds?.length)));
 const denyAll = computed(() => Boolean(scope.value?.denyAll));
 
 const summary = computed(() => {
+  if (scopeReadFailed.value) return '读取失败（无法确认是否受限，以服务端为准）';
   if (denyAll.value) return '全部拒绝（配置曾损坏，保存一次新范围即可恢复）';
   if (!restricted.value) {
     return scope.value?.allowLocalFs
@@ -80,6 +84,7 @@ function toggleIn(list: string[], value: string): string[] {
 }
 
 function startEdit() {
+  confirmingClear.value = false;
   form.value = {
     allowedGroups: [...(scope.value?.allowedGroups ?? [])],
     allowedTags: (scope.value?.allowedTags ?? []).join(', '),
@@ -103,6 +108,7 @@ async function save(clear = false) {
         };
     const config: unknown = await mcpStore.setScope(payload);
     if (config) {
+      confirmingClear.value = false;
       editing.value = false;
       store.announce(clear ? '已清空 MCP 授权范围（不限制）' : 'MCP 授权范围已保存（已建会话下次调用生效）', { level: 'success' });
     }
@@ -123,8 +129,23 @@ onMounted(() => {
       <ShieldCheck :size="13" class="chev" />
       <span class="s-label">授权范围</span>
       <span class="s-spacer" />
-      <span class="scope-summary" :class="{ 'is-deny': denyAll }">{{ summary }}</span>
-      <button v-if="!editing" type="button" class="icon-act" title="编辑授权范围" @click="startEdit">
+      <span class="scope-summary" :class="{ 'is-deny': denyAll || scopeReadFailed }" :title="summary">{{ summary }}</span>
+      <button
+        v-if="scopeReadFailed"
+        type="button"
+        class="icon-act"
+        aria-label="重试读取授权范围"
+        title="重试读取配置"
+        @click="mcpStore.loadMcpConfig()"
+      >重试</button>
+      <button
+        v-if="!editing"
+        type="button"
+        class="icon-act"
+        :aria-label="restricted ? '编辑授权范围' : '设置授权范围'"
+        title="编辑授权范围"
+        @click="startEdit"
+      >
         {{ restricted ? '编辑' : '设置…' }}
       </button>
     </div>
@@ -148,8 +169,9 @@ onMounted(() => {
 
       <!-- 允许的标签 -->
       <div class="field">
-        <span class="field-label">允许的标签（逗号分隔）</span>
+        <label for="mcp-scope-tags" class="field-label">允许的标签（逗号分隔）</label>
         <input
+          id="mcp-scope-tags"
           v-model="form.allowedTags"
           type="text"
           class="tag-input"
@@ -167,6 +189,7 @@ onMounted(() => {
             <span>{{ a.label }}</span>
           </label>
         </div>
+        <p v-else class="muted field-empty">尚无连接资产，添加资产后可在此勾选排除</p>
       </div>
 
       <!-- 本机 FS -->
@@ -176,9 +199,15 @@ onMounted(() => {
       </label>
 
       <div class="editor-actions">
-        <button type="button" class="text-btn" :disabled="saving" @click="save(true)">清空全部限制</button>
+        <template v-if="!confirmingClear">
+          <button type="button" class="text-btn" :disabled="saving" @click="confirmingClear = true">清空全部限制</button>
+        </template>
+        <template v-else>
+          <button type="button" class="danger-btn" :disabled="saving" @click="save(true)">确认清空？</button>
+          <button type="button" class="text-btn" :disabled="saving" @click="confirmingClear = false">取消</button>
+        </template>
         <span class="s-spacer" />
-        <button type="button" class="text-btn" :disabled="saving" @click="editing = false">取消</button>
+        <button type="button" class="text-btn" :disabled="saving" @click="editing = false; confirmingClear = false">取消</button>
         <button type="button" class="primary-btn" :disabled="saving" @click="save(false)">
           {{ saving ? '保存中…' : '保存' }}
         </button>
@@ -225,10 +254,11 @@ onMounted(() => {
   color: var(--accent);
   font: inherit;
   font-size: var(--text-xs);
-  padding: 2px 8px;
+  padding: 2px var(--space-2);
   cursor: pointer;
 }
 .icon-act:hover { background: var(--app-hover); }
+.icon-act:active { background: var(--app-active); }
 
 .scope-editor {
   display: flex;
@@ -256,7 +286,7 @@ onMounted(() => {
 }
 .field-empty {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--text-xs);
 }
 .check-list {
   display: flex;
@@ -290,7 +320,7 @@ onMounted(() => {
   color: inherit;
   font: inherit;
   font-size: var(--text-xs);
-  padding: 4px 8px;
+  padding: var(--space-1) var(--space-2);
 }
 .tag-input:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
@@ -305,23 +335,37 @@ onMounted(() => {
   color: var(--app-muted);
   font: inherit;
   font-size: var(--text-xs);
-  padding: 4px 8px;
+  padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-sm);
   cursor: pointer;
 }
 .text-btn:hover:not(:disabled) { color: var(--app-strong); background: var(--app-hover); }
+.text-btn:active:not(:disabled) { background: var(--app-active); }
 .text-btn:disabled { opacity: 0.5; cursor: default; }
 .primary-btn {
   border: none;
   background: var(--accent);
-  color: var(--accent-contrast, #fff);
+  color: var(--accent-on);
   font: inherit;
   font-size: var(--text-xs);
-  padding: 4px 14px;
+  padding: var(--space-1) 14px;
   border-radius: var(--radius-sm);
   cursor: pointer;
 }
 .primary-btn:hover:not(:disabled) { background: var(--accent-hover); }
+.primary-btn:active:not(:disabled) { background: var(--accent-active); }
 .primary-btn:disabled { opacity: 0.6; cursor: default; }
-.muted { color: var(--app-muted); }
+.danger-btn {
+  border: none;
+  background: var(--danger);
+  color: var(--accent-on);
+  font: inherit;
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.danger-btn:hover:not(:disabled) { background: color-mix(in oklab, var(--danger), black 10%); }
+.danger-btn:active:not(:disabled) { background: color-mix(in oklab, var(--danger), black 18%); }
+.danger-btn:disabled { opacity: 0.6; cursor: default; }
 </style>

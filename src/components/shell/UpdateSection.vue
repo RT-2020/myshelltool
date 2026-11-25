@@ -79,7 +79,9 @@ function onUpdateClick() {
       >
         <template v-if="updateState === 'available'">发现新版本 v{{ newVersion }}，点击下载并安装，完成后自动重启</template>
         <template v-else-if="updateState === 'downloading'">正在下载更新安装包（{{ downloadProgress }}%），请稍候…</template>
-        <template v-else-if="updateState === 'error'">检查或更新失败：{{ errorMessage || '网络连接失败或超时' }}</template>
+        <template v-else-if="updateState === 'error'">
+          检查更新未能完成（{{ errorMessage ? `原因：${errorMessage}` : '可能因网络中断或代理异常导致' }}）；当前版本功能不受影响，可点击「重试」或前往 GitHub 查看发布页。
+        </template>
         <template v-else-if="updateState === 'up_to_date'">当前已是最新版本 (v{{ appVersion }})</template>
         <template v-else>检查 GitHub releases 是否有新版本</template>
       </span>
@@ -101,40 +103,14 @@ function onUpdateClick() {
         </button>
       </div>
     </div>
-    <AppProgress v-if="updateState === 'downloading'" :value="downloadProgress > 0 ? downloadProgress : null" />
+    <AppProgress v-if="updateState === 'downloading'" :percent="downloadProgress" />
   </section>
 </template>
 
 <style scoped lang="scss">
 @use '@/styles/_tokens' as *;
 
-// 与 SettingsPanelContent / McpPanelContent 同视觉语言的 section 外框（scoped 不跨组件）
-.block {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-md, 8px);
-  background: var(--bg-elevated, var(--app-surface));
-}
-.block-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-secondary, var(--app-muted));
-}
-
-.update-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
+// .block / .block-head / .update-row / .link-action 已上收 _utilities.scss（07 A2）
 .update-hint {
   font-size: 12px;
   line-height: 1.5;
@@ -158,7 +134,7 @@ function onUpdateClick() {
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--text-secondary, var(--app-muted));
+  color: var(--app-muted);
 }
 // 行级渲染与限高滚动容器样式随模板拆至 ReleaseNotesBlock.vue（scoped 不跨组件）
 .release-notes-fallback {
@@ -167,23 +143,6 @@ function onUpdateClick() {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-}
-
-.link-action {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: none;
-  border: none;
-  padding: 0;
-  color: var(--accent);
-  cursor: pointer;
-  font: inherit;
-
-  &:hover {
-    color: var(--accent-hover);
-    text-decoration: underline;
-  }
 }
 
 .spin {

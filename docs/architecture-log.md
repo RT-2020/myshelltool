@@ -25,13 +25,15 @@
 - **On every ARCH-CHECK report (medium/high tier)**: append one row to the table below **immediately after the report is produced** 鈥?do not wait for session end (session boundaries are undefined in real AI harnesses and cause rows to be silently dropped). Low-tier changes produce no report and therefore no row.
 - **On a pure architecture session**: after restructuring, add a `RESET` row recording the new baseline.
 
-## Size limits (from AGENTS.md 搂璐ㄩ噺绾㈢嚎)
+## Size limits（已于 2026-11-25 取消）
 
-| Type | Soft warn | Hard limit |
+> ⚠️ 2026-11-25 变更：根据用户指示，取消前后端文件行数红线并移除 `npm run build` 中的 `lint:size` 门禁；模块拆分以职责内聚与可维护性为判据。下表仅作下方 2026-06-20 ~ 2026-09-18 历史条目的阈值参考：
+
+| Type | Historical soft warn | Historical hard limit |
 |---|---|---|
-| Vue SFC `.vue` | 300 | **500** |
-| Pinia store `.js` | 300 | **500** |
-| Rust module `.rs` | 400 | **800** |
+| Vue SFC `.vue` | 300 | 500 |
+| Pinia store `.js/.ts` | 300 | 500 |
+| Rust module `.rs` | 400 | 800 |
 
 ## Drift log
 
@@ -307,3 +309,13 @@ MCP server 原先仅具备单一 exec shell 通道，导致 AI 宿主无法浏�
 - **config 导入净化**（审查修订 P2-4）：`lib/sshImport.ts::sanitizeProxyJump`——逗号链（`j1,j2`）/`user@host` 跳过该字段 + 导入结果 warn 警示；jump_host 不支持逗号，链单一权威 = 资产嵌套。
 - 审查另出：验证按改动面走（前端仅纯函数层 → type-check，不跑 build 防 changelog 时间戳脏文件）；单跳保活假设自 P0-2 起从未真机验收（本笔验收单补）；连接数视角（N 跳 = N 条连接）入文档边界。
 - 验证：`test:core` 240/240（+7 jump_chain）、`cargo check`/`--tests` 0 错、type-check 过。**真机验收待做**：单跳回归 / 双跳（同机双 sshd 端口可构造）/ 环与超深报错 / 缺资产文案 / 断中间跳板（保活假设）/ 跳板不可达超时。
+
+## 2026-11-25 — 设计方案（00–10）P1/P2 全量实施与行数红线取消
+
+- **契机**：同步 `origin/master`（`v0.21.4`）后，对照 `docs/设计/`（`00` + `01–10` + `README`）全量落地剩余 44 项 P1 + 84 项 P2 整改，并按用户要求取消 500 行机械文件行数门禁（改按职责内聚度评估拆分）。
+- **主要结构调整**：
+  - **规则与脚本治理**：从 `package.json` 的 `build` 链、`AGENTS.md` 及 `.github/copilot-instructions.md` 移除 `lint:size` 机械门禁。
+  - **样式与基础 UI（`src/styles/`、`src/components/ui/`）**：新增 `_form-feedback.scss` 与 `--term-cursor` token；收敛 `_utilities.scss` 设置排版/禁用态/非交互 badge 规则；新增 `useModalFocus.ts` 焦点围栏；`ui/` 基础控件补全 `:active`、`aria-live`、`AppToastHost` 悬停/聚焦暂停消隐与同级折叠。
+  - **弹窗与壳层拆分**：从 `GlobalModals.vue` 拆出 `SecurityPromptContent.vue`、`KeyboardInteractiveContent.vue`，从 `WorkbenchShell.vue` 拆出 `WindowControls.vue`、`ThemeToggleButton.vue`，从 `ConnectionSidebar.vue` 拆出 `AssetSidebarEmpty.vue`；收窄 `ModalType`（移除死分支 `terminalSearch`/`syncPanel`）并新增批量关标签确认 `confirmBatchCloseTabs`。
+  - **状态与工具收敛**：新增 `src/lib/sessionStatus.ts` 统一状态归一化与主导状态判定；`resourceMonitor.ts` 增加 `paused`/`pause()`/`resume()`；`mcp.ts` 默认 `strict` 策略与错误 broadcast；`transferQueueOps.ts` 豁免 `error`/`cancelled` 自动裁剪并增加 `clearCompletedTransfers`；`formatBytes` 扩至 `GB` 档替换重复 `formatFileEntrySize`；`CodeMirrorHost.vue`/`EditorSurface.vue` 绑定 `tabId` 隔离切 tab 编辑态与预览态。
+- **验证**：`npm run test:ui`（5 套全部通过，含修复 `tests/ui-ipc-flows.mjs` `800×600` grid transition 稳定等待）、`npm run test:core`（243 passed）、`cargo check`（0 errors）及 `npm run build`（含 `lint:facts` / `check:ipc` / `lint:components` / `vue-tsc` / `vite build`）均通过；`npm run tauri:dev` 桌面真机手工走查未执行。

@@ -6,9 +6,9 @@
 // 不抽共享组件的判定：仅 2 处消费，且 settings 是稳定已发布组件，抽出须动其结构；
 // 两处注释互指登记此耦合（vibe-guard 判据 4：变更驱动一致但时机未到三处）。
 //
-// 另：.form-error / .native-input 原定义在 GlobalModals.modal.scss（scoped），子组件
-// 内部元素不带其 scope 属性、规则够不着——向导自 GatewayModals 模板抽成独立组件后
-// 这两类一直未被命中，此处就地补齐（缺口修复，非复制既有全局类）。
+// 另：.form-error / .native-input / .code-block 通过 @use '@/styles/_form-feedback'
+// 共享 mixin 就地补齐（10 A6，替代组件内三份复制）。
+@use '@/styles/_form-feedback' as *;
 
 // —— 面板骨架：左导航 + 右内容，撑满 modal-body（后者已 padding:0 + overflow:hidden） ——
 .gw-panel {
@@ -137,27 +137,7 @@
 }
 
 .code-block {
-  position: relative;
-  background: var(--app-panel-2);
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-3);
-  margin: var(--space-1) 0;
-
-  pre {
-    margin: 0;
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    white-space: pre-wrap;
-    word-break: break-all;
-    color: var(--app-text);
-  }
-
-  .link-btn {
-    position: absolute;
-    top: var(--space-1);
-    right: var(--space-1);
-  }
+  @include code-block-box;
 }
 
 .path-row {
@@ -189,31 +169,11 @@
   gap: var(--space-2);
 }
 
-// —— scoped 缺口补齐（见文件头注释）：对齐 GlobalModals.modal.scss 同名类视觉 ——
+// 共享表单错误 / 原生输入 mixin（10 A6）
 .form-error {
-  margin: 0;
-  padding: 8px 10px;
-  border: 1px solid color-mix(in oklab, var(--danger), transparent 50%);
-  border-radius: var(--radius-sm);
-  background: color-mix(in oklab, var(--danger), transparent 88%);
-  color: var(--danger);
-  font-size: var(--text-xs);
+  @include form-error-box;
 }
 
 .native-input {
-  width: 100%;
-  padding: 6px 10px;
-  background: var(--app-control);
-  color: var(--app-text);
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-sm);
-  font-size: var(--text-sm);
-  font-family: var(--font-body);
-  outline: none;
-  transition: border-color var(--dur-fast) var(--ease-standard),
-    box-shadow var(--dur-fast) var(--ease-standard);
-}
-.native-input:focus {
-  border-color: var(--accent);
-  box-shadow: var(--focus-ring);
+  @include native-input-control;
 }

@@ -10,9 +10,7 @@ import { ArrowUpDown, Gauge, ShieldCheck } from 'lucide-vue-next';
 import {
   transferConcurrency,
   setTransferConcurrency,
-  DEFAULT_CONCURRENCY,
-  MIN_CONCURRENCY,
-  MAX_CONCURRENCY
+  DEFAULT_CONCURRENCY
 } from '@/lib/transferConcurrency';
 
 const CONCURRENCY_LEVELS = [1, 2, 3, 4, 5] as const;
@@ -31,7 +29,7 @@ const hintText = computed(() => {
 
 <template>
   <div class="stack tab-pane">
-    <header class="page-title"><ArrowUpDown :size="15" />文件传输设置</header>
+    <header class="page-title"><ArrowUpDown :size="15" />传输</header>
     <p class="muted">配置目录上传与多文件传输的并发行为。更改即时生效并持久化保存。</p>
 
     <section class="block">
@@ -42,7 +40,8 @@ const hintText = computed(() => {
           :key="lvl"
           type="button"
           class="concurrency-card"
-          :class="{ active: transferConcurrency === lvl, isDefault: lvl === DEFAULT_CONCURRENCY }"
+          :class="{ active: transferConcurrency === lvl }"
+          :aria-pressed="transferConcurrency === lvl ? 'true' : 'false'"
           @click="setTransferConcurrency(lvl)"
         >
           <span class="level-num">{{ lvl }}</span>
@@ -101,15 +100,27 @@ const hintText = computed(() => {
     color var(--dur-fast) var(--ease-standard);
 
   &:hover {
-    border-color: var(--app-border-hover);
-    color: var(--app-fg);
+    border-color: var(--app-border-strong);
+    color: var(--app-strong);
+    background: var(--app-hover);
+  }
+  &:active {
+    background: var(--app-active);
+  }
+  &:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
   }
 
   &.active {
-    border-color: var(--color-primary);
-    background: var(--color-primary-subtle);
-    color: var(--color-primary);
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent) inset;
     font-weight: 500;
+  }
+  &.active:focus-visible {
+    box-shadow: 0 0 0 1px var(--accent) inset, var(--focus-ring);
   }
 }
 
@@ -145,12 +156,12 @@ const hintText = computed(() => {
     line-height: 1.5;
 
     strong {
-      color: var(--app-fg);
+      color: var(--app-strong);
     }
   }
 
   .bullet {
-    color: var(--color-primary);
+    color: var(--accent);
   }
 }
 </style>

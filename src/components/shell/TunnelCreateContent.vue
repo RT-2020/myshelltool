@@ -23,28 +23,28 @@ const tunnelKindOptions = [
 
 <template>
   <div class="stack">
-    <label class="stack"><span>名称</span>
+    <label class="stack"><span class="muted">名称</span>
       <AppInput :model-value="form.name" id="tunnelName" placeholder="mysql-local"
         @update:model-value="v => form.name = v" />
     </label>
-    <label class="stack"><span>类型</span>
+    <label class="stack"><span class="muted">类型</span>
       <AppSelect :model-value="form.kind" :options="tunnelKindOptions"
         @update:model-value="v => form.kind = v" />
     </label>
-    <label class="stack"><span>本地地址</span>
+    <label class="stack"><span class="muted">本地地址</span>
       <AppInput :model-value="form.local_addr" id="tunnelLocalAddr"
         @update:model-value="v => form.local_addr = v" />
     </label>
-    <label class="stack"><span>本地端口</span>
+    <label class="stack"><span class="muted">本地端口</span>
       <AppInput :model-value="form.local_port" id="tunnelLocalPort" type="number" placeholder="13306"
         @update:model-value="v => form.local_port = v" />
     </label>
-    <div v-if="form.kind !== 'dynamic'" id="tunnelRemoteFields">
-      <label class="stack"><span>远程地址</span>
+    <div v-if="form.kind !== 'dynamic'" id="tunnelRemoteFields" class="stack">
+      <label class="stack"><span class="muted">远程地址</span>
         <AppInput :model-value="form.remote_addr" id="tunnelRemoteAddr" placeholder="10.10.9.32"
           @update:model-value="v => form.remote_addr = v" />
       </label>
-      <label class="stack"><span>远程端口</span>
+      <label class="stack"><span class="muted">远程端口</span>
         <AppInput :model-value="form.remote_port" id="tunnelRemotePort" type="number" placeholder="3306"
           @update:model-value="v => form.remote_port = v" />
       </label>

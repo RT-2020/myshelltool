@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { CHART_H, CHART_W, buildAreaPath, buildLinePath, formatRate } from './chart-utils';
+import { CHART_H, CHART_W, SAMPLE_WINDOW_LABEL, buildAreaPath, buildLinePath, formatRate } from './chart-utils';
 
 const props = withDefaults(defineProps<{
   rxPoints?: number[];
@@ -28,10 +28,15 @@ const rxArea = computed(() => buildAreaPath(rxPath.value));
 const rxText = computed(() => (props.hasData ? formatRate(props.rxRate) : '—'));
 const txText = computed(() => (props.hasData ? formatRate(props.txRate) : '—'));
 const detailText = computed(() => (props.hasData ? `接收 ${formatRate(props.rxRate)} · 发送 ${formatRate(props.txRate)}` : '暂无数据'));
+const cardTitle = computed(() =>
+  props.hasData && (props.rxPoints.length || props.txPoints.length)
+    ? `${SAMPLE_WINDOW_LABEL} · 峰值 RX ${formatRate(Math.max(0, ...props.rxPoints))} / TX ${formatRate(Math.max(0, ...props.txPoints))}`
+    : SAMPLE_WINDOW_LABEL
+);
 </script>
 
 <template>
-  <article class="metric-card">
+  <article class="metric-card" :title="cardTitle">
     <!-- 读数行兼任图例：↓接收（info 实线+面积）/ ↑发送（success 虚线），与曲线色一一对应 -->
     <div class="metric-head">
       <span class="metric-name">网络</span>
@@ -146,5 +151,12 @@ const detailText = computed(() => (props.hasData ? `接收 ${formatRate(props.rx
 .line-tx-data {
   stroke: var(--success);
   stroke-dasharray: 4 3;
+}
+.grid-line,
+.baseline,
+.line-empty,
+.line-rx-data,
+.line-tx-data {
+  vector-effect: non-scaling-stroke;
 }
 </style>

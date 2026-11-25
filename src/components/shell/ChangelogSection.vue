@@ -80,27 +80,7 @@ const currentEntry = computed<ChangelogEntry | undefined>(
 <style scoped lang="scss">
 @use '@/styles/_tokens' as *;
 
-// 与 UpdateSection / SettingsPanelContent 的 section 外框同一视觉语言（scoped 不跨组件）
-.block {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-md, 8px);
-  background: var(--bg-elevated, var(--app-surface));
-}
-.block-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-secondary, var(--app-muted));
-}
-
+// .block / .block-head / .link-action 已上收 _utilities.scss（07 A2）
 .cl-hint {
   font-size: 12px;
   line-height: 1.5;
@@ -142,23 +122,4 @@ const currentEntry = computed<ChangelogEntry | undefined>(
   gap: 8px;
   flex-wrap: wrap;
 }
-
-.link-action {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: none;
-  border: none;
-  padding: 0;
-  color: var(--accent);
-  cursor: pointer;
-  font: inherit;
-
-  &:hover {
-    color: var(--accent-hover);
-    text-decoration: underline;
-  }
-}
-
-// .muted / .num 由全局 _utilities / _base 提供，此处不重复定义。
 </style>

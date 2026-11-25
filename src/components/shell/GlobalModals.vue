@@ -3,36 +3,21 @@
  * GlobalModals — Wave 3 Step 3.5
  *
  * Top-level modal hub. Hosts every modal that is NOT absorbed by a child
- * surface (TerminalSurface owns terminalSearch; FileSurface owns mkdir /
- * localMkdir / rename / localRename — but the FORM for those four still
- * renders here so the legacy #modalLayer / #modalBody / #modalPrimary /
- * .modal-actions .btn.danger selectors keep working for tests/ui-host-key.mjs
- * Wave 5 expansion).
+ * surface (FileSurface owns mkdir / localMkdir / rename / localRename actions —
+ * their forms render here so legacy #modalLayer / #modalBody / #modalPrimary /
+ * .modal-actions .btn.danger selectors keep working for tests/ui-host-key.mjs).
  *
- * Store-bound (workbench re-export of ui/sessions/assets/tunnels state +
- * the save/delete/resolve actions). The Pinia wiring stays untouched —
- * only the rendering moves out of App.vue.
- *
- * Modal types handled:
- *   - assetEditor      : 资产编辑表单
- *   - reauthPassword   : 认证失败快捷重输密码（TerminalSurface 错误卡片入口）
- *   - tunnelCreate     : 新建隧道表单
- *   - hostKeyVerify    : 主机密钥验证（confirm/deny）
- *   - keyboardInteractive : 键盘交互提示
- *   - tokenConfig      : GitHub PAT 配置（默认 settingsHub 分支）
- *   - mkdir / localMkdir / rename / localRename : 文件操作（form 渲染于此，
- *     触发逻辑在 FileSurface）
- *   - terminalSearch   : fallback —— TerminalSurface 已内嵌，但 store 切到
- *     该 modal 时关闭，避免双开
+ * Modal types handled (see domain ModalType):
+ *   - assetEditor / reauthPassword / tunnelCreate / gatewayWizard / tokenConfig
+ *   - hostKeyVerify / mcpApproval / keyboardInteractive
+ *   - mcpPanel / settings / mkdir / localMkdir / rename / localRename
+ *   - confirmDelete / confirmFileDelete / confirmFileOverwrite / renameGroup /
+ *     createGroup / moveAsset / confirmCloseAssetWindow / editorDialog
  */
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useWorkbenchStore } from '@/stores/workbench';
-import AppButton from '@/components/ui/AppButton.vue';
-import AppInput from '@/components/ui/AppInput.vue';
-import AppSelect from '@/components/ui/AppSelect.vue';
 import McpPanelContent from '@/components/shell/McpPanelContent.vue';
-import SyncPanelContent from '@/components/shell/SyncPanelContent.vue';
 import SettingsPanelContent from '@/components/shell/SettingsPanelContent.vue';
 import ConfirmCloseAssetWindowContent from '@/components/shell/ConfirmCloseAssetWindowContent.vue';
 import PatConfigCard from '@/components/shell/PatConfigCard.vue';
@@ -43,20 +28,30 @@ import GatewayWizardContent from '@/components/shell/GatewayWizardContent.vue';
 import GroupFormsContent from '@/components/shell/GroupFormsContent.vue';
 import FileOpFormsContent from '@/components/shell/FileOpFormsContent.vue';
 import FileOverwriteContent from '@/components/shell/FileOverwriteContent.vue';
+import SecurityPromptContent from '@/components/shell/SecurityPromptContent.vue';
+import KeyboardInteractiveContent from '@/components/shell/KeyboardInteractiveContent.vue';
 import { overwriteForm } from '@/lib/fileOverwrite';
 import { dispatchModalSubmit, type ModalSubmitContext } from '@/lib/modalSubmit';
 import { modalTitleFor } from '@/lib/modalTitles';
 import { useModalDismiss } from '@/composables/useModalDismiss';
+import { useModalFocus } from '@/composables/useModalFocus';
 import { useModalView } from '@/composables/useModalView';
 import { useModalFormSync, type EditorDialogViewPayload } from '@/composables/useModalFormSync';
-import type {
-  AssetEditorForm,
-  ConnectionAssetInput,
-  CredentialEditorForm,
-  ModalState,
-  RemoteFileEntry,
-  TunnelEditorForm
-} from '@/types/domain';
+import type { ModalState, ModalType, RemoteFileEntry } from '@/types/domain';
+
+const KNOWN_MODAL_TYPES: ReadonlySet<ModalType> = new Set([
+  'assetEditor', 'reauthPassword', 'tunnelCreate', 'gatewayWizard', 'tokenConfig',
+  'hostKeyVerify', 'keyboardInteractive', 'mcpApproval', 'mcpPanel', 'settings',
+  'mkdir', 'rename', 'localMkdir', 'localRename', 'confirmDelete',
+  'confirmFileDelete', 'confirmFileOverwrite', 'renameGroup', 'createGroup',
+  'moveAsset', 'confirmCloseAssetWindow', 'confirmBatchCloseTabs', 'editorDialog'
+]);
+const DESTRUCTIVE_MODAL_TYPES: ReadonlySet<string> = new Set([
+  'confirmDelete', 'confirmFileDelete', 'confirmFileOverwrite', 'confirmCloseAssetWindow', 'confirmBatchCloseTabs'
+]);
+const SELF_CONTAINED_MODAL_TYPES: ReadonlySet<string> = new Set([
+  'mcpPanel', 'settings', 'editorDialog', 'gatewayWizard'
+]);
 
 /**
  * modal 的按需挂载载荷：ModalState（ui store 的权威形状）只声明 type/asset/payload，
@@ -107,8 +102,28 @@ const {
   pendingFileDelete
 } = storeToRefs(store);
 const modal = computed(() => modalRef.value as ModalExtras);
+const modalPanelRef = ref<HTMLElement | null>(null);
+const isKnownViewType = computed(() => Boolean(view.value.type && KNOWN_MODAL_TYPES.has(view.value.type)));
+const isDestructiveModal = computed(() => Boolean(view.value.type && DESTRUCTIVE_MODAL_TYPES.has(view.value.type)));
+const isSelfContainedModal = computed(() => Boolean(view.value.type && SELF_CONTAINED_MODAL_TYPES.has(view.value.type)));
+
+if (import.meta.env.DEV) {
+  watch(() => modal.value.type, (t) => {
+    if (t && !KNOWN_MODAL_TYPES.has(t)) {
+      store.announce(`未知弹窗类型：${String(t)}`, { level: 'error' });
+    }
+  });
+}
+
 // 退场动画视图层：关闭瞬间 store 已置空，view 滞留最后载荷让淡出播完（状态即时、渲染滞后）
 const { view, closing, onExitAnimationEnd } = useModalView(modal);
+
+// Tab 圈闭 + 初始焦点策略 + 关闭还原触发焦点（10 A2；Esc 仍由 useModalDismiss 分发）
+useModalFocus({
+  open: () => Boolean(modal.value.type),
+  containerRef: modalPanelRef,
+  activeKey: () => modal.value.type
+});
 
 // ============================================================
 // 表单状态 + modal 切换同步：v0.20 拆至 composables/useModalFormSync（S2 刀，
@@ -118,7 +133,7 @@ const {
   editingAsset, editingCredential, tunnelForm, fileForm, renameTarget,
   keyboardResponses, groupInputs, assetFormError, groupFormError, reauthForm,
   editorDialogInput, editorDialogError, keyboardInstructions
-} = useModalFormSync({ modal, keyboardPrompt, closeTerminalSearchInline: () => store.closeTerminalSearchInline() });
+} = useModalFormSync({ modal, keyboardPrompt });
 
 // 异步提交进行中：主/副按钮禁用 + spinner，防止重复提交（提交生命周期态，
 // 与表单内容状态不同源——留在本组件而非 composable）
@@ -177,12 +192,10 @@ const submitCtx: ModalSubmitContext = {
     resolveMcpApproval: (id, ok) => store.resolveMcpApproval(id, ok),
     resolveKeyboardPrompt: (id, answers) => store.resolveKeyboardPrompt(id, answers),
     reconnectSession: id => store.reconnectSession(id),
-    closeTerminalSearchInline: () => store.closeTerminalSearchInline(),
     // accept/确认后的直关（绕过 closeModal 对安全审批类的 deny 路由）
     closeDirect: () => { store.modal = { type: null, asset: null }; },
     announce: (message, opts) => store.announce(message, opts),
-    get assets() { return store.assets; },
-    get terminalSearch() { return store.terminalSearch; }
+    get assets() { return store.assets; }
   },
   modal: modal.value,
   editingAsset,
@@ -260,12 +273,30 @@ useModalDismiss(
     closing 态：store 已关闭、退场动画播放中（view 滞留最后载荷，见 useModalView）
   -->
   <div class="modal-layer" id="modalLayer" :class="{ open: view.type, closing }" :aria-hidden="!view.type ? 'true' : 'false'" @animationend="onExitAnimationEnd">
-    <div class="modal" :class="`modal--${view.type}`" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div ref="modalPanelRef" class="modal" tabindex="-1" :class="view.type ? `modal--${view.type}` : undefined" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
       <div class="modal-head">
         <h2 id="modalTitle">{{ modalTitle }}</h2>
-        <button class="icon-btn" id="modalClose" aria-label="关闭" @click="closeModal">×</button>
+        <button
+          v-if="view.type === 'hostKeyVerify' || view.type === 'mcpApproval'"
+          type="button"
+          class="head-reject-btn"
+          id="modalClose"
+          aria-label="拒绝并关闭 (Esc)"
+          title="拒绝并关闭 (Esc)"
+          @click="closeModal"
+        >拒绝并关闭</button>
+        <button
+          v-else
+          type="button"
+          class="icon-btn"
+          id="modalClose"
+          data-modal-close
+          aria-label="关闭 (Esc)"
+          title="关闭 (Esc)"
+          @click="closeModal"
+        >×</button>
       </div>
-      <div class="modal-body" id="modalBody">
+      <div class="modal-body" id="modalBody" data-modal-body>
         <!-- assetEditor（表单体抽到 AssetEditorContent；校验/保存在 submitModal） -->
         <AssetEditorContent
           v-if="view.type === 'assetEditor'"
@@ -294,46 +325,24 @@ useModalDismiss(
           v-else-if="view.type === 'gatewayWizard'"
         />
 
-        <!-- hostKeyVerify -->
-        <div v-else-if="view.type === 'hostKeyVerify'" class="stack">
-          <p class="muted">检测到主机密钥，请确认是否信任该主机。</p>
-          <dl class="context-grid">
-            <dt>主机</dt><dd>{{ hostKeyPrompt?.host_port }}</dd>
-            <dt>密钥类型</dt><dd>{{ hostKeyPrompt?.key_type }}</dd>
-            <dt>指纹</dt><dd class="num" style="word-break:break-all">{{ hostKeyPrompt?.fingerprint }}</dd>
-            <dt>状态</dt><dd>{{ hostKeyPrompt?.is_changed ? '密钥已变更（警告）' : '首次连接' }}</dd>
-          </dl>
-          <p class="muted">确认后将会保存到本地 known_hosts，下次连接不再提示。</p>
-        </div>
+        <!-- hostKeyVerify / mcpApproval（10 §3.2 抽至 SecurityPromptContent） -->
+        <SecurityPromptContent
+          v-else-if="view.type === 'hostKeyVerify' || view.type === 'mcpApproval'"
+          :kind="view.type"
+          :host-key-prompt="hostKeyPrompt"
+          :mcp-approval-prompt="mcpApprovalPrompt"
+        />
 
-        <!-- mcpApproval（v1.5）：MCP 高危工具审批，客户端不支持 elicitation 时弹此窗 -->
-        <div v-else-if="view.type === 'mcpApproval'" class="stack">
-          <p class="muted">外部 AI 客户端（如 ZCode）请求执行高危命令，请确认三段信息是否一致：</p>
-          <dl class="context-grid">
-            <dt>AI 声明意图</dt><dd>{{ mcpApprovalPrompt?.intent || '(未声明)' }}</dd>
-            <dt>真实命令</dt><dd class="num" style="word-break:break-all">{{ mcpApprovalPrompt?.command }}</dd>
-            <dt>后果预测</dt><dd>{{ mcpApprovalPrompt?.consequence }}</dd>
-          </dl>
-          <p class="muted">核对意图与命令是否相符后再确认。拒绝或关闭都会阻止执行。</p>
-        </div>
-
-        <!-- keyboardInteractive -->
-        <div v-else-if="view.type === 'keyboardInteractive'" class="stack">
-          <p class="muted">服务器需要键盘交互认证，请根据提示输入：</p>
-          <p v-if="keyboardPrompt?.name"><strong>{{ keyboardPrompt.name }}</strong></p>
-          <p v-if="keyboardInstructions" class="muted">{{ keyboardInstructions }}</p>
-          <label v-for="(prompt, idx) in ((keyboardPrompt?.prompts as string[] | undefined) || [])" :key="idx" class="stack">
-            <span class="muted">{{ prompt }}</span>
-            <AppInput :model-value="keyboardResponses[idx]" type="password" :placeholder="prompt"
-              @update:model-value="v => keyboardResponses[idx] = v" />
-          </label>
-        </div>
+        <!-- keyboardInteractive（10 A11 显示/隐藏切换抽至 KeyboardInteractiveContent） -->
+        <KeyboardInteractiveContent
+          v-else-if="view.type === 'keyboardInteractive'"
+          :prompt="keyboardPrompt"
+          :instructions="keyboardInstructions || ''"
+          :responses="keyboardResponses"
+        />
 
         <!-- v1.2 mcpPanel：MCP 服务可观测与配置引导（内容抽到子组件，避免本 SFC 超 500 行） -->
         <McpPanelContent v-else-if="view.type === 'mcpPanel'" />
-
-        <!-- v1.3 syncPanel：Gist 资产同步管理（setup/push/pull/冲突/重置/清空） -->
-        <SyncPanelContent v-else-if="view.type === 'syncPanel'" />
 
         <!-- v1.8 settings：统一设置中心（关于与更新/外观/同步/MCP，内容抽到子组件避免本 SFC 超 500 行） -->
         <SettingsPanelContent v-else-if="view.type === 'settings'" />
@@ -354,11 +363,6 @@ useModalDismiss(
           :rename-target="renameTarget"
           :file-form="fileForm"
         />
-
-        <!-- terminalSearch (fallback — TerminalSurface handles inline) -->
-        <div v-else-if="view.type === 'terminalSearch'" class="stack">
-          <p class="muted">终端搜索由工具栏触发，此入口仅作兼容。</p>
-        </div>
 
         <!-- confirmDelete -->
         <div v-else-if="view.type === 'confirmDelete'" class="stack">
@@ -403,6 +407,12 @@ useModalDismiss(
           :count="view.count || 0"
         />
 
+        <!-- confirmBatchCloseTabs（03 A15：关闭其他 / 关闭右侧终端标签确认） -->
+        <div v-else-if="view.type === 'confirmBatchCloseTabs'" class="stack">
+          <p>将断开并关闭 <strong>{{ Number(view.payload?.count || 0) }}</strong> 个终端会话（{{ view.payload?.scopeLabel || '其他标签' }}）。</p>
+          <p class="danger-note">断开后对应远程会话内未完成的前台进程将随之终止。</p>
+        </div>
+
         <!-- editorDialog（v0.18 编辑器通用弹窗：消息 + 可选路径输入，按钮动态渲染） -->
         <div v-else-if="view.type === 'editorDialog'" class="editor-dialog-body">
           <p class="editor-dialog-message">{{ editorDialog?.message }}</p>
@@ -420,14 +430,24 @@ useModalDismiss(
           <p v-if="editorDialogError" class="form-error">{{ editorDialogError }}</p>
         </div>
 
-        <!-- default: tokenConfig（PAT 表单已抽到 PatConfigCard，供此处与 settings 同步 tab 复用） -->
-        <PatConfigCard v-else />
+        <!-- tokenConfig 显式分支（PAT 表单已抽到 PatConfigCard；10 A7 未知 type 独立守卫） -->
+        <PatConfigCard v-else-if="view.type === 'tokenConfig'" />
+        <div v-else-if="view.type" class="stack">
+          <p class="form-error">未知弹窗类型（{{ view.type }}），请关闭后重试。</p>
+        </div>
       </div>
       <div class="modal-actions">
-        <button v-if="view.type === 'hostKeyVerify'" class="btn danger" :disabled="submitting" @click="denyHostKey">拒绝</button>
-        <button v-else-if="view.type === 'mcpApproval'" class="btn danger" :disabled="submitting" @click="denyMcpApproval">拒绝执行</button>
-        <!-- mcpPanel / syncPanel / settings / editorDialog / gatewayWizard 等自包含面板隐藏「取消」（操作在面板内部完成） -->
-        <button v-if="view.type !== 'mcpPanel' && view.type !== 'syncPanel' && view.type !== 'settings' && view.type !== 'editorDialog' && view.type !== 'gatewayWizard'" class="btn" id="modalSecondary" :disabled="submitting" @click="secondaryAction">取消</button>
+        <button v-if="view.type === 'hostKeyVerify'" id="modalDeny" data-modal-autofocus class="btn danger" :disabled="submitting" @click="denyHostKey">拒绝</button>
+        <button v-else-if="view.type === 'mcpApproval'" id="modalDeny" data-modal-autofocus class="btn danger" :disabled="submitting" @click="denyMcpApproval">拒绝执行</button>
+        <!-- mcpPanel / settings / editorDialog / gatewayWizard 自包含面板及未知守卫隐藏「取消」 -->
+        <button
+          v-if="isKnownViewType && !isSelfContainedModal"
+          class="btn"
+          id="modalSecondary"
+          :data-modal-autofocus="isDestructiveModal ? '' : undefined"
+          :disabled="submitting"
+          @click="secondaryAction"
+        >取消</button>
         <button
           v-if="view.type === 'confirmDelete'"
           class="btn danger"
@@ -443,17 +463,24 @@ useModalDismiss(
           @click="submitModal"
         >断开并关闭</button>
         <button
+          v-else-if="view.type === 'confirmBatchCloseTabs'"
+          class="btn danger"
+          data-modal-primary-danger
+          :disabled="submitting"
+          @click="submitModal"
+        >全部关闭</button>
+        <button
           v-else-if="view.type === 'confirmFileDelete'"
           class="btn danger"
+          :class="{ 'is-loading': submitting }"
           data-modal-primary-danger
           :disabled="submitting"
           @click="runFileDeleteConfirm"
         >
-          <span v-if="submitting" class="btn-spinner" aria-hidden="true"></span>删除
+          <span class="btn-spinner-wrap" aria-hidden="true"><span class="btn-spinner"></span></span>
+          <span class="btn-label">删除</span>
         </button>
-        <!-- B2 冲突三选：重命名 + 覆盖同属一支（template 包裹保持 v-else-if 链——
-             拆成两个同条件 v-else-if 会让第二支成为死分支，覆盖按钮不渲染，
-             2026-10-14 真机验收抓出） -->
+        <!-- B2 冲突三选：重命名 + 覆盖同属一支（template 包裹保持 v-else-if 链） -->
         <template v-else-if="view.type === 'confirmFileOverwrite'">
           <button
             class="btn"
@@ -463,11 +490,16 @@ useModalDismiss(
             @click="store.renameFileOverwrite(overwriteForm.rename)"
           >重命名</button>
           <button
-            class="btn primary"
+            class="btn danger"
+            :class="{ 'is-loading': submitting }"
             id="modalPrimary"
+            data-modal-primary-danger
             :disabled="submitting"
             @click="store.confirmFileOverwrite"
-          >覆盖</button>
+          >
+            <span class="btn-spinner-wrap" aria-hidden="true"><span class="btn-spinner"></span></span>
+            <span class="btn-label">覆盖</span>
+          </button>
         </template>
         <!-- editorDialog：按钮完全由 payload 定义（danger/primary/顺序），逐个分发 -->
         <template v-else-if="view.type === 'editorDialog'">
@@ -475,18 +507,21 @@ useModalDismiss(
             v-for="(btn, i) in editorDialog?.buttons || []"
             :key="btn.label + '-' + i"
             class="btn"
-            :class="{ danger: btn.danger, primary: btn.primary }"
+            :class="{ danger: btn.danger, primary: btn.primary, 'is-loading': submitting && btn.primary }"
             :disabled="submitting"
             @click="runEditorDialog(i)"
           >
-            <span v-if="submitting && btn.primary" class="btn-spinner" aria-hidden="true"></span>{{ btn.label }}
+            <span v-if="btn.primary" class="btn-spinner-wrap" aria-hidden="true"><span class="btn-spinner"></span></span>
+            <span class="btn-label">{{ btn.label }}</span>
           </button>
         </template>
-        <!-- v1.2 mcpPanel / v1.3 syncPanel / v1.8 settings：自包含面板，主按钮「关闭」 -->
-        <button v-else-if="view.type === 'mcpPanel' || view.type === 'syncPanel' || view.type === 'settings' || view.type === 'gatewayWizard'" class="btn primary" id="modalPrimary" :disabled="submitting" @click="submitModal">关闭</button>
-        <button v-else class="btn primary" id="modalPrimary" :disabled="submitting" @click="submitModal">
-          <span v-if="submitting" class="btn-spinner" aria-hidden="true"></span>确认
+        <!-- 自包含面板：主按钮「关闭」 -->
+        <button v-else-if="view.type === 'mcpPanel' || view.type === 'settings' || view.type === 'gatewayWizard'" class="btn primary" id="modalPrimary" :disabled="submitting" @click="submitModal">关闭</button>
+        <button v-else-if="isKnownViewType" class="btn primary" :class="{ 'is-loading': submitting }" id="modalPrimary" :disabled="submitting" @click="submitModal">
+          <span class="btn-spinner-wrap" aria-hidden="true"><span class="btn-spinner"></span></span>
+          <span class="btn-label">确认</span>
         </button>
+        <button v-else class="btn primary" id="modalPrimary" @click="closeModal">关闭</button>
       </div>
     </div>
   </div>

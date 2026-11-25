@@ -28,21 +28,21 @@ defineProps<{
     <template v-if="kind === 'renameGroup'">
       <p class="muted">输入分组「{{ path }}」的新完整路径，可用「/」调整层级
         （如「生产/数据库」）；其子级分组与资产随行。</p>
-      <label class="stack"><span>新路径</span>
+      <label class="stack"><span class="muted">新路径</span>
         <AppInput :model-value="inputs.rename" placeholder="生产/数据库"
           @update:model-value="v => inputs.rename = v" />
       </label>
     </template>
     <template v-else-if="kind === 'createGroup'">
       <p class="muted">输入分组路径，可用「/」创建多级嵌套分组，如「生产/数据库」。</p>
-      <label class="stack"><span>分组路径</span>
+      <label class="stack"><span class="muted">分组路径</span>
         <AppInput :model-value="inputs.create" placeholder="生产/数据库"
           @update:model-value="v => inputs.create = v" />
       </label>
     </template>
     <template v-else>
       <p>移动连接「<strong>{{ assetName }}</strong>」到分组：</p>
-      <label class="stack"><span>目标分组</span>
+      <label class="stack"><span class="muted">目标分组</span>
         <!-- 可选可输：直输新分组路径即建组（保存时后端收口声明） -->
         <AppCombobox
           :model-value="inputs.move || '未分组'"

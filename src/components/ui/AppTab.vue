@@ -1,24 +1,27 @@
 <script setup lang="ts">
 import type { Component } from 'vue';
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     id?: string | number;
     label?: string;
     /** lucide-vue-next 图标组件（对象式或函数式组件）。 */
     icon?: Component | null;
     active?: boolean;
+    disabled?: boolean;
   }>(),
   {
     id: '',
     label: '',
     icon: null,
-    active: false
+    active: false,
+    disabled: false
   }
 );
 const emit = defineEmits<{ click: [] }>();
 
 function onClick() {
+  if (props.disabled) return;
   emit('click');
 }
 </script>
@@ -26,8 +29,9 @@ function onClick() {
 <template>
   <button
     class="app-tab"
-    :class="{ active }"
+    :class="{ active, 'is-disabled': disabled }"
     role="tab"
+    :disabled="disabled"
     :aria-selected="active"
     @click="onClick"
   >
@@ -55,9 +59,16 @@ function onClick() {
   transition: color var(--dur-fast) var(--ease-standard),
     background-color var(--dur-fast) var(--ease-standard);
 }
-.app-tab:hover {
+.app-tab:hover:not(:disabled) {
   color: var(--app-strong);
   background-color: var(--app-hover);
+}
+.app-tab:active:not(:disabled) {
+  background-color: var(--app-active);
+}
+.app-tab.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .app-tab.active {
   color: var(--app-strong);

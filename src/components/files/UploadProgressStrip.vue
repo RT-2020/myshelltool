@@ -362,6 +362,7 @@ onBeforeUnmount(() => { if (hideTimer) { clearTimeout(hideTimer); hideTimer = nu
 .ups-bar-fill.tone-cancelled { background: var(--warn); }
 
 .ups-action {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -376,10 +377,17 @@ onBeforeUnmount(() => { if (hideTimer) { clearTimeout(hideTimer); hideTimer = nu
   cursor: pointer;
   transition: background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
 }
+.ups-action::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+}
 .ups-action:hover { background: var(--app-hover); color: var(--app-strong); }
+.ups-action:active { background: var(--app-active); }
 .ups-action:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 /* 取消整批：与 ✕ 关闭视觉区分（warn 色悬停反馈，纯绘制属性） */
 .ups-cancel-batch:hover { background: color-mix(in oklab, var(--warn), transparent 85%); color: var(--warn); }
+.ups-cancel-batch:active { background: color-mix(in oklab, var(--warn), transparent 76%); color: var(--warn); }
 .ups-chev { transition: transform var(--dur-fast) var(--ease-standard); }
 .ups-chev.open { transform: rotate(180deg); }
 

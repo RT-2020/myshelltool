@@ -84,7 +84,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="app-tab-group" role="tablist">
+  <div v-if="tabs.length" class="app-tab-group" role="tablist">
     <AppTab
       v-for="tab in tabs"
       :key="tab.id"

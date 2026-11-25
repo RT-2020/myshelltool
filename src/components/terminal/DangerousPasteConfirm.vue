@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch, nextTick } from 'vue';
-import { AlertTriangle, X } from 'lucide-vue-next';
+import { computed, ref, watch } from 'vue';
+import { AlertTriangle, ChevronDown, ChevronUp, X } from 'lucide-vue-next';
+import { useModalFocus } from '@/composables/useModalFocus';
 
 const props = withDefaults(defineProps<{
   open?: boolean;
@@ -17,48 +18,62 @@ const emit = defineEmits<{
 }>();
 
 const rememberRule = ref(false);
-const confirmRef = ref<HTMLButtonElement | null>(null);
+const expanded = ref(false);
+const modalRef = ref<HTMLElement | null>(null);
 
-// 打开时聚焦「仍然粘贴」（Enter 即确认）；每次打开重置不再拦截勾选
-watch(() => props.open, async (v) => {
-  if (v) {
-    rememberRule.value = false;
-    await nextTick();
-    confirmRef.value?.focus();
-  }
+// 03 A7/A8：打开默认焦点落安全侧「取消」；Tab 圈闭并支持关闭还焦；Enter 由原生按钮触发当前焦点动作
+useModalFocus({
+  open: () => props.open,
+  containerRef: modalRef,
+  autofocusSelector: '[data-modal-autofocus]',
+  onEscape: () => emit('cancel')
 });
 
-function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Enter') { e.preventDefault(); confirm(); }
-  else if (e.key === 'Escape') { e.preventDefault(); emit('cancel'); }
-}
+watch(() => props.open, (v) => {
+  if (v) {
+    rememberRule.value = false;
+    expanded.value = false;
+  }
+});
 
 // confirm 携带 allowedPattern（勾选「本会话不再拦截此规则」时传 matchedPattern）
 function confirm() {
   emit('confirm', rememberRule.value ? props.matchedPattern : null);
 }
 
+const allLines = computed(() => (props.command ? props.command.replace(/\r/g, '').split('\n') : []));
+const hasMoreLines = computed(() => allLines.value.length > 4);
 const preview = computed(() => {
-  if (!props.command) return '';
-  const lines = props.command.replace(/\r/g, '').split('\n');
-  if (lines.length <= 4) return lines.join('\n');
-  return lines.slice(0, 4).join('\n') + `\n… (+${lines.length - 4} 行)`;
+  if (!allLines.value.length) return '';
+  if (expanded.value || !hasMoreLines.value) return allLines.value.join('\n');
+  return allLines.value.slice(0, 4).join('\n') + `\n… (+${allLines.value.length - 4} 行)`;
 });
 </script>
 
 <template>
   <Teleport to="body">
     <Transition name="danger-pop">
-      <div v-if="open" class="danger-overlay" @click.self="emit('cancel')" @keydown="onKeydown" role="alertdialog" aria-modal="true" aria-label="危险命令确认">
-      <div class="danger-modal">
+      <div v-if="open" class="danger-overlay" @click.self="emit('cancel')">
+      <div ref="modalRef" class="danger-modal" role="alertdialog" aria-modal="true" aria-label="危险命令确认">
         <header class="danger-header">
-          <AlertTriangle :size="22" class="danger-icon" />
+          <AlertTriangle :size="22" class="danger-icon" aria-hidden="true" />
           <h2>检测到危险命令</h2>
-          <button class="icon-btn" aria-label="取消" @click="emit('cancel')"><X :size="18" /></button>
+          <button type="button" class="icon-btn" data-modal-close aria-label="取消" @click="emit('cancel')"><X :size="18" /></button>
         </header>
         <div class="danger-body">
           <p class="muted">即将向远程主机写入以下命令，可能造成不可逆的数据丢失或服务中断：</p>
           <pre class="danger-preview"><code>{{ preview }}</code></pre>
+          <button
+            v-if="hasMoreLines"
+            type="button"
+            class="danger-expand-btn"
+            :aria-expanded="expanded"
+            @click="expanded = !expanded"
+          >
+            <ChevronUp v-if="expanded" :size="13" aria-hidden="true" />
+            <ChevronDown v-else :size="13" aria-hidden="true" />
+            <span>{{ expanded ? '收起预览' : `展开全部 ${allLines.length} 行` }}</span>
+          </button>
           <p v-if="matchedPattern" class="danger-pattern">命中规则：<code>{{ matchedPattern }}</code></p>
           <p class="muted small">如果这是你刻意执行的（例如在沙箱里测试），可以仍然粘贴。否则请取消。</p>
         </div>
@@ -66,8 +81,8 @@ const preview = computed(() => {
           <label class="remember-rule">
             <input v-model="rememberRule" type="checkbox" /> 本会话不再拦截此规则
           </label>
-          <button class="btn ghost" @click="emit('cancel')">取消</button>
-          <button ref="confirmRef" class="btn danger" @click="confirm">仍然粘贴</button>
+          <button type="button" class="danger-btn" data-modal-autofocus @click="emit('cancel')">取消</button>
+          <button type="button" class="danger-btn is-danger" @click="confirm">仍然粘贴</button>
         </footer>
       </div>
       </div>
@@ -164,6 +179,31 @@ const preview = computed(() => {
 
 .danger-preview code { font-family: inherit; }
 
+.danger-expand-btn {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-sm);
+  background: var(--app-panel-2);
+  color: var(--app-muted);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
+}
+.danger-expand-btn:hover {
+  background: var(--app-hover);
+  border-color: var(--app-border-strong);
+  color: var(--app-strong);
+}
+.danger-expand-btn:active {
+  background: var(--app-active);
+}
+
 .danger-pattern {
   font-size: var(--text-xs);
   color: var(--app-muted);
@@ -195,5 +235,47 @@ const preview = computed(() => {
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
   border-block-start: 1px solid var(--app-border);
+}
+
+/* 本组件位于 Teleport body 独立作用域且需与 danger 弹窗语气一致，按 GlobalModals .btn 同 token 自绘（03 A1） */
+.danger-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-sm);
+  background: var(--app-control);
+  color: var(--app-text);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
+}
+.danger-btn:hover {
+  background: var(--app-hover);
+  border-color: var(--app-border-strong);
+  color: var(--app-strong);
+}
+.danger-btn:active {
+  background: var(--app-active);
+}
+.danger-btn.is-danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--accent-on);
+}
+.danger-btn.is-danger:hover {
+  background: color-mix(in oklab, var(--danger), black 10%);
+  border-color: color-mix(in oklab, var(--danger), black 10%);
+  color: var(--accent-on);
+}
+.danger-btn.is-danger:active {
+  background: color-mix(in oklab, var(--danger), black 18%);
+  border-color: color-mix(in oklab, var(--danger), black 18%);
+  color: var(--accent-on);
 }
 </style>

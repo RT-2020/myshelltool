@@ -114,18 +114,20 @@ interface CollectedTree {
   skippedSymlinks: number;
 }
 
-function assertCollectLimits(depth: number, fileCount: number, path: string) {
+function assertCollectLimits(depth: number, fileCount: number, path: string, direction: 'upload' | 'download') {
+  const action = direction === 'upload' ? '目录上传中止' : '目录下载中止';
+  const target = direction === 'upload' ? '远端无改动' : '本地无改动';
   if (depth > MAX_TREE_DEPTH) {
-    throw new Error(`目录层级超过上限 ${MAX_TREE_DEPTH} 层：${path}（整批已中止）`);
+    throw new Error(`${action}：${path} 层级超过 ${MAX_TREE_DEPTH} 层上限。整批未开始传输，${target}。请拆分目录树后分批重试。`);
   }
   if (fileCount > MAX_TREE_FILES) {
-    throw new Error(`文件数超过上限 ${MAX_TREE_FILES} 个：${path}（整批已中止）`);
+    throw new Error(`${action}：${path} 文件数超过 ${MAX_TREE_FILES} 上限。整批未开始传输，${target}。请减少文件数或分批重试。`);
   }
 }
 
 async function walkLocal(batchId: string, absDir: string, rel: string[], depth: number, tree: CollectedTree) {
   if (isDirBatchCancelled(batchId)) throw new DirBatchCancelled();
-  assertCollectLimits(depth, tree.files.length, absDir);
+  assertCollectLimits(depth, tree.files.length, absDir, 'upload');
   const list = await invokeBackend<{ entries?: RemoteFileEntry[] }>('fs_local_list_dir', { path: absDir });
   for (const e of list?.entries ?? []) {
     if (isDirBatchCancelled(batchId)) throw new DirBatchCancelled();
@@ -146,7 +148,7 @@ async function walkLocal(batchId: string, absDir: string, rel: string[], depth: 
 
 async function walkRemote(batchId: string, session: FilesSessionLike, absDir: string, rel: string[], depth: number, tree: CollectedTree) {
   if (isDirBatchCancelled(batchId)) throw new DirBatchCancelled();
-  assertCollectLimits(depth, tree.files.length, absDir);
+  assertCollectLimits(depth, tree.files.length, absDir, 'download');
   const list = await invokeBackend<{ entries?: RemoteFileEntry[] }>('sftp_list_dir', {
     sessionId: session.sessionId,
     path: absDir

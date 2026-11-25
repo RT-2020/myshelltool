@@ -2,23 +2,17 @@
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, unref, watch } from 'vue';
 import {
   ArrowUpDown,
-  Minus,
-  Monitor,
-  Moon,
   PanelRight,
-  Search,
   Settings,
   Sparkles,
-  Square,
-  Sun,
-  TerminalSquare,
-  X,
 } from 'lucide-vue-next';
 import ConnectionSidebar from '@/components/shell/ConnectionSidebar.vue';
 import RightSidebar from '@/components/shell/RightSidebar.vue';
 import TerminalSurface from '@/components/terminal/TerminalSurface.vue';
 import FileSurface from '@/components/files/FileSurface.vue';
 import TitleBarSearch from '@/components/workbench/TitleBarSearch.vue';
+import ThemeToggleButton from '@/components/workbench/ThemeToggleButton.vue';
+import WindowControls from '@/components/workbench/WindowControls.vue';
 // v0.18 内置编辑器：懒加载（CodeMirror 及语言包不进主 bundle），覆盖中央区
 const EditorSurface = defineAsyncComponent(() => import('@/components/editor/EditorSurface.vue'));
 import { AppBrandLogo } from '@/components/ui';
@@ -54,7 +48,7 @@ const emit = defineEmits<{
   'create-asset-in-group': [group: string];
   'create-group': [parentPath?: string];
   'connect-selected': [];
-  'open-settings': [];
+  'open-settings': [tab?: string];
   'open-mcp-panel': [];
   'toggle-theme': [];
   'toggle-assets': [];
@@ -279,18 +273,11 @@ onUnmounted(() => {
       </div>
 
       <div class="tb-right">
-        <button
-          class="icon-btn"
-          type="button"
-          :aria-label="`切换主题（当前：${store.themeLabel}）`"
-          :title="`切换主题（当前：${store.themeLabel}）`"
-          @click="emit('toggle-theme')"
-        >
-          <!-- 与设置面板「外观」tab 同一套三态图标：system→Monitor / light→Sun / dark→Moon -->
-          <Monitor v-if="store.theme === 'system'" />
-          <Sun v-else-if="store.theme === 'light'" />
-          <Moon v-else />
-        </button>
+        <ThemeToggleButton
+          :theme="store.theme"
+          :theme-label="store.themeLabel"
+          @toggle="emit('toggle-theme')"
+        />
         <button
           class="icon-btn"
           type="button"
@@ -312,23 +299,13 @@ onUnmounted(() => {
           <Settings />
           <span v-if="updateState === 'available'" class="update-badge" aria-hidden="true"></span>
         </button>
-        <div v-if="desktopWindowControlsVisible" class="window-controls" data-no-drag="true" aria-label="窗口控制">
-          <button class="window-btn" type="button" aria-label="最小化" title="最小化" @click="minimizeWindow">
-            <Minus :size="14" />
-          </button>
-          <button
-            class="window-btn"
-            type="button"
-            :aria-label="isMaximized ? '还原窗口' : '最大化'"
-            :title="isMaximized ? '还原窗口' : '最大化'"
-            @click="toggleWindowMaximize"
-          >
-            <Square :size="12" />
-          </button>
-          <button class="window-btn danger" type="button" aria-label="关闭" title="关闭" @click="closeWindow">
-            <X :size="14" />
-          </button>
-        </div>
+        <WindowControls
+          :visible="desktopWindowControlsVisible"
+          :is-maximized="isMaximized"
+          @minimize="minimizeWindow"
+          @toggle-maximize="toggleWindowMaximize"
+          @close="closeWindow"
+        />
       </div>
     </header>
 
@@ -336,6 +313,7 @@ onUnmounted(() => {
       <ConnectionSidebar
         :assets="store.assets"
         :grouped-assets="store.groupedAssets"
+        :asset-source="store.assetSource"
         :selected-asset-id="store.selectedAssetId as string | undefined"
         :assets-collapsed="store.assetsCollapsed"
         :search-query="sidebarSearch"
@@ -409,7 +387,7 @@ onUnmounted(() => {
 
     <RightSidebar @collapse="emit('toggle-right')" />
 
-    <footer class="statusbar app-status-bar" data-region="statusbar">
+    <footer class="statusbar" data-region="statusbar">
       <div class="sb-left">
         <span class="sb-item muted status-text" aria-live="polite">{{ store.statusMessage || '就绪' }}</span>
         <button
@@ -424,13 +402,25 @@ onUnmounted(() => {
         </button>
       </div>
       <div class="sb-right">
-        <button class="sb-item transfer-pill" type="button" aria-label="打开传输队列" @click="emit('toggle-transfer-drawer')">
+        <button
+          class="sb-item transfer-pill"
+          type="button"
+          :aria-label="activeTransferCount > 0 ? `打开传输队列（${activeTransferCount} 个进行中）` : '打开传输队列'"
+          @click="emit('toggle-transfer-drawer')"
+        >
           <ArrowUpDown :size="12" aria-hidden="true" />
           <span class="mono">{{ activeTransferCount }}</span>
         </button>
-        <span class="sb-sep">·</span>
-        <span class="badge muted">{{ syncText }}</span>
-        <span class="sb-sep">·</span>
+        <span class="sb-sep" aria-hidden="true">·</span>
+        <button
+          class="badge muted"
+          type="button"
+          title="打开同步设置"
+          @click="emit('open-settings', 'sync')"
+        >
+          {{ syncText }}
+        </button>
+        <span class="sb-sep" aria-hidden="true">·</span>
         <button
           class="badge"
           :class="store.mcpClientConnected ? 'success' : 'warn'"

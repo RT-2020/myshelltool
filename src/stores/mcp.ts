@@ -79,9 +79,12 @@ export const useMcpStore = defineStore('mcp', () => {
   // v0.20（B1 GUI）：完整配置（level + scope）。scope 编辑面板的权威数据源；
   // 旧后端返回无 scope 字段时为空对象（= 不限制）。
   const config = ref<McpConfigResult | null>(null);
-  // v2：执行日志列表（timestampMs 倒序）+ 加载态。
+  const configLoadError = ref('');
+  const probeError = ref('');
+  // v2：执行日志列表（timestampMs 倒序）+ 加载态 / 错误态。
   const execLogs = ref<McpExecutionLogEntry[]>([]);
   const execLogsLoading = ref(false);
+  const execLogsError = ref('');
 
   // workbench bridge（attachWorkbench 注入）。延迟绑定，避免循环 import。
   let workbenchBridge: McpWorkbenchBridge | null = null;
@@ -124,9 +127,11 @@ export const useMcpStore = defineStore('mcp', () => {
     // 浏览器预览模式直接跳过，不发探测、不 warn。
     if (!isTauriRuntime()) return;
     loading.value = true;
+    probeError.value = '';
     try {
       status.value = await invokeBackend<McpStatusResult>('mcp_status');
     } catch (error) {
+      probeError.value = errorMessage(error);
       // 真 runtime 下的失败才记日志——探测本身的失败已内化成 probe.ok=false，
       // 这里 catch 的只有 IPC 层异常（命令未注册等），值得 warn。
       // eslint-disable-next-line no-console
@@ -161,7 +166,7 @@ export const useMcpStore = defineStore('mcp', () => {
       wb().announce?.('MCP 接入 token 已重置——旧配置已失效，请重新复制配置到 MCP host', { level: 'success' });
       return true;
     } catch (error) {
-      wb().announce?.('重置 MCP token 失败：' + errorMessage(error));
+      wb().announce?.('重置 MCP token 失败：' + errorMessage(error), { level: 'error' });
       return false;
     }
   }
@@ -202,7 +207,7 @@ export const useMcpStore = defineStore('mcp', () => {
     try {
       await invokeBackend('mcp_confirm_tool', { requestId, accepted });
     } catch (error) {
-      wb().announce?.('MCP 审批响应失败：' + errorMessage(error));
+      wb().announce?.('MCP 审批响应失败：' + errorMessage(error), { level: 'error' });
     }
     approvalPrompt.value = null;
     if (!accepted) wb().modal = { type: null };
@@ -220,7 +225,7 @@ export const useMcpStore = defineStore('mcp', () => {
         if (approvalPrompt.value) {
           approvalPrompt.value = null;
           wb().modal = { type: null };
-          wb().announce?.('MCP 高危操作审批超时（65秒未响应），已自动关闭');
+          wb().announce?.('MCP 高危操作审批超时（65秒未响应），已自动关闭', { level: 'warn' });
         }
       }, 65000);
     }
@@ -238,11 +243,14 @@ export const useMcpStore = defineStore('mcp', () => {
   /** 拉取拦截等级（mcp_get_config）。浏览器预览模式静默跳过。 */
   async function loadMcpConfig() {
     if (!isTauriRuntime()) return;
+    configLoadError.value = '';
     try {
       const cfg = await invokeBackend<McpConfigResult>('mcp_get_config');
       config.value = cfg;
-      interceptLevel.value = cfg?.level ?? 'minimal';
+      // fail-closed 显示折叠（09 R13）：仅识别明确两档，未知或异常值一律按更严 'strict' 展示（不写后端）
+      interceptLevel.value = cfg?.level === 'minimal' || cfg?.level === 'strict' ? cfg.level : 'strict';
     } catch (error) {
+      configLoadError.value = errorMessage(error);
       // eslint-disable-next-line no-console
       console.warn('[mcp] loadMcpConfig failed:', errorMessage(error));
     }
@@ -257,10 +265,11 @@ export const useMcpStore = defineStore('mcp', () => {
     const label = level === 'strict' ? '全部需确认' : '仅拦截毁灭性命令';
     try {
       const config = await invokeBackend<McpConfigResult>('mcp_set_config', { level });
-      interceptLevel.value = config?.level ?? level;
-      wb().announce?.(`MCP 拦截等级已切换为「${label}」`);
+      const raw = config?.level ?? level;
+      interceptLevel.value = raw === 'minimal' || raw === 'strict' ? raw : 'strict';
+      wb().announce?.(`MCP 拦截等级已切换为「${label}」`, { level: 'success' });
     } catch (error) {
-      wb().announce?.('切换 MCP 拦截等级失败：' + errorMessage(error));
+      wb().announce?.('切换 MCP 拦截等级失败：' + errorMessage(error), { level: 'error' });
     }
   }
 
@@ -273,9 +282,10 @@ export const useMcpStore = defineStore('mcp', () => {
     try {
       const updated = await invokeBackend<McpConfigResult>('mcp_set_scope', { scope });
       config.value = updated;
+      configLoadError.value = '';
       return updated;
     } catch (error) {
-      wb().announce?.('保存 MCP 授权范围失败：' + errorMessage(error));
+      wb().announce?.('保存 MCP 授权范围失败：' + errorMessage(error), { level: 'error' });
       return null;
     }
   }
@@ -287,9 +297,11 @@ export const useMcpStore = defineStore('mcp', () => {
   async function loadExecLogs(limit = 200) {
     if (!isTauriRuntime() || execLogsLoading.value) return;
     execLogsLoading.value = true;
+    execLogsError.value = '';
     try {
       execLogs.value = await invokeBackend<McpExecutionLogEntry[]>('mcp_list_execution_logs', { limit });
     } catch (error) {
+      execLogsError.value = errorMessage(error);
       // eslint-disable-next-line no-console
       console.warn('[mcp] loadExecLogs failed:', errorMessage(error));
     } finally {
@@ -302,9 +314,10 @@ export const useMcpStore = defineStore('mcp', () => {
     try {
       await invokeBackend('mcp_clear_execution_logs');
       execLogs.value = [];
-      wb().announce?.('MCP 执行日志已清空');
+      execLogsError.value = '';
+      wb().announce?.('MCP 执行日志已清空', { level: 'success' });
     } catch (error) {
-      wb().announce?.('清空 MCP 执行日志失败：' + errorMessage(error));
+      wb().announce?.('清空 MCP 执行日志失败：' + errorMessage(error), { level: 'error' });
     }
   }
 
@@ -346,8 +359,11 @@ export const useMcpStore = defineStore('mcp', () => {
     approvalPrompt,
     interceptLevel,
     config,
+    configLoadError,
+    probeError,
     execLogs,
     execLogsLoading,
+    execLogsError,
     // computed
     probe,
     clientConnected,

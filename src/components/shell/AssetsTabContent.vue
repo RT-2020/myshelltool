@@ -28,27 +28,3 @@ const assetsStore = useAssetsStore();
     </section>
   </div>
 </template>
-
-<style scoped lang="scss">
-@use '@/styles/_tokens' as *;
-
-.block {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-md, 8px);
-  background: var(--bg-elevated, var(--app-surface));
-}
-.block-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-secondary, var(--app-muted));
-}
-</style>

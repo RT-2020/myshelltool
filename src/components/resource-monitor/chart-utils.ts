@@ -5,6 +5,7 @@
 export const CHART_W = 240;
 export const CHART_H = 60;
 export const CHART_PAD = 4;
+export const SAMPLE_WINDOW_LABEL = '最近 60 个采样点（2 秒间隔）';
 export const MAX_POINTS = 60;
 
 export function formatBytes(b: number | null | undefined): string {

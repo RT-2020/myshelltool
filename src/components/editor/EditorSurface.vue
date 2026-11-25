@@ -11,7 +11,7 @@
  *
  * 本组件经 defineAsyncComponent 懒加载（CodeMirror 及语言包不进主 bundle）。
  */
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { AlertTriangle, RotateCw, FileWarning, PanelLeftClose, PanelLeftOpen, Eye } from 'lucide-vue-next';
 import { useEditorStore } from '@/stores/editor';
 import { useWorkbenchStore } from '@/stores/workbench';
@@ -30,7 +30,8 @@ const workbench = useWorkbenchStore();
 
 const editorHost = ref<InstanceType<typeof CodeMirrorHost> | null>(null);
 const cursor = ref<{ line: number; column: number; lines: number } | null>(null);
-const previewText = ref('');
+// 05 A1：预览通道绑定 tabId，切换 tab 即时重置，空串 "" 不回退到旧快照
+const previewState = ref<{ tabId: string; text: string } | null>(null);
 const dragOver = ref(false);
 /** Markdown 预览模式（仅 markdown 语言显示切换）。 */
 const previewMode = ref<'off' | 'split' | 'preview'>('split');
@@ -44,6 +45,26 @@ const saving = computed(() => Boolean(tab.value && store.savingTabIds[tab.value.
 const eolChoice = computed(() => (tab.value ? store.tabEolChoice(tab.value) : 'lf'));
 const encodingChoice = computed(() => tab.value?.encodingOverride ?? 'utf-8');
 
+watch(
+  () => [store.activeTabId, tab.value?.contentVersion] as const,
+  ([id]) => {
+    const current = id ? store.tabs.find(t => t.id === id) : null;
+    previewState.value =
+      current && languageIdForName(current.name) === 'markdown'
+        ? { tabId: current.id, text: store.currentContent(current.id) }
+        : null;
+  },
+  { immediate: true }
+);
+
+const markdownPreviewContent = computed(() => {
+  if (!tab.value) return '';
+  if (previewState.value && previewState.value.tabId === tab.value.id) {
+    return previewState.value.text;
+  }
+  return store.currentContent(tab.value.id);
+});
+
 function onJump(line: number) {
   if (line > 0) editorHost.value?.gotoLine(line);
   else editorHost.value?.focus();
@@ -53,21 +74,23 @@ function onCursor(pos: { line: number; column: number; lines: number }) {
   cursor.value = pos;
 }
 
-function onHostChange(text: string) {
-  if (isMarkdown.value && previewMode.value !== 'off') previewText.value = text;
+function onHostChange(tabId: string, text: string) {
+  if (tabId === store.activeTabId && isMarkdown.value && previewMode.value !== 'off') {
+    previewState.value = { tabId, text };
+  }
 }
 
-/** 打开失败的可读文案（按 kind 分类）。 */
+/** 打开失败的可读文案（按 kind 分类；05 A7 补齐四要素下一步指引）。 */
 function errorText(t: EditorTab): string {
   const e = t.error;
   if (!e) return '';
   switch (e.kind) {
-    case 'too-large': return '文件超过编辑器 2 MiB 上限，无法按文本打开（可下载后用本地工具编辑）。';
-    case 'binary': return '内容是二进制文件，无法按文本打开。';
+    case 'too-large': return '文件超过编辑器 2 MiB 上限，无法按文本打开。可在文件面板下载后用本地工具编辑。';
+    case 'binary': return '内容是二进制文件，无法按文本打开。请到文件面板下载后用对应工具打开。';
     case 'not-utf8': return '文件不是 UTF-8 文本。可能是 GBK 等本地编码——可按 GBK 重试，或在下方切换其他编码。';
     case 'encoding': return '当前选择的编码无法解码这份内容（换一个编码再试）。';
-    case 'lossy': return '文件名含无法识别的字符（非 UTF-8 文件名失真），无法安全寻址。';
-    case 'dir': return '目标路径是目录，不是文件。';
+    case 'lossy': return '文件名含无法识别的字符（非 UTF-8 文件名失真），无法安全寻址。可从文件面板检查或重命名。';
+    case 'dir': return '目标路径是目录，不是文件。请返回文件面板选择文件。';
     default: return e.message;
   }
 }
@@ -122,6 +145,7 @@ function onEolChange(event: Event) {
 </script>
 
 <template>
+  <Transition name="editor-win">
   <div
     v-if="store.surfaceVisible"
     class="editor-surface"
@@ -155,7 +179,7 @@ function onEolChange(event: Event) {
         </div>
 
         <div v-else-if="tab.status === 'error'" class="state-panel error" data-region="editor-error">
-          <AlertTriangle :size="20" />
+          <AlertTriangle :size="20" aria-hidden="true" />
           <p class="error-message">{{ errorText(tab) }}</p>
           <p class="error-raw">{{ tab.error?.message }}</p>
           <div class="error-actions">
@@ -171,7 +195,7 @@ function onEolChange(event: Event) {
               class="btn"
               @click="store.retryTab(tab.id)"
             >
-              <RotateCw :size="13" />重试
+              <RotateCw :size="13" aria-hidden="true" />重试
             </button>
           </div>
         </div>
@@ -192,7 +216,7 @@ function onEolChange(event: Event) {
             />
           </div>
           <div v-if="isMarkdown && previewMode !== 'off'" class="preview-pane">
-            <MarkdownPreviewPane :content="previewText || store.contentSnapshot(tab.id)" />
+            <MarkdownPreviewPane :content="markdownPreviewContent" />
           </div>
         </div>
       </div>
@@ -200,11 +224,16 @@ function onEolChange(event: Event) {
       <!-- 状态栏 -->
       <div class="editor-statusbar">
         <span class="status-item" :title="tab.target.path">{{ tab.target.path }}</span>
-        <span v-if="tab.readOnly" class="status-item readonly" :title="tab.readOnlyReason || ''">
-          <FileWarning :size="12" />只读
+        <span
+          v-if="tab.readOnly"
+          class="status-item readonly"
+          :title="tab.readOnlyReason || ''"
+          :aria-label="`只读${tab.readOnlyReason ? '：' + tab.readOnlyReason : ''}`"
+        >
+          <FileWarning :size="12" aria-hidden="true" />只读
         </span>
-        <span class="status-item">{{ cursor ? `行 ${cursor.line}, 列 ${cursor.column}` : '行 -, 列 -' }}</span>
-        <span class="status-item">共 {{ cursor?.lines ?? '-' }} 行</span>
+        <span class="status-item num">{{ cursor ? `行 ${cursor.line}, 列 ${cursor.column}` : '行 -, 列 -' }}</span>
+        <span class="status-item num">共 {{ cursor?.lines ?? '-' }} 行</span>
         <label class="status-item select-wrap" title="编码（切换将按新编码重新加载原文件）">
           <span>编码</span>
           <select class="mini-select" :value="encodingChoice" @change="onEncodingChange">
@@ -222,24 +251,27 @@ function onEolChange(event: Event) {
           <button
             type="button"
             class="tool-btn"
+            :aria-label="previewMode === 'off' ? '打开分屏预览' : '关闭预览'"
             :title="previewMode === 'off' ? '打开分屏预览' : '关闭预览'"
             @click="previewMode = previewMode === 'off' ? 'split' : 'off'"
           >
-            <component :is="previewMode === 'off' ? PanelLeftOpen : PanelLeftClose" :size="13" />
+            <component :is="previewMode === 'off' ? PanelLeftOpen : PanelLeftClose" :size="13" aria-hidden="true" />
           </button>
           <button
             type="button"
             class="tool-btn"
+            :aria-label="previewMode === 'preview' ? '回到编辑' : '仅看预览'"
             :title="previewMode === 'preview' ? '回到编辑' : '仅看预览'"
             @click="previewMode = previewMode === 'preview' ? 'split' : 'preview'"
           >
-            <Eye :size="13" />
+            <Eye :size="13" aria-hidden="true" />
           </button>
         </span>
       </div>
       </template>
     </div>
   </div>
+  </Transition>
 </template>
 
 <style scoped lang="scss">
@@ -272,6 +304,33 @@ function onEolChange(event: Event) {
     font-size: var(--text-sm);
     pointer-events: none;
   }
+}
+
+.editor-win-enter-active {
+  transition: opacity var(--dur-base) var(--ease-standard);
+}
+.editor-win-enter-active .editor-window {
+  transition:
+    transform var(--dur-slow) var(--ease-emphasized),
+    opacity var(--dur-base) var(--ease-standard);
+}
+.editor-win-leave-active {
+  transition: opacity var(--dur-fast) var(--ease-standard);
+  pointer-events: none;
+}
+.editor-win-leave-active .editor-window {
+  transition:
+    transform var(--dur-fast) var(--ease-standard),
+    opacity var(--dur-fast) var(--ease-standard);
+}
+.editor-win-enter-from,
+.editor-win-leave-to {
+  opacity: 0;
+}
+.editor-win-enter-from .editor-window,
+.editor-win-leave-to .editor-window {
+  transform: scale(0.985) translateY(4px);
+  opacity: 0;
 }
 
 // 弹窗窗体：编辑器本体（多 tab + 工具栏 + 主区 + 状态栏）。
@@ -346,8 +405,8 @@ function onEolChange(event: Event) {
 .error-actions .btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px var(--space-3);
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
   border: 1px solid var(--app-border);
   border-radius: var(--radius-sm);
   background: var(--app-panel);
@@ -356,11 +415,21 @@ function onEolChange(event: Event) {
   cursor: pointer;
 
   &:hover { background: var(--app-hover); }
+  &:active { background: var(--app-active); }
 
   &.primary {
     border-color: var(--accent);
     background: var(--accent);
-    color: var(--accent-contrast, #fff);
+    color: var(--accent-on);
+
+    &:hover {
+      border-color: var(--accent-hover);
+      background: var(--accent-hover);
+    }
+    &:active {
+      border-color: var(--accent-active);
+      background: var(--accent-active);
+    }
   }
 }
   }
@@ -383,7 +452,7 @@ function onEolChange(event: Event) {
   align-items: center;
   gap: var(--space-3);
   padding: 2px var(--space-3);
-  min-height: 26px;
+  min-height: 28px;
   border-top: 1px solid var(--app-border);
   background: var(--app-panel);
   font-size: var(--text-xs);
@@ -395,7 +464,7 @@ function onEolChange(event: Event) {
 .status-item {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   flex: 0 0 auto;
 
   &:first-child {
@@ -405,11 +474,16 @@ function onEolChange(event: Event) {
     text-overflow: ellipsis;
   }
 
+  &.num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
   &.readonly { color: var(--warn); }
 }
 
 .select-wrap {
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .mini-select {
@@ -421,7 +495,11 @@ function onEolChange(event: Event) {
   font-size: var(--text-xs);
   outline: none;
 
-  &:focus { border-color: var(--accent); }
+  &:focus {
+    border-color: var(--accent);
+    box-shadow: var(--focus-ring);
+  }
+  &:active { background: var(--app-hover); }
 }
 
 .preview-toggle {
@@ -443,6 +521,9 @@ function onEolChange(event: Event) {
   &:hover {
     background: var(--app-hover);
     color: var(--app-text);
+  }
+  &:active {
+    background: var(--app-active);
   }
 }
 </style>
