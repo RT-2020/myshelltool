@@ -1,7 +1,7 @@
 # AGENTS.md
 
 > 本文件是 **AI Coding Agent 的项目上下文单一信息源（Single Source of Truth）**，但只收录**每次协作都需要的常驻指令**。
-> 所有 AI 编码工具（Claude Code、Cursor、GitHub Copilot、ZCode 等）应首先读本文件。本文件是用户全局约定（`~/.dsh/AGENTS.md` 与 `~/.zcode/AGENTS.md`——两份当前内容一致，分别是 DSH 与 ZCode 的注入源；工程判据/协作纪律）的**项目层**：全局通用判据在本项目默认生效，本文件只收录项目专属事实与红线；两层冲突时以本文件为准。
+> 所有 AI 编码工具（Antigravity、Claude Code、Cursor、GitHub Copilot、ZCode 等）应首先读本文件。本文件是用户全局约定（`~/.agents/AGENTS.md` 等）的**项目层**：全局通用工程判据与协作纪律在本项目默认生效，本文件只收录项目专属事实与红线；两层冲突时以本文件为准。
 >
 > **分层原则（防膨胀，本文件自限 250 行以内）**：
 > - **本文件 = 常驻层**：协作方式、质量红线、约定、命令、安全红线——每次会话全量注入，必须短而硬。
@@ -14,45 +14,29 @@
 >   | 改某模块前查历史坑与回归防线 | [`docs/已知边界与修复史.md`](./docs/已知边界与修复史.md) |
 >   | 工程质量反模式完整实证 | [`docs/llm-engineering-guidelines.md`](./docs/llm-engineering-guidelines.md) |
 >   | 文件大小基线 / 架构漂移记忆 | [`docs/architecture-log.md`](./docs/architecture-log.md) |
+>   | 界面设计方案 / 改样式或新增界面时的方向、token 用法与拍板事项 | [`docs/设计/README.md`](./docs/设计/README.md) |
 > - **工具派生文件只引用本文件、不复制内容**：`.github/copilot-instructions.md` 如此；Cursor / Copilot 原生读 AGENTS.md，无需 `.cursor/rules` 式镜像目录（已删除）。**Claude Code 亦直接读本文件，故禁止新增 `CLAUDE.md`**——官方默认 `Project instructions = claude-md-or-agents-md`，仓库里存在 `CLAUDE.md` 时**只读它、不读 AGENTS.md**（原 `CLAUDE.md` 已按此删除，勿重建；Claude 专属红线见 §10）。
 >
 > 维护原则：**架构、命令、约定变化时，先改本文件（或对应 docs 文件），再同步指针**。不要把参考/历史内容塞进常驻层——它每次会话都在计费且稀释红线。
 
-## 0. 你是什么 / 怎么协作
+## 0. 项目协作须知
 
-你是一个 **长期协作的工程成员**，不是一次性问答工具。在本仓库中工作时：
-
-- **先读后写**：改动前先理解现有代码结构与约定，复用已有实现，避免重复造轮子。
-- **复杂任务先规划**：涉及多文件、架构决策的任务，先用 Plan 模式产出执行计划并获得确认，再实现。
-- **改完即验**：每次实现后跑构建/测试（见 §5），把验证结果如实报告，不要把"应该能过"说成"已通过"。
 - **遵循本文件**：命名、目录、状态管理、IPC 约定（见 §4 / §6 / §7）是硬约束，违反会破坏一致性。
-- **不造 ai-slop**：写代码前先搜现有实现；文件不过大；遵循工程质量红线（见下方「质量红线」）。
+- **不造 ai-slop**：写代码前先搜现有实现；按内聚边界合理拆分模块；遵循下方「质量红线」。
 - **发版走技能**：用户说「发版」「打 tag 发版」「bump 到 vX.Y.Z」等时，用项目内置技能 `release-myshelltool`（`.agents/skills/release-myshelltool/SKILL.md`），它沉淀了版本 bump → 打 tag → 触发 GitHub Actions → 验证产物的完整流程与本仓库真实踩过的坑（如 `createUpdaterArtifacts` 字段名、`.sig` 未生成、tag 重打）。不要临时拼凑发版步骤。
 
 ## 质量红线（硬约束，违反必须整改）
 
-> 完整说明与本项目反模式实证见 [`docs/llm-engineering-guidelines.md`](./docs/llm-engineering-guidelines.md)。以下为可量化阈值，每次提交前对照。
-
-**文件大小硬上限**（超出触发拆分）：
-
-| 类型 | 软警告 | 硬上限 |
-|---|---|---|
-| Vue SFC `.vue`（`<script setup lang="ts">`） | 300 行 | **500 行** |
-| Pinia store `.ts` | 300 行 | **500 行** |
-| Rust 模块 `.rs` | 400 行 | **800 行** |
-
-> ⚠️ 当前已超标的文件（重构候选）由 **`npm run lint:size`（`scripts/size-guard.mjs`）机械守门**：RATCHET 表登记存量超标文件的基线行数，只许缩不许涨；缩回限内必须除名（锁定成果）。软警告区清单随门禁输出实时打印；历史基线演进见 [`docs/architecture-log.md`](./docs/architecture-log.md)。新增功能时优先考虑拆分这些文件，而非继续往里堆。
+> 完整说明与本项目反模式实证见 [`docs/llm-engineering-guidelines.md`](./docs/llm-engineering-guidelines.md)。历史架构演进记录见 [`docs/architecture-log.md`](./docs/architecture-log.md)；已取消机械行数门禁，按职责内聚度自行评估拆分。
 
 **禁止事项**：
 - ❌ 重复造轮子，也禁止错误合并：写新逻辑/样式/正则前必须先搜（grep/Grep/Explore），但复用按全局判据 4 判定——契约一致**且**变更驱动一致才算等价，「长得像」不算，不得为通过检索强行合并；项目高频复用点：`ui/index.ts`、`workbench.ts` re-export、`backend.ts` normalize*。
-- ❌ 空catch {}：错误至少 `announce` 或显式注释「为何可忽略」。
 - ❌ `window.alert` / `window.confirm` / `window.prompt`：用内联校验 + `GlobalModals`。
 - ❌ 硬编码颜色/z-index/间距：用 `var(--token)`（见 `src/styles/_tokens.scss`）。
 - ❌ 同一概念多份实现：连接状态等用权威定义点（见指南 §5）。
-- ❌ 死代码：未被 import 的模块确认后删除。
 - ❌ 靠猜测代替事实：对外部环境（家目录/工具链/locale/时钟域/就绪信号/身份键）不做臆断——协议求证（SFTP canonicalize/stat、pty 终端模式）、解析命令输出加 `LC_ALL=C` + POSIX 选项（写法必须 `env LC_ALL=C <cmd>`，`VAR=值 cmd` 在 csh/tcsh 下整条命令失败）、比较同钟域、身份用完整键、探测三态（真/假/未知按保守处理）。详见指南 §7；**机械门禁**：`npm run lint:facts`（`scripts/fact-guards.mjs`，20 条规则，随 build/CI/发版强制执行；含 animation 简写双缓动拦截）。新增远程能力**默认走 SFTP/协议**，确需 exec 解析输出时注释平台假设与降级策略。
 - ❌ 靠形状猜测（形态 E）：用正则/前缀/子串去认结构化对象（命令串/路径/设备树/身份）必被等价写法绕过——命令按 shell 词法分段后**逐段**判定（`df -h; cat /etc/shadow` 不得因前缀 `df` 免审批）、路径先归一再按**组件**判定（`./.ssh/id_rsa`、`\\?\UNC\...`、`/home/x/.ssh/id_rsa` 同罪）、设备按**拓扑**判重（LVM/RAID 的 `dm-*`/`md*` 与物理盘记同一份 IO）。
-- ❌ 失败朝宽松方向折叠：涉及审批/凭据/拦截等级/数据覆盖的读盘或解析失败，**只允许回落到更严的一档**（fail-closed）+ 日志 + 损坏文件隔离改名；只有「文件不存在 = 用户无偏好」才可用产品默认档。「读不出来」永远不等于「空数据/不存在」——已两次导致静默丢数据（拦截等级降级为零审批放行、整份审计日志被 1 条覆盖）。
+- ❌ 失败朝宽松方向折叠：涉及审批/凭据/拦截等级/数据覆盖的读盘或解析失败，**只允许回落到更严的一档**（fail-closed）+ 日志 + 损坏文件隔离改名；只有「文件不存在 = 用户无偏好」才可用产品默认档。本项目曾两次因将「读不出来」误当作「空数据/不存在」导致静默丢数据（拦截等级降级为零审批放行、整份审计日志被 1 条覆盖）。
 
 ## 1. 项目概览
 
@@ -110,18 +94,18 @@ myshelltool/
 - **状态用 Pinia setup store**（`defineStore('x', () => {...})` 返回 refs/computeds/actions）。
 - **图标统一用 `lucide-vue-next`**，不要引入其他图标库或内联 SVG（资源监控图表除外，用自绘 SVG）。
 - **样式用 SCSS + 设计 token**（`@/styles/_tokens.scss`）。组件内 `<style scoped lang="scss">` 顶部 `@use '@/styles/_tokens' as *;`。
-  - 颜色/间距/圆角/阴影/动效/z-index **必须用 `var(--xxx)` token**，不要硬编码。z-index 用 `var(--z-base|dropdown|sticky|drawer|modal|toast|tooltip)`。
+  - 颜色/间距/圆角/阴影/动效/z-index **必须用 `var(--xxx)` token**，不要硬编码。z-index 用 `var(--z-base|dropdown|sticky|popover|drawer|modal|toast|tooltip)`（8 档，与 `_tokens.scss` 一致；popover=250 专给 teleport 到 body 的瞬态贴点浮层）。
   - 新增 token 加到 `_tokens.scss` 的 map 并暴露为 `:root` CSS 变量。
 - **hover/focus 反馈铁律（纯绘制属性）**：交互态只允许改 `color`/`background`/`border-color`/`opacity`/`box-shadow`/`outline-color`/`filter`/`transform`；**禁止**改一切盒模型与文档流属性（`padding`/`margin`/`border-width`/`width`/`height`/`min|max-*`/`font-size`/`font-weight`/`line-height`/`letter-spacing`/`gap`/`flex`/`grid-template`/`display`/`position`/`overflow`/`top|left|right|bottom`）——那会触发重排，hover 一行代码周边元素全位移（页面抖动）。悬停显隐元素必须**常驻占位**（默认 `opacity:0`/`visibility:hidden`，hover 改 `opacity:1`），**禁止** `display:none ↔ flex/grid` 切换；需要位移反馈用 `transform`（合成器属性，不重排）。**登记例外（仅此一处）**：标题栏全局搜索 `.tb-search:focus-within` 的「宽度呼吸」——必须活在 `.tb-center` 固定宽度槽位内（同排元素零位移，reflow 圈在组件自身子树，见 workbench-shell.scss 注释）；复制此模式须同样配固定槽位并在此登记。排查记录与验证方法见 [`docs/已知边界与修复史.md`](./docs/已知边界与修复史.md)「hover 抖动排查」节。
 - **路径别名 `@`** → `src/`（vite.config.ts 配置）。import 用 `@/stores/...`、`@/components/...`。
 - **组件分层**：`ui/` 是无业务的基础组件（`App*` 命名，barrel 导出）；业务组件按域放 `shell/`、`terminal/`、`files/`、`resource-monitor/`。
 - **通用操作入口模式**：右键菜单用 `AppContextMenu`（`items: [{label, action, danger, separator, disabled}]`），参照 `FileSurface.vue` 用法。危险操作用 `danger: true`（红色）或 `AppButton variant="danger"`。
-- **弹窗**：既有业务弹窗走 `GlobalModals.vue`（`store.modal = { type, ...payload }`）；标题与提交分发已抽出，新增 type 需同步 `src/lib/modalTitles.ts`（`modalTitleFor`）与 `src/lib/modalSubmit.ts`（`dispatchModalSubmit` 的 switch）**两处**。**新弹窗双轨判据**：GlobalModals 已贴 500 行硬上限，自持复杂流程的新弹窗走 App 根级 overlay（`AppModal` + 独立 SFC，先例 `SshImportDialog.vue`，组件头注释须登记不走 GlobalModals 的理由）；简单确认类仍进 GlobalModals。保留 legacy 选择器（`#modalLayer`/`#modalBody`/`.modal-actions .btn.danger`）以兼容测试。
+- **弹窗**：既有业务弹窗走 `GlobalModals.vue`（`store.modal = { type, ...payload }`）；标题与提交分发已抽出，新增 type 需同步 `src/lib/modalTitles.ts`（`modalTitleFor`）与 `src/lib/modalSubmit.ts`（`dispatchModalSubmit` 的 switch）**两处**。**新弹窗双轨判据**：自持复杂流程的新弹窗走 App 根级 overlay（`AppModal` + 独立 SFC，先例 `SshImportDialog.vue`，组件头注释须登记不走 GlobalModals 的理由）；简单确认/表单类进 GlobalModals。保留 legacy 选择器（`#modalLayer`/`#modalBody`/`.modal-actions .btn.danger`）以兼容测试。
 
 ### 4.2 状态管理（跨 store 桥接）
 - **`workbench.ts` 是编排壳**：实例化 8 个子 store（sessions/files/tunnels/assets/ui/mcp/sync/editor，v0.18 起），`initialize()` 编排启动加载，用 plain-object 返回 + `computed()` 包裹子 store 的响应式 state（**不要直接暴露子 store 的 ref**，会丢响应性）。**注意 `resourceMonitor.ts` 不经 workbench 编排**——它由 `ResourceMonitorPanel.vue` 直接 `useResourceMonitorStore()` 使用（独立轮询生命周期，与全局初始化解耦）。
 - **跨 store 依赖用 lazy bridge**：子 store 通过 `attachWorkbench(bridge)` 注入跨 store 访问（如 assets store 调 workbench.announce / workbench.modal）。**禁止循环 import**。
-- **新 action 加到子 store**。跨域消费面（App.vue / GlobalModals 等顶层编排消费方）经 `workbench.ts` return 块 re-export（参照 `saveAsset`/`deleteAsset` 模式）；**领域组件直连本域子 store**（editor 模式，先例 `EditorSurface`/`AssetsTabContent`）——判断「跨域」的标准是逻辑本身横跨多个 store，不是组件文件在哪个目录。workbench.ts 贴 500 行硬上限，re-export 面只增不减时优先让新代码直连。
+- **新 action 加到子 store**。跨域消费面（App.vue / GlobalModals 等顶层编排消费方）经 `workbench.ts` return 块 re-export（参照 `saveAsset`/`deleteAsset` 模式）；**领域组件直连本域子 store**（editor 模式，先例 `EditorSurface`/`AssetsTabContent`）——判断「跨域」的标准是逻辑本身横跨多个 store，不是组件文件在哪个目录。为控制编排壳暴露面，优先让领域组件直连本域子 store。
 
 ### 4.3 Rust 后端
 - **所有 Tauri 命令用 `State<'_, AppState>` 统一解析**（ADR v3 Option A 重构后）。**禁止** 双 `manage` hack。
@@ -154,7 +138,6 @@ npm run test:ui      # UI 五套：smoke / host-key / file-loading / **ipc-flows
 
 # —— 静态检查（各自单跑）——
 npm run lint:facts   # 「靠猜测代替事实」门禁：scripts/fact-guards.mjs（指南 §7）；build 首步即跑，CI/发版同步生效
-npm run lint:size    # 文件大小红线门禁：scripts/size-guard.mjs（RATCHET 制，见「质量红线」节）；随 build 生效
 npm run check:ipc    # IPC 契约清单级一致性：scripts/ipc-contract-check.mjs（命令注册表 × 调用面、事件 emit × 监听面）；随 build 生效
 npm run lint:components # SFC 模板组件解析门禁：scripts/component-resolve-guard.mjs（模板引用未 import 的组件即 fail——TitleBarSearch 漏 import 曾静默丢功能随版本发布）；随 build 生效
 npm run type-check   # vue-tsc --build，strict 全量；build 亦含此步
@@ -220,20 +203,15 @@ cd src-tauri && cargo check       # 更快的类型检查
 ## 10. Git / 提交
 
 - 默认分支 `master`。提交前确认在正确分支；用户没要求时**不要自动 commit/push**。
-- 改动尽量聚焦，提交信息描述清楚"做了什么 + 为什么"。
 - **禁止 AI 署名 trailer（项目所有者硬要求）**：commit message 里**禁止** `Co-Authored-By: Claude`、`Generated-by: Claude` 等会被 GitHub 解析为贡献者元数据的 trailer 语法，也不要用 AI 邮箱（如 `noreply@anthropic.com`）做 `git commit --author=`。**本仓库的 GitHub Contributors 列表不得出现 Claude / AI**。Claude Code 默认会追加 `Co-Authored-By: Claude`，**必须显式停用该行为**；「实现由 Claude 协助」的事实可用自然语言写在正文，但不得使用上述 trailer 语法。
-- **不为「风格统一」重写已工作的代码**——先确认有真实收益。
 
-## 11. 给 Agent 的快速决策清单
+## 11. 给 Agent 的快速决策清单（项目专属）
 
 收到任务时按此顺序判断：
-1. **是读/研究类**？→ 用 Explore 子 agent 并行搜索，给出结论而非文件堆。
-2. **涉及多文件/架构决策**？→ 先进 Plan 模式，产出计划并经确认。
-3. **需求不确定**？→ 先问清楚再动手（AskUserQuestion / 对话澄清），不要替用户做关键假设；宁可多问一句，不要按猜测铺开实现。
-4. **有现成实现**？→ 按全局判据 4 判等价（契约 + 变更驱动）后再定复用/新建；高频复用点查 `ui/index.ts`、`workbench.ts` re-export、`backend.ts` normalize*。
-5. **要改 Rust 命令**？→ 别忘了在 `generate_handler!` 注册。
-6. **要加跨 store 逻辑**？→ 加子 store action + `workbench.ts` re-export，用 lazy bridge。
-7. **要加分发分支**（modal type / 命令路由 / 事件分支等）？→ 优先注册表，**不要 switch 链**：新增一处分支不该漏改其他几处（本项目已把 modal 分发从 `GlobalModals.vue` 抽到 `lib/modalSubmit.ts` + `lib/modalTitles.ts`，新增 modal type 时两处都要动——这是「一处逻辑散在多个 switch」的历史教训，新代码别再复制该形态）。
-8. **涉及外部环境**（远端路径/命令输出解析/locale/时钟/身份键/就绪信号）？→ 先按指南 §7 逐项想清求证方式：能协议求证（SFTP canonicalize/stat/read_dir、pty 模式）就不猜；确需 exec 解析必须 `LC_ALL=C` + POSIX 选项 + 注释平台假设。新硬编码写进代码前自问「换个合理环境还成立吗」。
-9. **要找目录归属 / IPC 细节 / 数据模型 / 某模块历史坑**？→ 按顶部指针表读对应 docs 文件；不要把细节复制回本文件。
-10. **改完**？→ 跑 §5 的验证（build 首步即含 lint:facts 门禁），如实报告 exit code。
+1. **有现成实现？** → 按全局判据 4 判等价（契约 + 变更驱动）后再定复用/新建；高频复用点查 `ui/index.ts`、`workbench.ts` re-export、`backend.ts` normalize*。
+2. **要改 Rust 命令？** → 别忘了在 `generate_handler!` 注册（§4.3）。
+3. **要加跨 store 逻辑？** → 加子 store action + `workbench.ts` re-export，用 lazy bridge（§4.2）。
+4. **要加分发分支（modal type / 命令路由 / 事件分支等）？** → 优先注册表，**不要 switch 链**：新增一处分支不该漏改其他几处（本项目已把 modal 分发从 `GlobalModals.vue` 抽到 `lib/modalSubmit.ts` + `lib/modalTitles.ts`，新增 modal type 时两处都要动——这是「一处逻辑散在多个 switch」的历史教训，新代码别再复制该形态）。
+5. **涉及外部环境（远端路径/命令输出解析/locale/时钟/身份键/就绪信号）？** → 先按指南 §7 逐项想清求证方式：能协议求证（SFTP canonicalize/stat/read_dir、pty 模式）就不猜；确需 exec 解析必须 `LC_ALL=C` + POSIX 选项 + 注释平台假设。新硬编码写进代码前自问「换个合理环境还成立吗」。
+6. **要找目录归属 / IPC 细节 / 数据模型 / 某模块历史坑？** → 按顶部指针表读对应 docs 文件；不要把细节复制回本文件。
+7. **改完？** → 跑 §5 的闭环验证（build 含事实、IPC 与组件解析门禁），如实报告 exit code 与关键输出。

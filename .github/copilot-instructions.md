@@ -23,7 +23,7 @@
 **完整规则见 [`docs/llm-engineering-guidelines.md`](../docs/llm-engineering-guidelines.md)**（含本项目反模式实证）。Copilot 尤其易犯以下错误，务必避免：
 
 - **先搜后写**：生成新逻辑/样式/正则前先搜现有实现，已有就复用。本项目实证：tag 正则曾 ×3、`.dot` CSS ×4、`terminalController.js` 死代码。
-- **文件不过大**：Vue/store ≤500 行、Rust ≤800 行。当前超标清单以 `docs/architecture-log.md` 的 Baseline snapshot 为准，往里加功能前先评估拆分。
+- **按职责与内聚度拆分**：模块或组件职责膨胀、难以阅读时按内聚边界拆分子组件或纯函数模块，不设机械行数上限。
 - **禁空 catch / window.alert**：错误走 `announce` 或显式注释；校验/确认走 `GlobalModals`，不用浏览器原生弹窗。
 - **别用 switch 链**：新增分支 >5 个用注册表（`GlobalModals` 加 modal 曾要改 4 处）。
 - **死代码即删**：未被 import 的模块确认后删除。
